@@ -1,0 +1,59 @@
+{
+  "name": "agentdesk-ui",
+  "productName": "AgentDesk",
+  "version": "0.2.6",
+  "description": "AI 编程助手桌面端：连接 VPS 上的 Codex 操作 Windows 开发机",
+  "main": "main.js",
+  "scripts": {
+    "prepare:desktop": "node scripts/prepare-desktop.js",
+    "prestart": "npm run prepare:desktop",
+    "start": "electron .",
+    "predist": "npm run prepare:desktop",
+    "dist": "electron-builder --win portable nsis"
+  },
+  "build": {
+    "appId": "local.agentdesk.ui",
+    "productName": "AgentDesk",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "clawd.js",
+      "remote.js",
+      "workspace.js",
+      "build/icon.png",
+      "src/**/*",
+      "desktop.js",
+      "windows-files.js"
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": true
+    },
+    "portable": {
+      "artifactName": "AgentDesk-${version}-portable.exe"
+    },
+    "nsis": {
+      "artifactName": "AgentDesk-${version}-setup.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "extraResources": [
+      {
+        "from": "desktop-backend",
+        "to": "desktop-backend"
+      }
+    ]
+  },
+  "devDependencies": {
+    "agent-desktop": "1.3.1",
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0"
+  }
+}

@@ -1,0 +1,136 @@
+// 本地 mock 数据，不连接任何模型或远程服务
+window.MOCK = {
+  projects: [
+    { id: 'p1', name: 'billing-service', branch: 'feat/retry-queue' },
+    { id: 'p2', name: 'web-dashboard', branch: 'main' },
+    { id: 'p3', name: 'infra-scripts', branch: 'dev' },
+  ],
+
+  sessions: [
+    {
+      id: 's1', project: 'p1', title: '给支付回调加指数退避重试', status: 'waiting', time: '2 分钟',
+      items: [
+        { t: 'user', text: '支付回调偶尔超时直接丢了，帮我在 webhook 处理里加一个带指数退避的重试队列，最多 5 次。' },
+        { t: 'assist', html: '<p>好的。我先看一下现有的 webhook 处理逻辑和队列相关代码。</p>' },
+        { t: 'tool', kind: '读取文件', icon: 'file', arg: 'src/webhooks/handler.ts', meta: '148 行',
+          input: 'path: src/webhooks/handler.ts', output: 'export async function handleWebhook(evt: PaymentEvent) {\n  const res = await notifyMerchant(evt);\n  if (!res.ok) {\n    logger.warn("notify failed", evt.id);\n    return;           // ← 失败直接丢弃\n  }\n  ...\n}' },
+        { t: 'tool', kind: '搜索', icon: 'search', arg: '"enqueue" in src/', meta: '3 处匹配',
+          input: 'pattern: enqueue\npath: src/', output: 'src/queue/index.ts:12   export function enqueue(job: Job)\nsrc/queue/index.ts:40   export function enqueueDelayed(job: Job, ms: number)\nsrc/jobs/report.ts:8    enqueue({ type: "report", ... })' },
+        { t: 'assist', html: '<p>现有队列已经支持 <code>enqueueDelayed</code>，可以直接复用。计划：</p><ul><li>新增 <code>src/webhooks/retry.ts</code>，计算退避延迟（1s → 2s → 4s → 8s → 16s，带抖动）</li><li>修改 <code>handler.ts</code>，失败时入队而不是丢弃</li><li>补充单元测试</li></ul>' },
+        { t: 'tool', kind: '编辑文件', icon: 'edit', arg: 'src/webhooks/retry.ts', meta: '+24', link: 'diff',
+          input: '新建文件 src/webhooks/retry.ts', output: '已写入 24 行' },
+        { t: 'tool', kind: '编辑文件', icon: 'edit', arg: 'src/webhooks/handler.ts', meta: '+6 −2', link: 'diff',
+          input: '替换失败分支逻辑', output: '已修改 1 处' },
+        { t: 'assist', html: '<p>改动已完成，接下来需要运行测试确认没有回归。</p>' },
+        { t: 'approval', id: 'a1', title: '请求执行命令', desc: '助手想在项目目录中运行以下命令：', cmd: 'npm test -- webhooks', state: 'pending' },
+      ],
+    },
+    {
+      id: 's2', project: 'p1', title: '排查对账任务内存上涨', status: 'done', time: '昨天',
+      items: [
+        { t: 'user', text: '夜间对账任务内存会一直涨到 2GB 被 OOM，帮忙看下原因。' },
+        { t: 'tool', kind: '运行命令', icon: 'term', arg: 'node --inspect scripts/reconcile.js --dry', meta: '12.3s',
+          input: 'node --inspect scripts/reconcile.js --dry', output: 'heap used: 312MB → 1.84GB\nretained by: Map<string, Txn> (cache.ts:21)' },
+        { t: 'assist', html: '<p>问题在 <code>cache.ts</code> 的全局 Map 没有淘汰策略，每笔交易都会常驻。我改成了容量 5 万的 LRU，并在批次结束时清空。复测峰值内存约 380MB。</p>' },
+      ],
+    },
+    {
+      id: 's3', project: 'p2', title: '图表组件改为懒加载', status: 'running', time: '刚刚',
+      items: [
+        { t: 'user', text: '首页首屏太慢了，把图表相关组件改成按需懒加载。' },
+        { t: 'tool', kind: '列出目录', icon: 'folder', arg: 'src/components/charts', meta: '9 项',
+          input: 'path: src/components/charts', output: 'AreaChart.tsx\nBarChart.tsx\nDonut.tsx\nHeatmap.tsx\nindex.ts\n...' },
+        { t: 'assist', html: '<p>正在分析各图表组件的引用关系…</p>' },
+      ],
+    },
+    {
+      id: 's4', project: 'p2', title: '修复深色模式下表格边框', status: 'done', time: '3 天前',
+      items: [
+        { t: 'user', text: '深色模式下表格边框几乎看不见。' },
+        { t: 'assist', html: '<p>已把表格边框改为使用 <code>--border-strong</code> 变量，并在深色主题中提高了对比度。</p>' },
+      ],
+    },
+    {
+      id: 's5', project: 'p3', title: '备份脚本加上失败告警', status: 'idle', time: '上周',
+      items: [
+        { t: 'user', text: '备份脚本失败的时候发个通知。' },
+        { t: 'tool', kind: '运行命令', icon: 'term', arg: 'bash backup.sh --check', meta: '退出码 1', err: true,
+          input: 'bash backup.sh --check', output: 'error: NOTIFY_URL is not set' },
+        { t: 'assist', html: '<p>脚本缺少 <code>NOTIFY_URL</code> 配置。我已在失败分支加上通知调用，并在缺少配置时输出明确提示。</p>' },
+      ],
+    },
+  ],
+
+  diffs: [
+    { path: 'src/webhooks/retry.ts', add: 24, del: 0, lines: [
+      ['hunk', '@@ -0,0 +1,24 @@'],
+      ['add', 'import { enqueueDelayed } from "../queue";'],
+      ['add', 'import type { PaymentEvent } from "./types";'],
+      ['add', ''],
+      ['add', 'export const MAX_ATTEMPTS = 5;'],
+      ['add', 'const BASE_MS = 1000;'],
+      ['add', ''],
+      ['add', 'export function backoff(attempt: number): number {'],
+      ['add', '  const exp = BASE_MS * 2 ** (attempt - 1);'],
+      ['add', '  const jitter = Math.random() * exp * 0.2;'],
+      ['add', '  return Math.round(exp + jitter);'],
+      ['add', '}'],
+      ['add', ''],
+      ['add', 'export function scheduleRetry(evt: PaymentEvent, attempt: number) {'],
+      ['add', '  if (attempt > MAX_ATTEMPTS) {'],
+      ['add', '    logger.error("webhook dropped after retries", evt.id);'],
+      ['add', '    return false;'],
+      ['add', '  }'],
+      ['add', '  enqueueDelayed('],
+      ['add', '    { type: "webhook", evt, attempt },'],
+      ['add', '    backoff(attempt),'],
+      ['add', '  );'],
+      ['add', '  return true;'],
+      ['add', '}'],
+    ]},
+    { path: 'src/webhooks/handler.ts', add: 6, del: 2, lines: [
+      ['hunk', '@@ -1,6 +1,7 @@'],
+      ['ctx', 'import { notifyMerchant } from "../merchant";'],
+      ['add', 'import { scheduleRetry } from "./retry";'],
+      ['ctx', ''],
+      ['del', 'export async function handleWebhook(evt: PaymentEvent) {'],
+      ['add', 'export async function handleWebhook(evt: PaymentEvent, attempt = 1) {'],
+      ['ctx', '  const res = await notifyMerchant(evt);'],
+      ['ctx', '  if (!res.ok) {'],
+      ['ctx', '    logger.warn("notify failed", evt.id);'],
+      ['del', '    return;'],
+      ['add', '    const queued = scheduleRetry(evt, attempt + 1);'],
+      ['add', '    metrics.inc("webhook.retry", { queued });'],
+      ['add', '    return;'],
+      ['add', '  }'],
+    ]},
+  ],
+
+  tree: [
+    { name: 'src', dir: true, depth: 0 },
+    { name: 'queue', dir: true, depth: 1 },
+    { name: 'index.ts', depth: 2, path: 'src/queue/index.ts' },
+    { name: 'webhooks', dir: true, depth: 1 },
+    { name: 'handler.ts', depth: 2, path: 'src/webhooks/handler.ts', mod: 'M' },
+    { name: 'retry.ts', depth: 2, path: 'src/webhooks/retry.ts', mod: 'A' },
+    { name: 'types.ts', depth: 2, path: 'src/webhooks/types.ts' },
+    { name: 'test', dir: true, depth: 0 },
+    { name: 'retry.test.ts', depth: 1, path: 'test/retry.test.ts' },
+    { name: 'package.json', depth: 0, path: 'package.json' },
+    { name: 'README.md', depth: 0, path: 'README.md' },
+  ],
+
+  fileContents: {
+    'src/queue/index.ts': 'const jobs: Job[] = [];\n\nexport function enqueue(job: Job) {\n  jobs.push(job);\n}\n\nexport function enqueueDelayed(job: Job, ms: number) {\n  setTimeout(() => enqueue(job), ms);\n}',
+    'src/webhooks/types.ts': 'export interface PaymentEvent {\n  id: string;\n  merchantId: string;\n  amount: number;\n  currency: string;\n  createdAt: string;\n}',
+    'test/retry.test.ts': 'import { backoff } from "../src/webhooks/retry";\n\ntest("backoff grows exponentially", () => {\n  expect(backoff(1)).toBeGreaterThanOrEqual(1000);\n  expect(backoff(3)).toBeGreaterThanOrEqual(4000);\n});',
+    'package.json': '{\n  "name": "billing-service",\n  "version": "2.4.1",\n  "scripts": {\n    "test": "vitest run",\n    "dev": "tsx watch src/main.ts"\n  }\n}',
+    'README.md': '# billing-service\n\n支付与对账服务。\n\n## 本地运行\n\n    npm install\n    npm run dev',
+  },
+
+  terminal: [
+    ['m', 'AgentDesk 模拟终端 · 所有输出均为本地 mock'],
+    ['p', '~/billing-service (feat/retry-queue) $ git status --short'],
+    ['', ' M src/webhooks/handler.ts\n?? src/webhooks/retry.ts'],
+  ],
+};

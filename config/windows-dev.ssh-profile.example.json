@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "windows-dev": {
+      "host": "127.0.0.1",
+      "port": 2222,
+      "username": "codexwin",
+      "privateKeyPath": "/home/codexdev/.ssh/windows-login",
+      "strictHostKeyChecking": "yes",
+      "ignoreUserConfig": true
+    }
+  }
+}

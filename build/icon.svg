@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#25343a"/>
+      <stop offset="1" stop-color="#11181b"/>
+    </linearGradient>
+    <linearGradient id="gem" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5fe0c6"/>
+      <stop offset="1" stop-color="#6c8cf0"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".10"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角底板 -->
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#bg)"/>
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#shine)"/>
+  <rect x="13" y="13" width="230" height="230" rx="53" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="2"/>
+  <!-- 菱形标记（与应用内品牌标识一致） -->
+  <rect x="68" y="68" width="120" height="120" rx="26" transform="rotate(45 128 128)" fill="none" stroke="url(#gem)" stroke-width="14"/>
+  <!-- 终端提示符 > 与光标 -->
+  <path d="M104 106 L130 128 L104 150" fill="none" stroke="#e9f7f3" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="138" y="143" width="28" height="12" rx="6" fill="#5fe0c6"/>
+</svg>

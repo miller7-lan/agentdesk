@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>AgentDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 标题栏（右侧系统按钮由 Electron titleBarOverlay 绘制） -->
+  <header class="titlebar">
+    <div class="brand"><span class="brand-mark"></span>AgentDesk</div>
+    <div class="title-center"><span id="titleProject">—</span><span class="sep">/</span><span id="titleSession">—</span></div>
+    <div class="title-spacer"></div>
+  </header>
+
+  <div class="workbench">
+    <!-- 活动栏 -->
+    <nav class="activitybar">
+      <button class="act active" data-view="sessions" title="会话 (Ctrl+B)"><svg viewBox="0 0 24 24"><path d="M4 5h16v10H9l-5 4z"/></svg></button>
+      <button class="act" data-view="search" title="全局搜索"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
+      <button class="act" data-view="tasks" title="任务"><svg viewBox="0 0 24 24"><path d="M5 6h3M5 12h3M5 18h3M11 6h8M11 12h8M11 18h8"/></svg></button>
+      <div class="act-spacer"></div>
+      <button class="act" id="themeToggle" title="切换深浅色"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg></button>
+      <button class="act" data-view="settings" title="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/></svg></button>
+    </nav>
+
+    <!-- 侧栏 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head">
+        <span class="side-title">会话</span>
+        <button class="icon-btn" id="newSession" title="新建会话"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+      <div class="side-search">
+        <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
+        <input id="sessionSearch" placeholder="搜索会话…" />
+      </div>
+      <div class="side-list" id="sessionList"></div>
+    </aside>
+    <div class="splitter" id="leftSplit"></div>
+
+    <!-- 中间对话区 -->
+    <main class="center">
+      <div class="tabs" id="tabs"></div>
+      <div class="timeline" id="timeline"></div>
+      <div class="composer">
+        <div class="composer-box">
+          <textarea id="input" rows="2" placeholder="描述你想让助手做的事…  Enter 发送 · Shift+Enter 换行"></textarea>
+          <div class="composer-bar">
+            <button class="chip" id="attachBtn" title="附加文件"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
+            <div class="select-wrap">
+              <select id="modeSelect" title="权限模式">
+                <option value="ask">每步询问</option>
+                <option value="edit">自动编辑</option>
+                <option value="plan">只读规划</option>
+                <option value="auto" title="本机用户文件、C 盘非系统位置及 D 盘。Codex 命令和本机工具无需逐次批准。">完全访问</option>
+              </select>
+            </div>
+            <div class="select-wrap">
+              <select id="modelSelect" title="模型（mock）">
+                <option>Lumen-Pro</option>
+                <option>Lumen-Swift</option>
+                <option>Lumen-Mini</option>
+              </select>
+            </div>
+            <div class="select-wrap" id="effortWrap" hidden>
+              <select id="effortSelect" title="推理强度"></select>
+            </div>
+            <div class="select-wrap" id="tierWrap" hidden>
+              <select id="tierSelect" title="速度">
+                <option value="">标准速度</option>
+              </select>
+            </div>
+            <div class="attach-list" id="attachList"></div>
+            <div class="grow"></div>
+            <span class="hint" id="ctxHint">上下文 18%</span>
+            <button class="send" id="sendBtn" title="发送"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div class="splitter" id="rightSplit"></div>
+    <!-- 右侧面板 -->
+    <section class="panel" id="panel">
+      <div class="panel-tabs">
+        <button class="ptab active" data-panel="diff">Diff<span class="badge" id="diffBadge">2</span></button>
+        <button class="ptab" data-panel="terminal">终端</button>
+        <button class="ptab" data-panel="files">文件</button>
+        <div class="grow"></div>
+        <button class="icon-btn" id="closePanel" title="收起面板 (Ctrl+J)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <div class="panel-body" id="panelBody"></div>
+    </section>
+  </div>
+
+  <!-- 状态栏 -->
+  <footer class="statusbar">
+    <span class="sb-item"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10c0 4-6 3-10 6"/></svg><span id="sbBranch">main</span></span>
+    <span class="sb-item" id="sbState"><span class="dot ok"></span>空闲</span>
+    <span class="sb-item" id="sbMode">每步询问</span>
+    <div class="grow"></div>
+    <button class="sb-item clickable desktop-status" id="sbDesktop" type="button" title="点击断开或恢复 Windows 桌面控制">桌面控制</button>
+    <span class="sb-item clickable" id="sbConn" title="点击重新连接"><span class="dot wait"></span>正在连接…</span>
+    <span class="sb-item clickable" id="sbPet" title="点击重新检测"><span class="dot"></span>桌宠：检测中</span>
+    <span class="sb-item" id="sbTokens">12.4k tokens</span>
+    <span class="sb-item clickable" id="sbPanel">面板</span>
+    <span class="sb-item clickable" id="sbTheme">深色</span>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+  <script src="live.js"></script>
+</body>
+</html>
