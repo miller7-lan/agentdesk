@@ -1,10 +1,11 @@
 {
   "name": "agentdesk-ui",
   "productName": "AgentDesk",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "AI 编程助手桌面端：连接 VPS 上的 Codex 操作 Windows 开发机",
   "main": "main.js",
   "scripts": {
+    "test": "node --test test/*.test.js",
     "prepare:desktop": "node scripts/prepare-desktop.js",
     "prestart": "npm run prepare:desktop",
     "start": "electron .",

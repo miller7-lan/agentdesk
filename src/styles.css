@@ -257,6 +257,7 @@ code, pre, .mono { font-family: "Cascadia Code", "Cascadia Mono", Consolas, mono
 .sb-item.clickable { cursor: pointer; } .sb-item.clickable:hover { background: var(--hover); color: var(--text); }
 .desktop-status { border: 0; background: transparent; color: inherit; font: inherit; }
 .desktop-status[aria-pressed="true"] { color: var(--text); }
+.reconnect-button { border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--faint); }
 .dot.ok { background: var(--ok); } .dot.run { background: var(--accent); animation: blink 1s infinite; } .dot.wait { background: var(--warn); }
 

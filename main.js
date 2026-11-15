@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const clawd = require('./clawd');
@@ -272,6 +272,9 @@ app.on('before-quit', (e) => {
 
 app.whenReady().then(() => {
   createWindow();
-  if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) remote.start();
+  if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
+    remote.start();
+    powerMonitor.on('resume', () => { if (!ending) remote.reconnect(); });
+  }
 });
 app.on('window-all-closed', () => app.quit());

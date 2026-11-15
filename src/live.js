@@ -53,7 +53,9 @@
 
   /* ---------- 连接 ---------- */
   async function ensureReady() {
-    if (ready) return true;
+    const current = await rm.status();
+    if (ready && current.codex === 'ready') return true;
+    if (current.codex !== 'ready') ready = false;
     toast('正在连接 VPS 上的 Codex…');
     const ok = await rm.wake();
     for (let i = 0; i < 20 && ok && !ready; i++) await new Promise((r) => setTimeout(r, 100));
@@ -72,9 +74,14 @@
     const el = $('#sbConn'); if (!el) return;
     const s = conn;
     const sleeping = s.codex === 'sleeping';
-    const ok = s.codex === 'ready' && s.tunnel === 'up' && s.sshd === 'running';
+    const ok = s.codex === 'ready' && ['up', 'external'].includes(s.tunnel) && ['running', 'external'].includes(s.sshd);
     const bad = /denied|missing|failed|error/.test((s.sshd || '') + (s.codex || ''));
-    const label = sleeping ? 'Codex 已休眠（省内存）' : ok ? 'Windows 开发机已连接' : s.codex === 'ready' && s.tunnel !== 'up' ? 'Codex 已连接 · 隧道重连中' : s.codex === 'ready' ? 'Codex 已连接' : '正在连接…';
+    const retrying = s.codex === 'retry' || s.tunnel === 'retry';
+    const label = sleeping ? 'Codex 已休眠（输入时唤醒）'
+      : ok ? 'Windows 开发机已连接'
+      : s.codex === 'ready' ? 'Codex 已连接 · 隧道重连中'
+      : retrying ? (s.detail || '连接已断开，正在自动重连')
+      : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
     el.innerHTML = `<span class="dot ${ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait'}"></span>${label}`;
     el.title = `sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
   }
@@ -933,6 +940,7 @@
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
   $('#sbConn').addEventListener('click', () => { if (conn.codex === 'sleeping') { rm.wake(); toast('正在唤醒 Codex…'); } else { rm.reconnect(); toast('正在重新连接…'); } });
+  $('#sbReconnect').addEventListener('click', () => { rm.reconnect(); toast('正在重新连接…'); });
   const desktopButton = $('#sbDesktop');
   const displayDesktop = (enabled) => {
     desktopButton.textContent = enabled ? '本机桌面：开启' : '本机桌面：关闭';

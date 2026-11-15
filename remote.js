@@ -36,211 +36,358 @@ const sshBase = (cfg, key) => [
   '-i', key,
 ];
 
-const sc = (...args) => new Promise((res) => execFile('sc.exe', args, { windowsHide: true }, (err, out) => res({ err, out: String(out || '') })));
+const sc = (...args) => new Promise((res) => execFile('sc.exe', args, { windowsHide: true, timeout: 8000 }, (err, out) => res({ err, out: String(out || '') })));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Remote extends EventEmitter {
-  constructor() {
+  constructor({ config, spawnProcess = spawn, service = sc, timing = {} } = {}) {
     super();
-    this.cfg = loadConfig();
-    if (process.env.AGENTDESK_IDLE_MIN) this.cfg.idleMinutes = +process.env.AGENTDESK_IDLE_MIN;   // 测试用
+    this.cfg = config || loadConfig();
+    if (process.env.AGENTDESK_IDLE_MIN) this.cfg.idleMinutes = +process.env.AGENTDESK_IDLE_MIN;
+    this.spawnProcess = spawnProcess;
+    this.service = service;
+    this.timing = {
+      handshake: 30000, request: 60000, heartbeat: 20000, heartbeatReply: 15000,
+      tunnel: 30000, retry: [1000, 3000, 5000, 10000, 20000, 30000], ...timing,
+    };
     this.state = { sshd: 'unknown', tunnel: 'idle', codex: 'idle', detail: '' };
     this.stopping = false;
-    this.tunnelProc = null; this.codexProc = null;
-    this.tunnelRetry = 0; this.codexRetry = 0;
-    this.nextId = 1; this.pending = new Map(); this.buf = '';
-    this.startedSshd = false;
+    this.tunnelProc = null;
+    this.codexProc = null;
+    this.tunnelConnection = null;
+    this.codexConnection = null;
+    this.tunnelRetry = 0;
+    this.codexRetry = 0;
+    this.retryTimers = new Map();
+    this.nextId = 1;
+    this.pending = new Map();
+    this.pendingReqs = new Set();
+    this.activeTurns = new Set();
+    this.readyWaiters = new Set();
     this.sleeping = false;
     this.lastActivity = Date.now();
-    this.activeTurns = new Set();
-    this.pendingReqs = new Set();
-    this.readyWaiters = [];
-    setInterval(() => this.idleCheck(), 30000).unref?.();
+    this.startId = 0;
+    this.starting = null;
+    this.idleTimer = setInterval(() => this.idleCheck(), 30000);
+    this.idleTimer.unref?.();
   }
 
   touch() { this.lastActivity = Date.now(); }
-
-  idleCheck() {
-    const idleMs = (this.cfg.idleMinutes || 0) * 60000;
-    if (!idleMs || this.state.codex !== 'ready' || !this.codexProc) return;
-    if (this.activeTurns.size || this.pendingReqs.size) return;
-    if (Date.now() - this.lastActivity < idleMs) return;
-    this.sleeping = true;
-    this.codexProc.kill();
-  }
-
-  // 需要 Codex 时调用：休眠或断开时立即重连，并等待就绪
-  wake(timeoutMs = 45000) {
-    this.touch();
-    if (this.state.codex === 'ready' && this.codexProc) return Promise.resolve(true);
-    if (this.sleeping || (!this.codexProc && !this.stopping)) {
-      this.sleeping = false; this.codexRetry = 0;
-      this.startCodex();
-    }
-    return new Promise((resolve) => {
-      const t = setTimeout(() => resolve(false), timeoutMs);
-      this.readyWaiters.push(() => { clearTimeout(t); resolve(true); });
-    });
-  }
-
   set(patch) { Object.assign(this.state, patch); this.emit('status', { ...this.state }); }
 
-  async start() {
+  cancelRetry(channel) {
+    clearTimeout(this.retryTimers.get(channel));
+    this.retryTimers.delete(channel);
+  }
+
+  scheduleRetry(channel, reason) {
+    this.cancelRetry(channel);
+    if (this.stopping || (channel === 'codex' && this.sleeping)) return;
+    const attempt = channel === 'codex' ? this.codexRetry++ : this.tunnelRetry++;
+    const delays = this.timing.retry;
+    const delay = delays[Math.min(attempt, delays.length - 1)];
+    this.set({ [channel]: 'retry', detail: reason + '，' + Math.ceil(delay / 1000) + ' 秒后自动重连' });
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(channel);
+      if (channel === 'codex') this.startCodex();
+      else this.startTunnel();
+    }, delay);
+    this.retryTimers.set(channel, timer);
+    timer.unref?.();
+  }
+
+  start() {
+    if (this.starting) return this.starting;
     this.stopping = false;
-    if (!this.cfg.host) return this.set({ codex: 'error', detail: '请先在 ~/.agentdesk/remote.json 配置 VPS 地址并重启 AgentDesk' });
-    await this.ensureSshd();
-    this.startTunnel();
-    this.startCodex();
+    const id = ++this.startId;
+    const task = (async () => {
+      if (!this.cfg.host) {
+        this.set({ codex: 'error', detail: '请先在 ~/.agentdesk/remote.json 配置 VPS 地址并重启 AgentDesk' });
+        return;
+      }
+      try { await this.ensureSshd(); } catch (error) {
+        this.set({ sshd: 'failed', detail: error.message });
+      }
+      if (this.stopping || id !== this.startId) return;
+      this.startTunnel();
+      this.startCodex();
+    })();
+    this.starting = task;
+    task.finally(() => { if (this.starting === task) this.starting = null; });
+    return task;
   }
 
   async ensureSshd() {
     if (!this.cfg.manageSshd) return this.set({ sshd: 'external' });
-    const q = await sc('query', 'sshd');
+    const q = await this.service('query', 'sshd');
     if (/RUNNING/.test(q.out)) return this.set({ sshd: 'running' });
     if (!/SERVICE_NAME/.test(q.out)) return this.set({ sshd: 'missing', detail: '未找到 sshd 服务' });
     this.set({ sshd: 'starting' });
-    const r = await sc('start', 'sshd');
-    if (/拒绝|denied|5:/i.test(r.out) && !/START_PENDING|RUNNING/.test(r.out)) return this.set({ sshd: 'denied', detail: '没有启动 sshd 的权限' });
-    for (let i = 0; i < 20; i++) {
-      await sleep(300);
-      if (/RUNNING/.test((await sc('query', 'sshd')).out)) { this.startedSshd = true; return this.set({ sshd: 'running' }); }
+    const r = await this.service('start', 'sshd');
+    if (/拒绝|denied|5:/i.test(r.out) && !/START_PENDING|RUNNING/.test(r.out)) {
+      return this.set({ sshd: 'denied', detail: '没有启动 sshd 的权限' });
     }
-    this.set({ sshd: 'failed', detail: 'sshd 启动超时' });
+    for (let i = 0; i < 20 && !this.stopping; i++) {
+      await sleep(300);
+      if (/RUNNING/.test((await this.service('query', 'sshd')).out)) return this.set({ sshd: 'running' });
+    }
+    if (!this.stopping) this.set({ sshd: 'failed', detail: 'sshd 启动超时' });
   }
 
-  backoff(n) { return [1000, 3000, 5000, 10000, 20000, 30000][Math.min(n, 5)]; }
-
   startTunnel() {
-    if (!this.cfg.host || this.stopping || this.tunnelProc) return;
-    const c = this.cfg;
-    if (!c.remoteForward) return this.set({ tunnel: 'external' });
+    if (!this.cfg.host || this.stopping || this.tunnelConnection) return;
+    this.cancelRetry('tunnel');
+    if (!this.cfg.remoteForward) return this.set({ tunnel: 'external' });
     this.set({ tunnel: 'connecting' });
-    const args = [...sshBase(c, c.tunnelKey), '-N', '-o', 'ExitOnForwardFailure=yes', '-R', c.remoteForward, `${c.tunnelUser}@${c.host}`];
-    const p = spawn(SSH, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-    this.tunnelProc = p;
-    let err = '';
-    p.stderr.on('data', (d) => { err += d; });
-    // ssh -N 没有“已就绪”回显：2.5 秒内未退出即视为转发已建立
-    const ok = setTimeout(() => { if (this.tunnelProc === p) { this.tunnelRetry = 0; this.set({ tunnel: 'up' }); } }, 2500);
-    p.on('exit', (code) => {
-      clearTimeout(ok);
-      if (this.tunnelProc === p) this.tunnelProc = null;
-      if (this.stopping) return this.set({ tunnel: 'idle' });
-      const why = /remote port forwarding failed/i.test(err) ? 'VPS 端口 2222 被占用' : (err.trim().split('\n').pop() || `退出码 ${code}`);
-      const wait = this.backoff(this.tunnelRetry++);
-      this.set({ tunnel: 'retry', detail: `隧道断开：${why}，${Math.round(wait / 1000)} 秒后重连` });
-      setTimeout(() => this.startTunnel(), wait);
+    const c = this.cfg;
+    const args = [...sshBase(c, c.tunnelKey), '-v', '-N', '-o', 'ExitOnForwardFailure=yes',
+      '-R', c.remoteForward, c.tunnelUser + '@' + c.host];
+    let child;
+    try { child = this.spawnProcess(SSH, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] }); }
+    catch (error) { this.scheduleRetry('tunnel', error.message); return; }
+    const connection = { child, output: '', ready: false };
+    this.tunnelConnection = connection;
+    this.tunnelProc = child;
+    const fail = (reason) => this.dropTunnel(connection, reason);
+    connection.timer = setTimeout(() => fail('隧道建立超时'), this.timing.tunnel);
+    child.on('error', (error) => fail(error.message));
+    child.on('exit', (code) => fail(this.exitReason(connection.output, code, '隧道断开')));
+    child.on('close', (code) => fail(this.exitReason(connection.output, code, '隧道已关闭')));
+    child.stderr.on('data', (data) => {
+      if (this.tunnelConnection !== connection) return;
+      connection.output = (connection.output + data).slice(-4096);
+      // OpenSSH confirms that the server accepted the remote listening socket.
+      if (!connection.ready && /remote forward success for:/i.test(connection.output)) {
+        connection.ready = true;
+        clearTimeout(connection.timer);
+        this.tunnelRetry = 0;
+        this.set({ tunnel: 'up', detail: '' });
+      }
     });
+  }
+
+  exitReason(output, code, fallback) {
+    if (/remote port forwarding failed/i.test(output)) return 'VPS 转发端口被占用';
+    const message = output.trim().split(/\r?\n/).filter((line) => line && !/^debug\d:/.test(line)).pop();
+    return message || fallback + '（退出码 ' + code + '）';
+  }
+
+  dropTunnel(connection, reason, retry = true) {
+    if (this.tunnelConnection !== connection) return;
+    this.tunnelConnection = null;
+    this.tunnelProc = null;
+    clearTimeout(connection.timer);
+    try { connection.child.kill(); } catch {}
+    if (retry) this.scheduleRetry('tunnel', reason);
   }
 
   startCodex() {
-    if (!this.cfg.host || this.stopping || this.codexProc) return;
-    const c = this.cfg;
+    if (!this.cfg.host || this.stopping || this.sleeping || this.codexConnection) return;
+    this.cancelRetry('codex');
     this.set({ codex: 'connecting' });
-    const p = spawn(SSH, [...sshBase(c, c.codexKey), `${c.codexUser}@${c.host}`], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.codexProc = p; this.buf = '';
-    let err = '';
-    p.stdout.setEncoding('utf8');
-    p.stdout.on('data', (d) => this.onData(d));
-    p.stderr.on('data', (d) => { err = (err + d).slice(-2000); });
-    p.on('exit', (code) => {
-      if (this.codexProc === p) this.codexProc = null;
-      for (const [, w] of this.pending) w.reject(new Error('Codex 连接已断开'));
-      this.pending.clear();
-      this.activeTurns.clear(); this.pendingReqs.clear();
-      if (this.stopping) return this.set({ codex: 'idle' });
-      if (this.sleeping) {
-        this.set({ codex: 'sleeping', detail: `空闲 ${this.cfg.idleMinutes} 分钟，已断开以释放 VPS 内存；输入时自动重连` });
-        this.emit('codex-sleep');
-        return;
-      }
-      const wait = this.backoff(this.codexRetry++);
-      this.set({ codex: 'retry', detail: `Codex 连接断开（${err.trim().split('\n').pop() || '退出码 ' + code}），${Math.round(wait / 1000)} 秒后重连` });
-      this.emit('codex-down');
-      setTimeout(() => this.startCodex(), wait);
-    });
-    // 握手超时（网络抖动时连接可能半开、永远等不到响应）→ 杀掉进程，走上面的自动重连
-    const initTimer = setTimeout(() => {
-      if (this.codexProc === p && this.state.codex !== 'ready') { err += '\n握手超时'; try { p.kill(); } catch {} }
-    }, 30000);
+    const c = this.cfg;
+    let child;
+    try {
+      child = this.spawnProcess(SSH, [...sshBase(c, c.codexKey), c.codexUser + '@' + c.host],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (error) { this.scheduleRetry('codex', error.message); return; }
+    const connection = { child, output: '', buffer: '', ready: false, heartbeatPending: false };
+    this.codexConnection = connection;
+    this.codexProc = child;
+    const fail = (reason) => this.dropCodex(connection, reason);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (data) => this.onData(data, connection));
+    child.stderr.on('data', (data) => { connection.output = (connection.output + data).slice(-2000); });
+    child.stdin.on('error', (error) => fail('Codex 输入流已断开：' + error.message));
+    child.on('error', (error) => fail(error.message));
+    child.on('exit', (code) => fail(this.exitReason(connection.output, code, 'Codex 连接断开')));
+    child.on('close', (code) => fail(this.exitReason(connection.output, code, 'Codex 连接已关闭')));
     this.request('initialize', {
-      clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: '0.2.4' },
+      clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: '0.2.7' },
       capabilities: { experimentalApi: true, mcpServerOpenaiFormElicitation: true },
-    }).then((r) => {
-      clearTimeout(initTimer);
-      if (this.codexProc !== p) return;
+    }, { timeoutMs: this.timing.handshake, connection, internal: true }).then((info) => {
+      if (this.codexConnection !== connection) return;
       this.notify('initialized', {});
+      connection.ready = true;
+      this.info = info;
       this.codexRetry = 0;
-      this.info = r;
+      this.touch();
       this.set({ codex: 'ready', detail: '' });
-      this.emit('codex-ready', r);
-      this.readyWaiters.splice(0).forEach((f) => f());
-    }).catch((e) => { clearTimeout(initTimer); if (this.codexProc === p) this.set({ codex: 'error', detail: String(e.message || e) }); });
+      connection.heartbeat = setInterval(() => this.heartbeat(connection), this.timing.heartbeat);
+      connection.heartbeat.unref?.();
+      this.emit('codex-ready', info);
+      for (const resolve of [...this.readyWaiters]) resolve(true);
+    }).catch((error) => fail('Codex 握手失败：' + error.message));
   }
 
-  onData(d) {
-    this.buf += d;
-    let i;
-    while ((i = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, i).trim(); this.buf = this.buf.slice(i + 1);
-      if (!line) continue;
-      let m; try { m = JSON.parse(line); } catch { continue; }
-      if (m.id != null && m.method) { this.pendingReqs.add(m.id); this.emit('server-request', m); }   // 需要用户回应（审批等）
-      else if (m.id != null) {                                                // 对我们请求的响应
-        const w = this.pending.get(m.id); if (!w) continue;
-        this.pending.delete(m.id);
-        m.error ? w.reject(Object.assign(new Error(m.error.message || 'RPC 错误'), { data: m.error })) : w.resolve(m.result);
-      } else if (m.method) {
-        if (m.method === 'turn/started') this.activeTurns.add(m.params?.turn?.id);
-        else if (m.method === 'turn/completed') { this.activeTurns.delete(m.params?.turn?.id); this.touch(); }
-        this.emit('notification', m);
+  heartbeat(connection) {
+    if (this.codexConnection !== connection || !connection.ready || connection.heartbeatPending) return;
+    connection.heartbeatPending = true;
+    this.request('thread/list', { limit: 1 }, {
+      connection, internal: true, timeoutMs: this.timing.heartbeatReply,
+    }).catch(() => {}).finally(() => { connection.heartbeatPending = false; });
+  }
+
+  dropCodex(connection, reason, retry = true, sleeping = false) {
+    if (this.codexConnection !== connection) return;
+    this.codexConnection = null;
+    this.codexProc = null;
+    this.info = null;
+    clearInterval(connection.heartbeat);
+    for (const [id, request] of this.pending) {
+      if (request.connection !== connection) continue;
+      clearTimeout(request.timer);
+      this.pending.delete(id);
+      request.reject(new Error(reason));
+    }
+    this.activeTurns.clear();
+    this.pendingReqs.clear();
+    try { connection.child.kill(); } catch {}
+    if (sleeping) {
+      this.set({ codex: 'sleeping', detail: '空闲连接已休眠，输入时自动重连' });
+      this.emit('codex-sleep');
+    } else {
+      this.emit('codex-down');
+      if (retry) this.scheduleRetry('codex', reason);
+    }
+  }
+
+  onData(data, connection = this.codexConnection) {
+    if (!connection || this.codexConnection !== connection) return;
+    connection.buffer += data;
+    let end;
+    while ((end = connection.buffer.indexOf('\n')) >= 0) {
+      const line = connection.buffer.slice(0, end).trim();
+      connection.buffer = connection.buffer.slice(end + 1);
+      let message;
+      try { message = JSON.parse(line); } catch { continue; }
+      if (message.id != null && message.method) {
+        this.pendingReqs.add(message.id);
+        this.emit('server-request', message);
+      } else if (message.id != null) {
+        const request = this.pending.get(message.id);
+        if (!request || request.connection !== connection) continue;
+        this.pending.delete(message.id);
+        clearTimeout(request.timer);
+        if (message.error) request.reject(Object.assign(new Error(message.error.message || 'RPC 错误'), { data: message.error }));
+        else request.resolve(message.result);
+      } else if (message.method) {
+        if (message.method === 'turn/started') this.activeTurns.add(message.params?.turn?.id);
+        if (message.method === 'turn/completed') {
+          this.activeTurns.delete(message.params?.turn?.id);
+          this.touch();
+        }
+        if (message.method === 'serverRequest/resolved') this.pendingReqs.delete(message.params?.requestId);
+        this.emit('notification', message);
       }
     }
   }
 
-  write(m) {
-    if (!this.codexProc) throw new Error('Codex 未连接');
-    this.codexProc.stdin.write(JSON.stringify(m) + '\n');
+  write(message, connection = this.codexConnection) {
+    if (!connection || this.codexConnection !== connection || connection.child.stdin.destroyed) throw new Error('Codex 未连接');
+    connection.child.stdin.write(JSON.stringify(message) + '\n');
   }
   notify(method, params) { this.write({ method, params }); }
-  request(method, params) {
-    this.touch();
+
+  request(method, params, { connection = this.codexConnection, internal = false, timeoutMs = this.timing.request } = {}) {
+    if (!connection || (!internal && !connection.ready)) return Promise.reject(new Error('Codex 未连接'));
+    if (!internal) this.touch();
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
-      try { this.write({ id, method, params }); } catch (e) { this.pending.delete(id); reject(e); }
+      const timer = setTimeout(() => {
+        if (this.pending.get(id)?.connection !== connection) return;
+        // Never replay a timed-out mutation: its remote outcome is unknown.
+        this.dropCodex(connection, 'Codex 请求超时（' + method + '），请检查上一操作的结果');
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer, connection, internal });
+      try { this.write({ id, method, params }, connection); } catch (error) {
+        this.dropCodex(connection, error.message);
+      }
     });
   }
-  respond(id, result, error) { this.pendingReqs.delete(id); this.touch(); this.write(error ? { id, error } : { id, result }); }
 
-  // 通过 app-server 的 fs 接口把文件写到 VPS（codexdev 用户目录内）
+  respond(id, result, error) {
+    if (!this.pendingReqs.has(id)) return false;
+    this.pendingReqs.delete(id);
+    this.touch();
+    this.write(error ? { id, error } : { id, result });
+    return true;
+  }
+
+  idleCheck() {
+    const idle = (this.cfg.idleMinutes || 0) * 60000;
+    if (!idle || this.state.codex !== 'ready' || !this.codexConnection) return;
+    if (this.activeTurns.size || this.pendingReqs.size) return;
+    if ([...this.pending.values()].some((request) => !request.internal)) return;
+    if (Date.now() - this.lastActivity < idle) return;
+    this.sleeping = true;
+    this.cancelRetry('codex');
+    this.dropCodex(this.codexConnection, 'Codex 已休眠', false, true);
+  }
+
+  wake(timeoutMs = 45000) {
+    this.touch();
+    this.sleeping = false;
+    if (this.codexConnection?.ready) return Promise.resolve(true);
+    const result = new Promise((resolve) => {
+      const finish = (ready) => {
+        clearTimeout(timer);
+        this.readyWaiters.delete(finish);
+        resolve(ready);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      this.readyWaiters.add(finish);
+    });
+    if (!this.codexConnection) {
+      if (this.stopping) this.start();
+      else this.startCodex();
+    }
+    return result;
+  }
+
   async upload(dir, files) {
-    await this.wake();
+    if (!await this.wake()) throw new Error('Codex 连接超时，请重试上传');
     const made = new Set();
-    const mk = async (d) => { if (made.has(d)) return; await this.request('fs/createDirectory', { path: d, recursive: true }); made.add(d); };
+    const mk = async (directory) => {
+      if (made.has(directory)) return;
+      await this.request('fs/createDirectory', { path: directory, recursive: true });
+      made.add(directory);
+    };
     const out = [];
-    for (const f of files) {
-      const full = path.posix.join(dir, f.rel);
+    for (const file of files) {
+      const full = path.posix.join(dir, file.rel);
       await mk(path.posix.dirname(full));
-      await this.request('fs/writeFile', { path: full, dataBase64: f.b64 });
+      await this.request('fs/writeFile', { path: full, dataBase64: file.b64 });
       out.push(full);
     }
     return out;
   }
 
   reconnect() {
-    this.tunnelRetry = 0; this.codexRetry = 0; this.sleeping = false;
-    if (this.tunnelProc) this.tunnelProc.kill(); else this.startTunnel();
-    if (this.codexProc) this.codexProc.kill(); else this.startCodex();
+    this.cancelRetry('codex');
+    this.cancelRetry('tunnel');
+    this.codexRetry = 0;
+    this.tunnelRetry = 0;
+    this.sleeping = false;
+    if (this.codexConnection) this.dropCodex(this.codexConnection, '正在重新连接', false);
+    if (this.tunnelConnection) this.dropTunnel(this.tunnelConnection, '正在重新连接', false);
+    this.set({ codex: 'connecting', tunnel: this.cfg.remoteForward ? 'connecting' : 'external', detail: '正在重新连接' });
+    return this.start();
   }
 
   async stop() {
     this.stopping = true;
-    try { this.codexProc && this.codexProc.kill(); } catch {}
-    try { this.tunnelProc && this.tunnelProc.kill(); } catch {}
-    // sshd 只服务于这条回环隧道：AgentDesk 退出时一并停止（remote.json 里 stopSshdOnExit=false 可关闭）
-    if (this.cfg.manageSshd && this.cfg.stopSshdOnExit !== false) await sc('stop', 'sshd');
+    this.startId++;
+    this.starting = null;
+    this.cancelRetry('codex');
+    this.cancelRetry('tunnel');
+    if (this.codexConnection) this.dropCodex(this.codexConnection, 'AgentDesk 已关闭', false);
+    if (this.tunnelConnection) this.dropTunnel(this.tunnelConnection, 'AgentDesk 已关闭', false);
+    for (const resolve of [...this.readyWaiters]) resolve(false);
+    this.set({ codex: 'idle', tunnel: 'idle' });
+    if (this.cfg.manageSshd && this.cfg.stopSshdOnExit !== false) await this.service('stop', 'sshd');
   }
 }
 
 module.exports = new Remote();
+module.exports.Remote = Remote;

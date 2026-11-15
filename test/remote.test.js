@@ -1,0 +1,214 @@
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const { PassThrough, Writable } = require('node:stream');
+const { test } = require('node:test');
+const { setTimeout: delay } = require('node:timers/promises');
+const { Remote } = require('../remote');
+
+async function until(predicate, label = 'condition') {
+  const deadline = Date.now() + 1500;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for ' + label);
+    await delay(3);
+  }
+}
+
+function setup(t, options = {}) {
+  const spawned = [];
+  const services = [];
+  const remote = new Remote({
+    config: {
+      host: 'vps.example.invalid', codexUser: 'codexdev', tunnelUser: 'windows-tunnel',
+      remoteForward: '', idleMinutes: 10, manageSshd: false, ...options.config,
+    },
+    timing: {
+      handshake: 200, request: 200, heartbeat: 10000, heartbeatReply: 200,
+      tunnel: 200, retry: [10], ...options.timing,
+    },
+    service: async (...args) => {
+      services.push(args);
+      return { out: 'SERVICE_NAME: sshd STATE: 4 RUNNING' };
+    },
+    spawnProcess: (_exe, args) => {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.sent = [];
+      child.stdin = new Writable({
+        write(data, _encoding, callback) {
+          child.sent.push(JSON.parse(data.toString()));
+          callback();
+        },
+      });
+      child.kill = () => { child.killed = true; return true; };
+      child.respond = (id, result) => child.stdout.write(JSON.stringify({ id, result }) + '\n');
+      child.args = args;
+      spawned.push(child);
+      return child;
+    },
+  });
+  t.after(() => remote.stop());
+  return { remote, spawned, services };
+}
+
+async function connect(remote, child) {
+  const init = child.sent.find((request) => request.method === 'initialize');
+  assert(init);
+  child.respond(init.id, { userAgent: 'fake-server' });
+  await until(() => remote.state.codex === 'ready', 'ready');
+}
+
+test('exit and close only schedule one reconnect; stale output cannot settle new requests', async (t) => {
+  const { remote, spawned } = setup(t);
+  await remote.start();
+  const old = spawned[0];
+  await connect(remote, old);
+  const pending = remote.request('fs/writeFile', { path: '/tmp/test' });
+  const rejected = assert.rejects(pending, /断开|关闭/);
+  old.emit('exit', 255);
+  old.emit('close', 255);
+  await rejected;
+  await until(() => spawned.length === 2);
+  const fresh = spawned[1];
+  old.emit('exit', 255);
+  await connect(remote, fresh);
+  const next = remote.request('thread/list', {});
+  const id = fresh.sent.at(-1).id;
+  old.respond(id, { stale: true });
+  assert(remote.pending.has(id));
+  fresh.respond(id, { data: [] });
+  assert.deepEqual(await next, { data: [] });
+  assert.equal(fresh.sent.filter((request) => request.method === 'fs/writeFile').length, 0);
+});
+
+test('failed initialize disposes the old child and retries instead of staying in error', async (t) => {
+  const { remote, spawned } = setup(t);
+  await remote.start();
+  const old = spawned[0];
+  old.stdout.write(JSON.stringify({ id: old.sent[0].id, error: { message: 'temporarily unavailable' } }) + '\n');
+  await until(() => spawned.length === 2);
+  assert(old.killed);
+  await connect(remote, spawned[1]);
+});
+
+test('handshake timeout retries even if the OS never emits exit', async (t) => {
+  const { remote, spawned } = setup(t, { timing: { handshake: 30 } });
+  await remote.start();
+  await until(() => spawned.length === 2);
+  assert(spawned[0].killed);
+  await connect(remote, spawned[1]);
+});
+
+test('spawn errors retry without an exit event or unhandled EPIPE', async (t) => {
+  const { remote, spawned } = setup(t);
+  await remote.start();
+  spawned[0].emit('error', new Error('ENOENT'));
+  await until(() => spawned.length === 2);
+  await connect(remote, spawned[1]);
+  spawned[1].stdin.emit('error', new Error('EPIPE'));
+  await until(() => spawned.length === 3);
+  await connect(remote, spawned[2]);
+});
+
+test('an unanswered mutation rejects and reconnects without replay', async (t) => {
+  const { remote, spawned } = setup(t, { timing: { request: 25 } });
+  await remote.start();
+  await connect(remote, spawned[0]);
+  await assert.rejects(remote.request('fs/writeFile', {}), /请求超时/);
+  await until(() => spawned.length === 2);
+  await connect(remote, spawned[1]);
+  assert(!spawned[1].sent.some((request) => request.method === 'fs/writeFile'));
+  assert.equal(remote.pending.size, 0);
+});
+
+test('ready SSH with a stalled App Server is detected by the heartbeat', async (t) => {
+  const { remote, spawned } = setup(t, { timing: { heartbeat: 15, heartbeatReply: 20 } });
+  await remote.start();
+  await connect(remote, spawned[0]);
+  await until(() => spawned.length === 2);
+  assert(spawned[0].killed);
+  await connect(remote, spawned[1]);
+});
+
+test('heartbeat does not prevent idle sleep; wake ignores delayed old close', async (t) => {
+  const { remote, spawned } = setup(t);
+  await remote.start();
+  const old = spawned[0];
+  await connect(remote, old);
+  remote.heartbeat(remote.codexConnection);
+  remote.lastActivity = Date.now() - 11 * 60000;
+  remote.idleCheck();
+  assert.equal(remote.state.codex, 'sleeping');
+  assert.equal(remote.codexProc, null);
+  const awakened = remote.wake();
+  assert.equal(spawned.length, 2);
+  old.emit('close', 0);
+  await connect(remote, spawned[1]);
+  assert.equal(await awakened, true);
+  assert.equal(remote.pending.size, 0);
+});
+
+test('manual reconnect cancels backoff and rejects old requests immediately', async (t) => {
+  const { remote, spawned, services } = setup(t, {
+    config: { manageSshd: true, stopSshdOnExit: false },
+    timing: { retry: [100] },
+  });
+  await remote.start();
+  await connect(remote, spawned[0]);
+  spawned[0].emit('exit', 255);
+  await remote.reconnect();
+  assert.equal(spawned.length, 2);
+  await connect(remote, spawned[1]);
+  await delay(110);
+  assert.equal(spawned.length, 2);
+  const rejected = assert.rejects(remote.request('thread/list', {}), /重新连接/);
+  await remote.reconnect();
+  await rejected;
+  assert.equal(spawned.length, 3);
+  await connect(remote, spawned[2]);
+  assert.equal(services.filter(([command]) => command === 'query').length, 3);
+});
+
+test('tunnel is ready only after forwarding is acknowledged; stale close cannot break replacement', async (t) => {
+  const { remote, spawned } = setup(t, { config: { remoteForward: '127.0.0.1:2222:127.0.0.1:22' } });
+  await remote.start();
+  const oldTunnel = spawned[0];
+  assert(oldTunnel.args.includes('-v'));
+  assert.equal(remote.state.tunnel, 'connecting');
+  oldTunnel.stderr.write('debug1: remote forward success for: listen 127.0.0.1:2222, connect 127.0.0.1:22\n');
+  assert.equal(remote.state.tunnel, 'up');
+  oldTunnel.emit('exit', 255);
+  await until(() => spawned.length === 3);
+  const fresh = spawned[2];
+  oldTunnel.emit('close', 255);
+  fresh.stderr.write('debug1: remote forward success for: listen 127.0.0.1:2222\n');
+  assert.equal(remote.state.tunnel, 'up');
+  assert.equal(remote.tunnelProc, fresh);
+});
+
+test('a stalled tunnel is replaced without waiting for a process exit', async (t) => {
+  const { remote, spawned } = setup(t, {
+    config: { remoteForward: '127.0.0.1:2222:127.0.0.1:22' }, timing: { tunnel: 25 },
+  });
+  await remote.start();
+  await connect(remote, spawned[1]);
+  await until(() => spawned.length === 3);
+  assert(spawned[0].killed);
+  assert.equal(remote.state.tunnel, 'connecting');
+  spawned[2].stderr.write('debug1: remote forward success for: listen 127.0.0.1:2222\n');
+  assert.equal(remote.state.tunnel, 'up');
+});
+
+test('stop cancels retries and resolves waiters, including connection failures without exit', async (t) => {
+  const { remote, spawned } = setup(t);
+  await remote.start();
+  const waiter = remote.wake(20);
+  assert.equal(await waiter, false);
+  assert.equal(remote.readyWaiters.size, 0);
+  spawned[0].emit('exit', 255);
+  await remote.stop();
+  await delay(30);
+  assert.equal(spawned.length, 1);
+  assert.equal(remote.pending.size, 0);
+  assert.equal(remote.retryTimers.size, 0);
+});

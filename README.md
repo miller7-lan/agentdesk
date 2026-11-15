@@ -21,6 +21,12 @@ npm run dist
 
 构建产物位于 dist，包括便携版和安装版。构建时从 npm 的固定版本提取并校验 Windows 桌面组件。仓库内保留源码和图标，桌面组件及打包产物由构建生成。
 
+断线后客户端会自动重试，状态栏显示重试信息。状态栏的「重新连接」按钮可立即重建 VPS 连接及启用的 SSH 隧道。电脑从休眠恢复后也会重连。连接丢失时，当前请求会结束并显示失败，重新连接后可继续原会话。超时的写入或命令可能已在远端执行，请先确认结果再重试。
+
+~~~powershell
+npm test
+~~~
+
 ## 配置连接
 
 1. 在 VPS 的专用非 root 账户下配置并登录 Codex CLI，确认该账户能运行 codex app-server。将 [启动脚本模板](config/agentdesk-app-server.example.sh) 中的 Codex 路径改成实际位置，并将它设为 AgentDesk 连接公钥的 SSH 强制命令。此公钥使用 restrict 选项。
