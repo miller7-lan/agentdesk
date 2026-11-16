@@ -185,9 +185,9 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:f
 .sheet-pick { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
 .sheet-pick button { height: 22px; padding: 0 8px; border-radius: 11px; border: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
 .sheet-pick button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
-.sheet { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 4px 6px; }
+.sheet { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 4px 4px; }
 .sheet .cell { display: flex; flex-direction: column; align-items: center; padding: 4px 0; border-radius: 6px; }
-.sheet .cell canvas { width: 56px; height: 56px; }
+.sheet .cell canvas { width: 56px; height: 56px; max-width: 100%; }
 .sheet .cell span { font-size: 11px; color: var(--muted); }
 .sheet .cell small { font-size: 10px; color: var(--faint); }
 .sheet-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--faint); margin-top: 6px; }
@@ -333,17 +333,21 @@ const STATES = {
   idle:     { label: '空闲',     group: 'rest', pill: '' },
   asleep:   { label: '休眠',     group: 'rest', pill: 'sleep' },
   limited:  { label: '额度用尽', group: 'rest', pill: 'limited' },
+  peek:     { label: '鼠标悬停', group: 'react', pill: '' },
   thinking: { label: '思考中',   group: 'work', pill: 'work' },
   tool:     { label: '执行中',   group: 'work', pill: 'work' },
   long:     { label: '长任务',   group: 'work', pill: 'work' },
+  compacting: { label: '整理上下文', group: 'work', pill: 'work' },
+  juggling: { label: '协调中',   group: 'work', pill: 'work' },
   asking:   { label: '等你处理', group: 'ask',  pill: 'ask' },
   done:     { label: '完成',     group: 'end',  pill: 'done' },
   failed:   { label: '失败',     group: 'end',  pill: 'failed' },
 };
-const SHEET_ORDER = ['idle', 'asleep', 'limited', 'thinking', 'tool', 'long', 'asking', 'done', 'failed'];
+const SHEET_ORDER = ['idle', 'asleep', 'limited', 'peek', 'thinking', 'tool', 'long', 'compacting', 'juggling', 'asking', 'done', 'failed'];
 const status = {};      // member -> { state, task, since, mem }
 function setState(id, state, extra = {}) {
-  status[id] = { ...status[id], state, since: performance.now(), ...extra };
+  const prev = status[id]?.state;
+  status[id] = { ...status[id], state, prev: prev !== state ? prev : status[id]?.prev, since: prev !== state ? performance.now() : status[id]?.since, ...extra };
   renderMembers(); renderStrip(); renderStatusBar(); renderTree();
 }
 
@@ -354,7 +358,8 @@ function readColors() {
   const c = getComputedStyle(document.documentElement);
   colors = { ink: c.getPropertyValue('--bot-ink').trim(), shadow: c.getPropertyValue('--bot-shadow').trim(),
     warn: c.getPropertyValue('--warn').trim(), danger: c.getPropertyValue('--danger').trim(), faint: c.getPropertyValue('--faint').trim(),
-    accent: c.getPropertyValue('--accent').trim(), ok: c.getPropertyValue('--ok').trim(), muted: c.getPropertyValue('--muted').trim() };
+    accent: c.getPropertyValue('--accent').trim(), ok: c.getPropertyValue('--ok').trim(), muted: c.getPropertyValue('--muted').trim(),
+    raised: c.getPropertyValue('--raised').trim(), border: c.getPropertyValue('--border').trim() };
   for (const id in M) colors[id] = c.getPropertyValue(M[id].color).trim();
 }
 readColors();
@@ -375,26 +380,6 @@ function isLight() { const t = document.documentElement.dataset.theme; return t 
 loadLogos();
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { readColors(); loadLogos(); drawAll(true); });
 
-// 5x7 pixel signs drawn above the bot's head
-const SIGNS = {
-  exclamation: ['..#..', '..#..', '..#..', '..#..', '..#..', '.....', '..#..'],
-  ellipsis:    ['.....', '.....', '.....', '.....', '.....', '.....', '#.#.#'],
-  hourglass:   ['#####', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#####'],
-  cross:       ['.....', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '.....'],
-  z:           ['.....', '#####', '...#.', '..#..', '.#...', '#####', '.....'],
-  battery:     ['.###.', '#...#', '#...#', '#...#', '#...#', '#.#.#', '#####'],
-};
-function drawSign(ctx, sign, x, y, cell, color, t) {
-  const rows = SIGNS[sign];
-  rows.forEach((row, ry) => [...row].forEach((v, rx) => {
-    if (v !== '#') return;
-    let a = 1;
-    if (sign === 'ellipsis') a = Math.floor(t * 3) % 3 === rx / 2 ? 1 : 0.35;
-    ctx.globalAlpha = a; ctx.fillStyle = color;
-    ctx.fillRect(Math.round(x + rx * cell), Math.round(y + ry * cell), Math.ceil(cell), Math.ceil(cell));
-  }));
-  ctx.globalAlpha = 1;
-}
 const avatars = new Set();   // live canvases
 let pointer = { x: -1e4, y: -1e4, at: 0 };
 addEventListener('pointermove', (e) => { pointer = { x: e.clientX, y: e.clientY, at: performance.now() }; }, { passive: true });
@@ -403,8 +388,21 @@ function makeBot(id, size, opts = {}) {
   const cv = document.createElement('canvas');
   cv.style.width = size + 'px'; cv.style.height = size + 'px';
   cv.setAttribute('role', 'img');
-  const a = { cv, id, size, fixed: opts.state || null, still: !!opts.still, morph: null, blinkAt: performance.now() + 800 + Math.random() * 2500, seed: Math.random() * 10, key: '' };
+  const now0 = performance.now();
+  const a = { cv, id, size, fixed: opts.state || null, still: !!opts.still, morph: null, blinkAt: now0 + 800 + Math.random() * 2500,
+    seed: Math.random() * 10, key: '', hover: false, hoverOff: 0, pokes: [], pokeUntil: 0, annoyedUntil: 0,
+    nextPeek: now0 + 12000 + Math.random() * 20000, peekUntil: 0 };
   cv._bot = a;
+  if (!a.still && M[id].bot) {
+    // Hover: a resting logo opens its eyes and looks at you. Click: poke. Four quick pokes: annoyed.
+    cv.addEventListener('pointerenter', () => { a.hover = true; });
+    cv.addEventListener('pointerleave', () => { a.hover = false; a.hoverOff = performance.now(); });
+    cv.addEventListener('click', () => {
+      const n = performance.now();
+      a.pokes = a.pokes.filter((x) => n - x < 1500); a.pokes.push(n);
+      if (a.pokes.length >= 4) { a.annoyedUntil = n + 1800; a.pokes = []; } else a.pokeUntil = n + 520;
+    });
+  }
   avatars.add(a);
   updateLabel(a);
   return cv;
@@ -422,53 +420,71 @@ function drawBot(a, now) {
   const still = a.still || reduceMotion.matches;
   const t = still ? 0 : now / 1000 + a.seed;
   const m = M[id];
+  const s0 = status[id] || {};
+  const since = a.fixed ? (now % 4000) : now - (s0.since || 0);   // the state sheet loops its one-shot moments
+  const rest = ['idle', 'asleep', 'limited'].includes(st);
+
+  // Reactions and one-shot moments (inspired by Clawd on Desk's state design; drawn from scratch here)
+  const poked = !still && now < a.pokeUntil;
+  const annoyed = !still && now < a.annoyedUntil;
+  if (!still && st === 'idle' && !a.fixed && now > a.nextPeek) { a.peekUntil = now + 2400; a.nextPeek = now + 18000 + Math.random() * 25000; }
+  const idlePeek = !still && st === 'idle' && now < a.peekUntil;
+  const hovering = !still && (a.hover || now - a.hoverOff < 900);
+  const yawning = st === 'asleep' && since < 1800 && !still;
+  const waking = !still && s0.prev === 'asleep' && !a.fixed && since < 900;
+  const peek = st === 'peek' || ((hovering || idlePeek || poked || annoyed) && rest && st !== 'limited');
+
   // Not working: the plain logo. Working / needs you / result: the logo wakes up into a bot.
-  const awake = m.bot && !['idle', 'asleep', 'limited'].includes(st);
-  const target = awake ? 1 : 0;
+  const awake = m.bot && (!rest || peek || yawning || poked || annoyed) && st !== 'peek' ? true : (st === 'peek');
+  const target = !m.bot ? 0 : awake ? (rest || st === 'peek' ? 0.9 : 1) : 0;
   if (a.morph === null || still) a.morph = target; else a.morph += (target - a.morph) * 0.14;
-  const k = a.morph;   // 0 = logo, 1 = bot
+  const k = a.morph;
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, W, W);
-  const L = W * 0.66;                 // logo box
-  const cx = W * 0.44, cy = W * 0.56;
-  let scale = 1, tilt = 0, lift = 0;
-  const since = now - (status[id]?.since || 0);
+  const L = W * 0.62;
+  const cx = W * 0.44, cy = W * 0.57;
+  let scale = 1, tilt = 0, lift = 0, shakeX = 0;
   if (!still) {
-    if (st === 'thinking') { tilt = Math.sin(t * 1.3) * 0.07; lift = Math.sin(t * 2.6) * 0.03; }
-    if (st === 'tool') { lift = Math.abs(Math.sin(t * 5.2)) * 0.11; }
-    if (st === 'long') { tilt = Math.sin(t * 7) * 0.03; }
-    if (st === 'asking') { lift = Math.max(0, Math.sin(t * 6)) * 0.2; }
-    if (st === 'done') { const p = Math.min(1, since / 600); lift = Math.sin(p * Math.PI) * 0.16; }
-    if (st === 'failed') { tilt = Math.sin(t * 18) * 0.04 * Math.max(0, 1 - since / 900); }
+    if (st === 'idle') scale = 1 + Math.sin(t * 1.6) * 0.012;
+    if (st === 'asleep') scale = 1 + Math.sin(t * 0.8) * 0.03;
+    if (st === 'thinking') { tilt = Math.sin(t * 1.2) * 0.08; lift = Math.sin(t * 2.4) * 0.025; }
+    if (st === 'tool') { lift = Math.abs(Math.sin(t * 9)) * 0.045; }                 // typing: quick small bounce
+    if (st === 'long') { tilt = Math.sin(t * 2) * 0.05; }
+    if (st === 'compacting') { tilt = Math.sin(t * 4) * 0.16; shakeX = Math.sin(t * 4) * 0.05; }   // sweeping back and forth
+    if (st === 'juggling') { lift = Math.abs(Math.sin(t * 3)) * 0.04; }
+    if (st === 'asking') { lift = Math.max(0, Math.sin(t * 6)) * 0.2; shakeX = Math.sin(t * 40) * 0.012; }
+    if (st === 'done') { const p = Math.min(1, since / 700); lift = Math.sin(p * Math.PI) * 0.2; }
+    if (st === 'failed') { shakeX = Math.sin(t * 30) * 0.04 * Math.max(0.15, 1 - since / 900); }
+    if (poked) { const p = 1 - (a.pokeUntil - now) / 520; lift = Math.sin(p * Math.PI) * 0.16; }
+    if (annoyed) tilt = -0.18;
+    if (yawning) scale = 1 + Math.sin(Math.min(1, since / 1800) * Math.PI) * 0.07;
+    if (waking) scale = 1 + Math.sin(since / 900 * Math.PI) * 0.1;
   }
-  if (st === 'asking') scale = 1.08;
-  lift *= k; tilt *= k;
+  if (st === 'asking') scale *= 1.08;
 
-  if (k > 0.02) {   // ground shadow only for the awake bot
-    ctx.globalAlpha = k;
-    ctx.fillStyle = colors.shadow;
-    ctx.beginPath(); ctx.ellipse(cx, cy + L * 0.5, L * (0.34 - lift * 0.6), L * 0.05, 0, 0, Math.PI * 2); ctx.fill();
+  if (k > 0.02 && !rest) {
+    ctx.globalAlpha = k; ctx.fillStyle = colors.shadow;
+    ctx.beginPath(); ctx.ellipse(cx, cy + L * 0.52, L * (0.34 - lift * 0.6), L * 0.05, 0, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
   }
 
   ctx.save();
-  ctx.translate(cx, cy - lift * L);
+  ctx.translate(cx + shakeX * L, cy - lift * L);
   ctx.rotate(tilt);
   ctx.scale(scale, scale);
   const img = LOGO_IMG[id];
   if (m.bot && img && img.complete && img.naturalWidth) {
-    ctx.globalAlpha = st === 'asleep' ? 0.55 : st === 'limited' ? 0.4 : 1;
+    ctx.globalAlpha = st === 'asleep' && !yawning ? 0.55 : st === 'limited' ? 0.4 : 1;
     ctx.drawImage(img, -L / 2, -L / 2, L, L);
     ctx.globalAlpha = 1;
   } else {
-    // "you" (and a logo still loading): a plain disc with initials
     ctx.fillStyle = colors[id]; ctx.beginPath(); ctx.arc(0, 0, L * 0.46, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = colors.ink; ctx.font = `600 ${L * 0.42}px ${css.getPropertyValue('--font')}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(m.short, 0, L * 0.03);
   }
 
-  // eyes appear as the logo wakes
+  // eyes
   const E = EYES[id];
   if (E && k > 0.02) {
     const u = L / 24;
@@ -476,10 +492,12 @@ function drawBot(a, now) {
     ctx.globalAlpha = k;
     let gx = 0, gy = 0;
     if (!still) {
-      if (st === 'thinking') { gx = Math.sin(t * 1.1) * 0.35; gy = -0.2; }
-      else if (now - pointer.at < 6000) {
+      if (st === 'thinking') { gx = Math.sin(t * 1.1) * 0.35; gy = -0.3; }
+      else if (st === 'tool' || st === 'long') { gy = 0.35; gx = Math.sin(t * 2.2) * 0.15; }   // eyes on the keyboard
+      else if (idlePeek && !hovering) { gx = Math.sin((now - a.peekUntil) / 400) * 0.4; }      // glancing around
+      else if (now - pointer.at < 6000 || hovering) {
         const r = cv.getBoundingClientRect();
-        const dx = pointer.x - (r.left + r.width * 0.44), dy = pointer.y - (r.top + r.height * 0.56);
+        const dx = pointer.x - (r.left + r.width * 0.44), dy = pointer.y - (r.top + r.height * 0.57);
         const d = Math.hypot(dx, dy) || 1, f = Math.min(1, d / 260);
         gx = dx / d * 0.4 * f; gy = dy / d * 0.3 * f;
       }
@@ -487,8 +505,14 @@ function drawBot(a, now) {
     if (E.holes) { gx = Math.max(-0.15, Math.min(0.15, gx)); gy = Math.max(-0.4, Math.min(0.4, gy)); }
     let open = 1;
     if (!still && now > a.blinkAt) { const p = (now - a.blinkAt) / 140; if (p >= 1) a.blinkAt = now + 2200 + Math.random() * 3800; else open = Math.max(0.1, Math.abs(1 - p * 2)); }
+    if (yawning) open = Math.max(0.08, 1 - since / 1500);
+    let face = 'pill';
+    if (st === 'done') face = since < 1300 ? 'heart' : 'happy';
+    else if (st === 'failed') face = 'x';
+    else if (annoyed) face = 'flat';
+    else if (poked) face = 'squint';
     let w = E.w, h = E.h;
-    if (st === 'tool' || st === 'long') h *= 0.6;
+    if (st === 'tool' || st === 'long' || st === 'compacting') h *= 0.6;
     if (st === 'asking') { w *= 1.1; h *= 1.12; }
     let ink = '#15171b', halo = '#ffffff';
     if (E.plate) {
@@ -498,36 +522,187 @@ function drawBot(a, now) {
       ink = light ? '#ffffff' : '#16181b'; halo = null;
     }
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (const ex0 of E.x) {
+    E.x.forEach((ex0, side) => {
       const ex = (ex0 + gx) * u, ey = (E.y + gy) * u;
-      if (st === 'done' || st === 'failed') {
-        const r = Math.max(E.w, 1.4) * 0.6 * u;
-        const path = new Path2D();
-        if (st === 'done') { path.moveTo(ex - r, ey + r * 0.4); path.quadraticCurveTo(ex, ey - r * 1.3, ex + r, ey + r * 0.4); }
-        else { path.moveTo(ex - r, ey - r); path.lineTo(ex + r, ey + r); path.moveTo(ex + r, ey - r); path.lineTo(ex - r, ey + r); }
-        if (halo) { ctx.strokeStyle = halo; ctx.lineWidth = 1.5 * u; ctx.stroke(path); }
-        ctx.strokeStyle = ink; ctx.lineWidth = 0.8 * u; ctx.stroke(path);
-      } else {
+      const r = Math.max(E.w, 1.4) * 0.6 * u;
+      const path = new Path2D();
+      if (face === 'pill') {
         const hh = Math.max(0.3, h * open) * u, ww = w * u;
-        const path = new Path2D();
         if (path.roundRect) path.roundRect(ex - ww / 2, ey - hh / 2, ww, hh, ww / 2); else path.rect(ex - ww / 2, ey - hh / 2, ww, hh);
         if (!E.holes && halo) { ctx.strokeStyle = halo; ctx.lineWidth = 0.7 * u; ctx.stroke(path); }
         ctx.fillStyle = ink; ctx.fill(path);
+        return;
       }
+      if (face === 'heart') {
+        const hr = r * 0.62, hy = ey - r * 0.1;
+        path.moveTo(ex, hy + hr * 1.5);
+        path.bezierCurveTo(ex - hr * 2.2, hy + hr * 0.2, ex - hr * 1.1, hy - hr * 1.5, ex, hy - hr * 0.3);
+        path.bezierCurveTo(ex + hr * 1.1, hy - hr * 1.5, ex + hr * 2.2, hy + hr * 0.2, ex, hy + hr * 1.5);
+        if (halo) { ctx.strokeStyle = halo; ctx.lineWidth = 0.7 * u; ctx.stroke(path); }
+        ctx.fillStyle = colors.danger; ctx.fill(path);
+        return;
+      }
+      if (face === 'happy') { path.moveTo(ex - r, ey + r * 0.4); path.quadraticCurveTo(ex, ey - r * 1.3, ex + r, ey + r * 0.4); }
+      else if (face === 'x') { path.moveTo(ex - r, ey - r); path.lineTo(ex + r, ey + r); path.moveTo(ex + r, ey - r); path.lineTo(ex - r, ey + r); }
+      else if (face === 'flat') { path.moveTo(ex - r, ey); path.lineTo(ex + r, ey); }
+      else if (face === 'squint') { const d = side ? -1 : 1; path.moveTo(ex - r * d, ey - r * 0.8); path.lineTo(ex + r * d, ey); path.lineTo(ex - r * d, ey + r * 0.8); }   // > <
+      if (halo) { ctx.strokeStyle = halo; ctx.lineWidth = 1.5 * u; ctx.stroke(path); }
+      ctx.strokeStyle = ink; ctx.lineWidth = 0.8 * u; ctx.stroke(path);
+    });
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  if (!m.bot) return;
+
+  drawProps(ctx, a, st, { W, L, cx, cy, lift, t, still, since, s0, yawning, now });
+}
+
+/* ---- props: clear, recognisable objects (style reference: Clawd on Desk; drawn from scratch) ---- */
+const PAL = () => isLight()
+  ? { paper: '#ffffff', paperLine: '#cfd4da', dot: '#9aa0a9', kb: '#3a3f47', key: '#5b616b', wood: '#9a6a3c', straw: '#d9a43c', cloud: '#8b919b', gold: '#e0a020', red: '#d04848' }
+  : { paper: '#eef0f3', paperLine: '#eef0f3', dot: '#8b919b', kb: '#2b2f36', key: '#4a505a', wood: '#b07c4a', straw: '#e8b54c', cloud: '#7d838d', gold: '#f2c14e', red: '#e06c6c' };
+function star(ctx, x, y, r, color) {
+  ctx.fillStyle = color; ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4, rr = i % 2 ? r * 0.32 : r; ctx.lineTo(x + Math.sin(a) * rr, y - Math.cos(a) * rr); }
+  ctx.closePath(); ctx.fill();
+}
+function drawProps(ctx, a, st, o) {
+  const { W, L, cx, cy, lift, t, still, since, s0, yawning } = o;
+  const P = PAL();
+  const R = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); };
+  const headY = cy - L * 0.5 - lift * L;           // top of the logo
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+  if (st === 'thinking') {
+    // white thought bubble with three dots, two trailing puffs toward the head
+    const bw = W * 0.4, bh = W * 0.22, bx = W * 0.57, by = W * 0.03 + (still ? 0 : Math.sin(t * 2) * W * 0.01);
+    ctx.fillStyle = P.paper; ctx.strokeStyle = P.paperLine; ctx.lineWidth = Math.max(1, W * 0.012);
+    R(bx, by, bw, bh, bh / 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(bx + bw * 0.12, by + bh * 1.25, W * 0.028, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(bx - W * 0.01, by + bh * 1.7, W * 0.016, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    const lit = still ? 1 : Math.floor(t * 3.2) % 3;
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i === lit ? colors.accent : P.dot;
+      ctx.beginPath(); ctx.arc(bx + bw * (0.27 + i * 0.23), by + bh / 2 - (i === lit && !still ? W * 0.012 : 0), W * 0.026, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  if (st === 'tool') {
+    // a small keyboard in front, keys lighting up as it types
+    const kw = L * 0.95, kh = L * 0.24, kx = cx - kw / 2, ky = cy + L * 0.36;
+    ctx.fillStyle = P.kb; R(kx, ky, kw, kh, kh * 0.25); ctx.fill();
+    const cols = 7, rows = 2, gap = kw * 0.025, kwid = (kw - gap * (cols + 1)) / cols, khei = (kh - gap * (rows + 1)) / rows;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const on = !still && (Math.floor(t * 11) * 7 + 3) % (cols * rows) === r * cols + c;
+      ctx.fillStyle = on ? colors.accent : P.key;
+      R(kx + gap + c * (kwid + gap), ky + gap + r * (khei + gap), kwid, khei, khei * 0.25); ctx.fill();
+    }
+  }
+
+  if (st === 'long') {
+    // hourglass that drains, then flips
+    const hx = W * 0.82, hy = W * 0.17, hw = W * 0.15, hh = W * 0.24;
+    const cyc = still ? 0.4 : (t % 4) / 4;
+    const flip = cyc > 0.85 ? (cyc - 0.85) / 0.15 : 0;
+    const level = Math.min(1, cyc / 0.85);
+    ctx.translate(hx, hy); ctx.rotate(flip * Math.PI);
+    ctx.fillStyle = P.wood; R(-hw / 2 - W * 0.01, -hh / 2 - W * 0.02, hw + W * 0.02, W * 0.025, W * 0.01); ctx.fill(); R(-hw / 2 - W * 0.01, hh / 2 - W * 0.005, hw + W * 0.02, W * 0.025, W * 0.01); ctx.fill();
+    ctx.fillStyle = P.paper; ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.moveTo(-hw / 2, -hh / 2); ctx.lineTo(hw / 2, -hh / 2); ctx.lineTo(0, 0); ctx.lineTo(hw / 2, hh / 2); ctx.lineTo(-hw / 2, hh / 2); ctx.lineTo(0, 0); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1; ctx.fillStyle = P.straw;
+    const top = (1 - level) * 0.9, bot = level * 0.9;
+    ctx.beginPath(); ctx.moveTo(-hw / 2 * top, -hh / 2 * top); ctx.lineTo(hw / 2 * top, -hh / 2 * top); ctx.lineTo(0, 0); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-hw / 2 * 0.9, hh / 2 * 0.9); ctx.lineTo(hw / 2 * 0.9, hh / 2 * 0.9); ctx.lineTo(hw / 2 * 0.9 * (1 - bot * 0.6), hh / 2 * 0.9 * (1 - bot)); ctx.lineTo(-hw / 2 * 0.9 * (1 - bot * 0.6), hh / 2 * 0.9 * (1 - bot)); ctx.closePath(); ctx.fill();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  if (st === 'compacting') {
+    // a broom sweeping beside the bot, dust puffs flying off
+    const sw = still ? 0.2 : Math.sin(t * 4) * 0.35;
+    ctx.translate(cx - L * 0.5, cy + L * 0.5); ctx.rotate(-0.55 + sw);
+    ctx.strokeStyle = P.wood; ctx.lineWidth = Math.max(1.5, W * 0.03);
+    ctx.beginPath(); ctx.moveTo(0, -L * 0.75); ctx.lineTo(0, 0); ctx.stroke();
+    ctx.fillStyle = P.straw; ctx.beginPath(); ctx.moveTo(-W * 0.06, 0); ctx.lineTo(W * 0.06, 0); ctx.lineTo(W * 0.09, W * 0.11); ctx.lineTo(-W * 0.09, W * 0.11); ctx.closePath(); ctx.fill();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    for (let i = 0; i < 3; i++) {
+      const p = still ? i / 3 : (t * 0.8 + i / 3) % 1;
+      ctx.globalAlpha = (1 - p) * 0.8; ctx.fillStyle = P.cloud;
+      ctx.beginPath(); ctx.arc(cx - L * 0.55 - p * W * 0.25, cy + L * 0.62 - Math.sin(p * Math.PI) * W * 0.12, W * (0.02 + p * 0.03), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (st === 'juggling') {
+    // the lead juggles one ball per running task, coloured by who is doing it
+    const balls = (a.fixed ? ['cx', 'cc', 'ag'] : (s0.balls || [])).slice(0, 3);
+    const n = Math.max(1, balls.length);
+    for (let i = 0; i < n; i++) {
+      const ph = (still ? 0.7 : t * 2.4) + i * (Math.PI * 2 / n);
+      const x = cx + Math.cos(ph) * L * 0.5, y = Math.max(W * 0.07, headY - W * 0.02 - Math.max(0, Math.sin(ph)) * W * 0.17);
+      ctx.fillStyle = colors[balls[i]] || colors.accent;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(2, W * 0.055), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.arc(x - W * 0.017, y - W * 0.017, Math.max(0.8, W * 0.016), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  if (st === 'asking') {
+    // an orange notification badge with "!", bouncing and ringing
+    const r = W * 0.12, bx = W * 0.8, by = W * 0.2 - (still ? 0 : Math.max(0, Math.sin(t * 6)) * W * 0.05);
+    if (!still) {
+      const ring = (t * 1.6) % 1;
+      ctx.strokeStyle = colors.warn; ctx.globalAlpha = 1 - ring; ctx.lineWidth = Math.max(1, W * 0.015);
+      ctx.beginPath(); ctx.arc(bx, by, r * (1 + ring * 0.7), 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = colors.warn; ctx.beginPath(); ctx.arc(bx, by, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffffff'; R(bx - r * 0.13, by - r * 0.6, r * 0.26, r * 0.72, r * 0.13); ctx.fill();
+    ctx.beginPath(); ctx.arc(bx, by + r * 0.45, r * 0.15, 0, Math.PI * 2); ctx.fill();
+  }
+
+  if (st === 'failed') {
+    // a small storm cloud with a flashing bolt
+    const x0 = W * 0.64, y0 = W * 0.06;
+    ctx.fillStyle = P.cloud;
+    ctx.beginPath(); ctx.arc(x0 + W * 0.08, y0 + W * 0.1, W * 0.07, 0, Math.PI * 2); ctx.arc(x0 + W * 0.17, y0 + W * 0.07, W * 0.09, 0, Math.PI * 2); ctx.arc(x0 + W * 0.26, y0 + W * 0.11, W * 0.065, 0, Math.PI * 2); ctx.fill();
+    R(x0 + W * 0.04, y0 + W * 0.1, W * 0.27, W * 0.08, W * 0.04); ctx.fill();
+    if (still || Math.floor(t * 5) % 3 !== 0) {
+      ctx.fillStyle = P.gold; ctx.beginPath();
+      const bx = x0 + W * 0.16, by = y0 + W * 0.17;
+      ctx.moveTo(bx, by); ctx.lineTo(bx - W * 0.05, by + W * 0.09); ctx.lineTo(bx, by + W * 0.09); ctx.lineTo(bx - W * 0.03, by + W * 0.17); ctx.lineTo(bx + W * 0.05, by + W * 0.06); ctx.lineTo(bx + W * 0.005, by + W * 0.06); ctx.lineTo(bx + W * 0.03, by); ctx.closePath(); ctx.fill();
+    }
+  }
+
+  if (st === 'done' && since < 2200) {
+    // sparkles popping around the head
+    const p = still ? 0.5 : since / 2200;
+    [[0.12, 0.22, 0], [0.82, 0.12, 0.15], [0.9, 0.5, 0.3], [0.2, 0.6, 0.45]].forEach(([fx, fy, d]) => {
+      const q = Math.max(0, Math.min(1, (p - d) / 0.5));
+      if (q <= 0) return;
+      ctx.globalAlpha = Math.sin(q * Math.PI);
+      star(ctx, W * fx, W * fy - q * W * 0.06, W * (0.05 + Math.sin(q * Math.PI) * 0.035), P.gold);
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  if (st === 'limited') {
+    const bx = W * 0.74, by = W * 0.05, bw = W * 0.2, bh = W * 0.11;
+    ctx.strokeStyle = colors.warn; ctx.lineWidth = Math.max(1, W * 0.02);
+    R(bx, by, bw, bh, W * 0.02); ctx.stroke();
+    ctx.fillStyle = colors.warn; R(bx + bw, by + bh * 0.3, W * 0.025, bh * 0.4, W * 0.008); ctx.fill();
+    ctx.fillStyle = P.red; R(bx + W * 0.025, by + W * 0.025, bw * 0.18, bh - W * 0.05, W * 0.01); ctx.fill();
+  }
+
+  if (st === 'asleep' && !yawning) {
+    ctx.fillStyle = colors.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < 3; i++) {
+      const p = still ? i / 3 : (t * 0.35 + i / 3) % 1;
+      ctx.globalAlpha = still ? 0.85 : Math.sin(p * Math.PI);
+      ctx.font = `700 ${Math.round(W * (0.11 + p * 0.1))}px ${css.getPropertyValue('--font')}`;
+      ctx.fillText('z', W * (0.7 + p * 0.16), W * (0.32 - p * 0.24));
     }
     ctx.globalAlpha = 1;
   }
   ctx.restore();
-
-  // pixel sign above the head
-  const sign = { asking: 'exclamation', thinking: 'ellipsis', long: 'hourglass', failed: 'cross', asleep: 'z', limited: 'battery' }[st];
-  if (sign && m.bot) {
-    const cell = Math.max(1, Math.round(W / 26));
-    const sx = W - cell * 6.2;
-    const sy = W * 0.04 + (!still && sign === 'z' ? Math.sin(t * 1.2) * cell * 0.6 : 0) - (!still && st === 'asking' ? lift * L * 0.5 : 0);
-    const col = { exclamation: colors.warn, hourglass: colors.accent, ellipsis: colors.accent, cross: colors.danger, z: colors.faint, battery: colors.warn }[sign];
-    drawSign(ctx, sign, sx, Math.max(1, sy), cell, col, t);
-  }
 }
 let lastFrame = 0;
 function drawAll(force) {
@@ -764,7 +939,7 @@ function dispatchStep(C, quiet) {
   tasks[17] = { id: 17, to: 'cx', text: '定位并修复登录超时，跑 npm test', state: 'tool', container: 'task-17', secs: 0, elapsed: '0m00s', mem: '—' };
   tasks[18] = { id: 18, to: 'cc', text: '#17 完成后只读审查 diff', state: 'queued', container: '', note: '等待 #17' };
   push(C, { from: 'lead', kind: 'dispatch', tasks: [17, 18], text: '收到，拆成两步。实现交给 @Codex，审查交给 @Claude（不同厂商交叉审查）。', time: quiet ? '14:02' : clock() });
-  setState('lead', 'idle', { task: '' });
+  setState('lead', 'juggling', { task: '协调 #17 #18', balls: ['cx'] });
   setState('cx', 'tool', { task: '#17', mem: '—' });
   setState('cc', 'idle', { task: '#18 排队' });
   clearInterval(tickTimer); tickTimer = setInterval(tick17, 1000);
@@ -785,6 +960,7 @@ function resolveApproval(msg, how) {
   if (how === 'no') {
     tasks[17].state = 'failed'; tasks[17].note = '你拒绝了测试'; refreshTask(17);
     setState('cx', 'failed', { task: '#17 已停止' });
+    setState('lead', 'idle', { task: '' });
     push(C, { kind: 'event', text: '你拒绝了 Codex 的请求，#17 已停止' });
     later(2600, () => setState('cx', 'idle', { task: '' }));
     return;
@@ -800,6 +976,7 @@ function resolveApproval(msg, how) {
     later(1200, () => {
       tasks[18].state = 'thinking'; tasks[18].container = 'task-18'; tasks[18].note = ''; refreshTask(18);
       setState('cc', 'thinking', { task: '#18 · 审查' });
+      setState('lead', 'juggling', { task: '协调 #18', balls: ['cc'] });
       later(3600, () => {
         tasks[18].state = 'done'; tasks[18].elapsed = '0m41s'; tasks[18].mem = '峰值 402 MB'; refreshTask(18);
         setState('cc', 'done', { task: '#18 完成' });
@@ -829,6 +1006,12 @@ function send() {
   input.value = ''; closeMention();
   const { c } = convById(activeConv);
   push(activeConv, { from: 'you', text });
+  if (text === '/compact') {
+    const prev = status.lead.state;
+    setState('lead', 'compacting', { task: '整理上下文' });
+    later(3200, () => { setState('lead', prev === 'compacting' ? 'idle' : prev, { task: '' }); push(activeConv, { kind: 'event', text: '组长的上下文已整理，约释放 41%' }); });
+    return;
+  }
   const to = c.type === 'direct' ? c.with : (text.match(/@(Codex|Claude|Antigravity|Grok|本机)/) ? Object.keys(M).find((k) => M[k].name === RegExp.$1) : $('#toSelect').value);
   const target = to === 'all' ? 'lead' : to;
   if (status[target]?.state === 'limited') { push(activeConv, { kind: 'event', text: `${M[target].name} 额度用尽，消息已转给组长重新分配` }); return; }
@@ -939,7 +1122,7 @@ function renderTasksInto(body) {
 }
 function renderSheetInto(body) {
   const wrap = document.createElement('div');
-  wrap.innerHTML = '<div class="sec-title">状态图鉴</div><p class="note" style="margin:0 0 8px">不工作时显示原本的 logo；开始工作后 logo 醒来变成小机器人：长出眼睛、会动、眼睛跟着鼠标。状态由任务自动驱动，不需要点击。头顶的像素符号表示需要你注意的事。</p>';
+  wrap.innerHTML = '<div class="sec-title">状态图鉴</div><p class="note" style="margin:0 0 8px">不工作时显示原本的 logo；开始工作后 logo 醒来变成小机器人，不同状态有不同动作和头顶道具。状态由任务自动驱动。</p>';
   const pick = document.createElement('div'); pick.className = 'sheet-pick';
   for (const b of BOTS) {
     const btn = document.createElement('button'); btn.type = 'button'; btn.textContent = M[b].name; btn.setAttribute('aria-pressed', b === sheetMember);
@@ -948,7 +1131,7 @@ function renderSheetInto(body) {
   }
   wrap.appendChild(pick);
   const grid = document.createElement('div'); grid.className = 'sheet';
-  const group = { rest: '非工作', work: '工作', ask: '需要你', end: '结果' };
+  const group = { rest: '非工作', react: '互动', work: '工作', ask: '需要你', end: '结果' };
   for (const s of SHEET_ORDER) {
     const cell = document.createElement('div'); cell.className = 'cell';
     cell.appendChild(makeBot(sheetMember, 56, { state: s }));
@@ -956,14 +1139,14 @@ function renderSheetInto(body) {
     grid.appendChild(cell);
   }
   wrap.appendChild(grid);
-  wrap.insertAdjacentHTML('beforeend', '<div class="sheet-legend"><span>! 等你处理</span><span>… 思考</span><span>⧗ 长任务</span><span>× 失败</span><span>z 休眠</span><span>▯ 额度</span></div>');
+  wrap.insertAdjacentHTML('beforeend', '<p class="note" style="margin:8px 0 0">试试：把鼠标移到任意会动的头像上，它会睁眼看你；点一下会被「戳」到，连点四下会生气。在输入框发送 /compact 可以看到组长整理上下文。</p>');
   body.appendChild(wrap);
 }
 document.querySelectorAll('.ptab').forEach((t) => t.addEventListener('click', () => { panelTab = t.dataset.tab; renderPanel(); }));
 
 function renderStatusBar() {
   const cli = $('#sbCli');
-  const dot = (st) => ({ work: 'work', ask: 'warn', end: st === 'failed' ? 'bad' : 'ok', rest: st === 'limited' ? 'warn' : '' }[STATES[st].group]);
+  const dot = (st) => ({ work: 'work', ask: 'warn', end: st === 'failed' ? 'bad' : 'ok', rest: st === 'limited' ? 'warn' : '', react: '' }[STATES[st].group]);
   cli.innerHTML = ['cc', 'cx', 'ag', 'gk'].map((b) => { const st = status[b]?.state || 'idle'; return `<span class="sb" title="${esc(M[b].name)}：${STATES[st].label}"><span class="dot ${dot(st)}"></span>${M[b].short} ${STATES[st].label}</span>`; }).join('');
   const running = BOTS.filter((b) => ['tool', 'long', 'thinking', 'asking'].includes(status[b]?.state) && b !== 'local' && b !== 'lead').length;
   $('#sbBox').textContent = `容器 ${Math.min(2, running)}/2`;
