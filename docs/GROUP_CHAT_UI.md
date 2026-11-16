@@ -151,7 +151,7 @@
 |---|---|---|
 | 组长 | Claude Code | 直接填进 logo 自带的两个眼洞 |
 | Claude（审查） | Claude | logo 中心 |
-| Codex | Codex | 提示符上方 |
+| Codex | OpenAI（GPT） | logo 中心垫一块实心圆作为脸（线条图案上直接画眼睛看不清） |
 | Antigravity | Antigravity | 拱形下部 |
 | Grok | Grok | logo 中心 |
 | 本机 | Windows | 上面两个方块 |
