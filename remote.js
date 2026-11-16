@@ -68,6 +68,10 @@ class Remote extends EventEmitter {
     this.lastActivity = Date.now();
     this.startId = 0;
     this.starting = null;
+    this.ownedThreads = new Set();
+    this.codexExited = Promise.resolve();
+    this.codexExitPending = false;
+    this.codexStarting = false;
     this.idleTimer = setInterval(() => this.idleCheck(), 30000);
     this.idleTimer.unref?.();
   }
@@ -182,9 +186,25 @@ class Remote extends EventEmitter {
   }
 
   startCodex() {
-    if (!this.cfg.host || this.stopping || this.sleeping || this.codexConnection) return;
+    if (!this.cfg.host || this.stopping || this.sleeping || this.codexConnection || this.codexStarting) return;
     this.cancelRetry('codex');
     this.set({ codex: 'connecting' });
+    const begin = () => {
+      this.codexStarting = false;
+      if (!this.cfg.host || this.stopping || this.sleeping || this.codexConnection) return;
+      this.spawnCodex();
+    };
+    // Keep the first spawn synchronous so callers/tests see the child immediately.
+    // Only wait when a previous SSH child is still exiting.
+    if (!this.codexExitPending) {
+      begin();
+      return;
+    }
+    this.codexStarting = true;
+    this.codexExited.catch(() => {}).finally(begin);
+  }
+
+  spawnCodex() {
     const c = this.cfg;
     let child;
     try {
@@ -200,8 +220,8 @@ class Remote extends EventEmitter {
     child.stderr.on('data', (data) => { connection.output = (connection.output + data).slice(-2000); });
     child.stdin.on('error', (error) => fail('Codex 输入流已断开：' + error.message));
     child.on('error', (error) => fail(error.message));
-    child.on('exit', (code) => fail(this.exitReason(connection.output, code, 'Codex 连接断开')));
-    child.on('close', (code) => fail(this.exitReason(connection.output, code, 'Codex 连接已关闭')));
+    child.on('exit', (code) => { connection.ended = true; fail(this.exitReason(connection.output, code, 'Codex 连接断开')); });
+    child.on('close', (code) => { connection.ended = true; fail(this.exitReason(connection.output, code, 'Codex 连接已关闭')); });
     this.request('initialize', {
       clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: '0.2.7' },
       capabilities: { experimentalApi: true, mcpServerOpenaiFormElicitation: true },
@@ -228,11 +248,21 @@ class Remote extends EventEmitter {
     }).catch(() => {}).finally(() => { connection.heartbeatPending = false; });
   }
 
+  async releaseOwnedThreads(connection) {
+    if (!connection?.ready || !this.ownedThreads.size) { this.ownedThreads.clear(); return; }
+    const ids = [...this.ownedThreads];
+    this.ownedThreads.clear();
+    await Promise.all(ids.map((threadId) => this.request('thread/unsubscribe', { threadId }, {
+      connection, internal: true, timeoutMs: 2500,
+    }).catch(() => {})));
+  }
+
   dropCodex(connection, reason, retry = true, sleeping = false) {
     if (this.codexConnection !== connection) return;
     this.codexConnection = null;
     this.codexProc = null;
     this.info = null;
+    this.ownedThreads.clear();
     clearInterval(connection.heartbeat);
     for (const [id, request] of this.pending) {
       if (request.connection !== connection) continue;
@@ -242,7 +272,24 @@ class Remote extends EventEmitter {
     }
     this.activeTurns.clear();
     this.pendingReqs.clear();
-    try { connection.child.kill(); } catch {}
+    this.codexExitPending = true;
+    this.codexExited = new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        this.codexExitPending = false;
+        resolve();
+      };
+      const timer = setTimeout(finish, 5000);
+      try {
+        if (connection.ended) { finish(); return; }
+        connection.child.once('exit', finish);
+        connection.child.once('close', finish);
+        connection.child.kill();
+      } catch { finish(); }
+    });
     if (sleeping) {
       this.set({ codex: 'sleeping', detail: '空闲连接已休眠，输入时自动重连' });
       this.emit('codex-sleep');
@@ -299,7 +346,18 @@ class Remote extends EventEmitter {
         // Never replay a timed-out mutation: its remote outcome is unknown.
         this.dropCodex(connection, 'Codex 请求超时（' + method + '），请检查上一操作的结果');
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, connection, internal });
+      this.pending.set(id, {
+        resolve: (result) => {
+          if (method === 'thread/start' || method === 'thread/resume') {
+            const threadId = result?.thread?.id || params?.threadId;
+            if (threadId) this.ownedThreads.add(threadId);
+          } else if (method === 'thread/unsubscribe' || method === 'thread/archive' || method === 'thread/delete') {
+            if (params?.threadId) this.ownedThreads.delete(params.threadId);
+          }
+          resolve(result);
+        },
+        reject, timer, connection, internal,
+      });
       try { this.write({ id, method, params }, connection); } catch (error) {
         this.dropCodex(connection, error.message);
       }
@@ -320,9 +378,23 @@ class Remote extends EventEmitter {
     if (this.activeTurns.size || this.pendingReqs.size) return;
     if ([...this.pending.values()].some((request) => !request.internal)) return;
     if (Date.now() - this.lastActivity < idle) return;
+    if (this.idleSleeping) return;
+    const connection = this.codexConnection;
     this.sleeping = true;
     this.cancelRetry('codex');
-    this.dropCodex(this.codexConnection, 'Codex 已休眠', false, true);
+    const finish = () => {
+      this.idleSleeping = false;
+      // Wake may have cleared sleeping while unsubscribe was in flight — don't drop in that case.
+      if (!this.sleeping || this.codexConnection !== connection) return;
+      this.dropCodex(connection, 'Codex 已休眠', false, true);
+    };
+    // No owned writers: drop immediately. Otherwise unsubscribe first to avoid "active writer".
+    if (!this.ownedThreads.size) {
+      finish();
+      return;
+    }
+    this.idleSleeping = true;
+    this.releaseOwnedThreads(connection).finally(finish);
   }
 
   wake(timeoutMs = 45000) {
@@ -369,10 +441,17 @@ class Remote extends EventEmitter {
     this.codexRetry = 0;
     this.tunnelRetry = 0;
     this.sleeping = false;
-    if (this.codexConnection) this.dropCodex(this.codexConnection, '正在重新连接', false);
-    if (this.tunnelConnection) this.dropTunnel(this.tunnelConnection, '正在重新连接', false);
-    this.set({ codex: 'connecting', tunnel: this.cfg.remoteForward ? 'connecting' : 'external', detail: '正在重新连接' });
-    return this.start();
+    const connection = this.codexConnection;
+    const begin = () => {
+      if (this.codexConnection) this.dropCodex(this.codexConnection, '正在重新连接', false);
+      if (this.tunnelConnection) this.dropTunnel(this.tunnelConnection, '正在重新连接', false);
+      this.set({ codex: 'connecting', tunnel: this.cfg.remoteForward ? 'connecting' : 'external', detail: '正在重新连接' });
+      return this.start();
+    };
+    if (connection?.ready && this.ownedThreads.size) {
+      return this.releaseOwnedThreads(connection).finally(begin);
+    }
+    return begin();
   }
 
   async stop() {

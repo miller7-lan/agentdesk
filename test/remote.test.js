@@ -40,7 +40,14 @@ function setup(t, options = {}) {
           callback();
         },
       });
-      child.kill = () => { child.killed = true; return true; };
+      child.kill = () => {
+        child.killed = true;
+        queueMicrotask(() => {
+          child.emit('exit', null);
+          child.emit('close', null);
+        });
+        return true;
+      };
       child.respond = (id, result) => child.stdout.write(JSON.stringify({ id, result }) + '\n');
       child.args = args;
       spawned.push(child);
@@ -141,11 +148,11 @@ test('heartbeat does not prevent idle sleep; wake ignores delayed old close', as
   assert.equal(remote.state.codex, 'sleeping');
   assert.equal(remote.codexProc, null);
   const awakened = remote.wake();
-  assert.equal(spawned.length, 2);
-  old.emit('close', 0);
+  await until(() => spawned.length === 2, 'wake spawn');
   await connect(remote, spawned[1]);
   assert.equal(await awakened, true);
   assert.equal(remote.pending.size, 0);
+  assert.equal(old.killed, true);
 });
 
 test('manual reconnect cancels backoff and rejects old requests immediately', async (t) => {
