@@ -7,7 +7,9 @@
 
 | 概念 | 含义 | 来自哪里 |
 |---|---|---|
-| **群** | 一个工作空间：一个项目或一类任务。取代现在的「会话」 | 本地创建；微信对话自动对应一个「云任务」群 |
+| **项目** | 一个代码仓库或一类工作。**按项目建群** | 本地创建；微信对话对应一个固定的「云任务」项目 |
+| **群聊** | 项目内的多成员对话，组长参与 | 每个项目一个主群 |
+| **单聊** | 你和某一个 agent 的一对一对话，组长不参与 | 从成员列表直接发起；现有的单 Codex 会话就是一种单聊 |
 | **成员** | 你、组长、各执行 agent、本机、系统 | 群配置 |
 | **消息** | 成员的发言：派活、回复、提问、结论 | task-runner 的账本 + Codex app-server 事件 |
 | **任务** | 一次派活及其执行过程（容器、状态、日志、产物） | task-runner 的 SQLite（与微信 `/ls` 同一来源） |
@@ -65,10 +67,22 @@
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 左栏：群列表（替代会话列表）
+### 2.1 左栏：项目 → 群聊 / 单聊（替代会话列表）
 
-每一行显示：图标（☁ 云任务群 / ◇ 普通群）、群名、📱（连着微信）、成员头像叠放、未读数、**进行中任务数徽标**。
-排序：有待审批的置顶 → 有进行中任务的 → 按最近消息时间。待审批用警告色圆点，最显眼。
+```
+▾ ◇ agentdesk            ●2
+    # 群聊（组长 cx cc ag）  3
+    @ Codex                    ← 单聊
+    @ Grok                     ← 单聊
+▸ ☁ 云任务  📱            ●1
+▸ ◇ 周报整理
+  [+ 新建项目]
+```
+
+- 项目是第一层，展开后是该项目的**主群聊**和若干**单聊**；项目行汇总未读数和进行中任务数。
+- 项目行显示：图标（☁ 云任务 / ◇ 普通项目）、项目名、📱（连着微信）、**进行中任务数徽标**。
+- 排序：有待审批的置顶 → 有进行中任务的 → 按最近消息时间。待审批用警告色圆点，最显眼。
+- 新建单聊：在群聊右侧「成员」页点某个成员的「私聊」，或在左栏项目下点「+」。
 
 ### 2.2 中间：群聊时间线
 
@@ -92,7 +106,9 @@
 
 ### 2.3 输入区
 
-- 「发给：组长 ▾」：默认发给组长，也可以切换成直接发给某个成员（相当于 `@cx`）或全员。
+- 群聊中「发给：组长 ▾」：默认发给组长，也可以切换成直接发给某个成员（相当于 `@cx`）或全员。
+- **直接 @ 执行者时绕过组长**，不抄送，组长不会因此被唤醒。但这些任务仍然会进入项目的任务列表，写权限锁仍由 task-runner 统一控制（同一项目同一时刻只有一个成员能写），所以不会和组长派出的任务同时改同一份代码。
+- 单聊中没有「发给」选择，消息只发给对方；单聊里产生的任务同样记入项目任务列表。
 - 输入 `@` 弹出成员列表，**每个成员带当前状态**（▶️ 忙 / ✅ 空闲 / 🪫 额度用尽 / 🔑 需登录），不可用的成员置灰并说明原因。
 - 输入 `/` 弹出命令：`/duo`、`/team`、`/stop #17`、`/ls`，以及现有的 `/compact`、`/model`、`/review`。
 - 权限模式从「每条消息选一次」改为**群级设置**（放在群设置里），输入区只显示当前模式的小标签，避免每次都要选。
@@ -130,11 +146,12 @@
 ## 4. 数据模型（渲染层）
 
 ```js
-Group   { id, name, kind: 'cloud' | 'local', wechat: boolean, members: MemberId[], policy, unread, pinned }
+Project { id, name, kind: 'cloud' | 'local', wechat: boolean, policy, pinned }
+Conversation { id, projectId, type: 'group' | 'direct', members: MemberId[], unread }   // direct 时 members = ['you', 某成员]
 Member  { id: 'you'|'lead'|'cx'|'cc'|'ag'|'gk'|'local'|'system', name, short, color, backend, status, quota, auth }
-Message { id, groupId, from: MemberId, to: MemberId[], kind: 'text'|'dispatch'|'steps'|'approval'|'question'|'event',
+Message { id, conversationId, from: MemberId, to: MemberId[], kind: 'text'|'dispatch'|'steps'|'approval'|'question'|'event',
           replyTo?, taskId?, via?: 'wechat'|'desktop', body, ts }
-Task    { id, groupId, assignee, status, steps[], container, startedAt, endedAt, memPeak, artifacts[] }
+Task    { id, projectId, conversationId, assignee, status, steps[], container, startedAt, endedAt, memPeak, artifacts[] }
 ```
 
 数据来源：
@@ -147,7 +164,8 @@ Task    { id, groupId, assignee, status, steps[], container, startedAt, endedAt,
 | 现有 | 改为 |
 |---|---|
 | 侧栏「会话」列表（`#sessionList`） | 群列表 |
-| 中间多标签页（`#tabs`） | 去掉，用群列表切换；保留 Ctrl+Tab 快速切换最近的群 |
+| 中间多标签页（`#tabs`） | 去掉，用左栏切换；保留 Ctrl+Tab 快速切换最近的群聊 / 单聊 |
+| 现有的单 Codex 会话 | 迁移为对应项目下的「@ Codex」单聊，历史 thread 保留 |
 | `live.js` 中的单会话 item 渲染 | 拆为 `views/timeline.js`（消息类型渲染）+ `views/dispatch-card.js` + `views/approval-card.js`；工具调用的渲染逻辑原样复用到折叠行里 |
 | `modeSelect` 每条消息选一次 | 群级设置 |
 | 右侧面板 Diff / 终端 / 文件 | 新增「成员」「任务」页签，Diff 和终端按任务筛选 |
@@ -159,14 +177,14 @@ Task    { id, groupId, assignee, status, steps[], container, startedAt, endedAt,
 ## 6. 实施步骤
 
 1. **原型（2 天）**：先做一个可点击的静态原型（离线 mock 数据，沿用现有配色变量和深浅主题），确认布局、消息类型和防刷屏策略，再进入正式开发。
-2. **渲染层重构（3-4 天）**：拆分 `live.js`，引入 Group / Member / Message / Task 的状态仓库；现有的单 Codex 会话先作为「只有你和 cx 两名成员的群」跑通，保证功能不退化。
+2. **渲染层重构（3-4 天）**：拆分 `live.js`，引入 Project / Conversation / Member / Message / Task 的状态仓库；现有的单 Codex 会话先作为「@ Codex 单聊」跑通，保证功能不退化。
 3. **群聊视图（4-5 天）**：时间线的各种消息类型、派活卡片原地更新、筛选、@ 成员和 / 命令、群级权限设置。
 4. **右侧面板与状态栏（2-3 天）**：成员页、任务页、资源与 CLI 状态。
 5. **接入 task-runner（2-3 天）**：status API 的推送接入、微信消息标记、「云任务」群与微信对话的对应。
 6. **验收**：深浅两套主题截图（沿用 `AGENTDESK_SHOT` 机制）、长时间 4 个 agent 并发的刷屏测试、审批卡片只能在本机操作的验证。
 
-## 7. 待确认
+## 7. 已确定
 
-1. 群的划分方式：按**项目**建群（推荐），还是按**任务**建群（每个大任务一个群，做完归档）？
-2. 你在群里直接 @ 某个执行者时，组长是否要知情（抄送给组长，便于它掌握全局），还是完全绕过组长？
-3. 是否保留现有的「单 agent 对话」模式作为一种特殊的群（只有你和一个 agent），还是全部改成群聊？
+1. **按项目建群**：每个项目一个主群聊。
+2. **直接 @ 执行者不抄送组长**；写权限冲突由 task-runner 的项目级写锁兜底。
+3. **群聊和单聊都支持**：单聊是项目下你和某一个 agent 的一对一对话，现有的单 Codex 会话迁移为单聊。
