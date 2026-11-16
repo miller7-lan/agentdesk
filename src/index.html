@@ -101,6 +101,7 @@
     <span class="sb-item" id="sbMode">每步询问</span>
     <div class="grow"></div>
     <button class="sb-item clickable desktop-status" id="sbDesktop" type="button" title="点击断开或恢复 Windows 桌面控制">桌面控制</button>
+    <button class="sb-item clickable" id="sbOrchestrator" type="button" hidden>线路与模型</button>
     <span class="sb-item clickable" id="sbConn" title="点击重新连接"><span class="dot wait"></span>正在连接…</span>
     <button class="sb-item clickable reconnect-button" id="sbReconnect" type="button" title="立即重建 VPS 连接和 Windows 隧道">重新连接</button>
     <span class="sb-item clickable" id="sbPet" title="点击重新检测"><span class="dot"></span>桌宠：检测中</span>
@@ -109,9 +110,39 @@
     <span class="sb-item clickable" id="sbTheme">深色</span>
   </footer>
 
+  <dialog id="orchestratorDialog" class="orchestrator-dialog" aria-labelledby="orchestratorTitle">
+    <form method="dialog" class="orchestrator-heading">
+      <h2 id="orchestratorTitle">主控任务</h2>
+      <button type="submit" class="orchestrator-close" aria-label="关闭">×</button>
+    </form>
+    <div class="orchestrator-routes" aria-label="Mac 线路">
+      <button id="orchestratorSsh" data-route="ssh" type="button"><strong>SSH 主用</strong><span>检测中</span></button>
+      <button id="orchestratorRelay" data-route="relay" type="button"><strong>VPS 1 Relay 备用</strong><span>检测中</span></button>
+    </div>
+    <form id="orchestratorForm" class="orchestrator-form">
+      <label>执行方式<select id="orchestratorProvider">
+        <option value="">自动协作</option><option value="codex">Codex</option>
+        <option value="claude">Claude Code</option><option value="grok">Grok Build</option>
+      </select></label>
+      <label>模型 ID<input id="orchestratorModel" type="text" placeholder="留空使用 CLI 默认模型" maxlength="128" disabled /></label>
+      <label class="orchestrator-prompt">任务<textarea id="orchestratorPrompt" placeholder="输入要在 Mac 工作区完成的任务" maxlength="12000" required></textarea></label>
+      <button id="orchestratorSubmit" type="submit">提交任务</button>
+    </form>
+    <p id="orchestratorMessage" role="status" aria-live="polite"></p>
+    <section id="orchestratorTask" class="orchestrator-task" hidden aria-label="当前任务">
+      <div class="orchestrator-task-actions">
+        <button id="orchestratorRefresh" type="button">刷新</button>
+        <button id="orchestratorCancel" type="button">取消任务</button>
+        <button id="orchestratorApply" type="button" hidden>应用补丁</button>
+        <button id="orchestratorReconcile" type="button" hidden>核对在途操作</button>
+      </div>
+      <pre id="orchestratorTaskText"></pre>
+    </section>
+  </dialog>
   <div class="toast" id="toast"></div>
   <script src="data.js"></script>
   <script src="app.js"></script>
   <script src="live.js"></script>
+  <script src="orchestrator.js"></script>
 </body>
 </html>

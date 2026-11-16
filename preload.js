@@ -5,6 +5,7 @@ const on = (ch) => (cb) => { const h = (_e, v) => cb(v); ipcRenderer.on(ch, h); 
 contextBridge.exposeInMainWorld('desk', {
   setTheme: (theme) => ipcRenderer.send('theme:set', theme),
   platform: process.platform,
+  orchestrator: { control: (frame) => ipcRenderer.invoke('orchestrator:control', frame) },
   desktop: {
     enabled: () => ipcRenderer.invoke('desktop:enabled'),
     toggle: () => ipcRenderer.invoke('desktop:toggle'),

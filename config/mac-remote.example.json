@@ -1,0 +1,10 @@
+{
+  "host": "orchestrator.example.invalid",
+  "port": 22,
+  "codexUser": "agentdesk",
+  "codexKey": "/Users/yourname/.agentdesk/mac_codex_ed25519",
+  "knownHosts": "/Users/yourname/.ssh/known_hosts",
+  "workspace": "/var/lib/agentdesk-orchestrator/desktop-workspace",
+  "remoteForward": "",
+  "manageSshd": false
+}

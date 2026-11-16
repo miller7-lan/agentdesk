@@ -8,6 +8,7 @@ const { Desktop, desktopExecutable } = require('./desktop');
 const desktop = new Desktop(desktopExecutable(app));
 const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
+const mac = process.platform === 'darwin';
 const fileTurns = new Map();
 const fullAccessThreads = new Set();
 
@@ -37,8 +38,8 @@ function createWindow() {
     title: 'AgentDesk',
     icon: path.join(__dirname, 'build', 'icon.png'),
     backgroundColor: '#1b1d21',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: OVERLAY.dark,
+    titleBarStyle: mac ? 'hiddenInset' : 'hidden',
+    titleBarOverlay: mac ? false : OVERLAY.dark,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -101,7 +102,7 @@ remote.on('server-request', (m) => {
   if (m.method === 'item/tool/call') {
     const connection = remote.codexProc;
     const params = m.params || {};
-    const isFile = typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
+    const isFile = !mac && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
     const task = isFile
       ? !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId
         ? windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
@@ -229,12 +230,12 @@ ipcMain.handle('files:uploadData', async (_e, name, b64) => {
   try { if (b64.length > 14 * 1024 * 1024) throw new Error('图片超过 10 MB'); return { ok: true, file: await uploadOne(name, b64) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
-ipcMain.handle('remote:config', () => ({ workspace: remote.cfg.workspace, host: remote.cfg.host }));
+ipcMain.handle('remote:config', () => ({ workspace: remote.cfg.workspace, host: remote.cfg.host, localWorkspace: ws.root }));
 ipcMain.handle('codex:request', async (_e, method, params) => {
   try {
     if (method === 'thread/start') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
-      params = { ...params, dynamicTools: [...desktopSpecs, ...windowsFiles.specs] };
+      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac ? [] : windowsFiles.specs)] };
     }
     if (method === 'turn/start') {
       if (desktop.enabled) {
@@ -262,10 +263,82 @@ ipcMain.handle('codex:respond', (_e, id, result, error) => {
 ipcMain.handle('clawd:status', () => clawd.status());
 ipcMain.handle('clawd:send', (_e, evt) => clawd.send(evt));
 
+const macBridgeState = path.join(require('node:os').homedir(), 'Library', 'Application Support', 'AgentDesk', 'bridge', 'state');
+let stopMacDesktop;
+function startMacDesktop() {
+  if (!mac || !fs.existsSync(macBridgeState)) return;
+  const { Lines } = require('./orchestrator/transport');
+  const { createServer } = require('node:net');
+  const socketPath = path.join(macBridgeState, 'desktop.sock');
+  try {
+    if (!fs.lstatSync(socketPath).isSocket()) throw new Error('desktop_socket_path_occupied');
+    fs.unlinkSync(socketPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error(error.message);
+      return;
+    }
+  }
+  const server = createServer((socket) => {
+    const wire = new Lines(socket, socket, 28 * 1024 * 1024);
+    wire.once('frame', async (params) => {
+      try {
+        if (!desktop.enabled) throw new Error('mac_desktop_disabled');
+        await desktop.specs();
+        desktop.active.set(params.turnId, params.threadId);
+        const value = await desktop.call(params);
+        wire.send({ ok: true, value });
+      } catch (error) {
+        if (!socket.destroyed) wire.send({ ok: false, error: error.message });
+      } finally {
+        desktop.active.delete(params.turnId);
+        socket.end();
+      }
+    });
+  });
+  server.on('error', (error) => console.error('Mac desktop bridge:', error.message));
+  server.listen(socketPath, () => fs.chmodSync(socketPath, 0o600));
+  stopMacDesktop = () => server.close();
+}
+
+ipcMain.handle('orchestrator:control', async (event, frame) => {
+  if (!mac || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
+      !frame || !['routes', 'select_route', 'submit', 'status', 'cancel', 'apply', 'reconcile'].includes(frame.operation)) {
+    return { ok: false, error: '无权操作主控线路' };
+  }
+  const { request } = require('./orchestrator/mcp');
+  const socket = path.join(macBridgeState, 'control.sock');
+  try {
+    const value = await request(socket, frame, frame.operation === 'apply' ? 310000 : 16000);
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+let stopBridge;
+function startOrchestratorBridge() {
+  const config = remote.cfg.orchestratorBridge;
+  if (!config) return;
+  try {
+    const { startBridge } = require('./orchestrator/service');
+    stopBridge = startBridge({
+      config: JSON.parse(fs.readFileSync(config, 'utf8')),
+      desktop,
+      recycle: (target) => shell.trashItem(target),
+      spawnSsh: (ssh) => remote.openBridge(ssh),
+    });
+  } catch (error) {
+    console.error('AgentDesk Orchestrator Bridge:', error.message);
+  }
+}
+
 let ending = false;
 app.on('before-quit', (e) => {
   if (ending) return;
   ending = true; e.preventDefault();
+  stopBridge?.();
+  stopMacDesktop?.();
   clearLocalTools();
   Promise.race([Promise.all([clawd.endAll(), remote.stop()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
@@ -274,6 +347,8 @@ app.whenReady().then(() => {
   createWindow();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
     remote.start();
+    startOrchestratorBridge();
+    startMacDesktop();
     powerMonitor.on('resume', () => { if (!ending) remote.reconnect(); });
   }
 });

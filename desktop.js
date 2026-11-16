@@ -50,7 +50,7 @@ class Desktop {
       const inputSchema = structuredClone(tool.inputSchema);
       if (tool.name === 'desktop_screenshot') delete inputSchema.properties.output_path;
       if (tool.name === 'desktop_launch') delete inputSchema.properties.cdp;
-      const prefix = 'Operate the local Windows desktop in the signed-in AgentDesk account, not the VPS. ';
+      const prefix = 'Operate the local desktop in the signed-in AgentDesk account. ';
       const description = prefix + tool.description;
       return [tool.name, { type: 'function', name: tool.name, description, inputSchema }];
     }));
@@ -128,7 +128,9 @@ class Desktop {
 
 function desktopExecutable(app) {
   const directory = app.isPackaged ? process.resourcesPath : __dirname;
-  return path.join(directory, 'desktop-backend', 'agent-desktop-win32-x64.exe');
+  const filename = process.platform === 'darwin'
+    ? 'agent-desktop-darwin-' + process.arch : 'agent-desktop-win32-x64.exe';
+  return path.join(directory, 'desktop-backend', filename);
 }
 
 module.exports = { Desktop, desktopExecutable };

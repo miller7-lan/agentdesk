@@ -39,3 +39,11 @@ npm test
 在 AgentDesk 新建会话可使用本机工具。通过状态栏的「本机桌面」开关启停鼠标、键盘和截图能力。发送时选「完全访问」，VPS 上的 Codex 使用无沙盒、无需审批模式，本机文件工具可操作 Windows 用户本来就有权限的文件。本机 UAC、文件系统权限和系统目录边界仍然有效。桌面截图和文件内容会通过当前连接返回给 VPS 上的 Codex。
 
 运行时私钥、主机指纹记录和连接配置请存放在用户目录中。仓库只保存示例。
+
+## 双 VPS Relay
+
+VPS 1 负责转发 Windows Bridge 和 VPS 2 Orchestrator 之间的消息。详见 [Relay 通信协议](relay/PROTOCOL.md) 和 [Ubuntu 部署与运维](relay/OPERATIONS.md)。当前 Windows 客户端仍使用上述 SSH 连接方式。
+
+## VPS 2 Orchestrator
+
+Windows AgentDesk 优先直连 VPS 2 的 SSH 22，VPS 1 Relay 的 TLS 22022 作为手动切换备用链路。主控在 VPS 2 调度 Codex、Claude Code 和 Grok Build。详见 [双 VPS 架构](docs/ARCHITECTURE.md)、[部署与运维](orchestrator/OPERATIONS.md) 和 [业务协议](orchestrator/PROTOCOL.md)。

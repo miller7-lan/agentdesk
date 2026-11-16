@@ -4,7 +4,7 @@
   const LIVE = !!(window.desk && window.desk.codex);
   if (LIVE) {
     D.projects.forEach((p) => { p.name += '（示例）'; });
-    D.projects.unshift({ id: 'live', name: 'Windows 开发机 · Codex', branch: 'windows-dev', live: true });
+    D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区 · Codex' : 'Windows 开发机 · Codex', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
     D.sessions.unshift({ id: 'L1', project: 'live', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
   }
   const $ = (s, r = document) => r.querySelector(s);

@@ -4,7 +4,8 @@
   if (!A || !A.LIVE) return;
   const { D, state, $, esc, svg, store, sess, toast, pet, setBusy } = A;
   const cx = window.desk.codex, rm = window.desk.remote, wsApi = window.desk.ws, skApi = window.desk.skills, fileApi = window.desk.files;
-  const WIN_ROOT = 'C:\\CodexSSH\\windows-dev';
+  const isMac = window.desk.platform === 'darwin';
+  let WIN_ROOT = 'C:\\CodexSSH\\windows-dev';
 
   let cfg = { workspace: undefined };
   let ready = false;
@@ -42,7 +43,7 @@
     if (d < 86400) return Math.round(d / 3600) + ' 小时'; if (d < 172800) return '昨天';
     return Math.round(d / 86400) + ' 天前';
   };
-  const winPath = (r) => WIN_ROOT + '\\' + String(r).replace(/\//g, '\\');
+  const winPath = (r) => isMac ? WIN_ROOT + '/' + r : WIN_ROOT + '\\' + String(r).replace(/\//g, '\\');
   let rafPending = false;
   function render() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; A.renderAll(); }); }
   const isActive = (s) => s && s.id === state.active;
@@ -78,7 +79,7 @@
     const bad = /denied|missing|failed|error/.test((s.sshd || '') + (s.codex || ''));
     const retrying = s.codex === 'retry' || s.tunnel === 'retry';
     const label = sleeping ? 'Codex 已休眠（输入时唤醒）'
-      : ok ? 'Windows 开发机已连接'
+      : ok ? (isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接')
       : s.codex === 'ready' ? 'Codex 已连接 · 隧道重连中'
       : retrying ? (s.detail || '连接已断开，正在自动重连')
       : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
@@ -386,7 +387,7 @@
     s.items.push({ t: 'thinking', text: '思考中' });
     A.renderAll(); pet(s, 'thinking', 'UserPromptSubmit');
     if (sandbox === 'danger-full-access') {
-      input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
+      if (!isMac) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
     const sel = $('#modelSelect'); const model = sel.dataset.live ? sel.value : undefined;
     if (!s.threadId) {
@@ -825,6 +826,7 @@
   }
   const STATUS = (f) => f.untracked ? ['U', '新文件'] : (f.index === 'D' || f.work === 'D') ? ['D', '已删除'] : (f.index === 'A') ? ['A', '新增'] : (f.index === 'R') ? ['R', '重命名'] : ['M', '已修改'];
   function noAccessHtml() {
+    if (isMac) return `<div class="empty-note">无法打开 Mac 工作区。${esc(W.access?.error || '')}</div>`;
     return `<div class="empty-note">AgentDesk 还不能读取 <code>${esc(WIN_ROOT)}</code>（${esc(W.access?.error || '')}）。<br>
       需要给当前账户加只读权限：在管理员 PowerShell 运行<br><code>icacls ${esc(WIN_ROOT)} /grant "${esc('%USERNAME%')}:(OI)(CI)RX"</code></div>`;
   }
@@ -936,7 +938,7 @@
 
   /* ---------- 初始化 ---------- */
   window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult };
-  rm.config().then((c) => { cfg = c; });
+  rm.config().then((c) => { cfg = c; if (isMac) WIN_ROOT = c.localWorkspace || WIN_ROOT; });
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
   $('#sbConn').addEventListener('click', () => { if (conn.codex === 'sleeping') { rm.wake(); toast('正在唤醒 Codex…'); } else { rm.reconnect(); toast('正在重新连接…'); } });
@@ -983,6 +985,6 @@
   rm.status().then((st) => { if (st.codex === 'ready') onReady(); });
   wsApi.access().then((a) => { W.access = a; if (a.ok) refreshChanges(true); else if (sess(state.active)?.live) A.renderPanel(); });
   wsApi.onChanged(() => refreshChanges());
-  ta.placeholder = '让 Codex 在 Windows 开发机上做点什么…  / 命令 · $ 技能 · @ 文件 · Enter 发送';
+  ta.placeholder = isMac ? '向 VPS 上的 Codex 提问…  / 命令 · $ 技能 · @ 文件 · Enter 发送' : '让 Codex 在 Windows 开发机上做点什么…  / 命令 · $ 技能 · @ 文件 · Enter 发送';
   sortSessions(); A.renderAll();
 })();

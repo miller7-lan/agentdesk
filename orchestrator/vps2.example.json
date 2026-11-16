@@ -1,0 +1,52 @@
+{
+  "stateDir": "/var/lib/agentdesk-orchestrator",
+  "cliTimeoutMs": 900000,
+  "adapters": {
+    "codex": {
+      "bin": "/usr/local/bin/codex",
+      "credentials": {
+        "OPENAI_API_KEY": "/etc/agentdesk-orchestrator/openai.key"
+      }
+    },
+    "claude": {
+      "bin": "/usr/local/bin/claude",
+      "credentials": {
+        "ANTHROPIC_API_KEY": "/etc/agentdesk-orchestrator/anthropic.key"
+      }
+    },
+    "grok": {
+      "bin": "/usr/local/bin/grok",
+      "credentials": {
+        "XAI_API_KEY": "/etc/agentdesk-orchestrator/xai.key"
+      }
+    }
+  },
+  "workspaces": {
+    "project": {
+      "repository": "/var/lib/agentdesk-orchestrator/repos/project.git"
+    },
+    "mac": {
+      "repository": "/var/lib/agentdesk-orchestrator/repos/mac.git",
+      "sshBridge": "mac"
+    }
+  },
+  "relay": {
+    "host": "relay.example.invalid",
+    "port": 22022,
+    "deviceId": "vps2-orchestrator",
+    "tokenFile": "/etc/agentdesk-orchestrator/relay.token",
+    "caFile": "/etc/agentdesk-orchestrator/relay-ca.pem"
+  },
+  "sshBridges": [
+    "mac"
+  ],
+  "relayBridges": {
+    "mac": {
+      "host": "relay.example.invalid",
+      "port": 22022,
+      "deviceId": "vps2-orchestrator-mac",
+      "tokenFile": "/etc/agentdesk-orchestrator/relay-mac.token",
+      "caFile": "/etc/agentdesk-orchestrator/relay-ca.pem"
+    }
+  }
+}

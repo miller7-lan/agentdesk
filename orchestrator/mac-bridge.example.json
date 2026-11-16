@@ -1,0 +1,31 @@
+{
+  "stateDir": "/Users/yourname/Library/Application Support/AgentDesk/bridge/state",
+  "controlSocket": "/Users/yourname/Library/Application Support/AgentDesk/bridge/state/control.sock",
+  "controlWorkspace": "mac",
+  "desktopSocket": "/Users/yourname/Library/Application Support/AgentDesk/bridge/state/desktop.sock",
+  "git": "/usr/bin/git",
+  "workspaces": {
+    "mac": {
+      "root": "/Users/yourname/AgentDeskWorkspace",
+      "desktop": true,
+      "write": true,
+      "commands": {
+        "git-status": ["/usr/bin/git", "status", "--short"]
+      }
+    }
+  },
+  "ssh": {
+    "host": "orchestrator.example.invalid",
+    "port": 22,
+    "user": "agentdesk",
+    "key": "/Users/yourname/.agentdesk/mac_bridge_ed25519",
+    "knownHosts": "/Users/yourname/.ssh/known_hosts"
+  },
+  "relay": {
+    "host": "relay.example.invalid",
+    "port": 22022,
+    "deviceId": "mac-bridge",
+    "tokenFile": "/Users/yourname/.agentdesk/relay-mac.token",
+    "caFile": "/Users/yourname/.agentdesk/relay-ca.pem"
+  }
+}
