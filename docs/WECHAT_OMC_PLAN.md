@@ -1,126 +1,179 @@
-# 方案：微信入口 + oh-my-claudecode 多 agent 协作
+# 方案 v2：个人微信 → 企业微信 → 容器化云任务（多 CLI 协作）
 
-> 2026-11-16。承接 [MULTI_AGENT_RESEARCH.md](MULTI_AGENT_RESEARCH.md)。
-> 目标：在微信里给「组长 agent」发任务；组长用 oh-my-claudecode（下称 OMC）调度 Claude / Codex / Gemini 等子 agent 分工完成；结果和需要审批的事项回到微信与 AgentDesk。
+> 2026-11-16 更新。已确定的条件：
+> - VPS 内存 4 GB，另有 2 GB swap。
+> - 走企业微信官方能力对接个人微信。
+> - 微信入口只承担**简单云任务**。
+> - 每个任务在**独立容器**里运行，并**定期清理**。
+> - 任务和 agent 的**状态要能看到**。
+> - 接入 **Claude Code（+ oh-my-claudecode）、Codex、Gemini CLI、Grok CLI**。
+>
+> 背景见 [MULTI_AGENT_RESEARCH.md](MULTI_AGENT_RESEARCH.md)。
 
-## 1. 先说清楚两个硬限制
+## 1. 微信入口：用「微信客服」，而不是智能机器人
 
-**限制一：个人微信目前做不了「多个 agent 在微信群里聊」。**
+企业微信有两套机器人能力，适用对象不同：
 
-- 腾讯官方的微信 ClawBot 插件（底层是 iLink 协议，2026 年 3 月下旬开始灰度）**只支持单聊**，不支持群聊和微信自动化。要求 iOS 微信 8.0.70 及以上，在「我 → 设置 → 插件」里扫码连接。该信息来自第三方报道，以腾讯官方文档为准。
-- cccc 的微信桥同样**仅支持与机器人单聊**：扫码登录，群消息不支持（其 SDK 拿不到稳定的群 ID），只推送最终消息，不推送中间过程。
-- 用 wechaty 类非官方协议或 hook 注入可以进群，但有封号风险，并且等于把电脑控制权交给一个非官方程序。**不建议使用。**
-
-所以「群聊」发生在 agent 侧（cccc 的 Group 或 OMC 的 team），**微信只是你和组长之间的一对一遥控器**。如果一定要在 IM 群里看到多个 agent 发言，用**企业微信**：官方支持，cccc 的企业微信桥还支持流式输出。
-
-**限制二：OMC 没有微信，也没有远程触发入口。**
-
-- OMC 的通知能力：会话结束时向 Telegram / Discord / Slack 推送摘要（`omc config-stop-callback …`），以及把 6 类 hook 事件（session-start、stop、ask-user-question、pre/post-tool-use 等）**单向**转发到 OpenClaw 网关。
-- OMC 的 README 明确说 `/team`、`/autopilot` 等斜杠命令需要一个**正在运行的 Claude Code 会话**，没有用来远程发起任务的 webhook 或 API。
-- `omc team N:codex` 这类终端团队依赖 **tmux**，因此要跑在 Linux / WSL 上，不能在原生 Windows 上运行。
-
-结论：需要一个「中枢」负责收发微信消息，并把消息送进一个常驻的 Claude Code + OMC 会话。最现成的中枢是 **cccc**。
-
-## 2. 推荐架构
-
-```
- 微信（单聊 ClawBot/扫码）     企业微信群（可选，需要群聊时用）
-            │                            │
-            └──────────┬─────────────────┘
-                       ▼
-        ┌─────────── cccc 守护进程（VPS / Linux）──────────┐
-        │  Group「dev」 追加式账本：消息 / 任务 / 产物       │
-        │                                                    │
-        │  foreman：Claude Code + OMC 插件  ◀── 微信消息默认送达这里
-        │     │  /team、omc team 2:codex、/ask codex …       │
-        │     ├─ Codex worker（tmux）   实现 / 跑测试          │
-        │     ├─ Gemini/Antigravity worker（tmux）  第二意见   │
-        │     └─ Claude 子 agent       审查 / 验证            │
-        │                                                    │
-        │  peer：Codex App Server 会话（AgentDesk 现有链路） │
-        └────────────────────────────────────────────────────┘
-                       ▲
-                       │ SSH（现有链路）
-        AgentDesk（Windows）：看群聊、看 diff、审批、本机桌面/文件工具
-```
-
-各部分职责：
-
-| 组件 | 职责 | 为什么选它 |
+| 能力 | 个人微信能否直接对话 | 特点 |
 |---|---|---|
-| 微信 / 企业微信 | 发任务、收结果、`/status` `/pause` `/resume` | 手机随时可用 |
-| cccc | IM 桥接、Group 账本、把消息路由给 foreman、`@角色` 点名 | 现成的微信与企业微信桥；Claude Code 可以通过 MCP + hooks 接入为会话 |
-| Claude Code + OMC | 组长：拆任务、开 team、派给不同 CLI、验收 | OMC 的 plan → exec → verify → fix 流水线，加上多 CLI worker |
-| Codex / Gemini worker | 按分工干活 | 由 OMC 在 tmux 中拉起，干完即退出 |
-| AgentDesk | 桌面端查看、审批、本机 Windows 能力 | 已有的审批 UI 与本机工具，承担微信不适合做的事 |
+| **微信客服**（kf 接口） | ✅ 个人微信扫码或点链接即可进入会话 | 官方 API：回调通知后用 `kf/sync_msg` 拉取消息，用 `kf/send_msg` 回复。需要公网 HTTPS 回调地址（VPS 上有）。不支持流式输出 |
+| 企业微信**智能机器人**（长连接） | ❌ 只面向企业成员的单聊和内部群；第三方资料称外部群无法添加 | 支持流式回复，无需公网 IP；cccc 的企业微信桥接的是这一种 |
+| 个人微信 ClawBot | ✅ 但只能单聊，仍在灰度中 | 与企业微信无关 |
 
-一条消息的流转：
-1. 你在微信发「修一下登录超时的 bug，改完跑测试」。
-2. cccc 把这条消息作为 `/send @foreman` 投递给 Claude Code 会话。
-3. Claude（装了 OMC）走 team 流水线，例如 `omc team 1:codex` 负责实现，Claude 子 agent 负责审查，必要时用 `/ask antigravity` 拿第二意见。
-4. 遇到需要审批的操作（OMC 的 ask-user-question / pre-tool-use 事件），发到 AgentDesk 审批，微信端只收到一条「有待审批」的提醒。
-5. 完成后组长在 Group 里回复摘要，cccc 把最终消息推回微信，完整 diff 在 AgentDesk 里看。
+**结论**：个人微信入口用**微信客服**，自己写一个小型桥接服务（约 300 行 Node 代码）。如果以后需要在企业微信内部群里看各 agent 的流式输出，再接入智能机器人，可以和微信客服并存。
 
-## 3. 分工建议（扬长补短）
+> ⚠️ 实施前要在官方文档核实微信客服的**回复时限和条数限制**（据我了解，用户发消息后的一段时间内只能主动回复有限几条）。这个限制直接决定了「长任务完成后再通知」能否实现：如果超出时限，就改为由用户发 `/s 任务号` 主动查询，或者用企业微信应用消息兜底通知。
 
-| 角色 | 执行者 | 做什么 | 不做什么 |
+## 2. 总体架构
+
+```
+个人微信 ──(微信客服)──▶ 企业微信服务器 ──HTTPS 回调──▶ VPS
+                                                    │
+        ┌───────────────────────── VPS（4G + 2G swap）─────────────────────┐
+        │  wx-bridge（Node）  收发消息、白名单、命令解析                      │
+        │        │                                                          │
+        │        ▼                                                          │
+        │  task-runner（Node + SQLite）                                     │
+        │    队列 / 状态机 / 并发控制 / 超时 / 清理                           │
+        │        │ docker run（每个任务一个容器）                            │
+        │        ├─▶ [task-17] claude -p …        (agent-claude 镜像)       │
+        │        ├─▶ [task-18] codex exec …       (agent-codex 镜像)        │
+        │        └─▶ [task-19] gemini / grok …    (agent-gemini / grok 镜像)│
+        │                                                                   │
+        │  status API（127.0.0.1）  ◀── SSH 隧道 ── AgentDesk「云任务」面板  │
+        │  codex app-server（现有，AgentDesk 桌面会话用，不受影响）          │
+        └───────────────────────────────────────────────────────────────────┘
+```
+
+设计原则：
+- **微信只负责派发和查看简单任务**。复杂的开发工作仍在 AgentDesk 桌面端完成。
+- **一个任务对应一个容器**。容器结束即销毁，工作目录按策略保留，到期清理。
+- **状态只有一个来源**：task-runner 的 SQLite 数据库。微信、AgentDesk、命令行三处看到的状态一致。
+
+## 3. 四个 CLI 的分工（扬长补短）
+
+| 代号 | CLI | 无交互调用方式 | 默认用途 |
 |---|---|---|---|
-| 组长 | Claude Code + OMC | 拆解、派活、汇总、决定是否完成 | 不直接大规模改代码 |
-| 实现 | Codex（OMC worker，或 AgentDesk 现有的 Codex 会话） | 写代码、跑测试 | 不做最终验收 |
-| 第二意见 | Gemini / Antigravity worker | 方案对比、长上下文阅读 | 不写代码 |
-| 审查 | Claude 子 agent（与实现者不同厂商） | 只读审查 diff | 不改代码 |
-| 本机操作 | AgentDesk 的桌面与文件工具 | 只在需要操作 Windows 时调用 | 不从微信直接触发 |
+| `cc` | Claude Code（可加载 OMC） | `claude -p "<prompt>"` | 默认执行者：代码阅读、审查、需要多步推理的任务；`/team` 用于需要协作的任务 |
+| `cx` | Codex CLI | `codex exec "<prompt>"` | 写代码、跑脚本和测试 |
+| `gm` | Gemini CLI | `gemini -p "<prompt>"` | 长文档或大仓库的阅读与总结、第二意见 |
+| `gk` | Grok CLI | 待确认（见第 9 节） | 实时信息检索、第二意见 |
 
-原则：**写权限同一时刻只给一个角色**；并行的角色只读，或者各自在独立的 git worktree 里工作。
+路由规则（由 task-runner 实现，第一版用简单规则，不调用模型判断）：
+- 消息里显式指定了执行者（如 `@cx 写个脚本…`），就交给指定的 CLI。
+- 包含「审查 / review」→ `cc`；「总结 / 读一下」+ 长链接或大文件 → `gm`；「最新 / 新闻 / 查一下」→ `gk`；其它情况默认交给 `cc`。
+- `/duo <任务>`：一个 CLI 做，另一个厂商的 CLI 审查（例如 `cx` 实现 → `cc` 审查），两步串行执行，不并发，以节省内存。
+- `/team <任务>`：在 `cc` 容器内启用 OMC team。只在显式指定时使用，并且独占全部并发额度。
 
-## 4. 安全边界（必须在上线前做到）
+## 4. 容器设计
 
-微信账号等于一个能远程改代码、执行命令的入口，所以：
+**镜像**：共用一个基础镜像（Debian slim + Node + git + tmux + 常用工具），每个 CLI 一个派生镜像，固定 CLI 版本号，按周重建。
 
-1. **微信只能发任务，不能批准高危操作。** 完全访问、删除文件、本机桌面控制等操作的审批只能在 AgentDesk 里完成（对应 ROADMAP 里的 P0-2 和权限矩阵）。
-2. **白名单**：cccc 中只授权你自己的微信账号；如果用企业微信群，限定群成员和 @机器人 的范围。
-3. **从微信发起的会话默认不开完全访问**；VPS 上的 Codex 维持 workspace-write 沙盒。
-4. **审计**：每条微信指令、派出的子任务、执行的命令都写入 cccc 账本和 AgentDesk 的审计日志，两边可以对照。
-5. **熔断**：微信里 `/pause` 立即停止所有 worker；在 AgentDesk 里也要有对应按钮。
+**每个任务容器的启动参数**（4 GB 内存下的取值）：
 
-## 5. 资源与前置条件
+```
+docker run --rm --name task-<id>
+  --memory 1g --memory-swap 1.5g --cpus 1 --pids-limit 256
+  --read-only --tmpfs /tmp:size=256m
+  --cap-drop ALL --security-opt no-new-privileges
+  --user 10001:10001
+  -v /srv/agent-tasks/<id>/work:/work            # 任务工作目录（唯一可写目录）
+  -v /srv/agent-creds/<cli>:/home/agent/.cfg:ro # 该 CLI 的凭据，只读
+  --network agent-egress                        # 只放行 LLM API 与包管理源
+  --stop-timeout 10
+  agent-<cli>:<ver> <cli 命令>
+```
 
-- **VPS 内存是最大障碍。** `workspace.js` 的注释写着 VPS 只有 1 GB 内存。Claude Code + Codex + cccc + 若干 tmux worker 同时运行，1 GB 基本不够，**建议至少 4 GB**。另一种做法是把中枢放到 Windows 的 WSL 里（但这样电脑必须开机，cccc 也写明原生 Windows 的会话接入尚未完成验收）。
-- Claude Code 需要 ≥ 2.1.306（cccc 会话接入的要求）；cccc 的 Claude 会话接入功能**标注为实验性**，目前在 Linux / WSL 上测试过。
-- 需要在 VPS 上登录 Claude Code、Codex CLI、Gemini/Antigravity CLI 各自的账号。
-- 个人微信需要 ClawBot 灰度资格（iOS 8.0.70+）；cccc 的微信桥使用扫码登录。没有资格的话，先用企业微信。
+要点：
+- **不挂载 docker.sock**，也**不挂载**宿主机的代码仓库、`~/.ssh`、Codex app-server 的工作区。
+- **凭据**：每个 CLI 单独一个只读目录。优先使用 API Key，而不是个人账号的 OAuth 令牌，这样泄露后可以单独吊销，影响面更小。
+- **并发**：同时最多运行 **2 个**任务容器（2 × 1 GB，加上 codex app-server 和系统开销，不超过 4 GB，swap 只作缓冲）；`/team` 任务独占 2 个名额。超出的任务排队。
+- **超时**：默认 15 分钟，`/team` 任务 40 分钟，超时后 `docker stop` 并标记为 `timeout`。
+- **产物**：容器内写到 `/work/out/`；结束后由 task-runner 汇总生成摘要。文本直接回复到微信，文件则提供 AgentDesk 的查看入口，或在体积较小时以附件形式回复。
 
-## 6. 实施步骤
+## 5. 状态模型（「看得见」的核心）
 
-**阶段 1：跑通链路（约 3 天，不改 AgentDesk）**
-1. 将 VPS 扩容到 ≥ 4 GB，安装 tmux、Claude Code、OMC（`omc setup`）、cccc。
-2. `cccc sessions enable --runtime claude`，把 Claude Code 会话接入名为 dev 的 Group，并确认它是 foreman。
-3. 在 cccc Web UI 里扫码连接微信，发送 `/status` 验证收发。
-4. 从微信发一个只读任务（「审查最近一次提交」），确认 `omc team 1:codex` 能被组长拉起，并且结果回到了微信。
+任务状态：
 
-**阶段 2：接入 AgentDesk（约 1-2 周）**
-1. AgentDesk 新增「群聊」视图：通过 SSH 隧道读取 cccc 的 Group 账本（或直接嵌入 cccc 的 Web UI，最快）。
-2. 审批回流：把 OMC 的 ask-user-question / pre-tool-use 事件路由到 AgentDesk 的审批卡片；微信端只显示提醒。
-3. 让 AgentDesk 现有的 Codex App Server 会话作为 Group 的一名 peer，使本机桌面和文件工具可以被组长点名调用（仍需在 AgentDesk 里审批）。
+```
+queued ─▶ starting ─▶ running ─┬─▶ succeeded
+   │                           ├─▶ failed
+   │                           ├─▶ timeout
+   └──────── cancelled ◀───────┘   (用户 /stop)
+                       running ─▶ waiting_input ─▶ running   (需要你回答问题时)
+终态 ─(清理后)─▶ archived
+```
 
-**阶段 3：打磨（持续）**
-- 企业微信群模式：组长和各 worker 的发言以不同前缀显示在群里。
-- 成本控制：team 并发上限、每日 token 预算，超出时在微信里提醒。
-- 角色配置文件化：采用 `.agentdesk/agents/*.md`，见调研文档第 5 节。
+每个任务记录：id、来源（微信用户 / AgentDesk）、原始指令、执行者（cc/cx/gm/gk）、各子步骤（`/duo`、`/team` 的每个 agent 都有自己的状态行）、容器名、开始和结束时间、耗时、退出码、峰值内存、token 用量（CLI 能输出时记录）、摘要、产物路径。
 
-## 7. 备选路线
+**三处可以查看状态**：
 
-- **OpenClaw 路线**：微信 ClawBot 原生对接 OpenClaw，OMC 也能把事件转发到 OpenClaw 网关。但 OMC 到 OpenClaw 是单向的，从 OpenClaw 反向触发 OMC 的 team 没有现成文档，需要自己写桥接，可行性要先验证。
-- **完全自研**：用企业微信官方 API 加上 OMC 的库接口 `createOmcSession()`（基于 Claude Agent SDK）。控制力最强，但 OMC README 说明这只是一个库接口，不能替代插件界面，team 等功能能否完整使用要先验证。
+| 入口 | 内容 |
+|---|---|
+| 微信 | `/ls`：最近 10 个任务，每行形如「#17 ✅ cx 2m 写备份脚本」；`/s 17`：单个任务详情，含每个 agent 的状态和最后几行输出；`/stop 17`；`/sys`：内存、swap、磁盘、运行中的容器数 |
+| AgentDesk | 新增「云任务」面板：任务列表 + 实时日志（经 SSH 隧道访问 status API），可以停止、重跑、查看产物 |
+| 命令行 | `agent-tasks ls / show / logs -f / stop`，排障用 |
 
-## 8. 待你决定
+状态图标统一使用：⏳ 排队 ▶️ 运行 ❓ 等待回答 ✅ 成功 ❌ 失败 ⌛ 超时 ⏹ 已取消。
 
-1. 个人微信单聊够用，还是需要企业微信群（想在群里看到多个 agent 各自发言）？
-2. VPS 是否可以扩容到 ≥ 4 GB？不行的话，中枢就放 WSL，电脑需要常开。
-3. 除 Claude 和 Codex 外，是否还要接入 Gemini / Antigravity / Grok？
+## 6. 定期清理
+
+由 systemd timer 每小时执行一次 `agent-tasks gc`：
+
+| 对象 | 规则 |
+|---|---|
+| 运行超时的容器 | 立即停止，标记为 `timeout`（另有每分钟一次的看门狗兜底） |
+| 已退出的容器 | `--rm` 自动删除；残留的 `task-*` 容器超过 1 小时强制删除 |
+| 任务工作目录 `/srv/agent-tasks/<id>` | 成功的保留 **3 天**，失败的保留 **7 天**（便于排查），之后删除并标记 `archived` |
+| 任务数据库记录 | 保留 90 天（只保留元数据和摘要） |
+| 容器日志 | Docker `json-file` 驱动，单文件 10 MB、最多 3 个 |
+| 悬空镜像和构建缓存 | 每天一次 `docker image prune` / `builder prune`，保留当前使用的版本 |
+| 磁盘水位 | 可用空间低于 15% 时提前清理最旧的工作目录，并在微信提醒 |
+| 原有的 `.agentdesk-uploads` | 维持现有的 7 天清理规则 |
+
+清理只针对 `task-*` 容器和 `/srv/agent-tasks` 目录，**不碰** Codex app-server 和其他服务。
+
+## 7. 安全边界
+
+1. **白名单**：只有已登记的微信客服用户（你自己的 external_userid）发来的消息会被执行，其他人的消息只收到固定回复。
+2. **微信任务的权限上限**：只能在容器内操作，不能访问 Windows 本机的桌面或文件工具，不能访问 AgentDesk 的工作区，不能执行 SSH。需要这些能力时提示「请到 AgentDesk 处理」。
+3. **出网限制**：容器网络只放行各家 LLM API 和包管理源，防止数据被带出到任意地址。
+4. **配额**：每日任务数和 token 预算设上限，超出后暂停并通知你。
+5. **审计**：每条微信指令和容器的完整日志都保存到清理期限为止。
+
+## 8. 实施步骤
+
+**阶段 1：任务执行核心（约 4-5 天）**
+1. 编写 task-runner：SQLite 表结构、状态机、Docker 调度、并发限制、超时看门狗、`agent-tasks` 命令行。
+2. 构建基础镜像和 4 个 CLI 镜像，在 VPS 上逐个用无交互方式验证（并确认 Grok CLI 的调用方式）。
+3. 配置 gc 定时器与磁盘水位检查。
+
+**阶段 2：微信入口（约 3 天）**
+1. 注册企业微信，开通微信客服，配置回调地址（Nginx + HTTPS → wx-bridge）。
+2. wx-bridge：验签解密、`sync_msg` 游标、白名单、命令解析（`/ls` `/s` `/stop` `/sys` `/duo` `/team` `@cc/@cx/@gm/@gk`）。
+3. 根据核实后的回复时限，实现完成通知或主动查询的降级方案。
+
+**阶段 3：AgentDesk 面板（约 1 周）**
+1. status API（只监听 127.0.0.1）+ AgentDesk 的 SSH 本地端口转发。
+2. 「云任务」面板：列表、详情、实时日志、停止、重跑、产物预览。
+
+**阶段 4：协作模式（之后）**
+- `/duo` 交叉审查；`/team` 接入 OMC（容器内需要 tmux，OMC 的 worker 也在同一个容器里运行）。
+- 需要多 agent 群聊时再评估 cccc（其企业微信桥适用于内部群）。
+
+## 9. 待确认
+
+1. **Grok CLI 用哪个**：xAI 官方的 Grok Build，还是社区版 grok-cli？两者的安装方式和无交互调用参数不同，请告诉我你现在用的是哪个。
+2. **Gemini 的凭据**：OMC 文档提到 Antigravity 已接替 Gemini CLI，Gemini CLI 保留为企业版或 API Key 方式。容器里建议用 Gemini API Key，请确认你有。
+3. **企业微信主体**：可以使用未认证的企业，但部分接口和人数有限制，开通微信客服时需要确认是否可用。
+4. 云任务是否需要访问你的 Git 仓库？如果需要，给容器一个**只读的部署密钥**，限定到具体仓库。
 
 ## 参考来源
 
-- oh-my-claudecode README：https://github.com/Yeachan-Heo/oh-my-claudecode
-- cccc README 与 IM 桥文档：https://github.com/ChesterRa/cccc 、`docs/guide/im-bridge`
-- 微信 ClawBot / iLink（第三方报道，需要以官方文档核实）：https://ai-bot.cn/clawbot/ 、https://allclaw.org/zh/blog/what-is-ilink-zh 、https://tech.ifeng.com/c/8rhMPwE5mJz
+- 企业微信智能机器人官方文档：https://developer.work.weixin.qq.com/document/path/101031
+- 企业微信官方 Node SDK：https://cdn.jsdelivr.net/npm/@wecom/aibot-node-sdk@1.0.7/README.md
+- 外部群无法添加智能机器人（第三方文章）：https://damodev.csdn.net/6ae1cb7ee5f4ca4eff8cecf5.html
+- 个人微信用户经「微信客服」接入（阿里云文档）：https://help.aliyun.com/zh/beebot/intelligent-dialogue-robot-tongyi-version/wechat-customer-service-deployment-guidelines
+- 智能机器人长连接与流式回复（第三方整理）：https://damodev.csdn.net/6aef1812e5f4ca4eff8f124b.html
+- oh-my-claudecode：https://github.com/Yeachan-Heo/oh-my-claudecode
+- cccc：https://github.com/ChesterRa/cccc
