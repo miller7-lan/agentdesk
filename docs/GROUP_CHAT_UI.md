@@ -163,7 +163,7 @@ Task    { id, projectId, conversationId, assignee, status, steps[], container, s
 
 | 现有 | 改为 |
 |---|---|
-| 侧栏「会话」列表（`#sessionList`） | 群列表 |
+| 侧栏「会话」列表（`#sessionList`） | 项目 → 群聊 / 单聊 两级列表 |
 | 中间多标签页（`#tabs`） | 去掉，用左栏切换；保留 Ctrl+Tab 快速切换最近的群聊 / 单聊 |
 | 现有的单 Codex 会话 | 迁移为对应项目下的「@ Codex」单聊，历史 thread 保留 |
 | `live.js` 中的单会话 item 渲染 | 拆为 `views/timeline.js`（消息类型渲染）+ `views/dispatch-card.js` + `views/approval-card.js`；工具调用的渲染逻辑原样复用到折叠行里 |
