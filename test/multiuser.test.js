@@ -5,15 +5,16 @@ const Store = require('../orchestrator/store');
 const { Scheduler } = require('../orchestrator/scheduler');
 
 // Two people (bridges "alice" and "bob"), each with their own workspace.
-function setup({ maxConcurrentTasks, projects } = {}) {
+function setup({ maxConcurrentTasks, projects, ownerCaps, now } = {}) {
   const store = new Store(':memory:');
   const config = {
     maxConcurrentTasks, sshBridges: ['alice', 'bob'], quota: false,
     workspaces: { a: { sshBridge: 'alice' }, b: { sshBridge: 'bob' } },
     adapters: { codex: { bin: 'codex', env: {} }, claude: { bin: 'claude', env: {} } },
     ...(projects && { projects }),
+    ...(ownerCaps && { ownerCaps }),
   };
-  const scheduler = new Scheduler({ config, store, files: {} });
+  const scheduler = new Scheduler({ config, store, files: {}, ...(now && { now }) });
   const started = [];
   const finish = new Map();
   // Stand-in for a whole task run: it starts, then waits until the test lets it finish.
@@ -76,6 +77,27 @@ test('one process per CLI across tasks: a second Codex step waits for the first'
   await assert.rejects(cancelled, /cancelled/);
   hold();
   assert.equal(scheduler.cliBusy.get('codex'), 0);
+});
+
+test('one person reaching the daily cap does not block another person', (t) => {
+  const { store, scheduler } = setup({
+    ownerCaps: { default: { claude: 10, codex: 0 } },
+    now: () => new Date(2026, 10, 17, 10, 0).getTime(),
+  });
+  t.after(() => store.close());
+  scheduler.stopped = true;
+  const id = (name) => '00000000-0000-4000-8000-' + name.padStart(12, '0');
+  const alice = scheduler.submit(id('a1'), { workspace: 'a', prompt: 'alice' });
+  const bob = scheduler.submit(id('b1'), { workspace: 'b', prompt: 'bob' });
+  scheduler.tasks.set(id('prior'), {
+    id: id('prior'), owner: 'alice', state: 'completed',
+    metrics: { startedAt: new Date(2026, 10, 17, 9, 0).toISOString() },
+    quota: { claude: { fiveHour: 10 } },
+  });
+  assert.equal(scheduler.pickForTask(alice, 'plan'), null);
+  assert.equal(alice.ownerCapBlocked, true);
+  assert.equal(scheduler.pickForTask(bob, 'plan'), 'claude');     // Bob's own daily allowance is untouched
+  assert.equal(bob.ownerCapBlocked, undefined);
 });
 
 test('project members see a redacted status, cannot control another owner, and lose access when removed', (t) => {

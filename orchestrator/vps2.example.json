@@ -113,6 +113,28 @@
       ]
     }
   },
+  "ownerCaps": {
+    "default": {
+      "claude": 20,
+      "codex": 30,
+      "grok": 40,
+      "gemini": 40,
+      "antigravity": 40
+    },
+    "mac": {
+      "claude": 15
+    }
+  },
+  "projects": {
+    "agentdesk": {
+      "members": [
+        "mac"
+      ],
+      "workspaces": {
+        "mac": "mac"
+      }
+    }
+  },
   "workspaces": {
     "project": {
       "repository": "/var/lib/agentdesk-orchestrator/repos/project.git"
