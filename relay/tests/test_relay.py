@@ -84,6 +84,24 @@ class ValidationTests(unittest.TestCase):
             receipts.sweep()
             self.assertEqual(receipts.reserve("two", "a", "b", "task", b"a", now, True), "new")
 
+    def test_expiring_pairs_preserve_existing_devices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "devices.json"
+            entries = {}
+            for prefix, deadline in [('static', None), ('expired', 99), ('active', 101)]:
+                for role, peer_role in [('bridge', 'orchestrator'), ('orchestrator', 'bridge')]:
+                    name = prefix + '-' + role
+                    fields = {'role': role, 'peer': prefix + '-' + peer_role,
+                              'token_sha256': hashlib.sha256(name.encode()).hexdigest()}
+                    if deadline is not None:
+                        fields['expires_at'] = deadline
+                    entries[name] = fields
+            registry.write_text(json.dumps(entries))
+            with patch('state.time.time', return_value=100):
+                self.assertEqual(set(load_devices(registry)), {
+                    'static-bridge', 'static-orchestrator', 'active-bridge', 'active-orchestrator',
+                })
+
     def test_one_way_pair_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Path(tmp) / "devices.json"

@@ -1,0 +1,16 @@
+{
+  "bind": "0.0.0.0",
+  "port": 443,
+  "stateDir": "/var/lib/agentdesk-enrollment",
+  "sessionDir": "/var/lib/agentdesk-shared-enrollment",
+  "orchestratorStateDir": "/var/lib/agentdesk-orchestrator",
+  "maxDevices": 6,
+  "cert": "/etc/agentdesk-enrollment/https.crt",
+  "key": "/etc/agentdesk-enrollment/https.key",
+  "passwordFile": "/etc/agentdesk-enrollment/password.json",
+  "signingKey": "/etc/agentdesk-enrollment/ssh-ca",
+  "seedBundle": "/etc/agentdesk-enrollment/workspace.bundle",
+  "relayHost": "relay.example.invalid",
+  "registrarKey": "/etc/agentdesk-enrollment/relay-registrar",
+  "registrarKnownHosts": "/etc/agentdesk-enrollment/relay-registrar-known-hosts"
+}
