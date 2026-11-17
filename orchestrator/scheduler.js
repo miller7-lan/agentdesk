@@ -1,15 +1,16 @@
 const { mkdir, writeFile, readFile } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
-const { randomBytes, createHash } = require('node:crypto');
+const { randomBytes, randomUUID, createHash } = require('node:crypto');
 const { messageId } = require('./transport');
 const { runAdapter, addUsage } = require('./adapters');
 const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
+const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
 const { hostResources } = require('./host-resources');
-const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, clip } = require('./summary');
+const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, compactProject, clip } = require('./summary');
 const {
   REVIEW_INSTRUCTION, ACCEPTANCE_INSTRUCTION, parseReviewVerdict, reviewConflicts, mergeFindings,
 } = require('./review');
@@ -19,6 +20,11 @@ const { validateOwnerCaps, allow: ownerAllow, nextReset, ownerUsageReport } = re
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 const MAX_TRIAGE = 2;
+const taskModes = new Set(['normal', 'chat', 'duo', 'team', 'review_only']);
+const readOnlyMode = (mode) => mode === 'chat' || mode === 'review_only';
+const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const projectIdPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const teamTimeout = 40 * 60_000;
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -105,7 +111,9 @@ function publicTask(task) {
   const container = task.container;
   return {
     id: task.id, owner: task.owner || 'local', project: task.project,
-    state: task.state, detail: task.detail, stage: task.stage, createdAt: task.createdAt,
+    state: task.state, stage: task.stage, createdAt: task.createdAt,
+    mode: task.mode || 'normal', replyTo: task.replyTo, via: task.via, broadcastId: task.broadcastId,
+    detail: String(task.detail || '').split(':')[0],
     ...(metrics && { metrics: {
       startedAt: metrics.startedAt, endedAt: metrics.endedAt, durationMs: metrics.durationMs,
       stepCount: metrics.stepCount, roleCalls: metrics.roleCalls, reassignments: metrics.reassignments,
@@ -122,7 +130,7 @@ function publicTask(task) {
     } }),
     ...(task.testResult && Number.isFinite(task.testResult.code) && { testResult: { code: task.testResult.code } }),
     ...(container && { container: {
-      name: container.name, image: container.image, id: container.id, memPeak: container.memPeak,
+      memPeak: container.memPeak,
     } }),
     redacted: true,
   };
@@ -175,7 +183,7 @@ class Scheduler {
         if (signal.aborted || !reason) throw error;
         this.router.block(step.role, reason);
         step.tried = [...new Set([...(step.tried || []), step.role])];
-        const next = step.capability && this.pickForTask(task, step.capability, step.tried);
+        const next = step.capability && !step.fixedReview && !step.pinnedReadOnly && this.pickForTask(task, step.capability, step.tried);
         if (!next || (step.write && !this.router.canWrite(next))) {
           const configured = step.capability
             ? (this.router.routes[step.capability] || []).filter((role) => this.router.configured(role))
@@ -315,11 +323,14 @@ event(task, state, detail) {
     return undefined;
   }
 
-  save(task, state, detail, record = true) {
+  save(task, state, detail, record = true, data) {
     task.state = state;
     task.detail = detail;
     this.updateMetrics(task, state);
-    if (record) this.store.saveTask(task, this.event(task, state, detail));
+    if (record) {
+      const event = this.event(task, state, detail);
+      this.store.saveTask(task, data ? { ...event, kind: 'question', data } : event);
+    }
     else this.store.put('tasks', task.id, task);
   }
 
@@ -366,10 +377,19 @@ event(task, state, detail) {
   }
 
   submit(id, body, groupPlan = false) {
+    const mode = body.mode ?? 'normal';
+    if (!taskModes.has(mode) || (readOnlyMode(mode) && body.command != null) ||
+        (body.replyTo !== undefined && (typeof body.replyTo !== 'string' || !taskIdPattern.test(body.replyTo))) ||
+        (body.broadcastId !== undefined && (typeof body.broadcastId !== 'string' || !taskIdPattern.test(body.broadcastId))) ||
+        (body.reviewOf !== undefined && (mode !== 'review_only' || typeof body.reviewOf !== 'string' || !taskIdPattern.test(body.reviewOf))) ||
+        (body.via !== undefined && !['desktop', 'wechat'].includes(body.via))) throw new Error('invalid_task');
+    groupPlan = !readOnlyMode(mode) && (groupPlan || mode === 'duo' || mode === 'team');
     const existing = this.tasks.get(id);
     if (existing) {
       if (Boolean(existing.groupPlan) !== groupPlan || existing.prompt !== body.prompt || existing.workspace !== body.workspace ||
           existing.command !== body.command || existing.provider !== body.provider || existing.model !== body.model ||
+          (existing.mode || 'normal') !== mode || existing.replyTo !== body.replyTo ||
+          existing.via !== body.via || existing.broadcastId !== body.broadcastId || existing.reviewOf !== body.reviewOf ||
           existing.project !== body.project || existing.benchmarkId !== body.benchmarkId || existing.arm !== body.arm ||
           JSON.stringify(existing.tags || []) !== JSON.stringify(Array.isArray(body.tags)
             ? [...new Set(body.tags.map((tag) => typeof tag === 'string' ? tag.trim() : tag))] : body.tags || [])) {
@@ -384,6 +404,7 @@ event(task, state, detail) {
     if (body.provider === 'gemini' && !this.config.adapters?.gemini) throw new Error('gemini_not_configured');
     if (body.provider === 'antigravity' && !this.config.adapters?.antigravity) throw new Error('antigravity_not_configured');
     // The lead role is reserved for planning, triage and acceptance; a caller cannot pin a task to Claude.
+    if (mode === 'duo' && body.provider) throw new Error('duo_uses_group_routing');
     if (body.provider === LEAD_ROLE) throw new Error('claude_reserved');
     if ((body.provider !== undefined && !ROLES.includes(body.provider)) ||
         (body.model !== undefined && (!body.provider || typeof body.model !== 'string' ||
@@ -391,7 +412,7 @@ event(task, state, detail) {
     const tags = body.tags ?? [];
     if (!Array.isArray(tags) || tags.length > 8 ||
         tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 32)) throw new Error('invalid_task');
-    if (body.project !== undefined && (typeof body.project !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(body.project))) {
+    if (body.project !== undefined && (typeof body.project !== 'string' || !projectIdPattern.test(body.project))) {
       throw new Error('invalid_task');
     }
     const owner = this.ownerOf(body.workspace);
@@ -404,6 +425,14 @@ event(task, state, detail) {
         throw new Error('project_workspace_mismatch');
       }
     }
+    if (body.replyTo) {
+      const target = this.tasks.get(body.replyTo);
+      if (!target || target.project !== body.project || (target.owner !== owner && !project)) throw new Error('unknown_task');
+    }
+    if (body.reviewOf) {
+      const source = this.tasks.get(body.reviewOf);
+      if (!source || source.owner !== owner || source.workspace !== body.workspace || source.project !== body.project) throw new Error('unknown_task');
+    }
     if (body.benchmarkId !== undefined && (typeof body.benchmarkId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.benchmarkId))) {
       throw new Error('invalid_task');
     }
@@ -411,7 +440,12 @@ event(task, state, detail) {
     if (this.tasks.size >= 10000) throw new Error('task_capacity');
     const normalizedTags = [...new Set(tags.map((tag) => tag.trim()))];
     const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [],
-      owner, tags: normalizedTags,
+      owner, tags: normalizedTags, mode,
+      ...(body.replyTo && { replyTo: body.replyTo }),
+      ...(body.via && { via: body.via }),
+      ...(body.broadcastId && { broadcastId: body.broadcastId }),
+      ...(body.reviewOf && { reviewOf: body.reviewOf }),
+      ...(mode === 'team' && { slotCost: 2 }),
       ...(body.project !== undefined && { project: body.project }),
       ...(body.benchmarkId !== undefined && { benchmarkId: body.benchmarkId }),
       ...(body.arm !== undefined && { arm: body.arm }) };
@@ -420,6 +454,106 @@ event(task, state, detail) {
     this.save(task, 'queued', 'submitted');
     this.pump();
     return task;
+  }
+
+  broadcast(id, body) {
+    const owner = this.ownerOf(body.workspace);
+    const key = JSON.stringify([body.workspace, body.project, body.prompt, body.replyTo, body.via, body.tags]);
+    let entry = this.store.get('broadcasts', id);
+    if (entry && (entry.owner !== owner || entry.key !== key)) throw new Error('task_id_conflict');
+    if (!entry) {
+      const providers = this.availableRoles().filter((role) => role !== LEAD_ROLE &&
+        this.router.quotaAllows(role, 'scout') && this.ownerAllows({ owner }, role).allowed).slice(0, 5);
+      if (!providers.length) throw new Error('no_executor:scout');
+      entry = { key, owner, tasks: providers.map((provider) => ({ provider, id: randomUUID() })) };
+      this.store.put('broadcasts', id, entry);
+    }
+    return entry.tasks.map(({ provider, id: child }) => this.status(this.submit(child, {
+      ...body, mode: 'chat', command: undefined, reviewOf: undefined, model: undefined, provider, broadcastId: id,
+    }).id));
+  }
+
+  compact(project, named, workspace) {
+    if (project !== undefined ? typeof project !== 'string' || !projectIdPattern.test(project) ||
+        !Object.hasOwn(this.config.projects || {}, project) || (named && !this.isProjectMember(project, named))
+      : !Object.hasOwn(this.config.workspaces, workspace) || (named && this.ownerOf(workspace) !== named)) {
+      throw new Error('project_access_denied');
+    }
+    const key = project ?? 'workspace:' + workspace;
+    const tasks = [...this.tasks.values()].filter((task) => task.project === project && (project || task.workspace === workspace))
+      .map(({ id, state, tags }) => ({ id, state, tags }));
+    const brief = compactProject(project ?? workspace, tasks);
+    this.store.put('projectBriefs', key, brief);
+    return brief;
+  }
+
+  projectBrief(task) {
+    return this.store.get('projectBriefs', task.project ?? 'workspace:' + task.workspace);
+  }
+
+  addDuoReviews(task, steps) {
+    if (task.mode !== 'duo') return;
+    const configured = this.router.routes.review.filter((role) => role !== LEAD_ROLE && this.router.configured(role));
+    if (configured.length < 2) throw new Error('duo_requires_two_reviewers');
+    // Each review has one distinct provider. Preserve a planned review when it already fills a slot.
+    const reviews = steps.filter((step) => step.capability === 'review');
+    const used = new Set();
+    for (const review of reviews) {
+      if (used.has(review.role) || !configured.includes(review.role)) continue;
+      review.fixedReview = true;
+      used.add(review.role);
+    }
+    while (used.size < 2) {
+      const role = this.pickForTask(task, 'review', [...used, LEAD_ROLE]);
+      if (!role) throw new Error('executor_waiting:review');
+      const writer = steps.findLast((step) => step.write);
+      let index = steps.length;
+      while (steps.some(({ id }) => id === 'duo-review-' + index)) index++;
+      steps.push({ id: 'duo-review-' + index, role, capability: 'review', fixedReview: true,
+        dependsOn: writer ? [writer.id] : steps.filter((step) => step.capability !== 'accept').map((step) => step.id),
+        prompt: task.prompt, write: false, state: 'queued', attempts: 0 });
+      used.add(role);
+    }
+  }
+
+  async prepareReadOnly(task, signal) {
+    if (task.steps.length) return;
+    const capability = task.mode === 'review_only' ? 'review' : 'scout';
+    const fallback = capability === 'scout' && this.router.available('codex') &&
+      this.router.quotaAllows('codex', capability) && this.ownerAllows(task, 'codex').allowed ? 'codex' : null;
+    const role = task.provider || this.pickForTask(task, capability) || fallback;
+    if (!role) throw new Error('executor_waiting:' + capability);
+    if (task.provider && (role === LEAD_ROLE || !this.router.available(role) || !this.router.quotaAllows(role, capability) ||
+        !this.ownerAllows(task, role).allowed)) throw new Error('executor_waiting:' + capability);
+    if (task.mode === 'review_only' && !this.router.routes.review.includes(role)) throw new Error('invalid_review_provider');
+    const prompt = (task.mode === 'chat' ? 'Respond in read-only mode. Do not modify files or run write operations. Request: '
+      : 'Review the supplied uncommitted changes without modifying them. Request: ') + task.prompt;
+    if (task.mode === 'review_only') {
+      const snapshot = task.reviewOf ? await taskPatch(this.config.stateDir, this.tasks.get(task.reviewOf))
+        : await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
+          operation: 'git_review_diff', workspace: task.workspace,
+        });
+      if (!/^[0-9a-f]{40,64}$/.test(snapshot.base || '') || typeof snapshot.patch !== 'string' ||
+          Buffer.byteLength(snapshot.patch) > MAX_PATCH) throw new Error('review_snapshot_failed');
+      if (!snapshot.patch) {
+        this.save(task, 'completed', 'no_review_changes');
+        return;
+      }
+      const dir = path.join(this.config.stateDir, 'worktrees', task.id);
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(dir, 'review-input.patch'), snapshot.patch, { mode: 0o600 });
+      task.base = snapshot.base;
+    } else {
+      const { head } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
+        operation: 'git_baseline', workspace: task.workspace,
+      });
+      if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('invalid_workspace_baseline');
+      task.base = head;
+    }
+    const repo = this.config.workspaces[task.workspace].repository;
+    await git(repo, ['cat-file', '-e', task.base + '^{commit}'], signal);
+    task.steps = [{ id: capability, role, capability, model: task.model, prompt, pinnedReadOnly: Boolean(task.provider),
+      dependsOn: [], write: false, state: 'queued', attempts: 0 }];
   }
 
   status(id, after) {
@@ -453,7 +587,7 @@ event(task, state, detail) {
         throw new Error('plan_changed');
       }
       round.reply = reply;
-      this.save(task, 'queued', 'plan_reply_received');
+      this.save(task, 'queued', 'plan_reply_received', true, { revision });
     } else {
       if (plan.approved === revision) return this.status(task.id);
       if (round.revision !== revision || task.state !== 'awaiting_approval' || !round.steps?.length) throw new Error('plan_changed');
@@ -624,7 +758,9 @@ event(task, state, detail) {
   nextTask() {
     const runningBy = new Map();
     for (const id of this.running.keys()) {
-      const owner = this.tasks.get(id)?.owner || 'local';
+      const running = this.tasks.get(id);
+      if (running?.slotCost === 2) return undefined;
+      const owner = running?.owner || 'local';
       runningBy.set(owner, (runningBy.get(owner) || 0) + 1);
     }
     const ready = [...this.tasks.values()].filter((candidate) => {
@@ -635,6 +771,8 @@ event(task, state, detail) {
       const port = this.files.endpoint[route];
       return port?.ready && (!route.startsWith('relay') || port.online);
     });
+    const team = ready.find((candidate) => candidate.slotCost === 2);
+    if (team) return this.running.size ? undefined : team;
     let best;
     for (const candidate of ready) {     // insertion order is submission order, so ties go to the oldest
       const load = runningBy.get(candidate.owner || 'local') || 0;
@@ -646,6 +784,7 @@ event(task, state, detail) {
   start(task) {
     const controller = new AbortController();
     this.running.set(task.id, controller);
+    const timer = task.mode === 'team' ? setTimeout(() => controller.abort(new Error('team_timeout')), teamTimeout) : undefined;
     this.run(task, controller.signal).catch((error) => {
       if (error.message?.startsWith('executor_waiting:')) {
         this.waitForExecutor(task, error.message.slice('executor_waiting:'.length));
@@ -660,6 +799,7 @@ event(task, state, detail) {
         this.save(task, unknown ? 'needs_review' : 'failed', error.message);
       }
     }).finally(() => {
+      clearTimeout(timer);
       this.running.delete(task.id);
       this.pump();
       this.chargeQuota(task).catch(() => {});   // after releasing the task, so review and apply are not held up
@@ -669,14 +809,14 @@ event(task, state, detail) {
   async invoke(task, step, folder, signal, prompt = step.prompt) {
     const config = this.config.adapters[step.role];
     if (!config) throw new Error(step.role + '_not_configured');
-    const mcp = step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
+    const mcp = readOnlyMode(task.mode) || step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
     const release = await this.acquireCli(task, step, signal);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace });
     try {
       return await this.adapter({
         name: step.role, config, cwd: folder, prompt, readonly: !step.write,
-        timeout: this.config.cliTimeoutMs || 900000, signal,
+        timeout: task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000, signal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
         session: step.session, model: step.model,
         mcp: mcp && { socket: mcp.socket, capability },
@@ -703,6 +843,10 @@ event(task, state, detail) {
     if (task.groupPlan && !task.groupPlan.approved) {
       await this.planGroup(task, repo, root, signal);
       return;
+    }
+    if (readOnlyMode(task.mode)) {
+      await this.prepareReadOnly(task, signal);
+      if (!task.steps.length) return;
     }
     if (!task.base) {
       const { head, clean } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
@@ -732,7 +876,7 @@ event(task, state, detail) {
           this.waitForExecutor(task, 'plan');
           return;
         }
-        const planner = { id: 'planner', role: lead, capability: 'plan', write: false, prompt: PLANNER_PROMPT + task.prompt };
+        const planner = { id: 'planner', role: lead, capability: 'plan', write: false, prompt: PLANNER_PROMPT + task.prompt + (this.projectBrief(task) ? '\nProject context: ' + JSON.stringify(this.projectBrief(task)) : '') };
         const folder = path.join(root, 'planner');
         await this.ensureWorktree(repo, folder, task, planner, signal);
         const { output } = await this.execute(task, planner, folder, signal, planner.prompt);
@@ -818,6 +962,7 @@ event(task, state, detail) {
       capabilities: Object.fromEntries(Object.entries(this.router.routes)
         .map(([name, list]) => [name, list.filter((role) => this.router.available(role))])),
       models: plannerProfiles(this.availableRoles(), this.config.adapters, task.provider, task.model),
+      projectBrief: this.projectBrief(task),
       rounds: plan.rounds.slice(-8).map(({ questions, summary, reply }) => ({ questions, summary, reply })),
     };
     const prompt = [
@@ -854,7 +999,7 @@ event(task, state, detail) {
       result.questions.every((question) => typeof question === 'string' && question.trim() && question.length <= 400)) {
       delete plan.pending;
       plan.rounds.push({ revision, questions: result.questions });
-      this.save(task, 'awaiting_details', 'plan_questions');
+      this.save(task, 'awaiting_details', 'plan_questions', true, { revision });
       return;
     }
     if (typeof result?.summary !== 'string' || !result.summary.trim() || result.summary.length > 1800) throw new Error('invalid_plan');
@@ -863,6 +1008,8 @@ event(task, state, detail) {
       steps = validateSteps(result.steps, this.availableRoles(), this.router,
         (capability, exclude) => this.pickForTask(task, capability, exclude),
         (role) => this.ownerAllows(task, role).allowed);
+      if (!steps.every((step) => step.prompt.length <= 1000) || (task.provider && steps.length !== 1)) throw new Error('invalid_plan');
+      this.addDuoReviews(task, steps);
     } catch (error) {
       if (!error.message.startsWith('executor_waiting:')) throw error;
       plan.pending = { result, revision };
@@ -870,13 +1017,12 @@ event(task, state, detail) {
       return;
     }
     delete plan.pending;
-    if (steps.some(({ prompt }) => prompt.length > 1000) || (task.provider && steps.length !== 1)) throw new Error('invalid_plan');
     if (task.provider) {
       steps[0].role = task.provider;
       steps[0].write = task.provider !== 'gemini';
     }
     for (const [index, step] of steps.entries()) {
-      const selected = task.model || result.steps[index].model;
+      const selected = (index === 0 ? task.model : undefined) || result.steps[index]?.model;
       const { defaultModel, models } = context.models[step.role];
       if (selected !== undefined && (typeof selected !== 'string' || !Object.hasOwn(models, selected))) throw new Error('invalid_plan');
       step.model = selected || defaultModel;
@@ -890,6 +1036,8 @@ event(task, state, detail) {
   }
 
   acceptanceRequired(task) {
+    if (readOnlyMode(task.mode)) return false;
+    if (task.mode === 'duo') return true;
     if (!this.acceptance.enabled) return false;
     return this.acceptance.mode === 'always' || task.steps.some((step) => step.write) || task.steps.length >= 2;
   }
@@ -1045,23 +1193,34 @@ event(task, state, detail) {
       sharedWriter = task.steps.find((dep) => dep.id === step.reworkOf);
       if (!sharedWriter?.write) throw new Error('invalid_rework_target');
     }
-    const readonlyStep = step.capability === 'review' && Boolean(sharedWriter);
+    const reviewOnly = task.mode === 'review_only';
+    const readonlyStep = step.capability === 'review' && Boolean(sharedWriter || reviewOnly);
     const folder = path.join(root, sharedWriter?.id || step.id);
     await this.ensureWorktree(repo, folder, task, sharedWriter || step, signal);
     const dependencies = task.steps.filter((dep) => step.dependsOn.includes(dep.id))
       .map((dep) => ({ id: dep.id, output: dep.output?.slice(0, 4000), paths: dep.paths?.slice(0, 50),
         patch: dep.paths?.length ? path.join(root, dep.id + '.patch') : undefined,
       }));
+    if (reviewOnly) {
+      const patch = path.join(root, 'review-input.patch');
+      await git(folder, ['reset', '--hard', task.base], signal);
+      await git(folder, ['clean', '-fd'], signal);
+      await git(folder, ['apply', '--index', '--binary', patch], signal);
+    }
     const before = readonlyStep ? await worktreeState(folder, signal) : undefined;
     const savedState = () => ['awaiting_acceptance', 'triaging'].includes(task.state) ? task.state : 'running';
     for (;;) {
+      if ((step.fixedReview || step.pinnedReadOnly) &&
+          (!this.router.available(step.role) || !this.router.quotaAllows(step.role, step.capability) || !this.ownerAllows(task, step.role).allowed)) {
+        throw new Error('executor_waiting:' + step.capability);
+      }
       step.state = 'running';
       step.attempts += 1;
       this.save(task, savedState(), step.id + ':started');
       try {
         let prompt = dependencies.length ? step.prompt + '\nUpstream results: ' + JSON.stringify(dependencies) : step.prompt;
         if (readonlyStep) {
-          prompt += `\nReview the uncommitted changes in this working tree (writer step: ${sharedWriter.id}). Do not change files.`;
+          prompt += '\nReview the uncommitted changes in this working tree. Do not change files.';
         } else if (sharedWriter) {
           prompt += `\nContinue in the existing working tree of ${sharedWriter.id}; your change builds on it.`;
         }
@@ -1071,6 +1230,8 @@ event(task, state, detail) {
           const brief = step.brief || (stage === 'acceptance' ? buildAcceptanceBrief(task)
             : stage === 'triage' ? buildTriageBrief(task, step.reason || task.escalation?.reason)
               : buildLeadBrief(task, stage));
+          const projectBrief = stage === 'triage' && this.projectBrief(task);
+          if (projectBrief) brief.projectBrief = projectBrief;
           task.briefs ||= {};
           task.briefs[stage] = brief;
           // No raw upstream transcripts, logs or patches are sent to the lead.
@@ -1088,7 +1249,7 @@ event(task, state, detail) {
           if (await worktreeState(folder, signal) !== before) throw new Error('readonly_step_changed_files');
           // The writer's patch belongs to the writer step; a review must not claim it.
           step.paths = [];
-          step.reviewedStep = sharedWriter.id;
+          if (sharedWriter) step.reviewedStep = sharedWriter.id;
         } else {
           const { paths, patch } = await patchFor(folder, task.base, signal);
           if (!step.write && paths.length) throw new Error('readonly_step_changed_files');
@@ -1441,7 +1602,7 @@ event(task, state, detail) {
 
   control(frame, route) {
     const { task_id: id, body } = frame;
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw new Error('invalid_task_id');
+    if (!taskIdPattern.test(id)) throw new Error('invalid_task_id');
     const named = /^(?:ssh|relay):([a-z0-9]+)$/.exec(route)?.[1];
     const bridge = route === 'admin' ? frame.bridge : named;
     if (frame.kind === 'task.status' && route === 'admin' && ['report', 'benchmark'].includes(body.operation)) {
@@ -1458,9 +1619,11 @@ event(task, state, detail) {
       return value;
     }
     const startPlan = frame.kind === 'task.status' && body.operation === 'start_plan';
-    if (frame.kind === 'task.request' || startPlan) {
+    const broadcast = frame.kind === 'task.status' && body.operation === 'broadcast';
+    if (frame.kind === 'task.request' || startPlan || broadcast) {
       if (named && this.config.workspaces[body.workspace]?.sshBridge !== named) throw new Error('workspace_not_authorized');
       if (named && body.project !== undefined && !this.isProjectMember(body.project, named)) throw new Error('project_access_denied');
+      if (broadcast) return this.broadcast(id, body);
       const existing = this.tasks.get(id);
       const groupPlan = startPlan || Boolean(named && (!existing || existing.groupPlan));
       return this.status(this.submit(id, body, groupPlan).id);
@@ -1484,21 +1647,27 @@ event(task, state, detail) {
       const port = this.files.endpoint;
       const relay = port[bridge ? 'relay:' + bridge : 'relay'];
       return { route: channel, ssh: Boolean(port[bridge ? 'ssh:' + bridge : 'ssh']?.ready), relay: Boolean(relay?.ready && relay.online),
-        providers: this.availableRoles() };
+        providers: this.availableRoles(), projects: named ? this.projectsFor(named) : Object.keys(this.config.projects || {}) };
     }
     if (body.operation === 'select_route' && (route === 'admin' || named)) return this.setRoute(body.route, bridge);
-    if (body.operation === 'project_tasks') {
+    if (body.operation === 'compact_project' && (route === 'admin' || named)) return this.compact(body.project, named, body.workspace);
+    if (body.operation === 'project_tasks' && (route === 'admin' || named)) {
       const projects = named ? this.projectsFor(named) : null;
       if (named && body.project !== undefined && !projects.includes(body.project)) throw new Error('project_access_denied');
       const selected = body.project !== undefined ? [body.project] : projects;
       return [...this.tasks.values()]
         .filter((candidate) => selected ? selected.includes(candidate.project) : body.project === undefined || candidate.project === body.project)
-        .slice(-50).reverse().map((candidate) => named && candidate.owner !== named ? publicTask(candidate) : this.status(candidate.id));
+        .slice(-30).reverse().map((candidate) => named && candidate.owner !== named ? publicTask(candidate)
+          : { ...publicTask(candidate), redacted: false, workspace: candidate.workspace, prompt: clip(candidate.prompt, 240) });
     }
     const task = this.tasks.get(id);
     const sameProject = named && this.isProjectMember(task?.project, named);
     if (named && this.config.workspaces[task?.workspace]?.sshBridge !== named && !sameProject) throw new Error('unknown_task');
     const owner = route === 'admin' || (named && task?.owner === named);
+    if (['task_diff', 'task_log', 'task_artifacts'].includes(body.operation)) {
+      if (!task || !owner) throw new Error('task_access_denied');
+      return taskOutput(this.config.stateDir, task, body);
+    }
     if (body.operation === 'status') return owner || route === 'admin' ? this.status(id, body.after) : publicTask(task);
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');

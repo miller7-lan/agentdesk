@@ -2,6 +2,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { tmpdir } = require('node:os');
+const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
 
 const CHUNK = 64 * 1024;
@@ -51,7 +53,7 @@ async function checkVersion(filename, expected) {
   return current;
 }
 
-function execute(root, binary, args, timeout, signal, env = process.env) {
+function execute(root, binary, args, timeout, signal, env = process.env, outputLimit = 16000) {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
@@ -73,10 +75,13 @@ function execute(root, binary, args, timeout, signal, env = process.env) {
     const timer = setTimeout(() => stop(new Error('command_timeout')), timeout);
     const abort = () => stop(signal.reason);
     const output = { stdout: '', stderr: '' };
+    let truncated = false;
     signal.addEventListener('abort', abort, { once: true });
     for (const channel of Object.keys(output)) {
       child[channel].setEncoding('utf-8').on('data', (chunk) => {
-        output[channel] = (output[channel] + chunk).slice(-16000);
+        const combined = output[channel] + chunk;
+        if (channel === 'stdout' && combined.length > outputLimit) truncated = true;
+        output[channel] = combined.slice(-outputLimit);
       });
     }
     child.once('error', reject);
@@ -84,7 +89,7 @@ function execute(root, binary, args, timeout, signal, env = process.env) {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       if (failure) reject(failure);
-      else resolve({ code, ...output });
+      else resolve({ code, ...output, ...(truncated && { truncated }) });
     });
   });
 }
@@ -323,8 +328,8 @@ class WindowsOperations {
     return version(filename);
   }
 
-  git(root, args, signal) {
-    return execute(root, this.config.git || 'git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], 30000, signal);
+  git(root, args, signal, env, limit) {
+    return execute(root, this.config.git || 'git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], 30000, signal, env, limit);
   }
 
   async baseline(root, signal) {
@@ -332,6 +337,25 @@ class WindowsOperations {
     const status = await this.git(root, ['status', '--porcelain'], signal);
     if (head.code || status.code) throw new Error('git_status_failed');
     return { head: head.stdout.trim(), clean: !status.stdout };
+  }
+
+  async reviewDiff(root, signal) {
+    const { head } = await this.baseline(root, signal);
+    const directory = await fs.mkdtemp(path.join(tmpdir(), 'agentdesk-review-'));
+    try {
+      // 临时索引包括未跟踪文件，保留工作区真正的暂存区。
+      const env = { ...process.env, GIT_INDEX_FILE: path.join(directory, 'index'), GIT_OPTIONAL_LOCKS: '0' };
+      for (const args of [['read-tree', head], ['add', '--all']]) {
+        if ((await this.git(root, args, signal, env)).code !== 0) throw new Error('review_snapshot_failed');
+      }
+      const result = await this.git(root, ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', head], signal, env, MAX_PATCH);
+      if (result.code !== 0) throw new Error('review_snapshot_failed');
+      if (result.truncated || Buffer.byteLength(result.stdout) > MAX_PATCH) throw new Error('patch_too_large');
+      if ((await this.baseline(root, signal)).head !== head) throw new Error('plan_workspace_changed');
+      return { base: head, patch: result.stdout };
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   }
 
   async patch(taskId, root, body) {
@@ -350,6 +374,7 @@ class WindowsOperations {
   async command(taskId, id, workspace, root, body) {
     const controller = new AbortController();
     if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
+    if (body.operation === 'git_review_diff') return this.reviewDiff(root, controller.signal);
     const spec = Object.hasOwn(workspace.commands || {}, body.command) && workspace.commands[body.command];
     if (body.operation !== 'run' || body.permission !== 'development' || !Array.isArray(spec) ||
         !spec.length || spec.some((arg) => typeof arg !== 'string') ||
