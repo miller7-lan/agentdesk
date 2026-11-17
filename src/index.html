@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="group.css" />
   <link rel="stylesheet" href="task-graph.css" />
+  <script src="platform.js"></script>
 </head>
 <body>
   <header class="titlebar">
@@ -21,13 +22,13 @@
   <div class="workbench">
     <nav class="project-rail" aria-label="导航">
       <button class="icon-btn" id="railProjects" type="button" title="项目列表" aria-label="项目列表"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg></button>
-      <button class="icon-btn" id="railSearch" type="button" title="搜索对话 (Ctrl+K)" aria-label="搜索对话"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
+      <button class="icon-btn" id="railSearch" type="button" title="搜索对话" data-shortcut-title="搜索对话|K" aria-label="搜索对话"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
     </nav>
     <aside class="sidebar" id="sidebar" aria-label="项目与对话">
       <label class="side-search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
         <input id="sessionSearch" aria-label="搜索项目与对话" placeholder="搜索项目与对话" />
-        <kbd>Ctrl K</kbd>
+        <kbd data-shortcut="K">Ctrl K</kbd>
       </label>
       <div class="side-title">项目</div>
       <div class="side-list" id="sessionList"></div>
@@ -45,12 +46,12 @@
 
     <main class="center">
       <div class="session-strip">
-        <button class="icon-btn strip-toggle" id="toggleSidebar" type="button" title="切换侧栏 (Ctrl+B)" aria-label="会话侧栏" aria-controls="sidebar">
+        <button class="icon-btn strip-toggle" id="toggleSidebar" type="button" title="切换侧栏" data-shortcut-title="切换侧栏|B" aria-label="会话侧栏" aria-controls="sidebar">
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14"/></svg>
         </button>
         <div class="group-breadcrumb" id="directBreadcrumb"></div>
         <div id="groupBreadcrumb" class="group-breadcrumb" hidden></div>
-        <button class="icon-btn strip-toggle" id="sbPanel" type="button" title="切换工作区面板 (Ctrl+J)" aria-label="工作区面板" aria-controls="panel">
+        <button class="icon-btn strip-toggle" id="sbPanel" type="button" title="切换工作区面板" data-shortcut-title="切换工作区面板|J" aria-label="工作区面板" aria-controls="panel">
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/></svg>
         </button>
       </div>
@@ -148,7 +149,7 @@
     <section class="panel" id="panel" aria-labelledby="panelTitle">
       <div class="panel-heading">
         <h2 id="panelTitle">检查工作区</h2>
-        <button class="icon-btn" id="closePanel" type="button" title="收起面板 (Ctrl+J)" aria-label="收起工作区面板"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        <button class="icon-btn" id="closePanel" type="button" title="收起面板" data-shortcut-title="收起面板|J" aria-label="收起工作区面板"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div class="panel-tabs">
         <button class="ptab" data-panel="members" data-group-panel hidden>成员</button>

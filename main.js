@@ -11,7 +11,13 @@ const { Desktop, desktopExecutable } = require('./desktop');
 const desktop = new Desktop(desktopExecutable(app));
 const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
+const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
+const platformName = detectOs({ platform: process.platform });
+const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
+const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
+const windowMaterial = materialFor({ os: platformName, build: windowsBuild });
+const translucentWindow = windowMaterial === 'vibrancy' || windowMaterial === 'acrylic';
 const fileTurns = new Map();
 const fullAccessThreads = new Set();
 
@@ -40,7 +46,10 @@ function createWindow() {
     minHeight: 600,
     title: 'AgentDesk',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    backgroundColor: OVERLAY.dark.color,
+    // macOS vibrancy and Windows 11 acrylic only show through a transparent window background.
+    backgroundColor: translucentWindow ? '#00000000' : OVERLAY.dark.color,
+    ...(platformName === 'mac' ? { vibrancy: 'under-window', visualEffectState: 'active' } : {}),
+    ...(windowMaterial === 'acrylic' ? { backgroundMaterial: 'acrylic' } : {}),
     titleBarStyle: mac ? 'hiddenInset' : 'hidden',
     titleBarOverlay: mac ? false : OVERLAY.dark,
     show: false,
@@ -49,6 +58,12 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Synchronous platform information for the preload bridge: no async flash before first paint.
+      additionalArguments: [
+        '--agentdesk-os=' + platformName,
+        '--agentdesk-build=' + windowsBuild,
+        '--agentdesk-material=' + windowMaterial,
+      ],
     },
   });
   win.setMenuBarVisibility(false);
@@ -97,10 +112,20 @@ ipcMain.on('theme:set', (_e, theme) => {
   const t = theme === 'light' ? 'light' : 'dark';
   nativeTheme.themeSource = t;
   if (win && !win.isDestroyed()) {
+    // The caption-button colours follow the skin; the window itself stays transparent for vibrancy.
     try { win.setTitleBarOverlay(OVERLAY[t]); } catch (_) {}
-    win.setBackgroundColor(OVERLAY[t].color);
+    if (!translucentWindow) win.setBackgroundColor(OVERLAY[t].color);
   }
 });
+
+ipcMain.handle('platform:info', () => ({
+  os: platformName,
+  build: windowsBuild,
+  material: windowMaterial,
+  isWindows11: isWindows11(windowsBuild),
+  version: app.getVersion(),
+  electron: process.versions.electron,
+}));
 
 // 远程 Codex：状态、事件、审批请求转发给界面
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };

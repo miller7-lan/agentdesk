@@ -3,6 +3,10 @@
   const avatars = window.AgentDeskAvatars;
   // 真实连接：VPS 上的 Codex（通过 SSH 操作 Windows 开发机）
   const LIVE = !!(window.desk && window.desk.codex);
+  const navigatorOs = /Mac/i.test(navigator.platform) ? 'mac' : /Win/i.test(navigator.platform) ? 'win' : 'linux';
+  if (window.AgentDeskPlatform) {
+    window.__agentdeskSystem = window.AgentDeskPlatform.applyPlatform(document, window.desk?.system || { os: navigatorOs });
+  }
   document.documentElement.classList.toggle('native-mac', window.desk?.platform === 'darwin');
   if (LIVE) {
     D.projects.forEach((p) => { p.name += '（示例）'; });

@@ -2,9 +2,22 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const on = (ch) => (cb) => { const h = (_e, v) => cb(v); ipcRenderer.on(ch, h); return () => ipcRenderer.removeListener(ch, h); };
 
+// main.js appends these to the renderer argv, so the platform is known synchronously.
+const flag = (name, fallback) => {
+  const prefix = '--agentdesk-' + name + '=';
+  const found = (process.argv || []).find((arg) => String(arg).startsWith(prefix));
+  return found ? found.slice(prefix.length) : fallback;
+};
+
 contextBridge.exposeInMainWorld('desk', {
   setTheme: (theme) => ipcRenderer.send('theme:set', theme),
   platform: process.platform,
+  system: {
+    os: flag('os', process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux'),
+    build: Number(flag('build', '0')) || 0,
+    material: flag('material', 'drawn'),
+  },
+  platformInfo: () => ipcRenderer.invoke('platform:info'),
   enrollment: {
     required: () => ipcRenderer.invoke('enrollment:required'),
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
