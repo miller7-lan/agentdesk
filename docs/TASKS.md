@@ -1,7 +1,7 @@
 # AgentDesk 待办清单（2026-11-17 更新）
 
 > 汇总所有**还没完成**的事，按依赖顺序排列。以 `main`（`e46d666`，已合并 `fix/resume-active-writer` 和 `codex/agentdesk-dual-vps`）为准。
-> 详细背景：[微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
+> 详细背景：[视觉改版实施计划](VISUAL_PLAN.md) · [微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
 
 ## 已确定的决定
 
@@ -73,13 +73,14 @@
 
 ### 3.2 开机动画
 
-- [ ] **只在 App 进程启动时播放一次**：主进程启动时设置一个标志，渲染层读到后才播放；最小化、恢复、从托盘重新打开窗口都不重播
-- [ ] 首帧直接写在 `index.html` 里，窗口 `ready-to-show` 后再显示，避免白屏
-- [ ] 内容：「AgentDesk」逐字显现 → 逐行显示**真实**启动检查（VPS2 连接、主控、四个 CLI 的登录和额度、本机 Bridge）→ 每个 agent 通过时 logo 醒来 → 进度条跟随真实进度 → 溶解进主界面
-- [ ] **双击任意位置直接进入**；Esc、回车、空格也能进入；单击不跳过（避免误触）
-- [ ] 某项检查失败时给出处理办法（VPS 连不上时提供「重试 / 离线进入」）
-- [ ] 设置里可选「每次启动 / 关闭」，并能手动重播
-- [ ] 开启「减少动态效果」时只显示静态检查列表，约 1 秒后淡出
+已定：**组网 + 粒子字标、白色蓝图 HUD、约 5 秒、静音**。详细设计、真实检查的数据来源和文件结构见 [VISUAL_PLAN.md](VISUAL_PLAN.md) 第 1 节。
+
+- [ ] 移植成 `src/boot.js` / `src/boot.css`，节点头像复用 `src/avatars.js`
+- [ ] **只在 App 进程启动时播放一次**（主进程 `launchId`）；最小化、恢复、托盘或通知唤起都不重播
+- [ ] 首帧直接是白色开机画面，没有闪烁
+- [ ] 节点和日志由真实启动检查驱动；VPS 连不上时提供「重试 / 离线进入」
+- [ ] **双击任意位置直接进入**；Esc、回车、空格也可以；单击不跳过
+- [ ] 设置里可选「每次启动 / 关闭」，并能立即重播；「减少动态效果」时只显示约 1 秒静态画面
 
 ### 3.3 Windows / macOS
 

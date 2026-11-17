@@ -236,22 +236,16 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:f
   --glass-rgb: 14, 22, 38; --glass-line: rgba(255,255,255,.12); --glass-card: rgba(255,255,255,.06); --glass-card-line: rgba(255,255,255,.1);
   --aqua-ground: #060b15; --aqua-accent: hsl(var(--hue) 90% 66%); --aqua-accent-soft: hsla(var(--hue), 90%, 66%, .16); --aqua-accent-ink: #061020;
   --glow: hsla(var(--hue), 95%, 70%, .55); --aqua-muted: #a6b0c0; --aqua-faint: #7d889b;
-  --boot-bg: radial-gradient(120% 90% at 50% 40%, hsla(var(--hue), 70%, 18%, .55), rgba(3,6,12,.92)); --boot-ink: hsl(var(--hue) 100% 93%); --boot-text: rgba(220,235,255,.8); --boot-dim: rgba(220,235,255,.45);
-  --boot-glass: rgba(255,255,255,.07); --boot-line: rgba(255,255,255,.16); --boot-glow: 0 0 10px hsla(var(--hue), 100%, 72%, .95), 0 0 30px hsla(var(--hue), 100%, 62%, .6), 0 0 60px hsla(var(--hue), 100%, 55%, .35); --boot-ok: #7ee2a8; --boot-warn: #f2c14e;
 }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
   --glass-rgb: 255, 255, 255; --glass-line: rgba(255,255,255,.9); --glass-card: rgba(255,255,255,.9); --glass-card-line: rgba(30,50,80,.1);
   --aqua-ground: #eef3f9; --aqua-accent: hsl(var(--hue) 75% 42%); --aqua-accent-soft: hsla(var(--hue), 75%, 42%, .12); --aqua-accent-ink: #ffffff;
   --glow: hsla(var(--hue), 90%, 55%, .35); --aqua-muted: #4f5864; --aqua-faint: #6f7884; --read-floor: .9;
-  --boot-bg: radial-gradient(120% 90% at 50% 40%, hsla(var(--hue), 80%, 96%, .5), rgba(244,248,253,.94)); --boot-ink: hsl(var(--hue) 70% 30%); --boot-text: #3d4652; --boot-dim: #7a8491;
-  --boot-glass: rgba(255,255,255,.72); --boot-line: rgba(30,60,100,.12); --boot-glow: 0 0 18px hsla(var(--hue), 95%, 70%, .55), 0 0 42px hsla(var(--hue), 95%, 75%, .4); --boot-ok: #1f8a4c; --boot-warn: #a86b0c;
 } }
 :root[data-theme="light"] {
   --glass-rgb: 255, 255, 255; --glass-line: rgba(255,255,255,.9); --glass-card: rgba(255,255,255,.9); --glass-card-line: rgba(30,50,80,.1);
   --aqua-ground: #eef3f9; --aqua-accent: hsl(var(--hue) 75% 42%); --aqua-accent-soft: hsla(var(--hue), 75%, 42%, .12); --aqua-accent-ink: #ffffff;
   --glow: hsla(var(--hue), 90%, 55%, .35); --aqua-muted: #4f5864; --aqua-faint: #6f7884; --read-floor: .9;
-  --boot-bg: radial-gradient(120% 90% at 50% 40%, hsla(var(--hue), 80%, 96%, .5), rgba(244,248,253,.94)); --boot-ink: hsl(var(--hue) 70% 30%); --boot-text: #3d4652; --boot-dim: #7a8491;
-  --boot-glass: rgba(255,255,255,.72); --boot-line: rgba(30,60,100,.12); --boot-glow: 0 0 18px hsla(var(--hue), 95%, 70%, .55), 0 0 42px hsla(var(--hue), 95%, 75%, .4); --boot-ok: #1f8a4c; --boot-warn: #a86b0c;
 }
 :root[data-skin="aqua"] { --muted: var(--aqua-muted); --faint: var(--aqua-faint); --accent: var(--aqua-accent); --accent-soft: var(--aqua-accent-soft); --accent-ink: var(--aqua-accent-ink); }
 :root[data-os="mac"] { --font: -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif; --mono: "SF Mono", Menlo, ui-monospace, monospace; }
@@ -317,53 +311,42 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:f
 .look .aqua-only { display: contents; }
 :root:not([data-skin="aqua"]) .look .aqua-only { display: none; }
 
-/* boot sequence: follows the theme; white by default */
-.boot { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; overflow: hidden;
-  background: var(--boot-bg); color: var(--boot-text);
-  transition: opacity .7s ease, filter .7s ease, transform .7s ease; font-family: var(--font); }
-.boot.leaving { opacity: 0; filter: blur(10px); transform: scale(1.04); pointer-events: none; }
-.boot-stage { width: min(620px, calc(100% - 32px)); display: flex; flex-direction: column; align-items: center; gap: 18px; }
-.boot-pill { position: relative; padding: 14px 34px 18px; border-radius: 34px; background: var(--boot-glass); border: 1px solid var(--boot-line);
-  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); overflow: hidden; box-shadow: 0 0 60px hsla(var(--hue), 90%, 60%, .25); }
-.boot-pill::after { content: ""; position: absolute; top: -50%; bottom: -50%; width: 30%; left: -40%; transform: rotate(18deg);
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent); animation: sweep 2.4s ease-in-out .9s 1 both; }
-@keyframes sweep { to { left: 120%; } }
-.boot-title { font-size: clamp(40px, 9vw, 78px); font-weight: 700; letter-spacing: .5px; line-height: 1.1; white-space: nowrap; color: var(--boot-ink);
-  text-shadow: var(--boot-glow); }
-.boot-title span { display: inline-block; opacity: 0; filter: blur(10px); transform: translateY(10px); animation: letter .6s cubic-bezier(.2,.7,.2,1) forwards; }
-@keyframes letter { to { opacity: 1; filter: blur(0); transform: none; } }
-.boot-sub { font-size: 13px; letter-spacing: 3px; color: var(--boot-dim); opacity: 0; animation: fadeup .8s ease 1.1s forwards; }
-@keyframes fadeup { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.boot-bots { display: flex; gap: 6px; min-height: 52px; }
-.boot-bots canvas { width: 52px; height: 52px; opacity: 0; animation: fadeup .5s ease forwards; }
-.boot-term { width: 100%; border-radius: 12px; padding: 10px 14px; background: var(--boot-glass); border: 1px solid var(--boot-line);
-  font-family: var(--mono); font-size: 12px; line-height: 1.75; color: var(--boot-text); min-height: 9.5em; }
-.boot-term div { display: flex; gap: 8px; animation: fadeup .3s ease both; }
-.boot-term .k { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.boot-term .v { flex: none; }
-.boot-term .ok { color: var(--boot-ok); } .boot-term .warn { color: var(--boot-warn); } .boot-term .wait { color: var(--boot-dim); }
-.boot-bar { width: 100%; height: 3px; border-radius: 2px; background: var(--boot-line); overflow: hidden; }
-.boot-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, hsl(var(--hue) 95% 65%), hsl(calc(var(--hue) + 70) 90% 70%)); box-shadow: 0 0 12px hsla(var(--hue), 95%, 65%, .8); transition: width .35s ease; }
+/* boot sequence: white blueprint HUD, one fixed look (deliberately not theme-dependent) */
+.boot { position: fixed; inset: 0; z-index: 50; overflow: hidden; background: #f5f8fc; color: #1b2b44;
+  transition: opacity .7s ease, filter .7s ease, transform .7s ease; font-family: var(--font); cursor: default; }
+.boot.leaving { opacity: 0; filter: blur(8px); transform: scale(1.06); pointer-events: none; }
+.boot canvas#bootCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.boot-node { position: absolute; transform: translate(-50%, -50%); pointer-events: none; }
+.boot-label { position: absolute; transform: translate(-50%, 0); text-align: center; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .35s ease; }
+.boot-label b { display: block; font-size: 12.5px; font-weight: 600; color: #1b2b44; letter-spacing: .2px; }
+.boot-label span { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .8px; color: #6b7c94; }
+.boot-label span span { display: inline; }
+.boot-label .ok { color: #1a7f4e; } .boot-label .warn { color: #a3660a; }
+.boot-hud { position: absolute; font-family: var(--mono); font-size: 10.5px; letter-spacing: 1px; color: #6b7c94; line-height: 1.6; pointer-events: none; }
+.boot-hud.tl { top: max(18px, env(safe-area-inset-top, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); }
+.boot-hud.tr { top: max(18px, env(safe-area-inset-top, 0px)); right: max(18px, env(safe-area-inset-right, 0px)); text-align: right; }
+.boot-hud.bl { bottom: max(18px, env(safe-area-inset-bottom, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); max-width: min(360px, 60vw); }
+.boot-hud b { color: #1b2b44; font-weight: 600; }
+.boot-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.boot-log .ok { color: #1a7f4e; } .boot-log .warn { color: #a3660a; }
 .boot-skip { position: absolute; right: max(18px, env(safe-area-inset-right, 0px)); bottom: max(18px, env(safe-area-inset-bottom, 0px)); height: 28px; padding: 0 12px; border-radius: 14px;
-  border: 1px solid var(--boot-line); color: var(--boot-text); font-size: 12px; background: var(--boot-glass); }
-.boot-skip:hover { border-color: var(--accent); }
+  border: 1px solid rgba(40,90,170,.25); color: #3d5577; font-size: 12px; background: rgba(255,255,255,.7); }
+.boot-skip:hover { border-color: #2f6fe0; color: #1b2b44; }
+@media (max-width: 560px) { .boot-hud.tr, .boot-hud.bl, .boot-label .role { display: none; } }
 .app.booting { opacity: 0; transform: scale(.985); filter: blur(6px); }
 @media (prefers-reduced-motion: reduce) {
-  .boot-title span, .boot-sub, .boot-bots canvas, .boot-term div { animation: none; opacity: 1; filter: none; transform: none; }
-  .boot-pill::after { display: none; } .boot, .app { transition: opacity .3s linear; }
+  .boot, .app { transition: opacity .3s linear; }
 }
 </style>
 
 <canvas id="fluid" aria-hidden="true"></canvas>
 <div id="wall" aria-hidden="true"></div>
-<div class="boot" id="boot" hidden>
-  <div class="boot-stage">
-    <div class="boot-pill"><div class="boot-title" id="bootTitle" aria-label="AgentDesk"></div></div>
-    <div class="boot-sub">CLAUDE 统筹 · 多 AGENT 协作</div>
-    <div class="boot-bots" id="bootBots"></div>
-    <div class="boot-term" id="bootTerm" aria-live="polite"></div>
-    <div class="boot-bar"><i id="bootBar"></i></div>
-  </div>
+<div class="boot" id="boot" role="dialog" aria-label="AgentDesk 正在启动" hidden>
+  <canvas id="bootCanvas" aria-hidden="true"></canvas>
+  <div id="bootNodes"></div>
+  <div class="boot-hud tl"><b>AGENTDESK</b> // BOOT SEQUENCE<br>BUILD 0.3.0 · <span id="bootOs">WIN</span></div>
+  <div class="boot-hud tr"><span id="bootClock">--:--:--.---</span><br>VPS2 · 4 GB · DOCKER</div>
+  <div class="boot-hud bl boot-log" id="bootLog" aria-live="polite"></div>
   <button class="boot-skip" id="bootSkip" type="button">双击任意处或按 Esc 进入</button>
 </div>
 <div class="app" id="app">
@@ -1394,59 +1377,206 @@ function fluidFrame(now, force) {
 (function fluidLoop(now) { fluidFrame(now, false); requestAnimationFrame(fluidLoop); })(performance.now());
 addEventListener('resize', () => fluidFrame(performance.now(), true));
 
-/* ---------------- boot sequence ----------------
-   Real app: plays once per app launch (main process start). Minimising and restoring the window, or reopening it
-   from the tray, does not replay it. Each line is a real startup check (remote.js status, orchestrator route,
-   CLI login/quota) and the bar follows real progress. Here the checks are simulated. */
-const BOOT_CHECKS = [
-  ['连接 VPS · SSH 主线路', 'ok', '已连接', null],
-  ['主控 Orchestrator', 'ok', '在线', null],
-  ['Claude Code · 组长', 'ok', '就绪', 'lead'],
-  ['Codex · 改代码', 'ok', '就绪', 'cx'],
-  ['Antigravity · 侦察', 'ok', '就绪', 'ag'],
-  ['Grok Build · 审查', 'warn', '额度用尽 · 18:00 重置', 'gk'],
-  ['本机 Bridge · 桌面与文件', 'ok', '已授权', 'local'],
+/* ---------------- boot sequence: Claude brings the network online ----------------
+   Plays once per app launch (main-process start); minimising/restoring or reopening from the tray does not replay it.
+   Real app: each node and log line is a real startup check (remote.js status, orchestrator route, CLI login/quota).
+   Here the checks are simulated. White blueprint look, about 5 s, silent; double-click or Esc enters at any time. */
+const BP = { bg: '#f5f8fc', grid: 'rgba(40,90,170,.16)', line: '#2f6fe0', soft: 'rgba(47,111,224,.35)', faint: 'rgba(47,111,224,.14)',
+  glow: 'rgba(80,150,255,.55)', ink: '#13294b', cyan: '#18b6d8', warn: '#d48a12' };
+const BOOT_NODES = [   // id, name, role, status kind, readout
+  ['cx', 'Codex', '改代码', 'ok', 'ONLINE · 41ms'],
+  ['ag', 'Antigravity', '侦察', 'ok', 'ONLINE · 56ms'],
+  ['gk', 'Grok Build', '审查', 'warn', 'QUOTA 0% · 18:00'],
+  ['local', '本机 Bridge', '桌面与文件', 'ok', 'AUTHORIZED'],
 ];
-let bootTimers = [];
-function shouldBoot() {
-  if (look.boot === 'off') return false;
-  return true;
-}
+const BOOT_LOG = [
+  [0.15, 'link vps2 · ssh', 'ok', 'OK 38ms'], [0.45, 'orchestrator', 'ok', 'ONLINE'], [0.7, 'docker · containers', 'ok', '0/2'],
+  [0.95, 'claude-code · lead', 'ok', 'READY'], [1.55, 'codex', 'ok', 'READY'], [2.0, 'antigravity', 'ok', 'READY'],
+  [2.45, 'grok-build', 'warn', 'QUOTA 0% · 18:00'], [2.9, 'local bridge', 'ok', 'AUTH'], [4.3, 'system', 'ok', 'READY 100%'],
+];
+const T = { grid: 0, rings: 0.25, lead: 0.9, node0: 1.35, nodeStep: 0.45, link: 0.32, words: 3.05, solid: 3.95, scan: 4.15, out: 5.0 };
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const ease = (x) => 1 - Math.pow(1 - clamp01(x), 3);
+let bootRun = null;
+
+function shouldBoot() { return look.boot !== 'off'; }
 function endBoot() {
   const boot = $('#boot'); if (boot.hidden || boot.classList.contains('leaving')) return;
-  bootTimers.forEach(clearTimeout); bootTimers = [];
+  if (bootRun) { bootRun.stop = true; bootRun.timers.forEach(clearTimeout); }
   boot.classList.add('leaving'); $('#app').classList.remove('booting');
-  setTimeout(() => { boot.hidden = true; boot.classList.remove('leaving'); $('#input').focus({ preventScroll: true }); }, reduceMotion.matches ? 300 : 700);
+  setTimeout(() => { boot.hidden = true; boot.classList.remove('leaving'); bootRun = null; $('#input').focus({ preventScroll: true }); }, reduceMotion.matches ? 300 : 700);
+}
+function bootLayout(W, H, dpr) {
+  const narrow = W / dpr < 560;
+  const R = narrow ? Math.min(W * 0.33, H * 0.17) : Math.min(W * 0.27, H * 0.2);
+  const cx = W / 2, cy = H * (narrow ? 0.34 : 0.4);
+  const fs = Math.max(30 * dpr, Math.min(W * (narrow ? 0.11 : 0.075), 84 * dpr));
+  const nodes = BOOT_NODES.map((n, i) => { const a = -Math.PI * 0.82 + i * (Math.PI * 1.64 / (BOOT_NODES.length - 1)) - Math.PI / 2 + Math.PI / 2; return { a, x: cx + Math.cos(a - Math.PI / 2) * R, y: cy + Math.sin(a - Math.PI / 2) * R }; });
+  const lowest = Math.max(...nodes.map((n) => n.y));          // keep the wordmark clear of the lower labels
+  return { R, cx, cy, fs, narrow, wy: Math.max(cy + R + fs * 1.55, lowest + (narrow ? 84 : 100) * dpr + fs * 0.6), nodes };
+}
+function wordPoints(fs, dpr) {
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  x.font = `700 ${fs}px ${getComputedStyle(document.documentElement).getPropertyValue('--font')}`;
+  const w = Math.ceil(x.measureText('AgentDesk').width) + 4, h = Math.ceil(fs * 1.25);
+  c.width = w; c.height = h;
+  x.font = `700 ${fs}px ${getComputedStyle(document.documentElement).getPropertyValue('--font')}`; x.textBaseline = 'middle'; x.fillStyle = '#000';
+  x.fillText('AgentDesk', 2, h / 2);
+  const data = x.getImageData(0, 0, w, h).data, pts = [], step = Math.max(2, Math.round(fs / 22));
+  for (let yy = 0; yy < h; yy += step) for (let xx = 0; xx < w; xx += step) if (data[(yy * w + xx) * 4 + 3] > 140) pts.push([xx - w / 2, yy - h / 2]);
+  while (pts.length > 1600) pts.splice(Math.floor(Math.random() * pts.length), 1);
+  return { pts, w, h };
 }
 function runBoot(force) {
   if (!force && !shouldBoot()) return;
-  const boot = $('#boot'), title = $('#bootTitle'), term = $('#bootTerm'), bots = $('#bootBots'), bar = $('#bootBar');
-  bootTimers.forEach(clearTimeout); bootTimers = [];
-  title.innerHTML = [...'AgentDesk'].map((c, i) => `<span style="animation-delay:${0.15 + i * 0.07}s">${c}</span>`).join('');
-  term.innerHTML = ''; bots.innerHTML = ''; bar.style.width = '0%';
-  const botEls = {};
-  BOOT_CHECKS.forEach(([, , , id], i) => { if (!id) return; const c = makeBot(id, 52, { state: 'idle' }); c._bot.fixedSince = 0; c.style.animationDelay = (1.2 + i * 0.08) + 's'; bots.appendChild(c); botEls[id] = c; });
+  if (bootRun) { bootRun.stop = true; bootRun.timers.forEach(clearTimeout); }
+  const boot = $('#boot'), cv = $('#bootCanvas'), ctx = cv.getContext('2d'), nodesEl = $('#bootNodes'), logEl = $('#bootLog');
+  $('#bootOs').textContent = look.os === 'mac' ? 'MACOS' : 'WINDOWS';
+  nodesEl.innerHTML = ''; logEl.innerHTML = '';
   boot.hidden = false; boot.classList.remove('leaving'); $('#app').classList.add('booting');
   $('#bootSkip').focus({ preventScroll: true });
   const quick = reduceMotion.matches;
-  const step = quick ? 0 : 430, start = quick ? 0 : 1500;
-  BOOT_CHECKS.forEach(([label, kind, value, id], i) => {
-    bootTimers.push(setTimeout(() => {
-      const row = document.createElement('div');
-      row.innerHTML = `<span class="k">▸ ${esc(label)}</span><span class="v wait">检查中…</span>`;
-      term.appendChild(row);
-      bootTimers.push(setTimeout(() => {
-        row.querySelector('.v').className = 'v ' + kind; row.querySelector('.v').textContent = value;
-        bar.style.width = Math.round((i + 1) / BOOT_CHECKS.length * 100) + '%';
-        const c = id && botEls[id];
-        if (c) {   // the logo wakes up as its check passes
-          c._bot.fixed = kind === 'warn' ? 'limited' : 'done'; c._bot.fixedSince = performance.now();
-          if (kind !== 'warn') bootTimers.push(setTimeout(() => { c._bot.fixed = 'idle'; }, 1400));
-        }
-      }, quick ? 0 : 260));
-    }, start + i * step));
+  const run = { stop: false, timers: [], t0: performance.now() - (quick ? (T.out - 0.2) * 1000 : 0), logged: 0, woke: new Set() };
+  bootRun = run;
+  // DOM bots: lead in the centre, workers on the ring
+  const small = innerWidth < 560;
+  const leadBot = makeBot('lead', small ? 56 : 72, { state: 'idle' }); leadBot.className = 'boot-node'; nodesEl.appendChild(leadBot);
+  const leadLabel = document.createElement('div'); leadLabel.className = 'boot-label'; leadLabel.innerHTML = '<b>Claude · 组长</b><span class="ok">ORCHESTRATING</span>'; nodesEl.appendChild(leadLabel);
+  const nodeEls = BOOT_NODES.map(([id, name, role, kind, readout]) => {
+    const bot = makeBot(id, small ? 40 : 52, { state: 'idle' }); bot.className = 'boot-node'; bot.style.opacity = '0'; nodesEl.appendChild(bot);
+    const label = document.createElement('div'); label.className = 'boot-label';
+    label.innerHTML = `<b>${esc(name)}</b><span><span class="role">${esc(role)} · </span><span class="${kind}">${esc(readout)}</span></span>`; nodesEl.appendChild(label);
+    return { bot, label, kind };
   });
-  bootTimers.push(setTimeout(endBoot, quick ? 900 : start + BOOT_CHECKS.length * step + 900));
+  let word = null, parts = null, lastW = 0, lastH = 0;
+
+  function frame(now) {
+    if (run.stop) return;
+    const t = (now - run.t0) / 1000;
+    const dpr = Math.min(2, devicePixelRatio || 1), W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    const L = bootLayout(W, H, dpr);
+    if (!word || W !== lastW || H !== lastH) {
+      lastW = W; lastH = H; word = wordPoints(L.fs, dpr);
+      parts = word.pts.map(([px, py]) => {
+        const src = Math.random() < 0.3 ? { x: L.cx, y: L.cy } : L.nodes[Math.floor(Math.random() * L.nodes.length)];
+        return { tx: L.cx + px, ty: L.wy + py, sx: src.x + (Math.random() - 0.5) * 40 * dpr, sy: src.y + (Math.random() - 0.5) * 40 * dpr, d: Math.random() * 0.35, r: (0.8 + Math.random() * 0.9) * dpr };
+      });
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = BP.bg; ctx.fillRect(0, 0, W, H);
+
+    // 1. blueprint dot grid + crosshair + first scan line
+    const g = ease((t - T.grid) / 0.6), sp = 26 * dpr;
+    ctx.fillStyle = BP.grid; ctx.globalAlpha = g;
+    for (let y = (L.cy % sp); y < H; y += sp) for (let x = (L.cx % sp); x < W; x += sp) ctx.fillRect(x - dpr * 0.6, y - dpr * 0.6, dpr * 1.2, dpr * 1.2);
+    ctx.strokeStyle = BP.faint; ctx.lineWidth = dpr; ctx.beginPath(); ctx.moveTo(0, L.cy); ctx.lineTo(W, L.cy); ctx.moveTo(L.cx, 0); ctx.lineTo(L.cx, H); ctx.stroke();
+    ctx.globalAlpha = 1;
+    if (t < 1.3) {
+      const y = ease(t / 1.3) * H, band = ctx.createLinearGradient(0, y - 60 * dpr, 0, y);
+      band.addColorStop(0, 'rgba(47,111,224,0)'); band.addColorStop(1, 'rgba(47,111,224,.22)');
+      ctx.fillStyle = band; ctx.fillRect(0, y - 60 * dpr, W, 60 * dpr);
+      ctx.fillStyle = BP.line; ctx.globalAlpha = 0.6; ctx.fillRect(0, y, W, dpr); ctx.globalAlpha = 1;
+    }
+
+    // 2. HUD rings around the lead
+    const rp = ease((t - T.rings) / 1.0), spin = t;
+    ctx.save(); ctx.translate(L.cx, L.cy); ctx.lineCap = 'round';
+    ctx.strokeStyle = BP.soft; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([2 * dpr, 6 * dpr]);
+    ctx.beginPath(); ctx.arc(0, 0, L.R * 0.36, spin * 0.5, spin * 0.5 + rp * Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    const ticks = 120;
+    for (let i = 0; i < ticks * rp; i++) {
+      const a = i / ticks * Math.PI * 2 - Math.PI / 2, long = i % 10 === 0, r0 = L.R * 0.5, r1 = r0 + (long ? 9 : 4) * dpr;
+      ctx.strokeStyle = long ? BP.line : BP.soft; ctx.lineWidth = (long ? 1.4 : 1) * dpr;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
+    }
+    ctx.strokeStyle = BP.line; ctx.lineWidth = 2.2 * dpr;
+    for (let k = 0; k < 3; k++) { const a0 = -spin * 0.9 + k * Math.PI * 2 / 3; ctx.beginPath(); ctx.arc(0, 0, L.R * 0.62, a0, a0 + 0.55 * rp); ctx.stroke(); }
+    ctx.strokeStyle = BP.faint; ctx.lineWidth = dpr; ctx.beginPath(); ctx.arc(0, 0, L.R, -Math.PI / 2, -Math.PI / 2 + rp * Math.PI * 2); ctx.stroke();
+    if (ctx.createConicGradient && rp > 0.3) {   // radar sweep
+      const cg = ctx.createConicGradient(spin * 1.4, 0, 0);
+      cg.addColorStop(0, 'rgba(47,111,224,.16)'); cg.addColorStop(0.12, 'rgba(47,111,224,0)'); cg.addColorStop(1, 'rgba(47,111,224,0)');
+      ctx.fillStyle = cg; ctx.globalAlpha = rp; ctx.beginPath(); ctx.arc(0, 0, L.R * 0.98, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    // 3. links from the lead to each agent, data packets, node frames
+    L.nodes.forEach((n, i) => {
+      const t0 = T.node0 + i * T.nodeStep, p = ease((t - t0) / T.link);
+      if (p <= 0) return;
+      const dx = n.x - L.cx, dy = n.y - L.cy, d = Math.hypot(dx, dy), ux = dx / d, uy = dy / d;
+      const x0 = L.cx + ux * L.R * 0.4, y0 = L.cy + uy * L.R * 0.4, x1 = x0 + (n.x - ux * 34 * dpr - x0) * p, y1 = y0 + (n.y - uy * 34 * dpr - y0) * p;
+      const warn = BOOT_NODES[i][3] === 'warn';
+      const lg = ctx.createLinearGradient(x0, y0, x1, y1); lg.addColorStop(0, 'rgba(47,111,224,.15)'); lg.addColorStop(1, warn ? BP.warn : BP.line);
+      ctx.strokeStyle = lg; ctx.lineWidth = 1.6 * dpr; ctx.shadowColor = warn ? 'rgba(212,138,18,.5)' : BP.glow; ctx.shadowBlur = 8 * dpr;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.shadowBlur = 0;
+      if (p >= 1) {
+        for (let k = 0; k < 2; k++) {   // packets
+          const q = ((t - t0) * 0.9 + k * 0.5) % 1, px = x0 + (x1 - x0) * q, py = y0 + (y1 - y0) * q;
+          ctx.fillStyle = warn ? BP.warn : BP.cyan; ctx.beginPath(); ctx.arc(px, py, 2.4 * dpr, 0, Math.PI * 2); ctx.fill();
+        }
+        const pop = ease((t - t0 - T.link) / 0.35), nr = (30 + (1 - pop) * 14) * dpr;
+        ctx.strokeStyle = warn ? BP.warn : BP.line; ctx.globalAlpha = pop; ctx.lineWidth = 1.3 * dpr;
+        ctx.beginPath(); ctx.arc(n.x, n.y, nr, 0, Math.PI * 2); ctx.stroke();
+        for (let k = 0; k < 4; k++) { const a0 = t * 1.2 + k * Math.PI / 2; ctx.beginPath(); ctx.arc(n.x, n.y, nr + 6 * dpr, a0, a0 + 0.5); ctx.stroke(); }
+        ctx.globalAlpha = 1;
+      }
+    });
+
+    // 4. particles converge into the wordmark, then the solid wordmark and a scan sweep
+    if (t > T.words) {
+      const solid = ease((t - T.solid) / 0.5);
+      ctx.fillStyle = BP.line;
+      for (const pt of parts) {
+        const q = ease((t - T.words - pt.d) / 0.85); if (q <= 0) continue;
+        ctx.globalAlpha = (1 - solid * 0.85) * Math.min(1, q * 2);
+        ctx.fillRect(pt.sx + (pt.tx - pt.sx) * q - pt.r / 2, pt.sy + (pt.ty - pt.sy) * q - pt.r / 2, pt.r, pt.r);
+      }
+      ctx.globalAlpha = solid;
+      ctx.font = `700 ${L.fs}px ${getComputedStyle(document.documentElement).getPropertyValue('--font')}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = BP.glow; ctx.shadowBlur = 22 * dpr; ctx.fillStyle = BP.ink; ctx.fillText('AgentDesk', L.cx, L.wy);
+      ctx.shadowBlur = 0;
+      if (t > T.scan && t < T.scan + 0.8) {   // light sweep that only lights the letters
+        const sx = L.cx - word.w / 2 + (t - T.scan) / 0.8 * word.w, bw = 46 * dpr;
+        const sg = ctx.createLinearGradient(sx - bw, 0, sx + bw, 0);
+        sg.addColorStop(0, 'rgba(110,190,255,0)'); sg.addColorStop(0.5, 'rgba(150,215,255,1)'); sg.addColorStop(1, 'rgba(110,190,255,0)');
+        ctx.fillStyle = sg; ctx.fillText('AgentDesk', L.cx, L.wy);
+      }
+      ctx.globalAlpha = solid; ctx.font = `500 ${11 * dpr}px ${getComputedStyle(document.documentElement).getPropertyValue('--mono')}`; ctx.fillStyle = '#6b7c94';
+      const pct = Math.round(clamp01((t - T.node0) / (T.scan - T.node0)) * 100);
+      const state = `SYSTEM ${pct < 100 ? 'SYNC' : 'READY'} ${pct}%`;
+      ctx.fillText(L.narrow ? state : `CLAUDE 统筹 · 多 AGENT 协作   //   ${state}`, L.cx, L.wy + L.fs * 0.85);
+      ctx.globalAlpha = 1;
+    }
+
+    // DOM: position bots and labels, wake them as links connect
+    const css = 1 / dpr;
+    leadBot.style.left = L.cx * css + 'px'; leadBot.style.top = L.cy * css + 'px';
+    leadLabel.style.left = L.cx * css + 'px'; leadLabel.style.top = (L.cy + L.R * 0.5) * css + 14 + 'px'; leadLabel.style.opacity = t > T.lead && !L.narrow ? 1 : 0;
+    if (t > T.lead && !run.woke.has('lead')) { run.woke.add('lead'); leadBot._bot.fixed = 'juggling'; leadBot._bot.fixedSince = performance.now(); }
+    nodeEls.forEach((n, i) => {
+      const P = L.nodes[i], t0 = T.node0 + i * T.nodeStep + T.link;
+      n.bot.style.left = P.x * css + 'px'; n.bot.style.top = P.y * css + 'px'; n.bot.style.opacity = t > t0 ? Math.min(1, (t - t0) / 0.25) : 0;
+      const below = P.y > L.cy, gap = (small ? 26 : 34) + 6;
+      n.label.style.left = P.x * css + 'px'; n.label.style.top = (P.y * css + (below ? gap : -gap)) + 'px';
+      n.label.style.transform = below ? 'translate(-50%, 0)' : 'translate(-50%, -100%)';
+      n.label.style.opacity = t > t0 + 0.1 ? 1 : 0;
+      if (t > t0 && !run.woke.has(i)) {
+        run.woke.add(i); n.bot._bot.fixed = n.kind === 'warn' ? 'limited' : 'done'; n.bot._bot.fixedSince = performance.now();
+        if (n.kind !== 'warn') run.timers.push(setTimeout(() => { n.bot._bot.fixed = 'idle'; }, 1300));
+      }
+    });
+    while (run.logged < BOOT_LOG.length && t >= BOOT_LOG[run.logged][0]) {
+      const [, k, kind, v] = BOOT_LOG[run.logged++];
+      const row = document.createElement('div'); row.innerHTML = `&gt; ${esc(k)} <span>${'.'.repeat(Math.max(2, 22 - k.length))}</span> <span class="${kind}">${esc(v)}</span>`;
+      logEl.appendChild(row); while (logEl.children.length > 6) logEl.firstChild.remove();
+    }
+    const d = new Date(); $('#bootClock').textContent = d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    if (t >= T.out) { endBoot(); return; }
+    requestAnimationFrame(frame);
+  }
+  if (quick) run.timers.push(setTimeout(endBoot, 900));
+  requestAnimationFrame(frame);
 }
 $('#bootSkip').addEventListener('click', endBoot);
 $('#boot').addEventListener('dblclick', endBoot);   // a single click does nothing, so a stray click never skips it
