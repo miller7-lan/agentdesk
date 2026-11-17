@@ -1,6 +1,14 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
+const os = require('node:os');
+const { createUpdateChecks } = require('./updates');
+const { createLogger } = require('./logger');
+const { collectDiagnostics, exportDiagnostics } = require('./diagnostics');
+const { AppConfig, migrate } = require('./app-config');
+const { normalizeSettings } = require('./src/appearance');
+const { steps: onboardingSteps, configuredHost, verified } = require('./onboarding');
 const bootstrapPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'agentdesk-enrollment.json');
 const enrollment = fs.existsSync(bootstrapPath) && JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
 if (enrollment) process.env.AGENTDESK_ENROLLED = '1';
@@ -11,7 +19,21 @@ const { Desktop, desktopExecutable } = require('./desktop');
 const desktop = new Desktop(desktopExecutable(app));
 const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
+const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
+const platformName = detectOs({ platform: process.platform });
+const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
+const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
+const windowMaterial = materialFor({ os: platformName, build: windowsBuild });
+const translucentWindow = windowMaterial === 'vibrancy' || windowMaterial === 'acrylic';
+// One id per app launch: a renderer reload inside the same process must not replay the boot.
+const launchId = randomUUID();
+let bootMode = process.env.AGENTDESK_SHOT_SKIP_BOOT === '1' ? 'off' : 'on';
+if (process.env.AGENTDESK_APPEARANCE) {
+  try {
+    if (JSON.parse(process.env.AGENTDESK_APPEARANCE).boot === 'off') bootMode = 'off';
+  } catch (_) {}
+}
 const fileTurns = new Map();
 const fullAccessThreads = new Set();
 
@@ -31,6 +53,167 @@ const OVERLAY = {
 };
 
 let win;
+let appConfig;
+let logger;
+let updateChecks;
+let updateTimer;
+let configError;
+let trustedHost = { host: '', fingerprints: [] };
+let connectivityStarted = false;
+const skipOnboarding = process.env.AGENTDESK_ONBOARDING === '0' ||
+  (process.env.AGENTDESK_ONBOARDING !== '1' && Boolean(process.env.AGENTDESK_SHOT || process.env.AGENTDESK_LIVETEST));
+const legacyDir = path.join(os.homedir(), '.agentdesk');
+const preferredRoot = (() => {
+  if (mac || enrollment) return path.join(os.homedir(), 'AgentDeskWorkspace');
+  const previous = 'C:\\CodexSSH\\windows-dev';
+  return fs.existsSync(previous) ? previous : undefined;
+})();
+
+function activateProject() {
+  const project = appConfig?.active;
+  ws.setRoot(project?.localRoot || null);
+  toUi('projects:changed', appConfig.list());
+}
+
+async function loadAppConfig() {
+  const legacyFiles = (mac ? ['remote.json', 'mac.json', 'mac-remote.json'] : ['mac.json', 'remote.json', 'windows.json'])
+    .map((name) => path.join(legacyDir, name));
+  appConfig = new AppConfig(path.join(app.getPath('userData'), 'config.json'), {
+    legacyFiles, localRoot: preferredRoot, remoteCwd: remote.cfg.workspace,
+    name: mac ? 'Mac 工作区' : 'Windows 开发机',
+  });
+  try {
+    await appConfig.load();
+  } catch (error) {
+    configError = error.code || error.message;
+    appConfig.value = await migrate(legacyFiles, appConfig.defaults);
+  }
+  if (!process.env.AGENTDESK_APPEARANCE && appConfig.value.appearance?.boot === 'off') bootMode = 'off';
+  activateProject();
+}
+
+function fromMainWindow(event) {
+  return Boolean(win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame);
+}
+
+function hostConfirmed() {
+  return skipOnboarding || verified(trustedHost, appConfig?.value.confirmedHost);
+}
+
+function onboardingStatus() {
+  const saved = appConfig.value;
+  const confirmed = hostConfirmed();
+  const complete = saved.onboardingComplete === true && (!trustedHost.host || confirmed);
+  const savedStep = onboardingSteps.includes(saved.onboardingStep) ? saved.onboardingStep : 'welcome';
+  let step = savedStep;
+  if (trustedHost.host && !confirmed && !['welcome', 'fingerprint'].includes(savedStep)) step = 'fingerprint';
+  else if (enrollment && !enrolledSession && !complete && onboardingSteps.indexOf(savedStep) > 2) step = 'login';
+  const { host, fingerprints } = trustedHost;
+  return { ok: true, enabled: !skipOnboarding, complete, confirmed, trust: { host, fingerprints }, step,
+    enrollmentRequired: Boolean(enrollment), signedIn: Boolean(enrolledSession),
+    project: appConfig.active, configurationError: Boolean(configError) };
+}
+
+function startConnectivity() {
+  if (connectivityStarted || enrollment || !hostConfirmed() || process.env.AGENTDESK_SHOT || process.env.AGENTDESK_OFFLINE) return;
+  if (trustedHost.host && !skipOnboarding) {
+    try {
+      const pin = trustedHost.records.get(appConfig.value.confirmedHost.fingerprint);
+      const directory = path.join(app.getPath('userData'), 'ssh');
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const file = path.join(directory, 'known_hosts');
+      const temporary = file + '.' + randomUUID();
+      try {
+        fs.writeFileSync(temporary, pin, { mode: 0o600, flag: 'wx' });
+        fs.renameSync(temporary, file);
+      } finally { fs.rmSync(temporary, { force: true }); }
+      remote.cfg.knownHosts = file;
+    } catch {
+      logger?.log('host_pin', { status: 'failed' });
+      return;
+    }
+  }
+  connectivityStarted = true;
+  remote.start();
+  startOrchestratorBridge();
+  startMacDesktop();
+}
+
+ipcMain.handle('onboarding:status', (event) => fromMainWindow(event) ? onboardingStatus() : { ok: false });
+ipcMain.handle('onboarding:advance', async (event, { step, fingerprint } = {}) => {
+  if (!fromMainWindow(event) || configError || !onboardingSteps.includes(step)) return { ok: false, error: 'invalid_request' };
+  const current = onboardingStatus();
+  if (current.step !== step) return current;
+  if (step === 'fingerprint' && trustedHost.host && !trustedHost.fingerprints.includes(fingerprint)) {
+    return { ok: false, error: '请先核对并确认主机指纹。' };
+  }
+  if (step === 'login' && enrollment && !enrolledSession) return { ok: false, error: '请先在应用内登录。' };
+  if (step === 'workspace') {
+    const project = appConfig.active;
+    try {
+      if (!project || project.kind === 'local' && !project.localRoot) throw new Error('请先选择工作区。');
+      if (project.localRoot) await require('./app-config').validateGitRoot(project.localRoot);
+    } catch (error) { return { ok: false, error: error.message }; }
+  }
+  try {
+    await appConfig.mutate((draft) => {
+      if (step === 'fingerprint' && trustedHost.host) {
+        if (!current.confirmed) draft.onboardingComplete = false;
+        draft.confirmedHost = { host: trustedHost.host, fingerprint };
+      }
+      if (!(step === 'login' && onboardingSteps.indexOf(draft.onboardingStep) > 2)) {
+        draft.onboardingStep = onboardingSteps[Math.min(onboardingSteps.length - 1, onboardingSteps.indexOf(step) + 1)];
+      }
+    });
+    if (step === 'fingerprint') startConnectivity();
+    return onboardingStatus();
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle('onboarding:complete', async (event) => {
+  if (!fromMainWindow(event) || configError || onboardingStatus().step !== 'complete') return { ok: false, error: 'invalid_request' };
+  await appConfig.mutate((draft) => { draft.onboardingComplete = true; });
+  return onboardingStatus();
+});
+ipcMain.handle('onboarding:reset', async (event) => {
+  if (!fromMainWindow(event) || configError) return { ok: false, error: 'invalid_request' };
+  await appConfig.mutate((draft) => {
+    draft.onboardingComplete = false;
+    draft.onboardingStep = 'welcome';
+    delete draft.confirmedHost;
+  });
+  return onboardingStatus();
+});
+
+function currentRemoteDirectory(projectId) {
+  const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
+  if (projectId !== undefined && !project) throw new Error('project_not_found');
+  return project?.remoteCwd || enrolledSession?.remote.workspace;
+}
+
+for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
+  ipcMain.handle('projects:' + operation, async (event, request = {}) => {
+    if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+    try {
+      if (operation === 'list') return { ok: true, ...appConfig.list(), configError };
+      if (configError) throw new Error('配置文件无法读取，请修复或移走后再修改。');
+      const { id, name, kind, remoteCwd, orchestratorWorkspace, pickLocal } = request;
+      if (operation === 'add' || operation === 'update') {
+        let localRoot;
+        if (kind === 'local' && (pickLocal || operation === 'add')) {
+          const picked = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择 Git 工作区' });
+          if (picked.canceled) return { ok: false, cancelled: true };
+          [localRoot] = picked.filePaths;
+        }
+        await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot);
+      } else await appConfig[operation](id);
+      activateProject();
+      logger?.audit('project_change', { operation, projectId: id || appConfig.active?.id, status: 'ok' });
+      return { ok: true, ...appConfig.list() };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  });
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -40,22 +223,34 @@ function createWindow() {
     minHeight: 600,
     title: 'AgentDesk',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    backgroundColor: OVERLAY.dark.color,
+    // macOS vibrancy and Windows 11 acrylic only show through a transparent window background.
+    backgroundColor: translucentWindow ? '#00000000' : OVERLAY.light.color,
+    ...(platformName === 'mac' ? { vibrancy: 'under-window', visualEffectState: 'active' } : {}),
+    ...(windowMaterial === 'acrylic' ? { backgroundMaterial: 'acrylic' } : {}),
     titleBarStyle: mac ? 'hiddenInset' : 'hidden',
-    titleBarOverlay: mac ? false : OVERLAY.dark,
+    // Aqua is the default skin, so the first frame uses the light caption colours; app.js corrects
+    // this to the saved theme once the renderer boots.
+    titleBarOverlay: mac ? false : OVERLAY.light,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Synchronous platform information for the preload bridge: no async flash before first paint.
+      additionalArguments: [
+        '--agentdesk-os=' + platformName,
+        '--agentdesk-build=' + windowsBuild,
+        '--agentdesk-material=' + windowMaterial,
+        '--agentdesk-version=' + app.getVersion(),
+        '--agentdesk-launch=' + launchId,
+        '--agentdesk-boot=' + bootMode,
+      ],
     },
   });
   win.setMenuBarVisibility(false);
   // 拖进来的文件由页面处理；万一漏到窗口上也不要跳转去打开它
   win.webContents.on('will-navigate', (e) => e.preventDefault());
-  win.webContents.on('render-process-gone', (_e, details) => log.error('renderer.gone', details));
-  win.webContents.on('console-message', (e) => { if (e.level === 'error') log.error('renderer.error', { message: e.message, source: e.sourceId, line: e.lineNumber }); });
   // Links in model output never open a new Electron window; http(s) goes to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
@@ -86,7 +281,19 @@ function createWindow() {
   if (shot) {
     win.webContents.on('console-message', (e) => console.log('[renderer]', e.message));
     win.webContents.once('did-finish-load', () => setTimeout(async () => {
-      if (process.env.AGENTDESK_THEME) await win.webContents.executeJavaScript(`document.getElementById('themeToggle').click()`);
+      if (process.env.AGENTDESK_THEME) {
+        const theme = process.env.AGENTDESK_THEME === 'dark' ? 'dark' : 'light';
+        await win.webContents.executeJavaScript(
+          `(() => { if (window.__desk.state.theme !== ${JSON.stringify(theme)}) document.getElementById('themeToggle').click(); })()`);
+      }
+      if (process.env.AGENTDESK_APPEARANCE) {
+        let settings;
+        try { settings = JSON.parse(process.env.AGENTDESK_APPEARANCE); } catch (_) {}
+        if (settings && win && !win.isDestroyed()) {
+          await win.webContents.executeJavaScript(
+            `window.__appearance && window.__appearance.apply(${JSON.stringify(settings)})`);
+        }
+      }
       await new Promise((r) => setTimeout(r, 400));
       const img = await win.webContents.capturePage();
       require('fs').writeFileSync(shot, img.toPNG());
@@ -99,30 +306,99 @@ ipcMain.on('theme:set', (_e, theme) => {
   const t = theme === 'light' ? 'light' : 'dark';
   nativeTheme.themeSource = t;
   if (win && !win.isDestroyed()) {
+    // The caption-button colours follow the skin; the window itself stays transparent for vibrancy.
     try { win.setTitleBarOverlay(OVERLAY[t]); } catch (_) {}
-    win.setBackgroundColor(OVERLAY[t].color);
+    if (!translucentWindow) win.setBackgroundColor(OVERLAY[t].color);
   }
 });
 
-// 日志：%APPDATA%\AgentDesk\logs（Windows）或 ~/Library/Logs/AgentDesk（macOS），按天切分，保留 7 天
-const { Logger, diagnostics } = require('./logger');
-const log = new Logger({ dir: (() => { try { return app.getPath('logs'); } catch { return path.join(app.getPath('userData'), 'logs'); } })() });
-log.info('app.start', { version: app.getVersion(), platform: process.platform, arch: process.arch,
-  electron: process.versions.electron, os: require('os').release() });
-process.on('uncaughtExceptionMonitor', (error) => log.error('main.uncaught', { error, stack: error?.stack?.slice(0, 2000) }));
-process.on('unhandledRejection', (reason) => log.error('main.unhandled_rejection', { error: reason, stack: reason?.stack?.slice(0, 2000) }));
+ipcMain.handle('platform:info', () => ({
+  os: platformName,
+  build: windowsBuild,
+  material: windowMaterial,
+  isWindows11: isWindows11(windowsBuild),
+  version: app.getVersion(),
+  electron: process.versions.electron,
+}));
+
+const WALLPAPER_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+const WALLPAPER_MAX = 8 * 1024 * 1024;
+const wallpaperFile = () => Object.keys(WALLPAPER_TYPES)
+  .map((ext) => path.join(app.getPath('userData'), 'wallpaper' + ext))
+  .find((file) => fs.existsSync(file));
+
+function readWallpaper(file) {
+  const mime = WALLPAPER_TYPES[path.extname(file).toLowerCase()];
+  return mime ? 'data:' + mime + ';base64,' + fs.readFileSync(file).toString('base64') : null;
+}
+
+ipcMain.handle('appearance:pickWallpaper', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择壁纸',
+    properties: ['openFile'],
+    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  const source = result.filePaths[0];
+  const stat = fs.statSync(source);
+  if (!stat.isFile()) throw new Error('wallpaper_invalid');
+  if (stat.size > WALLPAPER_MAX) throw new Error('wallpaper_too_large');
+  const ext = path.extname(source).toLowerCase();
+  if (!WALLPAPER_TYPES[ext]) throw new Error('wallpaper_type');
+  const dir = app.getPath('userData');
+  for (const old of Object.keys(WALLPAPER_TYPES)) {
+    try { fs.unlinkSync(path.join(dir, 'wallpaper' + old)); } catch (_) {}
+  }
+  const target = path.join(dir, 'wallpaper' + ext);
+  fs.copyFileSync(source, target);
+  return { name: path.basename(source), url: readWallpaper(target) };
+});
+
+ipcMain.handle('appearance:wallpaper', () => {
+  const file = wallpaperFile();
+  return file ? { name: path.basename(file), url: readWallpaper(file) } : null;
+});
+
+ipcMain.handle('appearance:set', (_e, settings = {}) => {
+  const theme = settings.theme === 'dark' ? 'dark' : 'light';
+  const skin = settings.skin === 'classic' ? 'classic' : 'aqua';
+  nativeTheme.themeSource = theme;
+  if (win && !win.isDestroyed()) {
+    try { win.setTitleBarOverlay(OVERLAY[theme]); } catch (_) {}
+    if (platformName === 'win' && isWindows11(windowsBuild)
+        && typeof win.setBackgroundMaterial === 'function') {
+      try {
+        win.setBackgroundMaterial(skin === 'aqua' ? 'acrylic' : 'none');
+        win.setBackgroundColor(skin === 'aqua' ? '#00000000' : OVERLAY[theme].color);
+      } catch (_) {}
+    } else if (!translucentWindow) {
+      win.setBackgroundColor(skin === 'aqua' ? (theme === 'dark' ? '#060b15' : '#eef3f9') : OVERLAY[theme].color);
+    }
+  }
+  if (appConfig && !configError && !process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_LIVETEST) {
+    const appearance = { ...normalizeSettings(settings), theme };
+    let changed = false;
+    appConfig.mutate((draft) => {
+      if (JSON.stringify(draft.appearance) === JSON.stringify(appearance)) return false;
+      draft.appearance = appearance;
+      changed = true;
+    }).then(() => {
+      if (changed) logger?.audit('appearance_change', { status: 'ok' });
+    }).catch((error) => console.error('appearance:', error.code || 'config_write_failed'));
+  }
+  return { theme, skin };
+});
 
 // 远程 Codex：状态、事件、审批请求转发给界面
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
-let lastLinks = '';
+let lastRemoteState;
 remote.on('status', (s) => {
-  const links = [s.sshd, s.tunnel, s.codex].join('/');
-  if (links !== lastLinks) {          // log changes, not every repeat of the same state
-    lastLinks = links;
-    log[s.codex === 'error' || s.tunnel === 'retry' || s.codex === 'retry' ? 'warn' : 'info']('remote.status', s);
+  if (s.codex !== lastRemoteState) {
+    lastRemoteState = s.codex;
+    logger?.log('remote_connection', { status: s.codex });
   }
+  toUi('remote:status', s);
 });
-remote.on('status', (s) => toUi('remote:status', s));
 remote.on('notification', (m) => toUi('codex:event', m));
 remote.on('server-request', (m) => {
   if (m.method === 'item/tool/call') {
@@ -135,12 +411,8 @@ remote.on('server-request', (m) => {
         : Promise.resolve(windowsFiles.result(false, { error: 'Windows file tools require an active AgentDesk Full Access turn' }))
       : desktop.call(params);
     task.then((result) => {
-      const target = params.arguments?.path || params.arguments?.destination;
-      const failed = result?.success === false;
-      log[failed ? 'warn' : 'info']('local.tool', { tool: params.tool, target, success: !failed,
-        error: failed ? result.contentItems?.[0]?.text?.slice(0, 300) : undefined });
       if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result);
-    }).catch((error) => log.error('local.tool', { tool: params.tool, error }));
+    }).catch(() => {});
     return;
   }
   toUi('codex:server-request', m);
@@ -185,29 +457,8 @@ ipcMain.handle('desktop:toggle', (event) => {
   return toggleDesktop(!desktop.enabled);
 });
 ipcMain.handle('remote:status', () => ({ ...remote.state }));
-// 导出诊断信息：版本、系统、去除密钥的配置、当前连接状态和最近的日志，保存后在文件夹中定位
-ipcMain.handle('diag:export', async (event) => {
-  if (event.sender !== win?.webContents) return { ok: false };
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  const { canceled, filePath } = await dialog.showSaveDialog(win, {
-    title: '导出诊断信息', defaultPath: path.join(app.getPath('desktop'), `agentdesk-diagnostics-${stamp}.txt`),
-    filters: [{ name: '文本', extensions: ['txt'] }],
-  });
-  if (canceled || !filePath) return { ok: false, canceled: true };
-  const report = diagnostics({
-    info: { version: app.getVersion(), platform: process.platform, arch: process.arch, os: require('os').release(),
-      electron: process.versions.electron, node: process.versions.node, logDir: log.dir },
-    config: remote.cfg, state: { ...remote.state, desktopEnabled: desktop.enabled, enrolled: Boolean(enrolledSession) },
-    logs: log.tail(2000),
-  });
-  await fs.promises.writeFile(filePath, report, { mode: 0o600 });
-  log.info('diag.exported', { file: path.basename(filePath) });
-  shell.showItemInFolder(filePath);
-  return { ok: true, path: filePath };
-});
-ipcMain.handle('diag:open-logs', () => shell.openPath(log.dir));
-ipcMain.handle('remote:reconnect', () => { if (enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
-ipcMain.handle('remote:wake', () => enrollment && !enrolledSession ? false : remote.wake());
+ipcMain.handle('remote:reconnect', () => { if (!hostConfirmed() || enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
+ipcMain.handle('remote:wake', () => !hostConfirmed() || enrollment && !enrolledSession ? false : remote.wake());
 ipcMain.handle('remote:touch', () => { remote.touch(); return true; });
 
 // 窗口不在前台时，用系统通知提醒审批 / 完成（与官方桌面端一致）
@@ -238,8 +489,12 @@ const skillCache = new Map();
 ipcMain.handle('skills:local', () => ws.localSkills().catch(() => []));
 ipcMain.handle('skills:upload', async (_e, skill) => {
   try {
-    const pack = await ws.packSkill(skill.dir);
-    const dest = path.posix.join(remote.cfg.workspace, '.agentdesk-skills', skill.folder.replace(/[^\w.-]/g, '_'));
+    const approved = (await ws.localSkills()).find(({ folder, name }) => folder === skill?.folder && name === skill?.name);
+    if (!approved) throw new Error('找不到本机技能。');
+    const pack = await ws.packSkill(approved.dir);
+    const workspace = currentRemoteDirectory();
+    if (!workspace) throw new Error('请配置远程工作区目录。');
+    const dest = path.posix.join(workspace, '.agentdesk-skills', skill.folder.replace(/[^\w.-]/g, '_'));
     if (skillCache.get(dest) !== pack.sig) { await remote.upload(dest, pack.files); skillCache.set(dest, pack.sig); }
     return { ok: true, path: path.posix.join(dest, 'SKILL.md') };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
@@ -249,7 +504,9 @@ remote.on('codex-down', () => skillCache.clear());
 // 附件：选择或粘贴的文件上传到 VPS 的 .agentdesk-uploads（VPS 端 7 天后自动清理）
 async function uploadOne(name, b64) {
   const safe = Date.now() + '-' + String(name).replace(/[^\w.\-一-龥]/g, '_').slice(-80);
-  const dir = path.posix.join(remote.cfg.workspace, '.agentdesk-uploads');
+  const workspace = currentRemoteDirectory();
+  if (!workspace) throw new Error('请配置远程工作区目录。');
+  const dir = path.posix.join(workspace, '.agentdesk-uploads');
   const [full] = await remote.upload(dir, [{ rel: safe, b64 }]);
   return { name, path: full, image: /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) };
 }
@@ -281,9 +538,15 @@ ipcMain.handle('files:uploadData', async (_e, name, b64) => {
   try { if (b64.length > 14 * 1024 * 1024) throw new Error('图片超过 10 MB'); return { ok: true, file: await uploadOne(name, b64) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
-ipcMain.handle('remote:config', () => ({ workspace: remote.cfg.workspace, host: remote.cfg.host, localWorkspace: ws.root }));
-ipcMain.handle('codex:request', async (_e, method, params) => {
+ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), host: remote.cfg.host, localWorkspace: ws.root, projectId: appConfig?.active?.id }));
+ipcMain.handle('codex:request', async (event, method, params) => {
   try {
+    if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
+    const { projectId, ...request } = params || {};
+    params = request;
+    const directory = currentRemoteDirectory(projectId);
+    if (method === 'thread/start' || method === 'thread/list') params = { ...params, cwd: directory };
+    if (method === 'skills/list') params = { ...params, cwds: directory ? [directory] : [] };
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
@@ -305,7 +568,6 @@ ipcMain.handle('codex:request', async (_e, method, params) => {
     }
     return { ok: true, result: await remote.request(method, params) };
   } catch (e) {
-    log.warn('codex.request_failed', { method, error: e });
     if (method === 'turn/start') {
       desktopThreads.delete(params?.threadId);
       fullAccessThreads.delete(params?.threadId);
@@ -313,8 +575,15 @@ ipcMain.handle('codex:request', async (_e, method, params) => {
     return { ok: false, error: String(e.message || e) };
   }
 });
-ipcMain.handle('codex:respond', (_e, id, result, error) => {
-  try { remote.respond(id, result, error); return true; } catch { return false; }
+ipcMain.handle('codex:respond', (event, id, result, error) => {
+  if (!fromMainWindow(event)) return false;
+  try {
+    if (!remote.respond(id, result, error)) return false;
+    const outcome = ['accept', 'acceptForSession', 'approve', 'approved', 'approved_for_session'].includes(result?.decision) || result?.action === 'accept'
+      ? 'approved' : result?.answers ? 'answered' : 'declined';
+    logger?.audit('codex_approval', { status: outcome, projectId: appConfig.active?.id });
+    return true;
+  } catch { return false; }
 });
 
 // 桌宠（Clawd on Desk）状态推送
@@ -359,28 +628,79 @@ function startMacDesktop() {
   stopMacDesktop = () => server.close();
 }
 
-ipcMain.handle('orchestrator:control', async (event, frame) => {
-  if ((!mac && !enrollment) || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
-      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status'].includes(frame.operation)) {
+const orchestrationOperations = new Set([
+  'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel',
+  'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
+  'task_diff', 'task_log', 'task_artifacts', 'onboarding_check', 'diagnostics',
+]);
+const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
+
+async function orchestratorControl(frame) {
+  if ((!mac && !enrollment) || !frame || !orchestrationOperations.has(frame.operation)) {
     return { ok: false, error: '无权操作主控线路' };
   }
   const { request } = require('./orchestrator/mcp');
-  if (enrollment && !enrolledSession) return { ok: false, error: 'sign_in_required' };
+  if (!hostConfirmed() || (enrollment && !enrolledSession)) return { ok: false, error: 'sign_in_required' };
   const socket = enrolledSession?.controlSocket || path.join(macBridgeState, 'control.sock');
+  const { projectId, ...operation } = frame;
+  const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
+  if (projectId !== undefined && !project) return { ok: false, error: 'project_not_found' };
+  const audit = (status, result) => {
+    if (auditedTasks.has(frame.operation)) logger?.audit('orchestrator_task', {
+      operation: frame.operation, projectId: project?.id, taskId: result?.id || frame.taskId, status,
+    });
+  };
   try {
-    const value = await request(socket, frame, frame.operation === 'apply' ? 310000 : 16000);
+    const workspace = project?.orchestratorWorkspace;
+    const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : 16000);
+    audit('ok', value);
     return { ok: true, value };
   } catch (error) {
+    audit('failed');
     return { ok: false, error: error.message };
   }
+}
+
+ipcMain.handle('orchestrator:control', (event, frame) => fromMainWindow(event) ? orchestratorControl(frame) : { ok: false });
+
+function diagnosticSnapshot() {
+  return collectDiagnostics({
+    version: app.getVersion(), config: appConfig.value, logger, remote: remote.state,
+    request: (operation) => process.env.AGENTDESK_OFFLINE ? { ok: false } : orchestratorControl({ operation }),
+  });
+}
+
+ipcMain.handle('updates:check', (event) => fromMainWindow(event) && updateChecks
+  ? updateChecks.check() : { ok: true, status: 'disabled' });
+
+ipcMain.handle('diagnostics:preview', async (event) => {
+  if (!fromMainWindow(event)) return { ok: false };
+  try {
+    const { report, log, audit } = await diagnosticSnapshot();
+    return { ok: true, report, logCount: log.length, auditCount: audit.length };
+  } catch { return { ok: false, error: '无法生成诊断预览。' }; }
+});
+ipcMain.handle('diagnostics:export', async (event) => {
+  if (!fromMainWindow(event)) return { ok: false };
+  const picked = await dialog.showSaveDialog(win, {
+    title: '导出诊断包', defaultPath: 'agentdesk-diagnostics.tar.gz',
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true };
+  try {
+    const filename = picked.filePath.endsWith('.tar.gz') ? picked.filePath : picked.filePath + '.tar.gz';
+    await exportDiagnostics(filename, await diagnosticSnapshot());
+    logger?.audit('diagnostics_export', { status: 'ok' });
+    return { ok: true, filename };
+  } catch { return { ok: false, error: '无法写入诊断包。' }; }
 });
 
 let enrolledSession;
 let enrolling = false;
 let enrollmentExpiry;
 ipcMain.handle('enrollment:required', () => Boolean(enrollment));
+ipcMain.handle('enrollment:ready', () => Boolean(enrolledSession));
 ipcMain.handle('enrollment:login', async (event, password) => {
-  if (!enrollment || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
+  if (!enrollment || !hostConfirmed() || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
       enrolling || enrolledSession || typeof password !== 'string' || !password || password.length > 256) {
     return { ok: false, error: 'invalid_request' };
   }
@@ -388,7 +708,8 @@ ipcMain.handle('enrollment:login', async (event, password) => {
   let session;
   try {
     const { createSession } = require('./orchestrator/enrollment-client');
-    session = await createSession(enrollment, password, ws.root);
+    const knownHosts = skipOnboarding ? enrollment.knownHosts : trustedHost.records.get(appConfig.value.confirmedHost.fingerprint);
+    session = await createSession({ ...enrollment, knownHosts }, password, ws.root || preferredRoot);
     Object.assign(remote.cfg, session.remote);
     const { startBridge } = require('./orchestrator/service');
     stopBridge = startBridge({
@@ -396,6 +717,7 @@ ipcMain.handle('enrollment:login', async (event, password) => {
       spawnSsh: (ssh) => remote.openBridge(ssh),
     });
     enrolledSession = session;
+    if (!ws.root) ws.setRoot(session.bridge.workspaces[session.bridge.controlWorkspace].root);
     await remote.start();
     enrollmentExpiry = setTimeout(async () => {
       stopBridge?.();
@@ -405,8 +727,10 @@ ipcMain.handle('enrollment:login', async (event, password) => {
       await session.close();
       toUi('enrollment:expired');
     }, Math.max(0, session.expires * 1000 - Date.now()));
+    logger?.audit('enrollment', { status: 'ok', projectId: appConfig.active?.id });
     return { ok: true };
   } catch (error) {
+    logger?.audit('enrollment', { status: 'failed', projectId: appConfig.active?.id });
     if (session) await session.close();
     return { ok: false, error: error.message };
   } finally {
@@ -420,8 +744,11 @@ function startOrchestratorBridge() {
   if (!config) return;
   try {
     const { startBridge } = require('./orchestrator/service');
+    const settings = JSON.parse(fs.readFileSync(config, 'utf8'));
+    if (!skipOnboarding && settings.ssh?.host === trustedHost.host &&
+        Number(settings.ssh.port || 22) === Number(remote.cfg.port || 22)) settings.ssh.knownHosts = remote.cfg.knownHosts;
     stopBridge = startBridge({
-      config: JSON.parse(fs.readFileSync(config, 'utf8')),
+      config: settings,
       desktop,
       recycle: (target) => shell.trashItem(target),
       spawnSsh: (ssh) => remote.openBridge(ssh),
@@ -436,22 +763,35 @@ app.on('before-quit', (e) => {
   if (ending) return;
   ending = true; e.preventDefault();
   clearTimeout(enrollmentExpiry);
+  clearTimeout(updateTimer);
   stopBridge?.();
   stopMacDesktop?.();
   clearLocalTools();
-  Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
+  Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close(), logger?.log('application_stop')]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
 
-app.whenReady().then(() => {
-  log.info('app.ready');
+app.whenReady().then(async () => {
+  logger = createLogger(path.join(app.getPath('userData'), 'logs'), { onError: () => console.error('AgentDesk 日志写入失败') });
+  await loadAppConfig();
+  logger.log('application_start', { status: configError ? 'config_error' : 'ok' });
+  trustedHost = await configuredHost(enrollment, remote.cfg);
   createWindow();
-  if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
-    if (!enrollment) {
-      remote.start();
-      startOrchestratorBridge();
-      startMacDesktop();
+  if (!process.env.AGENTDESK_OFFLINE && !process.env.AGENTDESK_SHOT) {
+    updateChecks = createUpdateChecks({ app, settings: appConfig.value.update, logger });
+    if (updateChecks) {
+      const schedule = (delay) => {
+        updateTimer = setTimeout(async () => {
+          await updateChecks.check();
+          if (!ending) schedule(24 * 60 * 60_000);
+        }, delay);
+        updateTimer.unref();
+      };
+      schedule(30_000);
     }
-    powerMonitor.on('resume', () => { if (!ending && (!enrollment || enrolledSession)) remote.reconnect(); });
+  }
+  if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
+    startConnectivity();
+    powerMonitor.on('resume', () => { if (!ending && hostConfirmed() && (!enrollment || enrolledSession)) remote.reconnect(); });
   }
 });
 app.on('window-all-closed', () => app.quit());

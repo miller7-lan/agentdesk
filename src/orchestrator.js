@@ -3,6 +3,7 @@
   const { $, $$, esc, svg, state, store, LIVE } = A;
   const avatars = window.AgentDeskAvatars;
   const graph = window.AgentDeskTaskGraph;
+  const approvals = window.AgentDeskApprovals;
   const selectedFlowNodes = new Map();
   const api = window.desk?.orchestrator;
   const enrollment = window.desk?.enrollment;
@@ -10,12 +11,13 @@
   const supported = api && (window.desk.platform === 'darwin' || temporary);
   const liveProject = 'live';
   const isExample = (id) => !A.proj(id)?.live;
-  const isLiveGroup = () => state.group === liveProject;
+  const isLiveGroup = () => Boolean(state.group && A.proj(state.group)?.live);
+  const projectOf = (group) => A.proj(group.id)?.serverProject;
   const members = {
     you: { name: '你', initials: '你', role: '项目成员' },
     lead: { name: '组长', initials: '组', role: '自动规划与协作' },
     codex: { name: 'Codex', initials: 'CX', role: '实现与验证' },
-    claude: { name: 'Claude Code', initials: 'CL', role: '审查与执行' },
+    claude: { name: 'Claude Code', initials: 'CL', role: '规划、诊断与验收' },
     grok: { name: 'Grok Build', initials: 'GK', role: '分析与执行' },
     gemini: { name: 'Gemini', initials: 'GM', role: '分析与审查' },
     antigravity: { name: 'Antigravity', initials: 'AG', role: '侦察与简报' },
@@ -23,10 +25,16 @@
   };
   const statuses = {
     queued: '排队中', planning: '规划中', running: '执行中', applying: '应用补丁',
-    awaiting_details: '待补充细节', awaiting_approval: '待确认方案',
+    awaiting_details: '待补充细节', awaiting_approval: '待确认方案', awaiting_acceptance: '待验收', triaging: '升级诊断',
     testing: '验证中', needs_review: '待处理', completed: '已完成', failed: '失败', cancelled: '已取消',
   };
   const terminal = new Set(['needs_review', 'completed', 'failed', 'cancelled']);
+  const stages = { executing: '执行', awaiting_acceptance: '待验收', triaging: '升级诊断', reworking: '返工', accepted: '已验收' };
+  const acceptanceNames = {
+    accept: '通过', pass: '通过', accept_with_risk: '有风险接受', rework: '返工',
+    reject: '拒绝', blocked: '受阻', unknown: '无法判断', limit: '达到上限',
+  };
+  const triageNames = { retry: '重试', rework: '返工', accept_with_risk: '有风险接受', fail: '终止', unknown: '无法判断' };
   const details = {
     patches_ready: '补丁已准备好，等待应用到本机工作区。',
     planning_started: '开始制定计划',
@@ -39,6 +47,26 @@
     submitted: '任务已进入队列',
     cancelled: '任务已取消',
     cancel_requested: '已请求取消',
+    owner_quota_cap: '今日额度上限已到，任务将在本地零点后继续。',
+    triage_started: '任务遇到问题，已交给组长诊断。',
+    triage_unavailable: '组长暂时不可用，稍后自动继续诊断。',
+    triage_retry: '组长要求重试，任务重新排队。',
+    triage_rework: '组长要求返工，任务重新排队。',
+    triage_limit: '诊断次数已达上限，请人工处理。',
+    triage_retry_required: '重试没有可执行的步骤，请人工处理。',
+    triage_retry_failed: '重试后的测试仍然失败，等待组长诊断。',
+    triage_unparseable: '诊断结果无法解析，请人工处理。',
+    triage_pending: '补丁已应用但测试失败，等待组长诊断。',
+    rework_after_apply: '补丁已应用，返工不会自动改写已应用的文件。',
+    review_conflict: '审查意见冲突，已交给组长判断。',
+    acceptance_started: '组长开始验收。',
+    acceptance_skipped: '本任务无需额外验收。',
+    acceptance_rework: '组长要求返工，任务重新排队。',
+    acceptance_unparseable: '验收结论无法解析，等待组长重新判断。',
+    acceptance_limit: '验收返工次数已达上限，请人工处理。',
+    accepted_with_risk: '组长按风险接受本次结果，补丁仍可人工应用。',
+    windows_test_started: '正在本机运行测试。',
+    windows_test_failed: '本机测试失败。',
   };
   const routeNames = { ssh: 'SSH 主用', relay: 'VPS 1 Relay 备用' };
   const timeline = $('#groupTimeline');
@@ -50,15 +78,20 @@
   const routeStatus = $('#sbGroupRoute');
   const dialog = $('#orchestratorDialog');
   const routeMessage = $('#orchestratorMessage');
+  const projectDialog = $('#groupProjectDialog');
+  const projectBinding = $('#groupProjectBinding');
   const composerMessage = $('#groupSendStatus');
   const routeButtons = $$('[data-route]', dialog);
   const filterSelect = $('#groupMemberFilter');
   const suggestions = $('#groupSuggestions');
-  const recipients = ['lead', 'codex', 'claude', 'grok', 'gemini', 'antigravity'];
-  const mentions = { lead: '组长', codex: 'Codex', claude: 'Claude', grok: 'Grok', gemini: 'Gemini', antigravity: 'Antigravity' };
+  const recipients = ['lead', 'codex', 'grok', 'gemini', 'antigravity'];
+  const mentions = { lead: '组长', codex: 'Codex', grok: 'Grok', gemini: 'Gemini', antigravity: 'Antigravity' };
   // Members that only take work when the orchestrator has them configured.
   const optional = ['gemini', 'antigravity'];
-  const availableCommands = { ls: '查看项目任务', stop: '取消指定任务', routes: '查看主控线路', avatars: '查看状态图鉴' };
+  const availableCommands = { ls: '查看项目任务', stop: '取消指定任务', routes: '查看主控线路', avatars: '查看状态图鉴',
+    duo: '双人审查', team: '独占多步骤任务', compact: '生成项目简报', review: '审查改动',
+    broadcast: '只读广播', chat: '自由发言' };
+  const modeLabels = { chat: '只读发言', duo: '双人审查', team: '组队', review_only: '只读审查' };
   let suggestionItems = [];
   let suggestionIndex = 0;
   let filter = 'all';
@@ -68,6 +101,8 @@
   let knownRoutes = false;
   let routeState = {};
   let quotas = [];
+  let resources;
+  let checkingResources;
   let quotaCheck = null;
   let nextQuotaAt = 0;
   let cursor = 0;
@@ -81,13 +116,32 @@
     if (!A.proj(id) || groups.has(id)) return;
     groups.set(id, {
       id, records: new Map(tasks.map((task) => [task.id, task])), selected: tasks.at(-1)?.id,
+      approvals: new Map(), output: null, reference: null,
       draft: '', provider: '', model: '', taskError: '', statusError: '', pending: null, planReply: null,
     });
   }
 
+  const savedProjects = temporary ? [] : store.get('groupProjectBindings', []);
+  for (const project of savedProjects) {
+    if (typeof project.id === 'string' && /^group-[a-f0-9-]+$/.test(project.id) && typeof project.name === 'string') {
+      A.D.projects.push(project);
+    }
+  }
+
+  function syncProjectChoices() {
+    if (!projectDialog.open) return;
+    const chosen = projectBinding.value;
+    const bound = new Set(A.D.projects.map((project) => project.serverProject).filter(Boolean));
+    setHtml(projectBinding, '<option value="">本地示例</option>' + (routeState.projects || [])
+      .filter((id) => !bound.has(id))
+      .map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join(''));
+    if ([...projectBinding.options].some((option) => option.value === chosen)) projectBinding.value = chosen;
+  }
+
   const legacy = store.get('macTask', null) || localStorage.getItem('agentdesk.macTask');
   const saved = LIVE && !temporary ? store.get('groupTasks', legacy ? [{ id: legacy }] : []) : [];
-  for (const id of store.get('projectGroups', [])) addGroup(id, id === liveProject ? saved : []);
+  const savedByGroup = temporary ? {} : store.get('groupTasksByProject', {});
+  for (const id of store.get('projectGroups', [])) addGroup(id, id === liveProject ? saved : savedByGroup[id] || []);
   if (saved.length) addGroup(liveProject, saved);
 
   function createGroup(id) {
@@ -99,6 +153,21 @@
 
   const currentGroup = () => groups.get(state.group);
   const hasGroup = (id) => groups.has(id);
+  const lastSeen = new Map(Object.entries(store.get('groupLastSeen', {})));
+  const taskTime = (task) => Date.parse(task.updatedAt || task.createdAt || '') || task.time || 0;
+  function markSeen(group) {
+    if (document.hidden) return;
+    const time = Math.max(lastSeen.get(group.id) || 0, ...[...group.records.values()].map(taskTime));
+    if (lastSeen.get(group.id) === time) return;
+    lastSeen.set(group.id, time);
+    store.set('groupLastSeen', Object.fromEntries(lastSeen));
+  }
+  function unreadCount(id) {
+    const group = groups.get(id);
+    if (!group) return 0;
+    const seen = lastSeen.get(id) || 0;
+    return [...group.records.values()].filter((task) => taskTime(task) > seen).length;
+  }
   const getSelected = (group = currentGroup()) => group?.records.get(group.selected);
   const taskCount = (id = state.group) => {
     const records = groups.get(id)?.records;
@@ -109,11 +178,13 @@
     if (state.group === id) return;
     const previous = currentGroup();
     if (previous) {
+      markSeen(previous);
       previous.draft = input.value;
       previous.provider = provider.value;
       previous.model = model.value;
     }
     const next = groups.get(id);
+    if (next) markSeen(next);
     input.value = next?.draft || '';
     provider.value = next?.provider || '';
     model.value = next?.model || '';
@@ -128,15 +199,21 @@
 
   function persist(group) {
     if (isExample(group.id) || temporary) return;
-    store.set('groupTasks', [...group.records.values()].map(({ id, prompt, provider, model, time, state }) =>
-      ({ id, prompt, provider, model, time, state })));
+    const records = [...group.records.values()].filter((task) => !task.redacted).map(({ id, prompt, provider, model, time, state, updatedAt }) =>
+      ({ id, prompt, provider, model, time, state, updatedAt }));
+    if (group.id === liveProject) store.set('groupTasks', records);
+    else {
+      savedByGroup[group.id] = records;
+      store.set('groupTasksByProject', savedByGroup);
+    }
   }
 
   function updateTask(group, id, summary, complete = false) {
     const previous = group.records.get(id) || {};
     const local = complete ? { prompt: previous.prompt, time: previous.time } : previous;
     group.records.set(id, { ...local, ...summary, id });
-    persist(group);
+    if (group === currentGroup()) markSeen(group);
+    if (complete) persist(group);
   }
 
   const taskLabel = (task) => '#' + esc(task.id.slice(0, 8));
@@ -158,10 +235,18 @@
     if (details[detail]) return details[detail];
     const waiting = /:waiting:(\w+)$/.exec(detail || '');
     if (waiting) return `等待 ${memberName(waiting[1])} 空闲：同一时间每个 AI 只跑一个任务，可能有其他成员正在使用。`;
-    const handed = /:escalated:(\w+)$/.exec(detail || '');
-    if (handed) return `改代码失败，已交给 ${memberName(handed[1])} 判断下一步。`;
+    const executor = /^executor_waiting:(\w+)$/.exec(detail || '');
+    if (executor) return `等待 ${memberName(executor[1])} 可用：额度或登录状态恢复后自动继续，不会改派给其他成员。`;
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
+    const escalated = /^escalated:(\w+)$/.exec(detail || '');
+    if (escalated) return '任务遇到问题，已升级给组长处理。';
+    const decision = /^triage_decision:(\w+)$/.exec(detail || '');
+    if (decision) return `组长诊断结论：${triageNames[decision[1]] || decision[1]}。`;
+    const verdict = /^acceptance_verdict:(\w+)$/.exec(detail || '');
+    if (verdict) return `验收结论：${acceptanceNames[verdict[1]] || verdict[1]}。`;
+    const fix = /^(fix-\d+):(started|completed|failed)$/.exec(detail || '');
+    if (fix) return fix[2] === 'started' ? '返工步骤开始执行。' : fix[2] === 'completed' ? '返工步骤完成，等待重新验收。' : '返工步骤失败。';
     return detail;
   }
   const pathsOf = (task) => [...new Set((task?.steps || []).flatMap((step) => step.paths || []))];
@@ -176,6 +261,7 @@
   }
 
   const statusAnimation = { planning: 'thinking', awaiting_details: 'asking', awaiting_approval: 'asking',
+    awaiting_acceptance: 'asking', triaging: 'thinking',
     applying: 'tool', testing: 'long', needs_review: 'asking', completed: 'done', failed: 'failed' };
 
   function memberActivity(id) {
@@ -212,7 +298,7 @@
       button.querySelector('span').textContent = (knownRoutes ? (routeState[route] ? '在线' : '离线') : '检测中') + (route === selected ? ' · 当前' : '');
     }
     entry.querySelector('span').textContent = selected === 'relay' ? '主控线路 · Relay' : '主控线路';
-    $('#sbGroupMembers').hidden = $('#sbQuota').hidden = !state.group;
+    $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = !state.group;
     routeStatus.hidden = !isLiveGroup() || !supported;
     routeStatus.textContent = !knownRoutes ? '主控检测中' : hasRoute() ? routeNames[selected] : '主控离线';
     routeStatus.classList.toggle('route-online', hasRoute());
@@ -243,14 +329,15 @@
     for (const step of $$('details[data-step]', element)) step.open = openSteps.includes(step.dataset.step);
   }
 
-  function messageRow(id, metadata, body) {
-    return `<article class="group-message">${avatars.html(id, { still: true })}<div class="group-message-content">
+  function messageRow(id, metadata, body, kind = 'text') {
+    return `<article class="group-message" data-kind="${kind}">${avatars.html(id, { still: true })}<div class="group-message-content">
       <header><strong>${memberName(id)}</strong>${metadata ? `<span>${esc(metadata)}</span>` : ''}</header>${body}
     </div></article>`;
   }
 
   function planMessages(task) {
     const show = (id) => (!filterSelect.value || filterSelect.value === id) && (filter !== 'mine' || id === 'you');
+    if (task.redacted) return [];
     const disabled = busy || (!isExample(state.group) && !connected) ? 'disabled' : '';
     return (task.plan?.rounds || []).flatMap((round, index, rounds) => {
       const active = index === rounds.length - 1 && waitingForPlan(task);
@@ -265,35 +352,123 @@
           : `<p>${esc(round.summary)}</p>${steps ? `<ol>${steps}</ol>` : ''}`}
         ${steps ? `<button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="graph">查看方案调度图 ${svg('chev')}</button>` : ''}
         ${review}
-      </div>`));
+      </div>`, round.questions ? 'question' : 'steps'));
       if (round.reply && show('you')) messages.push(messageRow('you', '回复组长', `<p class="group-user-text">${esc(round.reply)}</p>`));
       return messages;
     });
   }
 
+  function acceptApproval(project, message) {
+    const group = groups.get(project);
+    // 审批属于发起请求的线程所绑定的项目，且只接入当前打开的群。
+    if (!group || group !== currentGroup() || !approvals.permitted(message.method)) return false;
+    const scope = approvals.identity(message);
+    const params = message.params || {};
+    const card = { id: crypto.randomUUID(), message, scope, state: 'pending',
+      questions: message.method === approvals.question && Array.isArray(params.questions) ? params.questions.slice(0, 10) : null };
+    if (scope && approvals.load(localStorage, project).some((rule) => approvals.matches(rule, scope))) {
+      respondApproval(group, card, true);
+      return true;
+    }
+    group.approvals.set(card.id, card);
+    repaint();
+    return true;
+  }
+
+  async function respondApproval(group, card, accept, { remember, answers } = {}) {
+    if (card.state !== 'pending') return;
+    card.state = 'sending';
+    const { message } = card;
+    const response = approvals.decision(message.method, accept, answers);
+    const sent = await window.desk.codex.respond(message.id, response).catch(() => false);
+    if (sent && accept && remember) approvals.remember(localStorage, group.id, card.scope);
+    card.state = sent ? (accept ? 'approved' : 'declined') : 'expired';
+    if (group === currentGroup()) repaint();
+  }
+
+  function approvalCards(group) {
+    return [...group.approvals.values()].map((card) => {
+      const params = card.message.params || {};
+      const command = Array.isArray(params.command) ? params.command.join(' ') :
+        params.command || params._meta?.tool_params?.command || params.grantRoot;
+      const pending = card.state === 'pending';
+      const outcome = { sending: '提交中', approved: '已批准', declined: '已拒绝', expired: '请求已过期' }[card.state];
+      const form = `<form data-group-approval="${card.id}" class="group-plan group-approval">
+        <strong>${card.questions ? 'Codex 提问' : 'Codex 请求授权'}</strong>
+        <p>${esc(params.reason || params.message || params.cwd || '')}</p>
+        ${command ? `<pre>${esc(String(command).slice(0, 4000))}</pre>` : ''}
+        ${card.questions ? card.questions.map((question, index) => `<label>${esc(question.question || question.header || '')}
+          ${pending ? `<input name="question-${index}" maxlength="2000" required />` : ''}</label>`).join('') : ''}
+        ${pending ? `<div class="task-actions">
+          <button class="btn primary" type="submit">${card.questions ? '提交回答' : '批准本次'}</button>
+          <button class="btn" type="button" data-group-approval-deny>拒绝</button>
+          ${card.scope ? '<label><input type="checkbox" name="remember" /> 在本群记住此线程、工具和目录</label>' : ''}
+        </div>` : `<p role="status">${outcome}</p>`}
+      </form>`;
+      return messageRow('codex', '', form, card.questions ? 'question' : 'approval');
+    }).join('');
+  }
+
+  timeline.addEventListener('submit', (event) => {
+    const form = event.target.closest('[data-group-approval]');
+    const group = currentGroup();
+    const card = group?.approvals.get(form?.dataset.groupApproval);
+    if (!card) return;
+    event.preventDefault();
+    const data = new FormData(form);
+    const answers = card.questions && Object.fromEntries(card.questions.map((question, index) =>
+      [question.id, { answers: [data.get('question-' + index)] }]));
+    respondApproval(group, card, true, { remember: data.has('remember'), answers });
+  });
+
   function renderTimeline() {
-    const { records } = currentGroup();
+    const group = currentGroup();
+    const { records } = group;
+    const broadcasts = new Set();
     const atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
-    const html = [...records.values()].filter((task) => filter !== 'attention' || task.state === 'needs_review' || waitingForPlan(task)).map((task) => {
+    const html = [...records.values()].sort((a, b) => (Date.parse(a.createdAt || '') || a.time || 0) - (Date.parse(b.createdAt || '') || b.time || 0)).filter((task) => filter !== 'attention' || task.state === 'needs_review' || waitingForPlan(task)).map((task) => {
       const sender = task.plan && !task.plan.approved ? 'lead' : owner(task);
       const steps = task.steps || [];
+      const acceptance = acceptanceLabel(task);
+      const stats = task.metrics || task;
+      const badges = [
+        task.owner ? '提交人 ' + task.owner : '',
+        task.project ? '项目 ' + task.project : '',
+        task.broadcastId ? '广播' : modeLabels[task.mode],
+        task.via === 'wechat' ? '微信' : '',
+        stats.testFailures ? '测试失败 ' + stats.testFailures : '',
+        stats.reworkRounds ? '返工 ' + stats.reworkRounds : '',
+        stats.reviewConflicts ? '冲突 ' + stats.reviewConflicts : '',
+        task.container?.memPeak ? '容器峰值 ' + Math.ceil(task.container.memPeak / 1024 ** 2) + ' MB' : '',
+      ].filter(Boolean);
+      const cardDetail = task.detail === 'patches_ready' ? textOf(task.detail)
+        : [steps.length ? steps.length + ' 个步骤' : '', pathsOf(task).length ? pathsOf(task).length + ' 个文件' : '', elapsed(task)].filter(Boolean).join(' · ') || '查看调度图';
       const card = `<button class="dispatch-card" type="button" data-task-id="${esc(task.id)}" data-task-view="graph">
         <span class="dispatch-top"><span class="dispatch-icon">${svg('term')}</span><strong>任务 <span class="mono">${taskLabel(task)}</span></strong>${pill(task.state)}</span>
-        <span class="dispatch-detail">${esc(task.detail === 'patches_ready' ? textOf(task.detail) : [steps.length ? steps.length + ' 个步骤' : '', pathsOf(task).length ? pathsOf(task).length + ' 个文件' : '', elapsed(task)].filter(Boolean).join(' · ') || '查看调度图')}</span>
+        <span class="dispatch-detail">${esc([
+          task.stage ? '阶段 ' + stageLabel(task.stage) : '',
+          acceptance ? '验收 ' + acceptance : '',
+          cardDetail,
+        ].filter(Boolean).join(' · '))}</span>
+        ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
       </button>`;
       const messages = [];
       const requiresReview = task.detail === 'patches_ready' || task.pendingRequest;
-      if (task.prompt && (!filterSelect.value || filterSelect.value === 'you')) {
+      if (task.prompt && !task.redacted && (!task.broadcastId || !broadcasts.has(task.broadcastId)) &&
+          (!filterSelect.value || filterSelect.value === 'you')) {
+        if (task.broadcastId) broadcasts.add(task.broadcastId);
         const time = task.time ? new Date(task.time).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
-        messages.push(messageRow('you', [memberName(sender), time].filter(Boolean).join(' · '), `<p class="group-user-text">${esc(task.prompt)}</p>`));
+        const quote = task.replyTo ? `<button class="group-quote" type="button" data-reference-jump="${esc(task.replyTo)}">查看引用 #${esc(task.replyTo.slice(0, 8))}</button>` : '';
+        messages.push(messageRow('you', [memberName(sender), time].filter(Boolean).join(' · '), `${quote}<p class="group-user-text">${esc(task.prompt)}</p>`));
       }
       if (filter !== 'mine' && (!filterSelect.value || filterSelect.value === sender)) {
-        messages.push(messageRow(sender, task.model || members[sender].role, card));
+        messages.push(messageRow(sender, task.model || members[sender]?.role, card, 'dispatch'));
       }
       messages.push(...planMessages(task));
       if (filter !== 'mine' && !filterSelect.value) {
         for (const note of reassignments(task)) messages.push(`<p class="group-system">${esc(note)}</p>`);
+        for (const note of systemNotes(task)) messages.push(`<p class="group-system" data-kind="event">${esc(note)}</p>`);
       }
       if (requiresReview && (!filterSelect.value || filterSelect.value === 'local')) {
         const title = task.detail === 'patches_ready' ? '待审核的本机补丁' : '待核对的本机操作';
@@ -312,15 +487,16 @@
           <button type="button" class="task-text-link" data-task-id="${esc(task.id)}">查看步骤输出 ${svg('chev')}</button>
         </div>`));
       }
-      return messages.length ? `<div class="dispatch-thread">${messages.join('')}</div>` : '';
-    }).join('');
+      const reply = `<button class="task-text-link group-reference" type="button" data-reference="${esc(task.id)}">引用</button>`;
+      return messages.length ? `<div class="dispatch-thread" data-message-id="${esc(task.id)}">${messages.join('')}${reply}</div>` : '';
+    }).join('') + approvalCards(group);
 
     setHtml(timeline, html || `<div class="group-empty">
       <span class="group-empty-icon">#</span>
       <h2>${records.size ? '没有符合筛选条件的消息' : '项目群聊'}</h2>
       ${records.size ? '' : '<p>组长先确认需求和方案，确认后开始执行。</p>'}
     </div>`);
-    if (atBottom && records.size) timeline.scrollTop = timeline.scrollHeight;
+    if (atBottom && (records.size || group.approvals.size)) timeline.scrollTop = timeline.scrollHeight;
   }
 
   function render() {
@@ -338,12 +514,15 @@
     setHtml($('#groupRoster'), Object.keys(members).filter((id) => id !== 'you' && canUse(id)).map((id) =>
       `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 34, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
     setHtml($('#sbGroupMembers'), recipients.slice(1).flatMap((id) => {
-      const { state: activity } = memberActivity(id);
+      const { state: activity, task } = memberActivity(id);
       if (!activity) return [];
-      return `<button type="button" class="sb-item clickable" data-status-member="${id}" title="${memberName(id)}"><span class="status-dot ${{ asking: 'waiting', done: 'done', failed: 'failed' }[activity] || 'running'}"></span>${avatars.members[id].short} ${avatars.states[activity].label}</button>`;
+      const stats = [taskStats(task, id), usageText(task, id)].flat().filter(Boolean).join(' · ');
+      return `<button type="button" class="sb-item clickable" data-status-member="${id}" title="${esc(memberName(id) + (stats ? ' · ' + stats : ''))}"><span class="status-dot ${{ asking: 'waiting', done: 'done', failed: 'failed' }[activity] || 'running'}"></span>${avatars.members[id].short} ${avatars.states[activity].label}${stats ? `<small class="sb-stats">${esc(stats)}</small>` : ''}</button>`;
     }).join(''));
     refreshQuotas();
     setHtml($('#sbQuota'), quotaStatusBar());
+    setHtml($('#sbResources'), resourceLabels().map(({ label, warning }) =>
+      `<button type="button" class="sb-item clickable sb-resource${warning ? ' resource-warning' : ''}">${esc(label)}</button>`).join(''));
     const canSend = isExample(state.group) || (supported && (currentGroup().planReply ? connected : hasRoute()));
     $('#groupSend').disabled = busy || !canSend || !recipientReady;
     $('#groupPlanReplyCancel').disabled = busy;
@@ -417,34 +596,122 @@
     </tbody></table><p class="panel-note">任务开始和结束时各读一次已用额度的差值，包含同一账号在这段时间里的其他使用。</p>`;
   }
 
-  // Scheduler events that deserve a line in the thread: a step moved to another member (quota or login),
-  // or a failed code change handed back to the lead and what the lead decided.
+  // "review:reassigned:grok->gemini:quota" → a one-line note in the thread.
   function reassignments(task) {
-    const stepOf = (id) => task.steps?.find((step) => step.id === id);
-    return (task.events || []).map(({ detail = '' }) => {
-      let match = /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail);
-      if (match) return `${memberName(match[2])} ${match[4] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(match[3])} 接手`;
-      match = /^([\w-]+):escalated:(\w+)$/.exec(detail);
-      if (match) return `${memberName(stepOf(match[1])?.role)} 改代码失败，交给 ${memberName(match[2])} 判断`;
-      match = /^([\w-]+):escalation:(retry|stop)$/.exec(detail);
-      if (!match) return '';
-      const step = stepOf(match[1]);
-      const reason = step?.escalation?.reason ? '：' + step.escalation.reason : '';
-      return match[2] === 'retry'
-        ? `${memberName(step?.escalation?.by)} 调整了做法，${memberName(step?.role)} 重新尝试${reason}`
-        : `${memberName(step?.escalation?.by)} 判断不再重试${reason}`;
-    }).filter(Boolean);
+    return (task.events || []).map((event) => /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(event.detail || ''))
+      .filter(Boolean).map(([, , from, to, reason]) =>
+        `${memberName(from)} ${reason === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(to)} 接手`);
+  }
+
+  // Only the events a person needs to understand a stuck task; ordinary step start/finish stays in
+  // the task panel. Repeats of the same notice collapse into one line.
+  function systemNotes(task) {
+    const notes = [];
+    const seen = new Set();
+    const add = (note) => {
+      if (note && !seen.has(note)) {
+        seen.add(note);
+        notes.push(note);
+      }
+    };
+    for (const event of task.events || []) {
+      const detail = event.detail || '';
+      const waiting = /^executor_waiting:(\w+)$/.exec(detail);
+      if (waiting) add(`等待 ${memberName(waiting[1])} 可用，任务保持排队。`);
+      else if (detail === 'owner_quota_cap') add('今日额度上限已到，任务将在本地零点后继续。');
+      else if (detail === 'triage_started') add('任务遇到问题，已交给组长诊断。');
+      else if (detail === 'triage_unavailable') add('组长暂时不可用，稍后自动继续诊断。');
+      else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
+      else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
+      else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
+      else if (detail === 'acceptance_started') add('组长开始验收。');
+      else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
+      else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
+      else if (/^acceptance_verdict:(\w+)$/.test(detail)) add(textOf(detail));
+      else if (/^fix-\d+:started$/.test(detail)) add('返工步骤开始执行。');
+      else if (/^fix-\d+:completed$/.test(detail)) add('返工步骤完成，等待重新验收。');
+      else if (/^fix-\d+:failed$/.test(detail)) add('返工步骤失败。');
+      else if (/^escalated:(\w+)$/.test(detail)) add('任务遇到问题，已升级给组长处理。');
+    }
+    return notes;
+  }
+
+  const stageLabel = (stage) => stages[stage] || stage;
+  function acceptanceLabel(task) {
+    const verdict = task?.acceptance?.verdict;
+    return verdict ? acceptanceNames[verdict] || verdict : '';
+  }
+
+  // Counts from the task record: calls, reassignments and escalations for one member.
+  function taskStats(task, id) {
+    const metrics = task?.metrics;
+    if (!metrics) return [];
+    const role = id === 'lead' ? 'claude' : id;
+    return [
+      metrics.roleCalls?.[role] ? `调用 ${metrics.roleCalls[role]}` : '',
+      metrics.reassignments ? `改派 ${metrics.reassignments}` : '',
+      metrics.triageRounds ? `升级 ${metrics.triageRounds}` : '',
+    ].filter(Boolean);
+  }
+
+  function usageText(task, id) {
+    const role = id === 'lead' ? 'claude' : id;
+    const total = Object.values(task?.usage?.[role] || {})
+      .reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+    return total ? `用量 ${Math.round(total / 1000)}k token` : '';
+  }
+
+  function resourceLabels() {
+    if (!isLiveGroup() || !resources) return [];
+    const { host, docker, disk } = resources;
+    const amount = (bytes) => {
+      if (!Number.isFinite(bytes) || bytes < 0) return '—';
+      return bytes < 1024 ** 3 ? Math.round(bytes / 1024 ** 2) + ' MB' : (bytes / 1024 ** 3).toFixed(1) + ' GB';
+    };
+    const labels = [];
+    if (docker?.enabled) {
+      if (docker.ok) {
+        const limit = Number.isSafeInteger(docker.max) ? docker.max : '—';
+        labels.push({ label: `容器 ${docker.count}/${limit}` }, { label: '容器内存 ' + amount(docker.memoryBytes) });
+      } else labels.push({ label: '容器数据不可用', warning: true });
+    }
+    if (host) labels.push(
+      { label: `主机内存 ${amount(host.memoryUsedBytes)} / ${amount(host.memoryTotalBytes)}` },
+      { label: `Swap ${amount(host.swapUsedBytes)} / ${amount(host.swapTotalBytes)}` },
+    );
+    if (docker?.enabled && Number.isFinite(disk?.freeRatio) && disk.freeRatio < 0.15) {
+      labels.push({ label: `磁盘仅余 ${Math.round(disk.freeRatio * 100)}%`, warning: true });
+    }
+    return labels;
+  }
+
+  function refreshResources(current) {
+    if (checkingResources || !isLiveGroup()) return;
+    checkingResources = control('resource_status').then((value) => {
+      if (current === generation) resources = value;
+    }, () => {
+      if (current === generation) resources = undefined;
+    }).finally(() => {
+      checkingResources = null;
+      if (current === generation) repaint();
+    });
   }
 
   function panelMembers() {
     refreshQuotas();
+    const rules = approvals.load(localStorage, state.group);
     return `<div class="project-panel-body"><div class="member-panel-heading"><h3>项目成员</h3>
       <button type="button" class="task-text-link" data-avatar-sheet>状态图鉴 ${svg('chev')}</button></div>
+      ${rules.length ? `<button type="button" class="task-text-link" data-clear-group-approvals>清除本群记住的授权（${rules.length}）</button>` : ''}
+      ${resourceLabels().length ? `<div id="panelResources" class="panel-resources">${resourceLabels().map(({ label, warning }) =>
+        `<span class="${warning ? 'resource-warning' : ''}">${esc(label)}</span>`).join('')}</div>` : ''}
       ${Object.entries(members).map(([id, member]) => {
         const { task, state: activity } = memberActivity(id);
         return `<div class="member-row ${focusMember === id ? 'member-focused' : ''}">${memberAvatar(id, 48, 'members')}<div>
           <span class="member-caption"><strong>${member.name}</strong>${activity ? `<small>${avatars.states[activity].label}</small>` : ''}</span><small>${member.role}${!canUse(id) ? ' · ' + availability(id) : ''}</small>
           ${recipients.includes(id) && id !== 'lead' && (isLiveGroup() || isExample(state.group)) ? quotaMarkup(id) : ''}
+          ${task && [...taskStats(task, id), usageText(task, id)].filter(Boolean).length
+            ? `<small class="member-task-stats">${esc([...taskStats(task, id), usageText(task, id)].filter(Boolean).join(' · '))}</small>` : ''}
           ${task ? `<button type="button" data-task-id="${esc(task.id)}" class="task-text-link">${taskLabel(task)} · ${statusName(task.state)}</button>` : ''}
         </div>${id === 'codex' ? '<button type="button" class="btn member-direct" data-direct-codex>单聊</button>' : ''}</div>`;
       }).join('')}</div>`;
@@ -476,13 +743,62 @@
     </div>`;
   }
 
+  function taskOutputPanel(task) {
+    if (!task || task.redacted || isExample(state.group)) return '';
+    const output = currentGroup().output;
+    const logStep = (output?.operation === 'task_log' ? output.stepId : '') || task.steps?.findLast((step) => ['running', 'failed', 'completed'].includes(step.state))?.id;
+    const options = [
+      ['task_diff', '完整补丁'],
+      ['task_log', '实时日志'],
+      ['task_artifacts', '产物'],
+    ];
+    const value = output?.value;
+    const text = value?.patch ?? value?.text;
+    return `<section class="group-output">
+      <div class="task-actions">${options.map(([operation, label]) =>
+        `<button class="btn" type="button" data-task-output="${operation}" data-log-step="${esc(logStep || '')}"
+          aria-pressed="${output?.operation === operation}" ${operation === 'task_log' && !logStep ? 'disabled' : ''}>${label}</button>`).join('')}</div>
+      ${output?.operation === 'task_log' && task.steps?.length ? `<label>日志步骤 <select data-log-select>${task.steps.map((step) =>
+        `<option value="${esc(step.id)}" ${step.id === logStep ? 'selected' : ''}>${esc(step.id)}</option>`).join('')}</select></label>` : ''}
+      ${output?.error ? `<p role="status">${esc(output.error)}</p>` : ''}
+      ${Array.isArray(value) ? (value.map(({ id, name }) => `<button class="task-text-link" type="button" data-artifact="${esc(id)}">${esc(name)}</button>`).join('') || '<p>暂无产物</p>') : ''}
+      ${text !== undefined ? `<pre>${esc(text || '没有改动')}${value.truncated ? '\n（仅显示日志末尾）' : ''}</pre>` : ''}
+      ${output?.loading ? '<p role="status">读取中…</p>' : ''}
+    </section>`;
+  }
+
+  async function updateOutput(group, output) {
+    if (output.loading) return;
+    const { operation, taskId, stepId, artifact } = output;
+    output.loading = true;
+    if (group === currentGroup()) A.renderPanel();
+    try {
+      output.value = await control(operation, { taskId, stepId, artifact });
+      output.error = '';
+    } catch (error) {
+      output.error = error.message;
+    } finally {
+      output.loading = false;
+      if (group === currentGroup() && group.output === output) A.renderPanel();
+    }
+  }
+
+  function openTaskOutput(operation, { stepId, artifact } = {}) {
+    const group = currentGroup();
+    if (!group) return;
+    const task = getSelected(group);
+    if (!task || task.redacted || isExample(group.id) || !connected) return;
+    group.output = { operation, taskId: task.id, stepId, artifact };
+    updateOutput(group, group.output);
+  }
+
   function panelTasks() {
     const { records, selected, statusError } = currentGroup();
     const task = getSelected();
     if (!records.size) return '<div class="empty-note">发送任务后，这里会显示进度和结果。</div>';
     const online = isExample(state.group) || connected;
     const steps = task?.steps || [];
-    const logs = steps.map((step) => `<details class="task-step" data-step="${esc(task.id + ':' + step.id)}"><summary><strong>${esc(memberName(step.role))}</strong>${pill(step.state)}</summary>
+    const logs = task?.redacted ? '' : steps.map((step) => `<details class="task-step" data-step="${esc(task.id + ':' + step.id)}"><summary><strong>${esc(memberName(step.role))}</strong>${pill(step.state)}</summary>
       ${step.output || step.error ? `<pre>${esc(step.error || step.output)}</pre>` : '<div class="empty-note">暂无步骤输出</div>'}
     </details>`).join('');
     const events = (task?.events || []).filter((event, i, all) => i === 0 || event.state !== all[i - 1].state);
@@ -493,19 +809,24 @@
       ${task ? `<section class="selected-task"><h3>任务 ${taskLabel(task)}</h3>
         ${elapsed(task) ? `<p>耗时 ${elapsed(task)}</p>` : ''}
         ${task.detail ? `<p>${esc(textOf(task.detail))}</p>` : ''}
+        ${task.stage || acceptanceLabel(task) ? `<p class="task-stage">${esc([
+          task.stage ? '阶段：' + stageLabel(task.stage) : '',
+          acceptanceLabel(task) ? '验收：' + acceptanceLabel(task) : '',
+        ].filter(Boolean).join(' · '))}</p>` : ''}
         ${statusError ? `<p class="task-status-error" role="status">${esc(statusError)}</p>` : ''}
         <div class="task-actions">
           <button class="btn" type="button" data-task-id="${esc(task.id)}" data-task-view="graph">查看调度图</button>
           <button class="btn" type="button" data-task-operation="status" ${busy || !online ? 'disabled' : ''}>刷新</button>
-          ${task.detail === 'patches_ready' ? `<button class="btn primary" type="button" data-task-operation="apply" ${busy || !online ? 'disabled' : ''}>应用补丁</button>` : ''}
-          ${task.pendingRequest ? `<button class="btn" type="button" data-task-operation="reconcile" ${busy || !online ? 'disabled' : ''}>核对操作</button>` : ''}
-          ${task.state && !terminal.has(task.state) ? `<button class="btn danger" type="button" data-task-operation="cancel" ${busy || !online ? 'disabled' : ''}>取消任务</button>` : ''}
-          ${task.prompt && terminal.has(task.state) ? '<button class="btn" type="button" data-task-operation="draft">重跑…</button>' : ''}
+          ${!task.redacted && task.detail === 'patches_ready' ? `<button class="btn primary" type="button" data-task-operation="apply" ${busy || !online ? 'disabled' : ''}>应用补丁</button>` : ''}
+          ${!task.redacted && task.pendingRequest ? `<button class="btn" type="button" data-task-operation="reconcile" ${busy || !online ? 'disabled' : ''}>核对操作</button>` : ''}
+          ${!task.redacted && task.state && !terminal.has(task.state) ? `<button class="btn danger" type="button" data-task-operation="cancel" ${busy || !online ? 'disabled' : ''}>取消任务</button>` : ''}
+          ${!task.redacted && task.prompt && terminal.has(task.state) ? '<button class="btn" type="button" data-task-operation="draft">重跑…</button>' : ''}
         </div>
         ${events.length ? `<ol class="task-events">${events.map((event) => `<li>${statusName(event.state)}</li>`).join('')}</ol>` : ''}
         ${reassignments(task).map((note) => `<p class="task-reassigned">${esc(note)}</p>`).join('')}
         ${quotaCharge(task)}
         ${logs ? `<h3>步骤输出</h3>${logs}` : ''}
+        ${taskOutputPanel(task)}
       </section>` : ''}
     </div>`;
   }
@@ -552,19 +873,19 @@
 
   function repaint() {
     render();
-    if (!state.group) return;
     for (const id of groups.keys()) {
-      const count = taskCount(id);
+      const count = taskCount(id) + ':' + unreadCount(id);
       if (count === displayedCounts.get(id)) continue;
       displayedCounts.set(id, count);
       A.renderSidebar();
       break;
     }
-    if (state.panelOpen && state.panel !== 'files') A.renderPanel();
+    if (state.group && state.panelOpen && state.panel !== 'files') A.renderPanel();
   }
 
   async function control(operation, extra) {
-    const answer = await api.control({ operation, ...extra });
+    const project = A.proj(state.group);
+    const answer = await api.control({ operation, ...(project?.configured && { projectId: project.id }), ...extra });
     if (answer.ok) return answer.value;
     const explanations = {
       bridge_offline: '没有可用线路，请检查 SSH 或 Relay。',
@@ -578,6 +899,12 @@
       plan_changed: '方案已更新，请按最新一轮的问题或方案操作。',
       invalid_plan: '组长未能生成可用的方案，请从任务详情重试。',
       sign_in_required: '请先登录 AgentDesk。',
+      patch_too_large: '补丁超出 24 KiB 预览上限。',
+      no_review_changes: '没有可审查的改动。',
+      duo_requires_two_reviewers: '主控需要配置两名不同的审查者。',
+      team_requires_two_slots: '组队任务需要两个调度槽位。',
+      review_snapshot_failed: '无法读取工作区改动。',
+      ENOENT: '产物尚未生成或已清理。',
     };
     throw new Error(explanations[answer.error] || answer.error);
   }
@@ -590,9 +917,10 @@
   }
 
   function refresh() {
-    if (!supported || busy || (!isLiveGroup() && !dialog.open)) return;
+    if (!supported || busy || (![...groups.keys()].some((id) => !isExample(id)) && !dialog.open && !projectDialog.open)) return;
     if (checking) return checking;
     const current = generation;
+    refreshResources(current);
     checking = (async () => {
       let routes;
       try {
@@ -604,9 +932,28 @@
       routeState = routes || {};
       knownRoutes = true;
       connected = Boolean(routeState.ssh || routeState.relay);
+      syncProjectChoices();
+      if (connected && !busy) await Promise.all([...groups.values()].filter((group) => !isExample(group.id)).map(async (group) => {
+        try {
+          const project = A.proj(group.id);
+          const summaries = await control('project_tasks', { project: projectOf(group), projectId: project.configured ? project.id : undefined });
+          if (current !== generation || !Array.isArray(summaries)) return;
+          const visible = new Set(summaries.map((summary) => summary.id));
+          for (const [id, task] of group.records) {
+            if (task.redacted && !visible.has(id)) group.records.delete(id);
+          }
+          for (const summary of summaries) {
+            const previous = group.records.get(summary.id);
+            updateTask(group, summary.id, { ...summary, ...(previous?.prompt && { prompt: previous.prompt }) });
+          }
+          if (!group.selected || !group.records.has(group.selected)) group.selected = summaries[0]?.id;
+          persist(group);
+        } catch { /* 旧主控继续从本地保存的任务 ID 同步。 */ }
+      }));
       if (connected && isLiveGroup() && !busy) {
         const group = currentGroup();
         const { records, selected } = group;
+        if (state.panelOpen && state.panel === 'tasks' && group.output?.operation === 'task_log') updateOutput(group, group.output);
         const pending = [...records.values()].filter((task) => task.id !== selected && (!task.state || !terminal.has(task.state)));
         const ids = new Set([selected, pending.length ? pending[cursor++ % pending.length].id : null]);
         for (const id of ids) {
@@ -627,7 +974,7 @@
   async function run(action, group) {
     if (busy) return false;
     busy = true;
-    await checking;
+    if (!group || !isExample(group.id)) await checking;
     if (group) group.taskError = '';
     routeMessage.textContent = '';
     repaint();
@@ -648,6 +995,7 @@
     const group = currentGroup();
     if (!group.records.has(id)) return;
     if (group.selected !== id) group.statusError = '';
+    if (group.selected !== id) group.output = null;
     group.selected = id;
     A.showPanel(panel);
     if (isLiveGroup() && connected) refresh();
@@ -671,12 +1019,10 @@
         updateTask(group, taskId, {
           state: 'completed', detail: '示例方案已确认。', plan: { ...task.plan, approved: revision },
           steps: [
-            { id: 'edit', role: task.provider || 'codex', state: 'completed', output: '示例：已按确认的范围完成修改。', paths: ['src/example.js'],
-              escalation: { by: 'claude', decision: 'retry', reason: '示例：改用项目里已有的重试工具函数' } },
+            { id: 'edit', role: task.provider || 'codex', state: 'completed', output: '示例：已按确认的范围完成修改。', paths: ['src/example.js'] },
             { id: 'review', role: 'gemini', state: 'completed', output: '示例：审查通过，没有阻塞问题。' },
           ],
           events: [{ state: 'planning', time: at(160) }, { state: 'running', time: at(150) },
-            { state: 'running', detail: 'edit:escalated:claude', time: at(120) }, { state: 'running', detail: 'edit:escalation:retry', time: at(110) },
             { state: 'running', detail: 'review:reassigned:grok->gemini:quota', time: at(60) }, { state: 'completed', time: at(5) }],
           quota: { claude: { fiveHour: 3, weekly: 1 }, codex: { fiveHour: 2, weekly: 0.5 }, gemini: { fiveHour: 1, weekly: 0 } },
         });
@@ -707,7 +1053,7 @@
     const group = currentGroup();
     const task = getSelected(group);
     const id = task?.id;
-    if (!task) return;
+    if (!task || task.redacted && operation !== 'status') return;
     if (operation === 'draft') {
       if (group.planReply) { A.toast('请先结束当前规划回复'); return; }
       if (input.value.trim()) { A.toast('请先处理当前草稿'); return; }
@@ -744,6 +1090,9 @@
     input.maxLength = reply ? 2000 : 12000;
     input.placeholder = reply ? '回复组长…' : '向组长描述任务…';
     $('#groupPlanReply').hidden = !reply;
+    const reference = group?.reference;
+    $('#groupReference').hidden = !reference || Boolean(reply);
+    if (reference) $('#groupReferenceLabel').textContent = '引用 #' + reference.slice(0, 8);
     if (reply) $('#groupPlanReplyText').textContent = '回复组长 · #' + reply.id.slice(0, 8);
   }
 
@@ -764,12 +1113,12 @@
     const token = suggestionToken();
     if (!token) { hideSuggestions(); return; }
     const { query, kind } = token;
-    suggestionItems = kind === '@' ? recipients.filter((id) => canUse(id) && memberName(id).toLowerCase().includes(query))
+    suggestionItems = kind === '@' ? [...recipients.filter((id) => canUse(id) && memberName(id).toLowerCase().includes(query)), ...('all'.startsWith(query) ? ['all'] : [])]
       : Object.keys(availableCommands).filter((name) => name.startsWith(query));
     if (!suggestionItems.length) { hideSuggestions(); return; }
     suggestionIndex = Math.min(suggestionIndex, suggestionItems.length - 1);
     setHtml(suggestions, suggestionItems.map((item, index) => `<button type="button" data-suggestion="${index}" aria-selected="${index === suggestionIndex}">
-      ${kind === '@' ? `${memberAvatar(item, 25)} ${memberName(item)} <small>${avatars.states[memberActivity(item).state || 'idle'].label}</small>`
+      ${item === 'all' && kind === '@' ? '<span class="mono">@all</span><small>只读广播</small>' : kind === '@' ? `${memberAvatar(item, 25)} ${memberName(item)} <small>${avatars.states[memberActivity(item).state || 'idle'].label}</small>`
         : `<span class="mono">/${item}</span><small>${availableCommands[item]}</small>`}
     </button>`).join(''));
     suggestions.hidden = false;
@@ -779,6 +1128,13 @@
     const token = suggestionToken();
     const item = suggestionItems[index];
     if (!token || !item) return;
+    if (token.kind === '@' && item === 'all') {
+      input.value = '@all ' + input.value.slice(input.selectionStart);
+      input.setSelectionRange(5, 5);
+      hideSuggestions();
+      input.focus();
+      return;
+    }
     if (token.kind === '@') {
       provider.value = item === 'lead' ? '' : item;
       model.value = '';
@@ -821,6 +1177,42 @@
     form.requestSubmit();
   });
 
+  function groupDraft(draft, group) {
+    const command = /^[/](duo|team|compact|review|broadcast|chat)(?:\s+|$)/i.exec(draft);
+    const all = /^@all(?:\s+|$)/i.exec(draft);
+    const modes = { duo: 'duo', team: 'team', review: 'review_only', chat: 'chat' };
+    const kind = all ? 'broadcast' : command?.[1].toLowerCase();
+    let prompt = command || all ? draft.slice((command || all)[0].length).trim() : draft;
+    let reviewOf;
+    if (kind === 'review') {
+      const target = /^#?([0-9a-f-]{6,36})(?:\s+|$)/i.exec(prompt);
+      if (target) {
+        const matches = [...group.records.values()].filter((task) => !task.redacted && task.id.startsWith(target[1]));
+        if (matches.length !== 1) throw new Error('找不到唯一的本人任务，请使用完整任务编号。');
+        reviewOf = matches[0].id;
+        prompt = prompt.slice(target[0].length).trim();
+      }
+      if (!prompt) prompt = '审查补丁的正确性和回归风险。';
+    }
+    const aliases = { '组长': '', codex: 'codex', claude: '', 'claude code': '', grok: 'grok', 'grok build': 'grok', gemini: 'gemini', antigravity: 'antigravity' };
+    const mention = /^@(组长|codex|claude(?: code)?|grok(?: build)?|gemini|antigravity)(?:\s+|$)/i.exec(prompt);
+    let recipient = mention ? aliases[mention[1].toLowerCase()] : provider.value;
+    if (['duo', 'team', 'review', 'broadcast', 'compact'].includes(kind)) recipient = '';
+    if (mention) prompt = prompt.slice(mention[0].length).trim();
+    if (recipient && !canUse(recipient)) throw new Error(`当前主控尚未启用 ${members[recipient].name}。`);
+    if (!prompt && kind !== 'compact') throw new Error('请输入任务内容。');
+    const mode = modes[kind] || 'normal';
+    const operation = kind === 'compact' ? 'compact_project' : kind === 'broadcast' ? 'broadcast'
+      : mode === 'review_only' || mode === 'chat' ? 'submit' : 'start_plan';
+    return {
+      operation,
+      request: {
+        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined,
+        provider: recipient || undefined, model: recipient && recipient === provider.value && model.value.trim() || undefined,
+      },
+    };
+  }
+
   function handleCommand(draft) {
     const match = /^\/(ls|stop|routes|avatars)(?:\s+(.+))?$/.exec(draft);
     if (!match) return false;
@@ -837,7 +1229,7 @@
       if (matches.length !== 1) { A.toast('请用 /stop #任务编号 指定一项任务'); return true; }
       selectTask(matches[0]);
       const task = getSelected();
-      if (!task.state || terminal.has(task.state)) { A.toast('这项任务当前不可取消'); return true; }
+      if (task.redacted || !task.state || terminal.has(task.state)) { A.toast('这项任务当前不可取消'); return true; }
       taskAction('cancel');
     }
     input.value = '';
@@ -863,35 +1255,39 @@
     }
     if (handleCommand(draft) || (!isExample(group.id) && (!supported || !hasRoute()))) return;
     hideSuggestions();
-    const aliases = { '组长': '', codex: 'codex', claude: 'claude', 'claude code': 'claude', grok: 'grok', 'grok build': 'grok', gemini: 'gemini', antigravity: 'antigravity' };
-    const mention = /^@(组长|codex|claude(?: code)?|grok(?: build)?|gemini|antigravity)(?:\s+|$)/i.exec(draft);
-    const recipient = mention ? aliases[mention[1].toLowerCase()] : provider.value;
-    const prompt = mention ? draft.slice(mention[0].length).trim() : draft;
-    if (recipient && !canUse(recipient)) {
-      group.taskError = `当前主控尚未启用 ${members[recipient].name}。`;
+    let parsed;
+    try {
+      parsed = groupDraft(draft, group);
+    } catch (error) {
+      group.taskError = error.message;
       render();
       return;
     }
-    if (!prompt) {
-      group.taskError = '请输入任务内容。';
-      render();
-      return;
-    }
-    const request = { prompt, provider: recipient || undefined,
-      model: recipient && recipient === provider.value && model.value.trim() || undefined };
-    const key = JSON.stringify(request);
+    const { operation, request } = parsed;
+    const key = JSON.stringify(parsed);
     if (group.pending?.key !== key) group.pending = { key, id: crypto.randomUUID() };
     const id = group.pending.id;
     const current = generation;
     const sent = await run(async () => {
       if (current !== generation) return;
-      const summary = isExample(group.id) ? {
+      if (operation === 'compact_project') {
+        const summary = isExample(group.id) ? { taskCount: group.records.size } : await control(operation, { project: request.project });
+        A.toast(`项目简报已更新 · ${summary.taskCount} 项任务`);
+        return;
+      }
+      const demo = operation === 'start_plan' ? {
         state: 'awaiting_details', detail: 'plan_questions',
         plan: { rounds: [{ revision: 1, questions: ['这项任务的交付物是什么？', '你会根据哪些条件验收？'] }] },
-      } : await control('start_plan', { taskId: id, ...request });
+      } : { state: 'completed', steps: [{ id: 'scout', role: request.provider || 'codex', output: '示例 · 已完成只读处理。' }] };
+      const summaries = isExample(group.id) ? [demo] : await control(operation, { taskId: id, ...request });
       if (current !== generation) return;
-      updateTask(group, id, { ...request, ...summary, time: Date.now() });
-      group.selected = id;
+      for (const summary of Array.isArray(summaries) ? summaries : [summaries]) {
+        const taskId = summary.id || id;
+        updateTask(group, taskId, { ...request, ...summary, time: Date.now() });
+        group.selected = taskId;
+      }
+      group.output = null;
+      persist(group);
       group.statusError = '';
       if (group === currentGroup()) {
         filter = 'all';
@@ -901,8 +1297,10 @@
     }, group);
     if (!sent || current !== generation) return;
     group.pending = null;
+    group.reference = null;
     if (group === currentGroup()) {
       if (input.value.trim() === draft) input.value = '';
+      setRecipient(group);
       timeline.scrollTop = timeline.scrollHeight;
     } else if (group.draft.trim() === draft) group.draft = '';
   });
@@ -927,13 +1325,58 @@
   }
   $('#groupRoster').addEventListener('click', (event) => showMember(event.target.closest('[data-roster]')?.dataset.roster));
   $('#sbGroupMembers').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
+  $('#sbResources').addEventListener('click', (event) => {
+    if (!event.target.closest('button')) return;
+    focusMember = undefined;
+    A.showPanel('members');
+    $('#panelResources')?.scrollIntoView({ block: 'nearest' });
+  });
   $('#sbQuota').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
   $('#panelBody').addEventListener('change', (event) => {
+    if (state.group && event.target.matches('[data-log-select]')) openTaskOutput('task_log', { stepId: event.target.value });
     if (state.group && event.target.id === 'flowTask') selectTask(event.target.value, 'graph');
   });
   for (const surface of [timeline, $('#panelBody')]) {
     surface.addEventListener('click', (event) => {
       if (!state.group) return;
+      const group = currentGroup();
+      if (event.target.closest('[data-clear-group-approvals]')) {
+        approvals.clear(localStorage, group.id);
+        A.renderPanel();
+        return;
+      }
+      const deny = event.target.closest('[data-group-approval-deny]');
+      if (deny) {
+        const id = deny.closest('[data-group-approval]').dataset.groupApproval;
+        respondApproval(group, group.approvals.get(id), false);
+        return;
+      }
+      const jump = event.target.closest('[data-reference-jump]');
+      if (jump) {
+        filter = 'all';
+        filterSelect.value = '';
+        updateFilters();
+        renderTimeline();
+        timeline.querySelector(`[data-message-id="${CSS.escape(jump.dataset.referenceJump)}"]`)?.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      const reference = event.target.closest('[data-reference]');
+      if (reference && !group.planReply) {
+        group.reference = reference.dataset.reference;
+        setRecipient(group);
+        input.focus();
+        return;
+      }
+      const output = event.target.closest('[data-task-output]');
+      if (output) {
+        openTaskOutput(output.dataset.taskOutput, { stepId: output.dataset.logStep || undefined });
+        return;
+      }
+      const artifact = event.target.closest('[data-artifact]');
+      if (artifact) {
+        openTaskOutput('task_artifacts', { artifact: artifact.dataset.artifact });
+        return;
+      }
       const planButton = event.target.closest('[data-plan-action]');
       if (planButton) {
         const group = currentGroup();
@@ -980,6 +1423,35 @@
     });
   }
 
+  $('#groupReferenceClear').addEventListener('click', () => {
+    const group = currentGroup();
+    if (!group) return;
+    group.reference = null;
+    setRecipient(group);
+  });
+  $('#newGroupProject').hidden = false;
+  $('#newGroupProject').addEventListener('click', () => {
+    projectDialog.showModal();
+    syncProjectChoices();
+    refresh();
+  });
+  $('#groupProjectClose').addEventListener('click', () => projectDialog.close());
+  $('#groupProjectForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = $('#groupProjectName').value.trim();
+    if (!name) return;
+    const binding = projectBinding.value;
+    if (binding && !routeState.projects?.includes(binding)) return;
+    const project = { id: 'group-' + crypto.randomUUID(), name, branch: 'main', live: Boolean(binding), serverProject: binding || undefined };
+    A.D.projects.push(project);
+    savedProjects.push(project);
+    if (!temporary) store.set('groupProjectBindings', savedProjects);
+    createGroup(project.id);
+    event.target.reset();
+    projectDialog.close();
+    A.openGroup(project.id);
+  });
+
   function openRoutes() {
     if (dialog.open) return;
     routeMessage.textContent = '';
@@ -1000,9 +1472,10 @@
   if (temporary) {
     enrollment.onExpired(() => {
       generation++;
-      const group = groups.get(liveProject);
-      if (group) {
+      for (const group of [...groups.values()].filter((group) => !isExample(group.id))) {
         group.records.clear();
+        group.approvals.clear();
+        group.output = group.reference = null;
         group.selected = group.pending = group.planReply = null;
         group.draft = group.provider = group.model = group.taskError = group.statusError = '';
       }
@@ -1019,7 +1492,11 @@
     });
   }
 
-  window.__group = { createGroup, hasGroup, switchGroup, taskCount, refresh, render, renderPanel };
+  document.addEventListener('visibilitychange', () => {
+    if (currentGroup()) markSeen(currentGroup());
+    repaint();
+  });
+  window.__group = { createGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel };
   A.renderSidebar();
   if (supported) setInterval(refresh, 5000);
 })();

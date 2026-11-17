@@ -1,6 +1,8 @@
 # AgentDesk
 
-AgentDesk 是一个 Windows 桌面客户端，通过 SSH 连接 VPS 上的 Codex App Server。客户端可转发本机桌面操作，并在「完全访问」模式下使用当前 Windows 账户的权限访问 C 盘非系统位置和 D 盘。
+AgentDesk 是一个 Windows 和 macOS 桌面客户端，通过 SSH 连接 VPS 上的 Codex App Server。客户端可转发本机桌面操作，并在「完全访问」模式下使用当前 Windows 账户的权限访问 C 盘非系统位置和 D 盘。
+
+应用支持本机 Git 和云端项目、SSH 指纹确认、群聊调度与诊断包导出。使用「工作区」管理项目和首次运行设置，使用「诊断」预览日志与主控状态以及检查更新。详见[安装](docs/INSTALL.md)、[权限](docs/PERMISSIONS.md)、[故障排查](docs/TROUBLESHOOTING.md)和[签名与发布](docs/SIGNING.md)。
 
 ## 从源码运行
 

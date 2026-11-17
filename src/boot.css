@@ -1,0 +1,35 @@
+/* boot sequence: white blueprint HUD, one fixed look (deliberately not theme-dependent) */
+.boot { position: fixed; inset: 0; z-index: 50; overflow: hidden; background: #f5f8fc; color: #1b2b44;
+  transition: opacity .7s ease, filter .7s ease, transform .7s ease; font-family: var(--font); cursor: default; }
+.boot.leaving { opacity: 0; filter: blur(8px); transform: scale(1.06); pointer-events: none; }
+.boot canvas#bootCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.boot-node { position: absolute; transform: translate(-50%, -50%); pointer-events: none; }
+.boot-label { position: absolute; transform: translate(-50%, 0); text-align: center; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .35s ease; }
+.boot-label b { display: block; font-size: 12.5px; font-weight: 600; color: #1b2b44; letter-spacing: .2px; }
+.boot-label span { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .8px; color: #6b7c94; }
+.boot-label span span { display: inline; }
+.boot-label .ok { color: #1a7f4e; } .boot-label .warn { color: #a3660a; }
+.boot-hud { position: absolute; font-family: var(--mono); font-size: 10.5px; letter-spacing: 1px; color: #6b7c94; line-height: 1.6; pointer-events: none; }
+.boot-hud.tl { top: max(18px, env(safe-area-inset-top, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); }
+.boot-hud.tr { top: max(18px, env(safe-area-inset-top, 0px)); right: max(18px, env(safe-area-inset-right, 0px)); text-align: right; }
+.boot-hud.bl { bottom: max(18px, env(safe-area-inset-bottom, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); max-width: min(360px, 60vw); }
+.boot-hud b { color: #1b2b44; font-weight: 600; }
+.boot-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.boot-log .ok { color: #1a7f4e; } .boot-log .warn { color: #a3660a; }
+.boot-skip { position: absolute; right: max(18px, env(safe-area-inset-right, 0px)); bottom: max(18px, env(safe-area-inset-bottom, 0px)); height: 28px; padding: 0 12px; border-radius: 14px;
+  border: 1px solid rgba(40,90,170,.25); color: #3d5577; font-size: 12px; background: rgba(255,255,255,.7); }
+.boot-skip:hover { border-color: #2f6fe0; color: #1b2b44; }
+@media (max-width: 560px) { .boot-hud.tr, .boot-hud.bl, .boot-label .role { display: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .boot { transition: none; }
+}
+
+#boot { display: none; }
+html[data-bootplay="yes"] #boot { display: block; }
+.boot { background-image: radial-gradient(rgba(40,90,170,.16) 1px, transparent 1px); background-size: 26px 26px; }
+.boot-hud.tl { top: 46px; }
+.boot-actions { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); white-space: nowrap; }
+.boot-actions button { border: 1px solid #9bb3d7; border-radius: 8px; background: #fff; color: #1b2b44; padding: 6px 12px; }
+.boot-log { white-space: pre; }
+.boot-actions span { display: block; text-align: center; margin-bottom: 8px; }

@@ -1,15 +1,13 @@
-// 本机工作区：C:\CodexSSH\windows-dev 的文件树、Git 改动、文件预览，以及本机技能的读取。
-// 全部在 Windows 本地完成，不占用 VPS（1 GB 内存）资源；对测试目录只读。
+// 本机工作区：只读文件树、Git 改动、文件预览和技能。
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
+const { contained } = require('./app-config');
 
 const mac = process.platform === 'darwin';
-const ROOT = process.env.AGENTDESK_ENROLLED || mac ? path.join(os.homedir(), 'AgentDeskWorkspace') : 'C:\\CodexSSH\\windows-dev';
-const ROOT_FWD = ROOT.replace(/\\/g, '/');
 const IGNORE = new Set(['.git', '.tools', '__pycache__', 'node_modules', '.venv', '.pytest_cache', '.mypy_cache']);
 const MAX_TREE = 3000;
 const MAX_PREVIEW = 512 * 1024;
@@ -18,15 +16,30 @@ const SKILL_MAX_BYTES = 5 * 1024 * 1024;
 const SKILL_MAX_FILES = 300;
 const UPLOAD_MAX = 10 * 1024 * 1024;
 
-function inside(rel) {
-  const abs = path.resolve(ROOT, rel || '.');
-  if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) throw new Error('路径超出工作区');
-  return abs;
+async function inside(root, rel) {
+  if (!root || typeof rel !== 'string' || !rel || path.posix.isAbsolute(rel) || path.win32.isAbsolute(rel) ||
+      rel.split(/[\\/]/).some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git' || /[:\x00]/.test(part))) {
+    throw new Error('路径超出工作区');
+  }
+  const abs = path.resolve(root, rel);
+  if (!contained(root, abs)) throw new Error('路径超出工作区');
+  try {
+    const resolved = await fsp.realpath(abs);
+    if (!contained(await fsp.realpath(root), resolved)) throw new Error('路径超出工作区');
+    return resolved;
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      const parent = path.dirname(rel);
+      if (parent !== '.') await inside(root, parent);
+      return abs;
+    }
+    throw error;
+  }
 }
 
-function git(args, { okCodes = [0] } = {}) {
+function git(root, args, { okCodes = [0] } = {}) {
   return new Promise((resolve) => {
-    execFile('git', ['--no-optional-locks', '-c', `safe.directory=${ROOT_FWD}`, '-c', 'core.quotepath=false', '-C', ROOT, ...args],
+    execFile('git', ['--no-optional-locks', '-c', `safe.directory=${root.replace(/\\/g, '/')}`, '-c', 'core.quotepath=false', '-C', root, ...args],
       { windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => {
         const code = err ? (typeof err.code === 'number' ? err.code : -1) : 0;
@@ -36,11 +49,27 @@ function git(args, { okCodes = [0] } = {}) {
 }
 
 class Workspace extends EventEmitter {
-  constructor() { super(); this.root = ROOT; this.watcher = null; this.timer = null; }
+  constructor(root = null) {
+    super();
+    this.root = root;
+    this.watcher = null;
+    this.timer = null;
+  }
+
+  setRoot(root) {
+    if (this.root === root) return;
+    clearTimeout(this.timer);
+    this.watcher?.close();
+    this.watcher = null;
+    this.root = root;
+    this.emit('changed');
+  }
 
   async access() {
-    try { await fsp.readdir(ROOT); return { ok: true, root: ROOT }; }
-    catch (e) { return { ok: false, root: ROOT, code: e.code, error: e.code === 'EPERM' || e.code === 'EACCES' ? '当前账户没有读取测试目录的权限' : e.message }; }
+    const root = this.root;
+    if (!root) return { ok: false, root, error: '当前项目没有本机工作区。' };
+    try { await fsp.readdir(root); return { ok: true, root }; }
+    catch (e) { return { ok: false, root, code: e.code, error: e.code === 'EPERM' || e.code === 'EACCES' ? '当前账户没有读取测试目录的权限' : e.message }; }
   }
 
   async tree() {
@@ -58,14 +87,15 @@ class Workspace extends EventEmitter {
         if (e.isDirectory()) await walk(path.join(dir, e.name), r, depth + 1);
       }
     };
-    await walk(ROOT, '', 0);
+    const root = this.root;
+    if (root) await walk(root, '', 0);
     return { items: out, truncated: out.length >= MAX_TREE };
   }
 
-  async read(rel) {
-    const abs = inside(rel);
-    if (mac && !(await fsp.realpath(abs)).startsWith((await fsp.realpath(ROOT)) + path.sep)) throw new Error('路径超出工作区');
+  async read(rel, root = this.root) {
+    const abs = await inside(root, rel);
     const st = await fsp.stat(abs);
+    if (!st.isFile()) throw new Error('只能预览普通文件。');
     if (st.size > MAX_PREVIEW) return { tooLarge: true, size: st.size };
     const buf = await fsp.readFile(abs);
     if (buf.subarray(0, 8000).includes(0)) return { binary: true, size: st.size };
@@ -74,9 +104,11 @@ class Workspace extends EventEmitter {
 
   // 改动列表：暂存区 + 工作区 + 未跟踪文件，带增删行数
   async changes() {
-    const top = await git(['rev-parse', '--show-toplevel']);
+    const root = this.root;
+    if (!root) return { repo: false, files: [] };
+    const top = await git(root, ['rev-parse', '--show-toplevel']);
     if (!top.ok) return { repo: false, files: [], error: /not a git repository/i.test(top.err) ? '' : top.err };
-    const st = await git(['status', '--porcelain=v1', '-uall', '-z']);
+    const st = await git(root, ['status', '--porcelain=v1', '-uall', '-z']);
     if (!st.ok) return { repo: true, files: [], error: st.err };
     const files = new Map();
     const parts = st.out.split('\0').filter(Boolean);
@@ -89,31 +121,32 @@ class Workspace extends EventEmitter {
       const [a, d, ...rest] = l.split('\t'); const f = files.get(rest.join('\t'));
       if (f) { f.add += a === '-' ? 0 : +a; f.del += d === '-' ? 0 : +d; if (a === '-') f.binary = true; }
     });
-    add((await git(['diff', '--numstat'])).out);
-    add((await git(['diff', '--cached', '--numstat'])).out);
+    add((await git(root, ['diff', '--numstat'])).out);
+    add((await git(root, ['diff', '--cached', '--numstat'])).out);
     for (const f of files.values()) if (f.untracked) {
-      try { const r = await this.read(f.path); f.add = r.text ? r.text.split('\n').length - (r.text.endsWith('\n') ? 1 : 0) : 0; if (r.binary) f.binary = true; } catch {}
+      try { const r = await this.read(f.path, root); f.add = r.text ? r.text.split('\n').length - (r.text.endsWith('\n') ? 1 : 0) : 0; if (r.binary) f.binary = true; } catch {}
     }
-    const branch = (await git(['symbolic-ref', '--short', '-q', 'HEAD'])).out.trim() || '(detached)';
+    const branch = (await git(root, ['symbolic-ref', '--short', '-q', 'HEAD'])).out.trim() || '(detached)';
     return { repo: true, branch, files: [...files.values()] };
   }
 
   async diff(rel) {
-    inside(rel);
-    const staged = await git(['diff', '--cached', '--no-color', '--', rel]);
-    const work = await git(['diff', '--no-color', '--', rel]);
+    const root = this.root;
+    await inside(root, rel);
+    const staged = await git(root, ['diff', '--cached', '--no-color', '--', rel]);
+    const work = await git(root, ['diff', '--no-color', '--', rel]);
     let text = staged.out + work.out;
     if (!text.trim()) {                                          // 未跟踪文件：与空文件比较
-      const u = await git(['diff', '--no-index', '--no-color', '--', mac ? '/dev/null' : 'NUL', rel], { okCodes: [0, 1] });
+      const u = await git(root, ['diff', '--no-index', '--no-color', '--', mac ? '/dev/null' : 'NUL', rel], { okCodes: [0, 1] });
       text = u.out;
     }
     return { text };
   }
 
   watch() {
-    if (this.watcher) return;
+    if (this.watcher || !this.root) return;
     try {
-      this.watcher = fs.watch(ROOT, { recursive: true }, (_ev, file) => {
+      this.watcher = fs.watch(this.root, { recursive: true }, (_ev, file) => {
         if (file && /(^|[\\/])(\.git[\\/](objects|logs)|__pycache__)/.test(file)) return;
         clearTimeout(this.timer);
         this.timer = setTimeout(() => this.emit('changed'), 700);
@@ -161,10 +194,12 @@ class Workspace extends EventEmitter {
 
   // 绝对路径在测试目录内 → 返回相对路径（用 / 分隔），否则返回 null
   relIfInside(p) {
-    const abs = path.resolve(p); const low = abs.toLowerCase(); const root = ROOT.toLowerCase();
-    if (low === root) return '';
-    if (!low.startsWith(root + path.sep)) return null;
-    return abs.slice(ROOT.length + 1).replace(/\\/g, '/');
+    if (!this.root || typeof p !== 'string' || !path.isAbsolute(p)) return null;
+    try {
+      const root = fs.realpathSync(this.root);
+      const absolute = fs.realpathSync(p);
+      return contained(root, absolute) ? path.relative(root, absolute).split(path.sep).join('/') : null;
+    } catch { return null; }
   }
 
   async readUpload(p) {
@@ -175,3 +210,4 @@ class Workspace extends EventEmitter {
 }
 
 module.exports = new Workspace();
+module.exports.Workspace = Workspace;

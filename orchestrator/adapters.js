@@ -195,8 +195,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     if (stopped) throw stopped;
     if (code !== 0 || failure) {
       const kind = classifyFailure((failure || '') + '\n' + tail);
-      // The reply so far and the last lines of stderr go with the error, so the lead can judge what went wrong.
-      throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')), { provider: name, usage, output: (output + '\n' + tail).trim().slice(-6000) });
+      throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')), { provider: name, usage });
     }
     return { output, usage };
   } finally {

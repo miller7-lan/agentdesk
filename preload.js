@@ -2,17 +2,56 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const on = (ch) => (cb) => { const h = (_e, v) => cb(v); ipcRenderer.on(ch, h); return () => ipcRenderer.removeListener(ch, h); };
 
+// main.js appends these to the renderer argv, so the platform is known synchronously.
+const flag = (name, fallback) => {
+  const prefix = '--agentdesk-' + name + '=';
+  const found = (process.argv || []).find((arg) => String(arg).startsWith(prefix));
+  return found ? found.slice(prefix.length) : fallback;
+};
+
 contextBridge.exposeInMainWorld('desk', {
   setTheme: (theme) => ipcRenderer.send('theme:set', theme),
   platform: process.platform,
-  diagnostics: {
-    export: () => ipcRenderer.invoke('diag:export'),
-    openLogs: () => ipcRenderer.invoke('diag:open-logs'),
+  system: {
+    os: flag('os', process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux'),
+    build: Number(flag('build', '0')) || 0,
+    material: flag('material', 'drawn'),
+    version: flag('version', ''),
+  },
+  launch: {
+    id: flag('launch', ''),
+    boot: flag('boot', 'on'),
+  },
+  platformInfo: () => ipcRenderer.invoke('platform:info'),
+  appearance: {
+    pickWallpaper: () => ipcRenderer.invoke('appearance:pickWallpaper'),
+    wallpaper: () => ipcRenderer.invoke('appearance:wallpaper'),
+    apply: (settings) => ipcRenderer.invoke('appearance:set', settings),
   },
   enrollment: {
     required: () => ipcRenderer.invoke('enrollment:required'),
+    ready: () => ipcRenderer.invoke('enrollment:ready'),
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
     onExpired: on('enrollment:expired'),
+  },
+  updates: { check: () => ipcRenderer.invoke('updates:check') },
+  diagnostics: {
+    preview: () => ipcRenderer.invoke('diagnostics:preview'),
+    export: () => ipcRenderer.invoke('diagnostics:export'),
+  },
+  onboarding: {
+    status: () => ipcRenderer.invoke('onboarding:status'),
+    advance: (request) => ipcRenderer.invoke('onboarding:advance', request),
+    complete: () => ipcRenderer.invoke('onboarding:complete'),
+    reset: () => ipcRenderer.invoke('onboarding:reset'),
+  },
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    add: (project) => ipcRenderer.invoke('projects:add', project),
+    update: (project) => ipcRenderer.invoke('projects:update', project),
+    remove: (id) => ipcRenderer.invoke('projects:remove', { id }),
+    select: (id) => ipcRenderer.invoke('projects:select', { id }),
+    onChanged: on('projects:changed'),
   },
   orchestrator: { control: (frame) => ipcRenderer.invoke('orchestrator:control', frame) },
   desktop: {

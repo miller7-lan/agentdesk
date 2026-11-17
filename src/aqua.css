@@ -1,0 +1,220 @@
+/* Aqua glass skin: a white, slowly moving glass surface over the classic layout.
+   Loaded after styles.css/group.css so it only remaps colours; classic skin is untouched. */
+
+:root {
+  --hue: 212;
+  --blur: 22px;
+  --frost: .72;        /* glass panels */
+  --read-floor: .9;    /* conversation area, never more transparent than this */
+  --bright: 1;
+  --wall-blur: 0px;
+  --glass-rgb: 14, 22, 38;
+  --glass-line: rgba(255, 255, 255, .14);
+  --glass-card: rgba(255, 255, 255, .08);
+  --glass-card-line: rgba(255, 255, 255, .12);
+  --aqua-ground: #060b15;
+  --aqua-accent: hsl(var(--hue) 90% 66%);
+  --aqua-accent-soft: hsla(var(--hue), 90%, 66%, .16);
+  --aqua-accent-ink: #061020;
+  --aqua-muted: #a6b0c0;
+  --aqua-faint: #8b95a6;
+  --glow: hsla(var(--hue), 95%, 70%, .55);
+}
+
+:root[data-theme="light"] {
+  --glass-rgb: 255, 255, 255;
+  --glass-line: rgba(255, 255, 255, .92);
+  --glass-card: rgba(255, 255, 255, .9);
+  --glass-card-line: rgba(30, 50, 80, .1);
+  --aqua-ground: #eef3f9;
+  --aqua-accent: hsl(var(--hue) 75% 42%);
+  --aqua-accent-soft: hsla(var(--hue), 75%, 42%, .12);
+  --aqua-accent-ink: #fff;
+  --aqua-muted: #4f5864;
+  --aqua-faint: #6f7884;
+  --glow: hsla(var(--hue), 90%, 55%, .35);
+  --read-floor: .9;
+}
+
+:root[data-theme="dark"] {
+  --glass-rgb: 14, 22, 38;
+  --glass-line: rgba(255, 255, 255, .12);
+  --glass-card: rgba(255, 255, 255, .06);
+  --glass-card-line: rgba(255, 255, 255, .1);
+  --aqua-ground: #060b15;
+  --aqua-accent: hsl(var(--hue) 90% 66%);
+  --aqua-accent-soft: hsla(var(--hue), 90%, 66%, .16);
+  --aqua-accent-ink: #061020;
+  --aqua-muted: #a6b0c0;
+  --aqua-faint: #8b95a6;
+  --glow: hsla(var(--hue), 95%, 70%, .55);
+  --read-floor: .9;
+}
+
+/* Remap the classic palette. Text colours were chosen against a white card, not against the wallpaper. */
+:root[data-skin="aqua"][data-theme="light"] {
+  --bg: rgba(255, 255, 255, .62);
+  --side: rgba(255, 255, 255, .68);
+  --main: rgba(255, 255, 255, .9);
+  --panel: rgba(255, 255, 255, .68);
+  --raised: rgba(255, 255, 255, .92);
+  --hover: rgba(25, 50, 80, .08);
+  --border: rgba(25, 50, 80, .14);
+  --text: #24282e;
+  --muted: #4f5864;
+  --faint: #6f7884;
+  --accent: var(--aqua-accent);
+  --accent-ink: #fff;
+  --accent-soft: var(--aqua-accent-soft);
+  --warn: #8a5300;
+  --warn-soft: #fff4dd;
+  --danger: #b02a3d;
+  --danger-soft: #ffe9ed;
+  --ok: #16704f;
+  --add-bg: #eaf7ef;
+  --del-bg: #fdeef1;
+  --user-bubble: rgba(232, 240, 250, .9);
+  --code-bg: rgba(240, 244, 248, .95);
+  --shadow: 0 18px 48px rgba(35, 55, 90, .16);
+  color-scheme: light;
+}
+
+:root[data-skin="aqua"][data-theme="dark"] {
+  --bg: rgba(14, 22, 38, .62);
+  --side: rgba(14, 22, 38, .7);
+  --main: rgba(10, 17, 30, .9);
+  --panel: rgba(14, 22, 38, .7);
+  --raised: rgba(22, 31, 49, .92);
+  --hover: rgba(255, 255, 255, .09);
+  --border: rgba(255, 255, 255, .13);
+  --text: #e5e8ed;
+  --muted: #a6b0c0;
+  --faint: #8b95a6;
+  --accent: var(--aqua-accent);
+  --accent-ink: #061020;
+  --accent-soft: var(--aqua-accent-soft);
+  --warn: #edbf72;
+  --warn-soft: #2c231e;
+  --danger: #f291a5;
+  --danger-soft: #33212d;
+  --ok: #7bceaa;
+  --add-bg: #192b29;
+  --del-bg: #30202a;
+  --user-bubble: rgba(39, 48, 66, .9);
+  --code-bg: rgba(18, 24, 36, .95);
+  --shadow: 0 18px 48px rgba(0, 0, 0, .38);
+  color-scheme: dark;
+}
+
+/* ---------- moving background and wallpaper ---------- */
+#fluid, #wall {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  display: none; z-index: 0; pointer-events: none;
+}
+#fluid { filter: brightness(var(--bright)); }
+#wall { background-size: cover; background-position: center; filter: blur(var(--wall-blur)) brightness(var(--bright)); transform: scale(1.06); }
+:root[data-skin="aqua"] body { background: var(--aqua-ground); }
+:root[data-skin="aqua"] #fluid { display: block; }
+:root[data-skin="aqua"][data-wall="on"] #fluid { display: none; }
+:root[data-skin="aqua"][data-wall="on"] #wall { display: block; }
+
+.titlebar, .workbench, .statusbar { position: relative; z-index: 1; }
+
+/* ---------- glass surfaces ---------- */
+:root[data-skin="aqua"] .titlebar,
+:root[data-skin="aqua"] .project-rail,
+:root[data-skin="aqua"] .sidebar,
+:root[data-skin="aqua"] .panel,
+:root[data-skin="aqua"] .center,
+:root[data-skin="aqua"] .statusbar,
+:root[data-skin="aqua"] .session-strip {
+  background: rgba(var(--glass-rgb), var(--frost));
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.5);
+  backdrop-filter: blur(var(--blur)) saturate(1.5);
+  border-color: var(--glass-line);
+}
+
+/* Reading first: the conversation and composer stay close to opaque whatever the frost slider says. */
+:root[data-skin="aqua"] .center {
+  background: rgba(var(--glass-rgb), max(var(--frost), var(--read-floor)));
+}
+:root[data-skin="aqua"] .composer-box {
+  background: rgba(var(--glass-rgb), .96);
+  border-color: var(--glass-card-line);
+}
+:root[data-skin="aqua"] .composer textarea::placeholder { color: var(--faint); opacity: 1; }
+
+:root[data-skin="aqua"] .dispatch-card,
+:root[data-skin="aqua"] .task-row,
+:root[data-skin="aqua"] .task-list-item,
+:root[data-skin="aqua"] .msg-user,
+:root[data-skin="aqua"] .card,
+:root[data-skin="aqua"] .steps-list,
+:root[data-skin="aqua"] .approval {
+  background: var(--glass-card);
+  border-color: var(--glass-card-line);
+}
+:root[data-skin="aqua"] .approval { background: linear-gradient(var(--warn-soft), var(--warn-soft)), var(--glass-card); border-color: var(--warn); }
+:root[data-skin="aqua"] .composer-bar select,
+:root[data-skin="aqua"] .tb-btn {
+  background: var(--glass-card);
+  border-color: var(--glass-card-line);
+}
+
+:root[data-skin="aqua"] .timeline {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
+
+/* The brand gets a soft glass pill so it reads as a control, not as floating text. */
+:root[data-skin="aqua"] .brand {
+  padding: 1px 12px 1px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(rgba(var(--glass-rgb), .72), rgba(var(--glass-rgb), .72)) padding-box,
+    linear-gradient(135deg, hsl(var(--hue) 95% 70%), hsl(calc(var(--hue) + 70) 90% 72%)) border-box;
+  box-shadow: 0 0 16px var(--glow);
+}
+:root[data-skin="aqua"] .brand-mark {
+  background: linear-gradient(135deg, hsl(var(--hue) 95% 68%), hsl(calc(var(--hue) + 70) 90% 70%));
+  border-radius: 50%;
+}
+
+/* ---------- floating layout ---------- */
+:root[data-skin="aqua"][data-layout="float"] .workbench { gap: 6px; padding: 10px; }
+:root[data-skin="aqua"][data-layout="float"] .titlebar,
+:root[data-skin="aqua"][data-layout="float"] .statusbar {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: transparent;
+}
+:root[data-skin="aqua"][data-layout="float"] .project-rail,
+:root[data-skin="aqua"][data-layout="float"] .sidebar,
+:root[data-skin="aqua"][data-layout="float"] .center,
+:root[data-skin="aqua"][data-layout="float"] .panel {
+  border: 1px solid var(--glass-line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(20, 40, 70, .14);
+}
+:root[data-skin="aqua"][data-theme="dark"][data-layout="float"] .project-rail,
+:root[data-skin="aqua"][data-theme="dark"][data-layout="float"] .sidebar,
+:root[data-skin="aqua"][data-theme="dark"][data-layout="float"] .center,
+:root[data-skin="aqua"][data-theme="dark"][data-layout="float"] .panel {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+:root[data-skin="aqua"][data-layout="float"] .splitter { background: transparent; }
+:root[data-skin="aqua"][data-layout="float"] .statusbar { padding: 0 16px; }
+
+/* Flat layout keeps the same colours but squares the corners and removes the outer padding. */
+:root[data-skin="aqua"][data-layout="flat"] .project-rail,
+:root[data-skin="aqua"][data-layout="flat"] .sidebar,
+:root[data-skin="aqua"][data-layout="flat"] .center,
+:root[data-skin="aqua"][data-layout="flat"] .panel { border-radius: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  #fluid { display: none !important; }
+  :root[data-skin="aqua"][data-wall="on"] #wall { transform: none; }
+}

@@ -16,7 +16,6 @@ const DEFAULTS = {
   codexKey: path.join(DIR, 'codex_vps_ed25519'),
   knownHosts: path.join(HOME, '.ssh', 'known_hosts'),
   remoteForward: mac ? '' : '127.0.0.1:2222:127.0.0.1:22',
-  workspace: '/home/codexdev/.local/share/codex-vps/workspace/windows-dev',
   manageSshd: !mac,
   port: 22,
   idleMinutes: 10,          // 空闲时断开 Codex，输入时自动重连
