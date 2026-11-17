@@ -84,6 +84,31 @@ test('failure text is classified as a login or quota problem, and usage shapes a
   assert.equal(normalizeUsage({ unrelated: 1 }), null);
 });
 
+test('Codex JSON errors classify quota exhaustion without treating recovered retries as failures', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdesk-codex-events-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'exec'), [
+    "const type = process.env.MOCK_CODEX_RESULT;",
+    "const message = 'You’ve hit your usage limit. Try again at 7:11 AM.';",
+    "console.log(JSON.stringify({ type: 'error', message }));",
+    "if (type === 'recovered') {",
+    "  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'ok' } }));",
+    "  console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 3 } }));",
+    "} else {",
+    "  if (type === 'terminal') console.log(JSON.stringify({ type: 'turn.failed', error: { message } }));",
+    "  process.exitCode = 1;",
+    "}",
+  ].join('\n'));
+  const run = (result) => runAdapter({
+    name: 'codex', config: { bin: process.execPath, env: { ...process.env, MOCK_CODEX_RESULT: result } },
+    cwd: dir, readonly: true, signal: new AbortController().signal, timeout: 5000,
+    prompt: 'hello', log: path.join(dir, result + '.log'), onSession() {},
+  });
+  await assert.rejects(run('terminal'), /cli_quota_exhausted/);
+  await assert.rejects(run('error_only'), /cli_quota_exhausted/);
+  assert.deepEqual(await run('recovered'), { output: 'ok', usage: { input: 3 } });
+});
+
 test('a CLI described by template runs with its flags, and an exhausted quota is reported as such', { skip: process.platform === 'win32' }, async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdesk-cli-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

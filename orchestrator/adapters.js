@@ -12,6 +12,8 @@ const providers = {
     session: (event) => event.thread_id,
     output: (event) => event.item?.type === 'agent_message' && event.item.text,
     usage: (event) => event.type === 'turn.completed' && event.usage,
+    failure: (event) => event.type === 'turn.failed' && (event.error?.message || 'turn_failed'),
+    diagnostic: (event) => event.type === 'error' && event.message,
   },
   claude: {
     args: (_prompt, readonly, session) => [
@@ -183,6 +185,8 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
         const message = provider.output(event);
         if (typeof message === 'string') output = (provider.append?.(event) ? output + redact(message) : redact(message)).slice(0, 12000);
         usage = addUsage(usage, normalizeUsage(provider.usage?.(event)));
+        const diagnostic = provider.diagnostic?.(event);
+        if (typeof diagnostic === 'string') tail = (tail + redact(diagnostic) + '\n').slice(-4000);
         const failed = provider.failure?.(event);
         if (failed) failure = redact(failed);
       } catch {}
