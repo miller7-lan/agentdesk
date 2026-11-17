@@ -584,6 +584,18 @@
   }
   $('#railSearch').addEventListener('click', focusSearch);
   $('#themeToggle').addEventListener('click', toggleTheme);
+  const diag = window.desk?.diagnostics;
+  if (diag) {
+    $('#diagExport').hidden = false;
+    $('#diagExport').addEventListener('click', async () => {
+      try {
+        const result = await diag.export();
+        if (result?.ok) toast('诊断信息已保存：' + result.path.split(/[\\/]/).pop());
+      } catch (error) {
+        toast('导出失败：' + (error.message || error));
+      }
+    });
+  }
 
   window.addEventListener('keydown', (e) => {
     if (!e.ctrlKey) return;

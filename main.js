@@ -54,6 +54,8 @@ function createWindow() {
   win.setMenuBarVisibility(false);
   // 拖进来的文件由页面处理；万一漏到窗口上也不要跳转去打开它
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.on('render-process-gone', (_e, details) => log.error('renderer.gone', details));
+  win.webContents.on('console-message', (e) => { if (e.level === 'error') log.error('renderer.error', { message: e.message, source: e.sourceId, line: e.lineNumber }); });
   // Links in model output never open a new Electron window; http(s) goes to the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
@@ -102,8 +104,24 @@ ipcMain.on('theme:set', (_e, theme) => {
   }
 });
 
+// 日志：%APPDATA%\AgentDesk\logs（Windows）或 ~/Library/Logs/AgentDesk（macOS），按天切分，保留 7 天
+const { Logger, diagnostics } = require('./logger');
+const log = new Logger({ dir: (() => { try { return app.getPath('logs'); } catch { return path.join(app.getPath('userData'), 'logs'); } })() });
+log.info('app.start', { version: app.getVersion(), platform: process.platform, arch: process.arch,
+  electron: process.versions.electron, os: require('os').release() });
+process.on('uncaughtExceptionMonitor', (error) => log.error('main.uncaught', { error, stack: error?.stack?.slice(0, 2000) }));
+process.on('unhandledRejection', (reason) => log.error('main.unhandled_rejection', { error: reason, stack: reason?.stack?.slice(0, 2000) }));
+
 // 远程 Codex：状态、事件、审批请求转发给界面
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
+let lastLinks = '';
+remote.on('status', (s) => {
+  const links = [s.sshd, s.tunnel, s.codex].join('/');
+  if (links !== lastLinks) {          // log changes, not every repeat of the same state
+    lastLinks = links;
+    log[s.codex === 'error' || s.tunnel === 'retry' || s.codex === 'retry' ? 'warn' : 'info']('remote.status', s);
+  }
+});
 remote.on('status', (s) => toUi('remote:status', s));
 remote.on('notification', (m) => toUi('codex:event', m));
 remote.on('server-request', (m) => {
@@ -117,8 +135,12 @@ remote.on('server-request', (m) => {
         : Promise.resolve(windowsFiles.result(false, { error: 'Windows file tools require an active AgentDesk Full Access turn' }))
       : desktop.call(params);
     task.then((result) => {
+      const target = params.arguments?.path || params.arguments?.destination;
+      const failed = result?.success === false;
+      log[failed ? 'warn' : 'info']('local.tool', { tool: params.tool, target, success: !failed,
+        error: failed ? result.contentItems?.[0]?.text?.slice(0, 300) : undefined });
       if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result);
-    }).catch(() => {});
+    }).catch((error) => log.error('local.tool', { tool: params.tool, error }));
     return;
   }
   toUi('codex:server-request', m);
@@ -163,6 +185,27 @@ ipcMain.handle('desktop:toggle', (event) => {
   return toggleDesktop(!desktop.enabled);
 });
 ipcMain.handle('remote:status', () => ({ ...remote.state }));
+// 导出诊断信息：版本、系统、去除密钥的配置、当前连接状态和最近的日志，保存后在文件夹中定位
+ipcMain.handle('diag:export', async (event) => {
+  if (event.sender !== win?.webContents) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: '导出诊断信息', defaultPath: path.join(app.getPath('desktop'), `agentdesk-diagnostics-${stamp}.txt`),
+    filters: [{ name: '文本', extensions: ['txt'] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  const report = diagnostics({
+    info: { version: app.getVersion(), platform: process.platform, arch: process.arch, os: require('os').release(),
+      electron: process.versions.electron, node: process.versions.node, logDir: log.dir },
+    config: remote.cfg, state: { ...remote.state, desktopEnabled: desktop.enabled, enrolled: Boolean(enrolledSession) },
+    logs: log.tail(2000),
+  });
+  await fs.promises.writeFile(filePath, report, { mode: 0o600 });
+  log.info('diag.exported', { file: path.basename(filePath) });
+  shell.showItemInFolder(filePath);
+  return { ok: true, path: filePath };
+});
+ipcMain.handle('diag:open-logs', () => shell.openPath(log.dir));
 ipcMain.handle('remote:reconnect', () => { if (enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
 ipcMain.handle('remote:wake', () => enrollment && !enrolledSession ? false : remote.wake());
 ipcMain.handle('remote:touch', () => { remote.touch(); return true; });
@@ -262,6 +305,7 @@ ipcMain.handle('codex:request', async (_e, method, params) => {
     }
     return { ok: true, result: await remote.request(method, params) };
   } catch (e) {
+    log.warn('codex.request_failed', { method, error: e });
     if (method === 'turn/start') {
       desktopThreads.delete(params?.threadId);
       fullAccessThreads.delete(params?.threadId);
@@ -399,6 +443,7 @@ app.on('before-quit', (e) => {
 });
 
 app.whenReady().then(() => {
+  log.info('app.ready');
   createWindow();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
     if (!enrollment) {

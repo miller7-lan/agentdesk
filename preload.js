@@ -5,6 +5,10 @@ const on = (ch) => (cb) => { const h = (_e, v) => cb(v); ipcRenderer.on(ch, h); 
 contextBridge.exposeInMainWorld('desk', {
   setTheme: (theme) => ipcRenderer.send('theme:set', theme),
   platform: process.platform,
+  diagnostics: {
+    export: () => ipcRenderer.invoke('diag:export'),
+    openLogs: () => ipcRenderer.invoke('diag:open-logs'),
+  },
   enrollment: {
     required: () => ipcRenderer.invoke('enrollment:required'),
     login: (password) => ipcRenderer.invoke('enrollment:login', password),

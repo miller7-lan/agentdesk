@@ -30,6 +30,7 @@
       "src/**/*",
       "desktop.js",
       "windows-files.js",
+      "logger.js",
       "orchestrator/*.js"
     ],
     "win": {
