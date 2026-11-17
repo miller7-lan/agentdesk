@@ -182,3 +182,7 @@
 .quota-table th { color: var(--muted); font-weight: 600; }
 .quota-table :is(th, td) + :is(th, td) { text-align: right; }
 @media (max-width: 1100px) { .quota-mini { display: none; } }
+
+.sb-resource { white-space: nowrap; }
+.panel-resources { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; color: var(--muted); font-size: 12px; }
+.sb-resource.resource-warning, .panel-resources .resource-warning { color: var(--amber, #a3660a); }

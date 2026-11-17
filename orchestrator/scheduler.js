@@ -8,6 +8,7 @@ const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent }
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
+const { hostResources } = require('./host-resources');
 const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, clip } = require('./summary');
 const {
   REVIEW_INSTRUCTION, ACCEPTANCE_INSTRUCTION, parseReviewVerdict, reviewConflicts, mergeFindings,
@@ -1467,6 +1468,7 @@ event(task, state, detail) {
     if (frame.kind !== 'task.status') throw new Error('unsupported_operation');
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
+    if (body.operation === 'resource_status' && (route === 'admin' || named)) return hostResources();
     if (body.operation === 'quota_status') {
       if (route === 'admin') {
         return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true }))

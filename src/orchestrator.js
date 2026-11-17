@@ -94,6 +94,8 @@
   let knownRoutes = false;
   let routeState = {};
   let quotas = [];
+  let resources;
+  let checkingResources;
   let quotaCheck = null;
   let nextQuotaAt = 0;
   let cursor = 0;
@@ -388,6 +390,8 @@
     }).join(''));
     refreshQuotas();
     setHtml($('#sbQuota'), quotaStatusBar());
+    setHtml($('#sbResources'), resourceLabels().map(({ label, warning }) =>
+      `<button type="button" class="sb-item clickable sb-resource${warning ? ' resource-warning' : ''}">${esc(label)}</button>`).join(''));
     const canSend = isExample(state.group) || (supported && (currentGroup().planReply ? connected : hasRoute()));
     $('#groupSend').disabled = busy || !canSend || !recipientReady;
     $('#groupPlanReplyCancel').disabled = busy;
@@ -526,10 +530,48 @@
     return total ? `用量 ${Math.round(total / 1000)}k token` : '';
   }
 
+  function resourceLabels() {
+    if (!isLiveGroup() || !resources) return [];
+    const { host, docker, disk } = resources;
+    const amount = (bytes) => {
+      if (!Number.isFinite(bytes) || bytes < 0) return '—';
+      return bytes < 1024 ** 3 ? Math.round(bytes / 1024 ** 2) + ' MB' : (bytes / 1024 ** 3).toFixed(1) + ' GB';
+    };
+    const labels = [];
+    if (docker?.enabled) {
+      if (docker.ok) {
+        const limit = Number.isSafeInteger(docker.max) ? docker.max : '—';
+        labels.push({ label: `容器 ${docker.count}/${limit}` }, { label: '容器内存 ' + amount(docker.memoryBytes) });
+      } else labels.push({ label: '容器数据不可用', warning: true });
+    }
+    if (host) labels.push(
+      { label: `主机内存 ${amount(host.memoryUsedBytes)} / ${amount(host.memoryTotalBytes)}` },
+      { label: `Swap ${amount(host.swapUsedBytes)} / ${amount(host.swapTotalBytes)}` },
+    );
+    if (docker?.enabled && Number.isFinite(disk?.freeRatio) && disk.freeRatio < 0.15) {
+      labels.push({ label: `磁盘仅余 ${Math.round(disk.freeRatio * 100)}%`, warning: true });
+    }
+    return labels;
+  }
+
+  function refreshResources(current) {
+    if (checkingResources || !isLiveGroup()) return;
+    checkingResources = control('resource_status').then((value) => {
+      if (current === generation) resources = value;
+    }, () => {
+      if (current === generation) resources = undefined;
+    }).finally(() => {
+      checkingResources = null;
+      if (current === generation) repaint();
+    });
+  }
+
   function panelMembers() {
     refreshQuotas();
     return `<div class="project-panel-body"><div class="member-panel-heading"><h3>项目成员</h3>
       <button type="button" class="task-text-link" data-avatar-sheet>状态图鉴 ${svg('chev')}</button></div>
+      ${resourceLabels().length ? `<div id="panelResources" class="panel-resources">${resourceLabels().map(({ label, warning }) =>
+        `<span class="${warning ? 'resource-warning' : ''}">${esc(label)}</span>`).join('')}</div>` : ''}
       ${Object.entries(members).map(([id, member]) => {
         const { task, state: activity } = memberActivity(id);
         return `<div class="member-row ${focusMember === id ? 'member-focused' : ''}">${memberAvatar(id, 48, 'members')}<div>
@@ -689,6 +731,7 @@
     if (!supported || busy || (!isLiveGroup() && !dialog.open)) return;
     if (checking) return checking;
     const current = generation;
+    refreshResources(current);
     checking = (async () => {
       let routes;
       try {
@@ -1021,6 +1064,12 @@
   }
   $('#groupRoster').addEventListener('click', (event) => showMember(event.target.closest('[data-roster]')?.dataset.roster));
   $('#sbGroupMembers').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
+  $('#sbResources').addEventListener('click', (event) => {
+    if (!event.target.closest('button')) return;
+    focusMember = undefined;
+    A.showPanel('members');
+    $('#panelResources')?.scrollIntoView({ block: 'nearest' });
+  });
   $('#sbQuota').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
   $('#panelBody').addEventListener('change', (event) => {
     if (state.group && event.target.id === 'flowTask') selectTask(event.target.value, 'graph');
