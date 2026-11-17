@@ -154,7 +154,7 @@
 | Codex | OpenAI（GPT） | logo 中心垫一块实心圆作为脸（线条图案上直接画眼睛看不清） |
 | Antigravity | Antigravity | 拱形下部 |
 | Grok | Grok | logo 中心 |
-| 本机 | Windows | 上面两个方块 |
+| 本机 | 自绘的电脑图标（Windows 和 macOS 通用） | 屏幕中间 |
 
 状态与表现。状态全部由任务自动驱动；动作和道具的设计参考了 [Clawd on Desk](https://github.com/rullerzhou-afk/clawd-on-desk)（AGPL-3.0，只借鉴思路，代码和素材都是重新画的）：
 
@@ -183,7 +183,7 @@
 - 系统开启「减少动态效果」时只显示静止的状态画面；窗口不在前台时暂停绘制。
 - 用 Canvas 2D 自己绘制，不复制 agent-hud-open 的代码，因此没有 Apache-2.0 代码的署名义务；只借鉴它的状态划分和交互思路。
 
-**logo 的来源和使用边界**：logo 文件取自 `@lobehub/icons-static-svg`（MIT 许可），各 logo 的商标权归各自公司。在你自用的 AgentDesk 里用来标识对应工具没有问题；如果以后要公开发布或商业分发，需要再确认各家的商标使用规范，必要时换回自绘的原创形象。agent-hud-open 自带的 Clawd 精灵图另有 Anthropic 版权，不要拿来用。
+**logo 的来源和使用边界**：「本机」用自己画的电脑图标，不随系统变化；其余 logo 取自 `@lobehub/icons-static-svg`（MIT 许可），各 logo 的商标权归各自公司。在你自用的 AgentDesk 里用来标识对应工具没有问题；如果以后要公开发布或商业分发，需要再确认各家的商标使用规范，必要时换回自绘的原创形象。agent-hud-open 自带的 Clawd 精灵图另有 Anthropic 版权，不要拿来用。
 
 ## 3.6 视觉：白色玻璃主题、开机动画、双平台
 

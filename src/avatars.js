@@ -20,7 +20,7 @@ const EYES = {
   antigravity:    { x: [10.0, 14.0], y: 14.2, w: 1.5, h: 2.6 },
   gemini:  { x: [10.2, 13.8], y: 12.0, w: 1.5, h: 2.6 },
   grok:    { x: [9.7, 14.3], y: 11.6, w: 1.5, h: 2.7 },
-  local: { x: [6.75, 17.25], y: 6.75, w: 1.8, h: 3.0 },
+  local: { x: [9.6, 14.4], y: 10.0, w: 1.6, h: 2.8 },   // eyes on the screen
 };
 // State vocabulary shared with task-runner and WeChat (/ls).
 const STATES = {
@@ -59,7 +59,7 @@ function readColors() {
 
 function logoImage(id) {
   if (!M[id].bot) return null;
-  const name = id === 'local' && window.desk?.platform === 'darwin' ? 'mac' : id;
+  const name = id;   // 本机 uses one neutral computer mark on both Windows and macOS
   const path = './avatar-assets/' + name + (['codex', 'grok'].includes(name) ? (isLight() ? '-light' : '-dark') : '') + '.svg';
   if (!images.has(path)) {
     const image = new Image();
