@@ -213,11 +213,30 @@ function start(config) {
     wire.once('frame', async (frame) => {
       try {
         const scope = capabilities.get(frame.capability);
-        if (!scope || !['read', 'list', 'stat', 'search'].includes(frame.operation)) throw new Error('mcp_permission_denied');
-        const value = await files.call(scheduler.bridgeRoute(scope.workspace), scope.taskId, 'file.read', {
-          operation: frame.operation, workspace: scope.workspace, path: frame.path,
-          query: frame.query, offset: frame.offset, version: frame.version,
-        });
+        if (!scope) throw new Error('mcp_permission_denied');
+        const route = scheduler.bridgeRoute(scope.workspace);
+        let value;
+        if (['read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+          value = await files.call(route, scope.taskId, 'file.read', {
+            operation: frame.operation, workspace: scope.workspace, path: frame.path,
+            query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
+          });
+        } else if (frame.operation === 'commands' || frame.operation === 'run') {
+          // Commands run in the person's real project, so only scout and code-changing steps may use them,
+          // and only the commands that workspace lists in agentCommands.
+          if (!scope.runCommands) throw new Error('mcp_permission_denied: this step cannot run local commands');
+          value = frame.operation === 'commands'
+            ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', workspace: scope.workspace })
+            : await files.call(route, scope.taskId, 'command.execute', {
+              operation: 'run', workspace: scope.workspace, command: frame.command, permission: 'agent', timeout_ms: 300000,
+            }, 310000);
+          if (frame.operation === 'run') {
+            const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
+            value = { ...value, stdout: tail(value.stdout), stderr: tail(value.stderr) };
+          }
+        } else {
+          throw new Error('mcp_permission_denied');
+        }
         if (!socket.destroyed) wire.send({ ok: true, value });
       } catch (error) {
         if (!socket.destroyed) wire.send({ ok: false, error: error.message });

@@ -11,6 +11,47 @@ const MAX_FILE = 20 * 1024 * 1024;
 const sha = (data) => createHash('sha256').update(data).digest('hex');
 const validDigest = (value) => /^[a-f0-9]{64}$/.test(value);
 
+// Content search for agents: finds lines containing the query in text files under a project path.
+// Skips symlinks, version-control and dependency folders, binary files and files over 1 MB; capped in
+// files visited, matches and response size like the name search.
+const GREP_SKIP = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.next', '.cache']);
+async function grep(start, body) {
+  if (typeof body.query !== 'string' || !body.query || body.query.length > 200) throw new Error('invalid_query');
+  const sensitive = body.caseSensitive === true;
+  const needle = sensitive ? body.query : body.query.toLowerCase();
+  const matches = [];
+  let visited = 0;
+  let size = 0;
+  let truncated = false;
+  async function scan(file, rel) {
+    const stat = await fs.stat(file);
+    if (stat.size > 1024 * 1024) return;
+    const bytes = await fs.readFile(file);
+    if (bytes.subarray(0, 8000).includes(0)) return;
+    const lines = bytes.toString('utf8').split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+      if (!(sensitive ? lines[index] : lines[index].toLowerCase()).includes(needle)) continue;
+      const text = lines[index].trim().slice(0, 200);
+      size += rel.length + text.length + 24;
+      matches.push({ path: rel, line: index + 1, text });
+      if (matches.length >= 200 || size >= 12000) { truncated = true; return; }
+    }
+  }
+  async function walk(dir, prefix) {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      if (truncated) return;
+      if (++visited > 5000) { truncated = true; return; }
+      if (entry.isSymbolicLink() || GREP_SKIP.has(entry.name.toLowerCase())) continue;
+      const rel = prefix + entry.name;
+      if (entry.isDirectory()) await walk(path.join(dir, entry.name), rel + '/');
+      else if (entry.isFile()) await scan(path.join(dir, entry.name), rel);
+    }
+  }
+  if ((await fs.stat(start)).isDirectory()) await walk(start, body.path ? body.path + '/' : '');
+  else await scan(start, body.path);
+  return { matches, truncated };
+}
+
 async function within(root, relative, { missing = false, directory = false } = {}) {
   if (typeof relative !== 'string' || (relative === '' && !directory) || relative.length > 1024 ||
       (relative && relative.split('/').some((part) =>
@@ -291,6 +332,7 @@ class WindowsOperations {
       await walk(filename, body.path ? body.path + '/' : '');
       return { items, truncated: visited > 10000 || items.length >= 500 || responseSize >= 12000 };
     }
+    if (body.operation === 'grep') return grep(filename, body);
     if (body.operation !== 'read') throw new Error('unsupported_file_operation');
     const metadata = await version(filename);
     if (metadata.type !== 'file' || (body.version && metadata.version !== body.version)) throw new Error('version_conflict');
@@ -375,8 +417,14 @@ class WindowsOperations {
     const controller = new AbortController();
     if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
     if (body.operation === 'git_review_diff') return this.reviewDiff(root, controller.signal);
+    // Agents see and run only the commands this workspace lists in agentCommands (empty by default).
+    const forAgents = Array.isArray(workspace.agentCommands) ? workspace.agentCommands.filter((name) => Array.isArray(workspace.commands?.[name])) : [];
+    if (body.operation === 'list_agent_commands') {
+      return { commands: forAgents.map((name) => ({ name, program: path.basename(workspace.commands[name][0]), args: workspace.commands[name].slice(1, 21) })) };
+    }
+    if (body.permission === 'agent' && !forAgents.includes(body.command)) throw new Error('command_not_enabled_for_agents');
     const spec = Object.hasOwn(workspace.commands || {}, body.command) && workspace.commands[body.command];
-    if (body.operation !== 'run' || body.permission !== 'development' || !Array.isArray(spec) ||
+    if (body.operation !== 'run' || !['development', 'agent'].includes(body.permission) || !Array.isArray(spec) ||
         !spec.length || spec.some((arg) => typeof arg !== 'string') ||
         !Number.isSafeInteger(body.timeout_ms) || body.timeout_ms < 1 || body.timeout_ms > 900000) {
       throw new Error('command_not_authorized');

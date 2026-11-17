@@ -9,6 +9,7 @@ const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
 const { teamAdapter } = require('./team');
+const { cleanup, retention } = require('./cleanup');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
 const { hostResources } = require('./host-resources');
 const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, compactProject, clip } = require('./summary');
@@ -144,6 +145,7 @@ class Scheduler {
     this.files = files;
     this.adapter = adapter;
     this.teamAdapter = teamAdapter(config.docker, config.stateDir);
+    retention(config.retention);   // fail at start-up on a bad retention setting, not at the first clean-up
     this.now = now;
     this.router = new Router(config, now);
     this.acceptance = validateAcceptance(config.acceptance);
@@ -274,7 +276,20 @@ class Scheduler {
         ? { role, ok: false, error: error.code === 'ENOENT' ? 'not_installed' : (stderr || error.message).trim().slice(0, 200) }
         : { role, ok: true, version: (stdout || stderr).trim().split('\n')[0].slice(0, 120) }));
     });
-    return Promise.all(this.router.roles().map(version)).then((clis) => ({ clis, ...this.router.status() }));
+    return Promise.all(this.router.roles().map(version)).then((clis) => ({ clis, ...this.router.status(), cleanup: this.lastCleanup || null }));
+  }
+
+  // One clean-up pass at a time; the hourly tick and `ad gc` share it.
+  cleanupNow() {
+    this.cleaning ||= cleanup({
+      tasks: [...this.tasks.values()], running: this.running, config: this.config, now: this.now(),
+      onCleared: (task) => this.save(task, task.state, task.detail, false),   // marks cleanedAt without a new event
+    }).then((result) => {
+      this.lastCleanup = result;
+      if (result.lowDisk) console.error('cleanup: low disk', result.freePercent + '% free');
+      return result;
+    }).finally(() => { this.cleaning = null; });
+    return this.cleaning;
   }
 
   async diagnosticStatus({ named, admin = false } = {}) {
@@ -683,6 +698,11 @@ event(task, state, detail) {
   // Called by the service timer: refresh cached quota (a Codex read starts an App Server) and retry
   // tasks whose executor may have become available.
   tick() {
+    const now = this.now();
+    if (!this.lastCleanupAt || now - this.lastCleanupAt >= 3600_000) {
+      this.lastCleanupAt = now;
+      this.cleanupNow().catch((error) => console.error('cleanup:', error.message));
+    }
     this.refreshQuota().catch(() => {}).finally(() => {
       // A triage that was waiting for Claude is retried in place; the task is not lent to another CLI.
       const now = this.now();
@@ -833,7 +853,7 @@ event(task, state, detail) {
     const mcp = readOnlyMode(task.mode) || step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
     const release = await this.acquireCli(task, step, signal);
     const capability = mcp && randomBytes(32).toString('base64url');
-    if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace });
+    if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, runCommands: Boolean(step.write || step.capability === 'scout') });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
@@ -1660,6 +1680,7 @@ event(task, state, detail) {
     if (frame.kind !== 'task.status') throw new Error('unsupported_operation');
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
+    if (body.operation === 'cleanup' && route === 'admin') return this.cleanupNow();
     if (body.operation === 'diagnostics' && (route === 'admin' || named)) return this.diagnosticStatus({ named, admin: route === 'admin' });
     if (body.operation === 'onboarding_check' && (route === 'admin' || named)) {
       return this.diagnosticStatus({ named, admin: route === 'admin' }).then(({ clis }) => clis);

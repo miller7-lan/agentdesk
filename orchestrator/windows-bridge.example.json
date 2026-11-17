@@ -6,13 +6,43 @@
       "desktop": true,
       "write": true,
       "commands": {
-        "git-status": ["git.exe", "status", "--short"],
-        "java-build": ["javac.exe", "Main.java"],
-        "python-test": ["python.exe", "-m", "pytest"],
-        "node-build": ["node.exe", "scripts/build.js"],
-        "maven-test": ["cmd.exe", "/d", "/c", "C:/Tools/apache-maven/bin/mvn.cmd", "test"],
-        "gradle-test": ["cmd.exe", "/d", "/c", "gradlew.bat", "test"]
-      }
+        "git-status": [
+          "git.exe",
+          "status",
+          "--short"
+        ],
+        "java-build": [
+          "javac.exe",
+          "Main.java"
+        ],
+        "python-test": [
+          "python.exe",
+          "-m",
+          "pytest"
+        ],
+        "node-build": [
+          "node.exe",
+          "scripts/build.js"
+        ],
+        "maven-test": [
+          "cmd.exe",
+          "/d",
+          "/c",
+          "C:/Tools/apache-maven/bin/mvn.cmd",
+          "test"
+        ],
+        "gradle-test": [
+          "cmd.exe",
+          "/d",
+          "/c",
+          "gradlew.bat",
+          "test"
+        ]
+      },
+      "agentCommands": [
+        "git-status",
+        "python-test"
+      ]
     }
   },
   "ssh": {

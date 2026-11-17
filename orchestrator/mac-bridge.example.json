@@ -10,8 +10,15 @@
       "desktop": true,
       "write": true,
       "commands": {
-        "git-status": ["/usr/bin/git", "status", "--short"]
-      }
+        "git-status": [
+          "/usr/bin/git",
+          "status",
+          "--short"
+        ]
+      },
+      "agentCommands": [
+        "git-status"
+      ]
     }
   },
   "ssh": {

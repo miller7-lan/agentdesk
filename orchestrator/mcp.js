@@ -3,29 +3,39 @@ const { connect } = require('node:net');
 const { Lines } = require('./transport');
 
 const operations = {
-  windows_list_directory: ['list', []],
-  windows_stat_file: ['stat', []],
-  windows_search_files: ['search', ['query']],
-  windows_read_file_chunk: ['read', []],
+  windows_list_directory: ['list', ['path']],
+  windows_stat_file: ['stat', ['path']],
+  windows_search_files: ['search', ['path', 'query']],
+  windows_grep_files: ['grep', ['path', 'query']],
+  windows_read_file_chunk: ['read', ['path']],
+  windows_list_commands: ['commands', []],
+  windows_run_command: ['run', ['command']],
 };
 
-const tools = Object.entries(operations).map(([name, [action, extra]]) => ({
+const descriptions = {
+  list: 'List a directory in the authorized project on the person\'s machine.',
+  stat: 'Get a file\'s size and SHA-256 version on the person\'s machine.',
+  search: 'Search file and folder names in the authorized project on the person\'s machine.',
+  grep: 'Search file contents in the authorized project on the person\'s machine, including files not in Git such as local config and logs. Returns path, line and text for each match.',
+  read: 'Read one file chunk as Base64 from the person\'s machine. Pass version and offset to continue reading.',
+  commands: 'List the commands the person allows agents to run in their project.',
+  run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
+};
+
+const tools = Object.entries(operations).map(([name, [action, required]]) => ({
   name,
-  description: {
-    list: 'List a directory in the authorized Windows project.',
-    stat: 'Get the Windows file size and SHA-256 version.',
-    search: 'Search names in the authorized Windows project.',
-    read: 'Read one Windows file chunk as Base64. Pass version and offset to continue reading.',
-  }[action],
-  annotations: { readOnlyHint: true },
+  description: descriptions[action],
+  annotations: { readOnlyHint: action !== 'run' },
   inputSchema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Slash-separated path relative to the project. Empty string means project root.' },
-      ...(action === 'search' ? { query: { type: 'string' } } : {}),
+      ...(required.includes('path') ? { path: { type: 'string', description: 'Slash-separated path relative to the project. Empty string means project root.' } } : {}),
+      ...(required.includes('query') ? { query: { type: 'string' } } : {}),
+      ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
+      ...(action === 'run' ? { command: { type: 'string', description: 'A name returned by windows_list_commands.' } } : {}),
     },
-    required: ['path', ...extra],
+    required,
     additionalProperties: false,
   },
 }));
@@ -70,7 +80,8 @@ if (require.main === module) {
       } else if (frame.method === 'tools/call' && Object.hasOwn(operations, frame.params.name)) {
         const [operation] = operations[frame.params.name];
         const args = frame.params.arguments || {};
-        const value = await request(socketPath, { capability, operation, path: args.path, query: args.query, offset: args.offset, version: args.version });
+        const value = await request(socketPath, { capability, operation, path: args.path, query: args.query, offset: args.offset,
+          version: args.version, caseSensitive: args.caseSensitive, command: args.command }, operation === 'run' ? 320000 : 35000);
         result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
       } else {
         throw new Error('unsupported_mcp_method');
