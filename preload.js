@@ -30,8 +30,15 @@ contextBridge.exposeInMainWorld('desk', {
   },
   enrollment: {
     required: () => ipcRenderer.invoke('enrollment:required'),
+    ready: () => ipcRenderer.invoke('enrollment:ready'),
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
     onExpired: on('enrollment:expired'),
+  },
+  onboarding: {
+    status: () => ipcRenderer.invoke('onboarding:status'),
+    advance: (request) => ipcRenderer.invoke('onboarding:advance', request),
+    complete: () => ipcRenderer.invoke('onboarding:complete'),
+    reset: () => ipcRenderer.invoke('onboarding:reset'),
   },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),

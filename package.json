@@ -23,6 +23,7 @@
     "files": [
       "main.js",
       "app-config.js",
+      "onboarding.js",
       "preload.js",
       "clawd.js",
       "remote.js",

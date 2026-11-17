@@ -1632,6 +1632,14 @@ event(task, state, detail) {
     if (frame.kind !== 'task.status') throw new Error('unsupported_operation');
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
+    if (body.operation === 'onboarding_check' && (route === 'admin' || named)) {
+      return this.doctor().then(({ clis }) => clis.map(({ role, name, ok, version }) => {
+        const provider = role || name;
+        const block = this.router.blocked.get(provider);
+        const state = !ok ? 'unavailable' : block?.until > this.now() ? block.reason === 'auth' ? 'auth_required' : 'quota_limited' : 'ready';
+        return { provider, state, ...(version && { version: clip(version, 80) }) };
+      }));
+    }
     if (body.operation === 'resource_status' && (route === 'admin' || named)) return hostResources();
     if (body.operation === 'quota_status') {
       if (route === 'admin') {

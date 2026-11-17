@@ -5,6 +5,7 @@ const { randomUUID } = require('crypto');
 const os = require('node:os');
 const { AppConfig, migrate } = require('./app-config');
 const { normalizeSettings } = require('./src/appearance');
+const { steps: onboardingSteps, configuredHost, verified } = require('./onboarding');
 const bootstrapPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'agentdesk-enrollment.json');
 const enrollment = fs.existsSync(bootstrapPath) && JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
 if (enrollment) process.env.AGENTDESK_ENROLLED = '1';
@@ -51,6 +52,10 @@ const OVERLAY = {
 let win;
 let appConfig;
 let configError;
+let trustedHost = { host: '', fingerprints: [] };
+let connectivityStarted = false;
+const skipOnboarding = process.env.AGENTDESK_ONBOARDING === '0' ||
+  (process.env.AGENTDESK_ONBOARDING !== '1' && Boolean(process.env.AGENTDESK_SHOT || process.env.AGENTDESK_LIVETEST));
 const legacyDir = path.join(os.homedir(), '.agentdesk');
 const preferredRoot = (() => {
   if (mac || enrollment) return path.join(os.homedir(), 'AgentDeskWorkspace');
@@ -84,6 +89,72 @@ async function loadAppConfig() {
 function fromMainWindow(event) {
   return Boolean(win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame);
 }
+
+function hostConfirmed() {
+  return skipOnboarding || verified(trustedHost, appConfig?.value.confirmedHost);
+}
+
+function onboardingStatus() {
+  const saved = appConfig.value;
+  const confirmed = hostConfirmed();
+  const complete = saved.onboardingComplete === true && (!trustedHost.host || confirmed);
+  const step = onboardingSteps.includes(saved.onboardingStep) ? saved.onboardingStep : 'welcome';
+  return { ok: true, enabled: !skipOnboarding, complete, confirmed, trust: trustedHost,
+    step: trustedHost.host && !confirmed && !['welcome', 'fingerprint'].includes(step) ? 'fingerprint' : step,
+    enrollmentRequired: Boolean(enrollment), signedIn: Boolean(enrolledSession),
+    project: appConfig.active, configurationError: Boolean(configError) };
+}
+
+function startConnectivity() {
+  if (connectivityStarted || enrollment || !hostConfirmed() || process.env.AGENTDESK_SHOT || process.env.AGENTDESK_OFFLINE) return;
+  connectivityStarted = true;
+  remote.start();
+  startOrchestratorBridge();
+  startMacDesktop();
+}
+
+ipcMain.handle('onboarding:status', (event) => fromMainWindow(event) ? onboardingStatus() : { ok: false });
+ipcMain.handle('onboarding:advance', async (event, { step, fingerprint } = {}) => {
+  if (!fromMainWindow(event) || configError || !onboardingSteps.includes(step)) return { ok: false, error: 'invalid_request' };
+  const current = onboardingStatus();
+  if (current.step !== step) return current;
+  if (step === 'fingerprint' && trustedHost.host && !trustedHost.fingerprints.includes(fingerprint)) {
+    return { ok: false, error: '请先核对并确认主机指纹。' };
+  }
+  if (step === 'login' && enrollment && !enrolledSession) return { ok: false, error: '请先在应用内登录。' };
+  if (step === 'workspace') {
+    const project = appConfig.active;
+    try {
+      if (!project || project.kind === 'local' && !project.localRoot) throw new Error('请先选择工作区。');
+      if (project.localRoot) await require('./app-config').validateGitRoot(project.localRoot);
+    } catch (error) { return { ok: false, error: error.message }; }
+  }
+  try {
+    await appConfig.mutate((draft) => {
+      if (step === 'fingerprint' && trustedHost.host) {
+        if (!current.confirmed) draft.onboardingComplete = false;
+        draft.confirmedHost = { host: trustedHost.host, fingerprint };
+      }
+      draft.onboardingStep = onboardingSteps[Math.min(onboardingSteps.length - 1, onboardingSteps.indexOf(step) + 1)];
+    });
+    if (step === 'fingerprint') startConnectivity();
+    return onboardingStatus();
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+ipcMain.handle('onboarding:complete', async (event) => {
+  if (!fromMainWindow(event) || configError || onboardingStatus().step !== 'complete') return { ok: false, error: 'invalid_request' };
+  await appConfig.mutate((draft) => { draft.onboardingComplete = true; });
+  return onboardingStatus();
+});
+ipcMain.handle('onboarding:reset', async (event) => {
+  if (!fromMainWindow(event) || configError) return { ok: false, error: 'invalid_request' };
+  await appConfig.mutate((draft) => {
+    draft.onboardingComplete = false;
+    draft.onboardingStep = 'welcome';
+    delete draft.confirmedHost;
+  });
+  return onboardingStatus();
+});
 
 function currentRemoteDirectory(projectId) {
   const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
@@ -346,8 +417,8 @@ ipcMain.handle('desktop:toggle', (event) => {
   return toggleDesktop(!desktop.enabled);
 });
 ipcMain.handle('remote:status', () => ({ ...remote.state }));
-ipcMain.handle('remote:reconnect', () => { if (enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
-ipcMain.handle('remote:wake', () => enrollment && !enrolledSession ? false : remote.wake());
+ipcMain.handle('remote:reconnect', () => { if (!hostConfirmed() || enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
+ipcMain.handle('remote:wake', () => !hostConfirmed() || enrollment && !enrolledSession ? false : remote.wake());
 ipcMain.handle('remote:touch', () => { remote.touch(); return true; });
 
 // 窗口不在前台时，用系统通知提醒审批 / 完成（与官方桌面端一致）
@@ -430,7 +501,7 @@ ipcMain.handle('files:uploadData', async (_e, name, b64) => {
 ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), host: remote.cfg.host, localWorkspace: ws.root, projectId: appConfig?.active?.id }));
 ipcMain.handle('codex:request', async (event, method, params) => {
   try {
-    if (!fromMainWindow(event)) throw new Error('invalid_request');
+    if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     const { projectId, ...request } = params || {};
     params = request;
     const directory = currentRemoteDirectory(projectId);
@@ -512,11 +583,11 @@ function startMacDesktop() {
 
 ipcMain.handle('orchestrator:control', async (event, frame) => {
   if ((!mac && !enrollment) || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
-      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts'].includes(frame.operation)) {
+      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'onboarding_check'].includes(frame.operation)) {
     return { ok: false, error: '无权操作主控线路' };
   }
   const { request } = require('./orchestrator/mcp');
-  if (enrollment && !enrolledSession) return { ok: false, error: 'sign_in_required' };
+  if (!hostConfirmed() || enrollment && !enrolledSession) return { ok: false, error: 'sign_in_required' };
   const socket = enrolledSession?.controlSocket || path.join(macBridgeState, 'control.sock');
   try {
     const { projectId, ...operation } = frame;
@@ -534,8 +605,9 @@ let enrolledSession;
 let enrolling = false;
 let enrollmentExpiry;
 ipcMain.handle('enrollment:required', () => Boolean(enrollment));
+ipcMain.handle('enrollment:ready', () => Boolean(enrolledSession));
 ipcMain.handle('enrollment:login', async (event, password) => {
-  if (!enrollment || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
+  if (!enrollment || !hostConfirmed() || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
       enrolling || enrolledSession || typeof password !== 'string' || !password || password.length > 256) {
     return { ok: false, error: 'invalid_request' };
   }
@@ -551,6 +623,7 @@ ipcMain.handle('enrollment:login', async (event, password) => {
       spawnSsh: (ssh) => remote.openBridge(ssh),
     });
     enrolledSession = session;
+    if (!ws.root) ws.setRoot(session.bridge.workspaces[session.bridge.controlWorkspace].root);
     await remote.start();
     enrollmentExpiry = setTimeout(async () => {
       stopBridge?.();
@@ -599,14 +672,11 @@ app.on('before-quit', (e) => {
 
 app.whenReady().then(async () => {
   await loadAppConfig();
+  trustedHost = await configuredHost(enrollment, remote.cfg);
   createWindow();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
-    if (!enrollment) {
-      remote.start();
-      startOrchestratorBridge();
-      startMacDesktop();
-    }
-    powerMonitor.on('resume', () => { if (!ending && (!enrollment || enrolledSession)) remote.reconnect(); });
+    startConnectivity();
+    powerMonitor.on('resume', () => { if (!ending && hostConfirmed() && (!enrollment || enrolledSession)) remote.reconnect(); });
   }
 });
 app.on('window-all-closed', () => app.quit());

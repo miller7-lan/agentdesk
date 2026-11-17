@@ -222,6 +222,15 @@
       <p id="enrollmentStatus" role="status" aria-live="polite"></p>
     </form>
   </dialog>
+  <dialog id="onboardingDialog" class="orchestrator-dialog" aria-labelledby="onboardingTitle">
+    <h2 id="onboardingTitle"></h2>
+    <div id="onboardingContent" class="group-project-form"></div>
+    <p id="onboardingStatus" role="status" aria-live="polite"></p>
+    <div class="task-actions">
+      <button id="onboardingNext" class="btn primary" type="button">继续</button>
+      <button id="onboardingLater" class="btn" type="button">稍后设置</button>
+    </div>
+  </dialog>
   <dialog id="workspaceDialog" class="orchestrator-dialog" aria-labelledby="workspaceTitle">
     <h2 id="workspaceTitle">工作区</h2>
     <div id="workspaceList"></div>
@@ -236,6 +245,7 @@
         <button class="btn primary" id="workspaceSave" type="submit">添加</button>
         <button class="btn danger" id="workspaceRemove" type="button" hidden>移除</button>
         <button class="btn" id="workspaceClose" type="button">关闭</button>
+        <button class="btn" id="onboardingOpen" type="button">运行设置向导</button>
       </div>
       <p id="workspaceStatus" role="status"></p>
     </form>
@@ -305,5 +315,6 @@
   <script src="orchestrator.js"></script>
   <script src="enrollment.js"></script>
   <script src="projects.js"></script>
+  <script src="wizard.js"></script>
 </body>
 </html>
