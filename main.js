@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const os = require('node:os');
+const { createLogger } = require('./logger');
+const { collectDiagnostics, exportDiagnostics } = require('./diagnostics');
 const { AppConfig, migrate } = require('./app-config');
 const { normalizeSettings } = require('./src/appearance');
 const { steps: onboardingSteps, configuredHost, verified } = require('./onboarding');
@@ -51,6 +53,7 @@ const OVERLAY = {
 
 let win;
 let appConfig;
+let logger;
 let configError;
 let trustedHost = { host: '', fingerprints: [] };
 let connectivityStarted = false;
@@ -179,6 +182,7 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
         await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot);
       } else await appConfig[operation](id);
       activateProject();
+      logger?.audit('project_change', { operation, projectId: id || appConfig.active?.id, status: 'ok' });
       return { ok: true, ...appConfig.list() };
     } catch (error) {
       return { ok: false, error: error.message };
@@ -348,9 +352,13 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
   }
   if (appConfig && !configError && !process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_LIVETEST) {
     const appearance = { ...normalizeSettings(settings), theme };
+    let changed = false;
     appConfig.mutate((draft) => {
       if (JSON.stringify(draft.appearance) === JSON.stringify(appearance)) return false;
       draft.appearance = appearance;
+      changed = true;
+    }).then(() => {
+      if (changed) logger?.audit('appearance_change', { status: 'ok' });
     }).catch((error) => console.error('appearance:', error.code || 'config_write_failed'));
   }
   return { theme, skin };
@@ -358,7 +366,14 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
 
 // 远程 Codex：状态、事件、审批请求转发给界面
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
-remote.on('status', (s) => toUi('remote:status', s));
+let lastRemoteState;
+remote.on('status', (s) => {
+  if (s.codex !== lastRemoteState) {
+    lastRemoteState = s.codex;
+    logger?.log('remote_connection', { status: s.codex });
+  }
+  toUi('remote:status', s);
+});
 remote.on('notification', (m) => toUi('codex:event', m));
 remote.on('server-request', (m) => {
   if (m.method === 'item/tool/call') {
@@ -535,8 +550,15 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     return { ok: false, error: String(e.message || e) };
   }
 });
-ipcMain.handle('codex:respond', (_e, id, result, error) => {
-  try { remote.respond(id, result, error); return true; } catch { return false; }
+ipcMain.handle('codex:respond', (event, id, result, error) => {
+  if (!fromMainWindow(event)) return false;
+  try {
+    if (!remote.respond(id, result, error)) return false;
+    const outcome = ['accept', 'acceptForSession', 'approve', 'approved', 'approved_for_session'].includes(result?.decision) || result?.action === 'accept'
+      ? 'approved' : result?.answers ? 'answered' : 'declined';
+    logger?.audit('codex_approval', { status: outcome, projectId: appConfig.active?.id });
+    return true;
+  } catch { return false; }
 });
 
 // 桌宠（Clawd on Desk）状态推送
@@ -581,24 +603,67 @@ function startMacDesktop() {
   stopMacDesktop = () => server.close();
 }
 
-ipcMain.handle('orchestrator:control', async (event, frame) => {
-  if ((!mac && !enrollment) || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
-      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'onboarding_check'].includes(frame.operation)) {
+const orchestrationOperations = new Set([
+  'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel',
+  'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
+  'task_diff', 'task_log', 'task_artifacts', 'onboarding_check', 'diagnostics',
+]);
+const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
+
+async function orchestratorControl(frame) {
+  if ((!mac && !enrollment) || !frame || !orchestrationOperations.has(frame.operation)) {
     return { ok: false, error: '无权操作主控线路' };
   }
   const { request } = require('./orchestrator/mcp');
-  if (!hostConfirmed() || enrollment && !enrolledSession) return { ok: false, error: 'sign_in_required' };
+  if (!hostConfirmed() || (enrollment && !enrolledSession)) return { ok: false, error: 'sign_in_required' };
   const socket = enrolledSession?.controlSocket || path.join(macBridgeState, 'control.sock');
+  const { projectId, ...operation } = frame;
+  const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
+  if (projectId !== undefined && !project) return { ok: false, error: 'project_not_found' };
+  const audit = (status, result) => {
+    if (auditedTasks.has(frame.operation)) logger?.audit('orchestrator_task', {
+      operation: frame.operation, projectId: project?.id, taskId: result?.id || frame.taskId, status,
+    });
+  };
   try {
-    const { projectId, ...operation } = frame;
-    const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
-    if (projectId !== undefined && !project) throw new Error('project_not_found');
     const workspace = project?.orchestratorWorkspace;
     const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : 16000);
+    audit('ok', value);
     return { ok: true, value };
   } catch (error) {
+    audit('failed');
     return { ok: false, error: error.message };
   }
+}
+
+ipcMain.handle('orchestrator:control', (event, frame) => fromMainWindow(event) ? orchestratorControl(frame) : { ok: false });
+
+function diagnosticSnapshot() {
+  return collectDiagnostics({
+    version: app.getVersion(), config: appConfig.value, logger, remote: remote.state,
+    request: (operation) => process.env.AGENTDESK_OFFLINE ? { ok: false } : orchestratorControl({ operation }),
+  });
+}
+
+ipcMain.handle('diagnostics:preview', async (event) => {
+  if (!fromMainWindow(event)) return { ok: false };
+  try {
+    const { report, log, audit } = await diagnosticSnapshot();
+    return { ok: true, report, logCount: log.length, auditCount: audit.length };
+  } catch { return { ok: false, error: '无法生成诊断预览。' }; }
+});
+ipcMain.handle('diagnostics:export', async (event) => {
+  if (!fromMainWindow(event)) return { ok: false };
+  const picked = await dialog.showSaveDialog(win, {
+    title: '导出诊断包', defaultPath: 'agentdesk-diagnostics.tar.gz',
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true };
+  try {
+    const filename = picked.filePath.endsWith('.tar.gz') ? picked.filePath : picked.filePath + '.tar.gz';
+    await exportDiagnostics(filename, await diagnosticSnapshot());
+    logger?.audit('diagnostics_export', { status: 'ok' });
+    return { ok: true, filename };
+  } catch { return { ok: false, error: '无法写入诊断包。' }; }
 });
 
 let enrolledSession;
@@ -633,8 +698,10 @@ ipcMain.handle('enrollment:login', async (event, password) => {
       await session.close();
       toUi('enrollment:expired');
     }, Math.max(0, session.expires * 1000 - Date.now()));
+    logger?.audit('enrollment', { status: 'ok', projectId: appConfig.active?.id });
     return { ok: true };
   } catch (error) {
+    logger?.audit('enrollment', { status: 'failed', projectId: appConfig.active?.id });
     if (session) await session.close();
     return { ok: false, error: error.message };
   } finally {
@@ -667,11 +734,13 @@ app.on('before-quit', (e) => {
   stopBridge?.();
   stopMacDesktop?.();
   clearLocalTools();
-  Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
+  Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close(), logger?.log('application_stop')]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
 
 app.whenReady().then(async () => {
+  logger = createLogger(path.join(app.getPath('userData'), 'logs'), { onError: () => console.error('AgentDesk 日志写入失败') });
   await loadAppConfig();
+  logger.log('application_start', { status: configError ? 'config_error' : 'ok' });
   trustedHost = await configuredHost(enrollment, remote.cfg);
   createWindow();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {

@@ -92,3 +92,32 @@ test('SSH fingerprint confirmation matches the exact pinned host and port', () =
   assert.equal(verified({ host, fingerprints }, { host, fingerprint: 'wrong' }), false);
   assert.equal(verified({ host, fingerprints }, { host, fingerprint: fingerprints[0] }), true);
 });
+
+test('logs rotate, audit logs are private, and diagnostics exclude credentials and paths', async (t) => {
+  const { createLogger } = require('../logger');
+  const { collectDiagnostics, exportDiagnostics } = require('../diagnostics');
+  const { gunzipSync } = require('node:zlib');
+  const folder = await sandbox(t);
+  const logger = createLogger(folder, { limit: 140, now: () => new Date(2026, 10, 17, 12) });
+  for (let index = 0; index < 8; index++) {
+    await logger.log('remote', { status: 'retry', message: 'private raw output', password: 'not-for-log' });
+  }
+  await logger.audit('project_change', { operation: 'add', projectId: 'live', apiKey: 'must-not-appear' });
+  assert.ok((await stat(path.join(folder, 'agentdesk.log.2'))).size > 0);
+  if (process.platform !== 'win32') assert.equal((await stat(path.join(folder, 'audit-20261117.jsonl'))).mode & 0o777, 0o600);
+  const diagnostic = await collectDiagnostics({
+    version: '1.2.3', config: { projects: [{ id: 'live', kind: 'local', localRoot: '/private/workspace', token: 'token-secret' }] },
+    remote: { codex: 'ready', detail: 'private raw output', key: 'private key' }, logger,
+    request: async (operation) => ({ ok: true, value: operation === 'diagnostics'
+      ? { clis: [{ provider: 'codex', state: 'ready', version: 'Codex 4.5.6', error: 'internal host' }] } : {} }),
+  });
+  assert.equal(diagnostic.report.orchestrator.cli[0].version, '4.5.6');
+  assert.equal(diagnostic.report.config.projects[0].localConfigured, true);
+  assert.equal(diagnostic.audit.length, 1);
+  const archive = path.join(folder, 'bundle.tar.gz');
+  await exportDiagnostics(archive, diagnostic);
+  const tar = gunzipSync(await readFile(archive)).toString();
+  assert.match(tar, /diagnostics\.json/);
+  assert.match(tar, /audit\.jsonl/);
+  assert.doesNotMatch(tar, /not-for-log|token-secret|private raw output|private key|private\/workspace|must-not-appear|internal host/);
+});

@@ -24,6 +24,8 @@
       "main.js",
       "app-config.js",
       "onboarding.js",
+      "logger.js",
+      "diagnostics.js",
       "preload.js",
       "clawd.js",
       "remote.js",

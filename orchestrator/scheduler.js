@@ -275,6 +275,24 @@ class Scheduler {
     return Promise.all(this.router.roles().map(version)).then((clis) => ({ clis, ...this.router.status() }));
   }
 
+  async diagnosticStatus({ named, admin = false } = {}) {
+    const { clis } = await this.doctor();
+    const snapshot = await hostResources();
+    const imageDigests = [...new Set([this.config.docker?.image, ...Object.values(this.config.docker?.images || {})]
+      .map((image) => typeof image === 'string' ? image.match(/sha256:[a-f0-9]{64}$/)?.[0] : undefined).filter(Boolean))];
+    return {
+      clis: clis.map(({ role, ok, version }) => {
+        const block = this.router.blocked.get(role);
+        const state = !ok ? 'unavailable' : block?.until > this.now()
+          ? block.reason === 'auth' ? 'auth_required' : 'quota_limited' : 'ready';
+        return { provider: role, state, ...(version && { version: version.match(/\b\d+(?:\.\d+){1,3}\b/)?.[0] }) };
+      }),
+      ...(admin || this.config.quotaBridges?.includes(named) ? { quota: this.router.quota } : {}),
+      resources: snapshot,
+      imageDigests,
+    };
+  }
+
   list() {
     return [...this.tasks.values()].slice(-50).reverse().map(({ id, owner, workspace, prompt, state, detail, stage, steps, quota, usage, project, tags, metrics }) => ({
       id, owner: owner || 'local', workspace, state, detail, stage, project, tags, prompt: prompt.slice(0, 80),
@@ -1632,13 +1650,9 @@ event(task, state, detail) {
     if (frame.kind !== 'task.status') throw new Error('unsupported_operation');
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
+    if (body.operation === 'diagnostics' && (route === 'admin' || named)) return this.diagnosticStatus({ named, admin: route === 'admin' });
     if (body.operation === 'onboarding_check' && (route === 'admin' || named)) {
-      return this.doctor().then(({ clis }) => clis.map(({ role, name, ok, version }) => {
-        const provider = role || name;
-        const block = this.router.blocked.get(provider);
-        const state = !ok ? 'unavailable' : block?.until > this.now() ? block.reason === 'auth' ? 'auth_required' : 'quota_limited' : 'ready';
-        return { provider, state, ...(version && { version: clip(version, 80) }) };
-      }));
+      return this.diagnosticStatus({ named, admin: route === 'admin' }).then(({ clis }) => clis);
     }
     if (body.operation === 'resource_status' && (route === 'admin' || named)) return hostResources();
     if (body.operation === 'quota_status') {

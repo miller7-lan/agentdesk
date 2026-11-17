@@ -52,6 +52,7 @@
       <div class="side-list" id="sessionList"></div>
       <div class="side-footer">
         <button class="side-action" id="workspaceSettings" type="button" hidden>工作区</button>
+        <button class="side-action" id="diagnosticsOpen" type="button" hidden>诊断</button>
         <button class="side-action" id="sbOrchestrator" type="button" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="5" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M12 8v4m-5.5 4v-4h11v4"/></svg>
           <span>主控线路</span>
@@ -222,6 +223,15 @@
       <p id="enrollmentStatus" role="status" aria-live="polite"></p>
     </form>
   </dialog>
+  <dialog id="diagnosticsDialog" class="orchestrator-dialog" aria-labelledby="diagnosticsTitle">
+    <form method="dialog" class="orchestrator-heading">
+      <h2 id="diagnosticsTitle">诊断</h2>
+      <button type="submit" class="orchestrator-close" aria-label="关闭">×</button>
+    </form>
+    <p id="diagnosticsStatus" role="status"></p>
+    <pre id="diagnosticsReport"></pre>
+    <button type="button" class="btn" id="diagnosticsExport" disabled>导出诊断包</button>
+  </dialog>
   <dialog id="onboardingDialog" class="orchestrator-dialog" aria-labelledby="onboardingTitle">
     <h2 id="onboardingTitle"></h2>
     <div id="onboardingContent" class="group-project-form"></div>
@@ -316,5 +326,6 @@
   <script src="enrollment.js"></script>
   <script src="projects.js"></script>
   <script src="wizard.js"></script>
+  <script src="diagnostics-ui.js"></script>
 </body>
 </html>

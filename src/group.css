@@ -204,3 +204,4 @@
 #onboardingContent p { margin: 0; }
 #onboardingContent label:has(input[type="radio"]) { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 #onboardingContent > .btn { justify-self: start; }
+#diagnosticsReport { max-height: 45vh; overflow: auto; margin: 8px 0; font-size: 11px; background: var(--bg); }
