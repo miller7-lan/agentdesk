@@ -111,3 +111,71 @@ test('a capability with no configured candidate fails instead of waiting forever
     { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
   ]), router.availableRoles(), router), /no_executor:implement/);
 });
+
+function reviewFixture(t, adapter) {
+  return repository(t).then(({ dir, head, mirror }) => {
+    const store = new Store(':memory:');
+    t.after(() => store.close());
+    const scheduler = new Scheduler({
+      config: {
+        stateDir: dir, quota: false, maxConcurrentTasks: 1,
+        adapters: adapters('codex', 'claude', 'grok'),
+        workspaces: { mac: { repository: mirror } },
+      },
+      store, files: { endpoint: {} }, adapter,
+    });
+    const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'change the fixture' });
+    task.base = head;
+    task.planRaw = JSON.stringify([
+      { id: 'edit', capability: 'implement', prompt: 'edit', dependsOn: [] },
+      { id: 'review', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
+    ]);
+    return { task, scheduler };
+  });
+}
+
+test('a review sees the writer worktree and cannot claim the writer patch', async (t) => {
+  let reviewSaw;
+  const { task, scheduler } = await reviewFixture(t, async ({ name, cwd }) => {
+    if (name === 'codex') {
+      await fs.writeFile(path.join(cwd, 'README.md'), 'updated\n');
+      return { output: 'edited' };
+    }
+    reviewSaw = await fs.readFile(path.join(cwd, 'README.md'), 'utf8');
+    return { output: 'reviewed' };
+  });
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(reviewSaw, 'updated\n');
+  const review = task.steps.find((step) => step.id === 'review');
+  assert.equal(review.state, 'completed');
+  assert.equal(review.reviewedStep, 'edit');
+  assert.deepEqual(review.paths, []);
+  assert.equal(task.state, 'needs_review');
+  assert.equal(task.detail, 'patches_ready');
+});
+
+test('a shared-worktree review that edits a writer file is rejected', async (t) => {
+  const { task, scheduler } = await reviewFixture(t, async ({ name, cwd }) => {
+    if (name === 'codex') {
+      await fs.writeFile(path.join(cwd, 'README.md'), 'updated\n');
+      return { output: 'edited' };
+    }
+    await fs.writeFile(path.join(cwd, 'README.md'), 'tampered\n');
+    return { output: 'reviewed' };
+  });
+  await assert.rejects(scheduler.run(task, new AbortController().signal), /readonly_step_changed_files/);
+  const review = task.steps.find((step) => step.id === 'review');
+  assert.equal(review.state, 'failed');
+  assert.equal(review.error, 'readonly_step_changed_files');
+});
+
+test('a review with two writer dependencies is ambiguous', async (t) => {
+  const { task, scheduler } = await reviewFixture(t, async ({ name }) => ({ output: name === 'codex' ? 'edited' : 'reviewed' }));
+  task.planRaw = JSON.stringify([
+    { id: 'one', capability: 'implement', prompt: 'one', dependsOn: [] },
+    { id: 'two', capability: 'implement', prompt: 'two', dependsOn: [] },
+    { id: 'review', capability: 'review', prompt: 'review', dependsOn: ['one', 'two'] },
+  ]);
+  await assert.rejects(scheduler.run(task, new AbortController().signal), /ambiguous_review_target/);
+  assert.equal(task.steps.find((step) => step.id === 'review').state, 'queued');
+});

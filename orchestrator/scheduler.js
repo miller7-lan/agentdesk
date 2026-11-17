@@ -1,7 +1,7 @@
 const { mkdir, writeFile, readFile } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
-const { randomBytes } = require('node:crypto');
+const { randomBytes, createHash } = require('node:crypto');
 const { messageId } = require('./transport');
 const { runAdapter, addUsage } = require('./adapters');
 const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
@@ -22,6 +22,14 @@ const CAPABILITY_GUIDE = [
 const PLANNER_PROMPT = 'Plan this development task. Return only a JSON array of steps {id, capability, prompt, dependsOn (earlier step IDs)} with at most 12 steps. ' +
   CAPABILITY_GUIDE + ' The CLIs run on subscriptions, so quota is what runs out; Claude and Codex quota is the scarcest. Task: ';
 const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review']);
+
+// Fingerprints the uncommitted state of a worktree: which files are dirty (including untracked ones)
+// and the exact tracked diff. A read-only step must leave this unchanged.
+async function worktreeState(folder, signal) {
+  const status = await git(folder, ['status', '--porcelain=v1', '-z'], signal);
+  const diff = await git(folder, ['diff', '--binary', 'HEAD'], signal);
+  return createHash('sha256').update(status).update('\0').update(diff).digest('hex');
+}
 
 function parseJson(output) {
   try {
@@ -637,18 +645,30 @@ class Scheduler {
   }
 
   async runStep(task, step, repo, root, signal) {
-    const folder = path.join(root, step.id);
-    await this.ensureWorktree(repo, folder, task, step, signal);
+    // A review of a writer's work must look at that writer's uncommitted changes, so it shares the
+    // writer's worktree. Any change made while the reviewer runs is detected and rejected below.
+    let sharedWriter;
+    if (step.capability === 'review') {
+      const writers = task.steps.filter((dep) => dep.write && step.dependsOn.includes(dep.id));
+      if (writers.length > 1) throw new Error('ambiguous_review_target');
+      [sharedWriter] = writers;
+    }
+    const folder = path.join(root, sharedWriter?.id || step.id);
+    await this.ensureWorktree(repo, folder, task, sharedWriter || step, signal);
     const dependencies = task.steps.filter((dep) => step.dependsOn.includes(dep.id))
       .map((dep) => ({ id: dep.id, output: dep.output?.slice(0, 4000), paths: dep.paths?.slice(0, 50),
         patch: dep.paths?.length ? path.join(root, dep.id + '.patch') : undefined,
       }));
+    const before = sharedWriter ? await worktreeState(folder, signal) : undefined;
     for (;;) {
       step.state = 'running';
       step.attempts += 1;
       this.save(task, 'running', step.id + ':started');
       try {
         let prompt = dependencies.length ? step.prompt + '\nUpstream results: ' + JSON.stringify(dependencies) : step.prompt;
+        if (sharedWriter) {
+          prompt += `\nReview the uncommitted changes in this working tree (writer step: ${sharedWriter.id}). Do not change files.`;
+        }
         if (step.usesBrief) {
           const stage = step.capability === 'accept' ? 'acceptance'
             : step.capability === 'triage' ? 'triage' : 'lead';
@@ -663,10 +683,17 @@ class Scheduler {
         const { output } = await this.execute(task, step, folder, signal, prompt);
         signal.throwIfAborted();
         step.output = output;
-        const { paths, patch } = await patchFor(folder, task.base, signal);
-        if (!step.write && paths.length) throw new Error('readonly_step_changed_files');
-        if (paths.length) await writeFile(path.join(root, step.id + '.patch'), patch, { mode: 0o600 });
-        step.paths = paths;
+        if (sharedWriter) {
+          if (await worktreeState(folder, signal) !== before) throw new Error('readonly_step_changed_files');
+          // The writer's patch belongs to the writer step; a review must not claim it.
+          step.paths = [];
+          step.reviewedStep = sharedWriter.id;
+        } else {
+          const { paths, patch } = await patchFor(folder, task.base, signal);
+          if (!step.write && paths.length) throw new Error('readonly_step_changed_files');
+          if (paths.length) await writeFile(path.join(root, step.id + '.patch'), patch, { mode: 0o600 });
+          step.paths = paths;
+        }
         step.state = 'completed';
         this.save(task, 'running', step.id + ':completed');
         return;
