@@ -300,10 +300,14 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         if (!channel || (['submit', 'start_plan', 'broadcast'].includes(operation) && !value[active])) throw new Error('bridge_offline');
         const kind = operation === 'submit' ? 'task.request' : 'task.status';
         const body = { operation, route, revision, reply, project, after, stepId, artifact };
-        if (['submit', 'start_plan', 'broadcast', 'compact_project'].includes(operation)) {
-          body.workspace = config.controlWorkspace;
+        if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
           body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
-          if (operation !== 'compact_project') Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });
+          const workspaces = config.controlWorkspaces || {};
+          const workspace = Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace;
+          if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
+          if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
+            Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });
+          }
         }
         const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : 10000);
         wire.send({ ok: true, value: answer });

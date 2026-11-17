@@ -111,7 +111,7 @@ function publicTask(task) {
   const container = task.container;
   return {
     id: task.id, owner: task.owner || 'local', project: task.project,
-    state: task.state, stage: task.stage, createdAt: task.createdAt,
+    state: task.state, stage: task.stage, createdAt: task.createdAt, updatedAt: task.updatedAt,
     mode: task.mode || 'normal', replyTo: task.replyTo, via: task.via, broadcastId: task.broadcastId,
     detail: String(task.detail || '').split(':')[0],
     ...(metrics && { metrics: {
@@ -326,6 +326,7 @@ event(task, state, detail) {
   save(task, state, detail, record = true, data) {
     task.state = state;
     task.detail = detail;
+    if (record) task.updatedAt = new Date(this.now()).toISOString();
     this.updateMetrics(task, state);
     if (record) {
       const event = this.event(task, state, detail);
@@ -440,7 +441,7 @@ event(task, state, detail) {
     if (this.tasks.size >= 10000) throw new Error('task_capacity');
     const normalizedTags = [...new Set(tags.map((tag) => tag.trim()))];
     const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [],
-      owner, tags: normalizedTags, mode,
+      owner, tags: normalizedTags, mode, createdAt: new Date(this.now()).toISOString(),
       ...(body.replyTo && { replyTo: body.replyTo }),
       ...(body.via && { via: body.via }),
       ...(body.broadcastId && { broadcastId: body.broadcastId }),
@@ -1655,8 +1656,13 @@ event(task, state, detail) {
       const projects = named ? this.projectsFor(named) : null;
       if (named && body.project !== undefined && !projects.includes(body.project)) throw new Error('project_access_denied');
       const selected = body.project !== undefined ? [body.project] : projects;
+      const workspace = body.workspace;
+      if (workspace !== undefined && !Object.hasOwn(this.config.workspaces, workspace)) throw new Error('workspace_not_authorized');
+      if (named && workspace !== undefined && this.ownerOf(workspace) !== named) throw new Error('workspace_not_authorized');
       return [...this.tasks.values()]
-        .filter((candidate) => selected ? selected.includes(candidate.project) : body.project === undefined || candidate.project === body.project)
+        .filter((candidate) => workspace !== undefined && candidate.project === undefined
+          ? candidate.workspace === workspace
+          : selected ? selected.includes(candidate.project) : true)
         .slice(-30).reverse().map((candidate) => named && candidate.owner !== named ? publicTask(candidate)
           : { ...publicTask(candidate), redacted: false, workspace: candidate.workspace, prompt: clip(candidate.prompt, 240) });
     }

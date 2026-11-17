@@ -180,7 +180,7 @@
             ${G() && !hasGroup ? `<button type="button" data-new-group="${esc(p.id)}" aria-label="${esc(p.name)}：新建群聊">＋ 新建群聊</button>` : ''}
           </div>
           ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
-          <span class="channel-mark">#</span><span class="s-title">群聊</span>
+          <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
         </button>` : ''}${items.map((s) => `
           <div class="sess ${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.title)}" role="button" tabindex="0">
             ${avatars.html('codex', { size: 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.title)}</span><span class="s-time">${esc(s.time)}</span>
