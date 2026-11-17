@@ -1,35 +1,67 @@
-/* boot sequence: white blueprint HUD, one fixed look (deliberately not theme-dependent) */
-.boot { position: fixed; inset: 0; z-index: 50; overflow: hidden; background: #f5f8fc; color: #1b2b44;
-  transition: opacity .7s ease, filter .7s ease, transform .7s ease; font-family: var(--font); cursor: default; }
-.boot.leaving { opacity: 0; filter: blur(8px); transform: scale(1.06); pointer-events: none; }
-.boot canvas#bootCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.boot-node { position: absolute; transform: translate(-50%, -50%); pointer-events: none; }
-.boot-label { position: absolute; transform: translate(-50%, 0); text-align: center; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .35s ease; }
-.boot-label b { display: block; font-size: 12.5px; font-weight: 600; color: #1b2b44; letter-spacing: .2px; }
-.boot-label span { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .8px; color: #6b7c94; }
-.boot-label span span { display: inline; }
-.boot-label .ok { color: #1a7f4e; } .boot-label .warn { color: #a3660a; }
-.boot-hud { position: absolute; font-family: var(--mono); font-size: 10.5px; letter-spacing: 1px; color: #6b7c94; line-height: 1.6; pointer-events: none; }
-.boot-hud.tl { top: max(18px, env(safe-area-inset-top, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); }
-.boot-hud.tr { top: max(18px, env(safe-area-inset-top, 0px)); right: max(18px, env(safe-area-inset-right, 0px)); text-align: right; }
-.boot-hud.bl { bottom: max(18px, env(safe-area-inset-bottom, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); max-width: min(360px, 60vw); }
-.boot-hud b { color: #1b2b44; font-weight: 600; }
-.boot-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.boot-log .ok { color: #1a7f4e; } .boot-log .warn { color: #a3660a; }
-.boot-skip { position: absolute; right: max(18px, env(safe-area-inset-right, 0px)); bottom: max(18px, env(safe-area-inset-bottom, 0px)); height: 28px; padding: 0 12px; border-radius: 14px;
-  border: 1px solid rgba(40,90,170,.25); color: #3d5577; font-size: 12px; background: rgba(255,255,255,.7); }
-.boot-skip:hover { border-color: #2f6fe0; color: #1b2b44; }
-@media (max-width: 560px) { .boot-hud.tr, .boot-hud.bl, .boot-label .role { display: none; } }
-
-@media (prefers-reduced-motion: reduce) {
-  .boot { transition: none; }
-}
-
+/* Boot sequence: the team converges into the AgentDesk mark.
+   One fixed light look, deliberately independent of the app theme. Times below match the timeline in boot.js. */
 #boot { display: none; }
 html[data-bootplay="yes"] #boot { display: block; }
-.boot { background-image: radial-gradient(rgba(40,90,170,.16) 1px, transparent 1px); background-size: 26px 26px; }
-.boot-hud.tl { top: 46px; }
-.boot-actions { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); white-space: nowrap; }
-.boot-actions button { border: 1px solid #9bb3d7; border-radius: 8px; background: #fff; color: #1b2b44; padding: 6px 12px; }
-.boot-log { white-space: pre; }
-.boot-actions span { display: block; text-align: center; margin-bottom: 8px; }
+
+.boot { position: fixed; inset: 0; z-index: 50; overflow: hidden; cursor: default; font-family: var(--font);
+  background: radial-gradient(120% 90% at 50% 42%, #ffffff 0%, #f6f8fb 55%, #eef2f7 100%); color: #13223a;
+  transition: opacity .75s cubic-bezier(.4, 0, .2, 1), filter .75s cubic-bezier(.4, 0, .2, 1); }
+.boot.leaving { opacity: 0; filter: blur(10px); pointer-events: none; }
+.boot.leaving .boot-stage { transform: translate(-50%, -50%) scale(1.06); }
+.boot canvas#bootCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.boot-stage { --mark: clamp(108px, 23vh, 184px); position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; transition: transform .75s cubic-bezier(.4, 0, .2, 1); }
+.boot-mark { width: var(--mark); height: var(--mark); overflow: visible; }
+
+/* the dark glass tile condenses behind the drawn diamond */
+.boot-tile { transform-origin: 128px 128px; opacity: 0; filter: drop-shadow(0 18px 30px rgba(20, 40, 70, .22)); }
+.boot-gem, .boot-prompt { stroke-dasharray: 100; stroke-dashoffset: 100; }
+.boot-cursor { opacity: 0; }
+.boot-sweep { transform-box: view-box; transform-origin: 128px 128px; transform: rotate(18deg); }
+
+.boot-word { margin-top: calc(var(--mark) * .22); font-size: clamp(40px, 7.6vh, 66px); font-weight: 700; letter-spacing: -.02em;
+  line-height: 1.1; white-space: nowrap; }
+.boot-word span { display: inline-block; opacity: 0; }
+.boot-word .accent { background: linear-gradient(120deg, #2fb59c, #5b7be8); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.boot-greet { margin-top: 14px; min-height: 20px; font-size: 14.5px; letter-spacing: .02em; color: #5c6b80; opacity: 0; white-space: nowrap; }
+.boot-greet .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin: 0 6px 1px 0; background: #2fb59c; vertical-align: middle; }
+.boot-greet .warn { background: #d08a1c; }
+
+.boot-actions { margin-top: 18px; display: flex; gap: 10px; }
+.boot-actions[hidden] { display: none; }
+.boot-actions button { height: 32px; padding: 0 16px; border-radius: 16px; border: 1px solid rgba(19, 34, 58, .14); background: rgba(255, 255, 255, .85);
+  color: #13223a; font-size: 13px; box-shadow: 0 4px 14px rgba(20, 40, 70, .08); }
+.boot-actions button:first-child { background: #13223a; color: #fff; border-color: #13223a; }
+
+.boot-foot { position: absolute; left: 0; right: 0; bottom: max(18px, env(safe-area-inset-bottom, 0px)); display: flex; justify-content: center;
+  opacity: 0; pointer-events: none; }
+.boot-foot #bootBuild { position: absolute; left: 20px; bottom: 6px; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; color: #9aa6b6; }
+.boot-skip { pointer-events: auto; height: 28px; padding: 0 14px; border: 0; border-radius: 14px; background: transparent; color: #8a97a8; font-size: 12px; }
+.boot-skip:focus { outline: none; }
+.boot-skip:hover, .boot-skip:focus-visible { color: #13223a; background: rgba(19, 34, 58, .06); }
+
+/* timeline */
+.boot.run .boot-gem { animation: boot-draw .72s cubic-bezier(.65, 0, .35, 1) 1.5s forwards; }
+.boot.run .boot-tile { animation: boot-tile .7s cubic-bezier(.2, .9, .25, 1.15) 1.95s forwards; }
+.boot.run .boot-prompt { animation: boot-draw .38s cubic-bezier(.65, 0, .35, 1) 2.2s forwards; }
+.boot.run .boot-cursor { animation: boot-blink 1.1s steps(1, end) 2.55s infinite; }
+.boot.run .boot-sweep { animation: boot-sweep .9s cubic-bezier(.4, 0, .2, 1) 2.7s forwards; }
+.boot.run .boot-word span { animation: boot-letter .8s cubic-bezier(.2, .8, .2, 1) calc(2.6s + var(--i) * 45ms) forwards; }
+.boot.run .boot-greet { animation: boot-rise .7s cubic-bezier(.2, .8, .2, 1) 3.3s forwards; }
+.boot.run .boot-foot { animation: boot-fade .6s ease .9s forwards; }
+
+@keyframes boot-draw { to { stroke-dashoffset: 0; } }
+@keyframes boot-tile { from { opacity: 0; transform: scale(.82); filter: blur(10px) drop-shadow(0 18px 30px rgba(20, 40, 70, 0)); }
+  to { opacity: 1; transform: scale(1); filter: blur(0) drop-shadow(0 18px 30px rgba(20, 40, 70, .22)); } }
+@keyframes boot-blink { 0% { opacity: 1; } 55% { opacity: 0; } }
+@keyframes boot-sweep { from { transform: rotate(18deg) translateX(0); } to { transform: rotate(18deg) translateX(420px); } }
+@keyframes boot-letter { from { opacity: 0; transform: translateY(14px); filter: blur(8px); } to { opacity: 1; transform: none; filter: blur(0); } }
+@keyframes boot-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes boot-fade { to { opacity: 1; } }
+
+/* reduced motion, or a replay that must show the end state at once */
+.boot.still .boot-gem, .boot.still .boot-prompt { stroke-dashoffset: 0; }
+.boot.still .boot-tile, .boot.still .boot-cursor, .boot.still .boot-word span, .boot.still .boot-greet, .boot.still .boot-foot { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .boot, .boot-stage { transition: none; } }
+@media (max-height: 520px) { .boot-greet { display: none; } }

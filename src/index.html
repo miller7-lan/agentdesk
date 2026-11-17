@@ -15,16 +15,33 @@
 <body>
   <div class="boot" id="boot" role="dialog" aria-label="AgentDesk 正在启动">
     <canvas id="bootCanvas" aria-hidden="true"></canvas>
-    <div id="bootNodes"></div>
-    <div class="boot-hud tl"><b>AGENTDESK // BOOT SEQUENCE</b><br /><span id="bootBuild"></span> · <span id="bootOs"></span></div>
-    <div class="boot-hud tr"><span id="bootClock"></span></div>
-    <div class="boot-hud bl boot-log" id="bootLog" aria-live="polite"></div>
-    <button class="boot-skip" id="bootSkip" type="button">双击任意处或按 Esc 进入</button>
-    <div class="boot-actions" id="bootActions" hidden>
-      <span>云端连接离线</span>
-      <button id="bootRetry" type="button">重试</button>
-      <button id="bootOffline" type="button">离线进入</button>
+    <div class="boot-stage" id="bootStage">
+      <svg class="boot-mark" id="bootMark" viewBox="0 0 256 256" aria-hidden="true">
+        <defs>
+          <linearGradient id="bootTile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#25343a"/><stop offset="1" stop-color="#11181b"/></linearGradient>
+          <linearGradient id="bootGem" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5fe0c6"/><stop offset="1" stop-color="#6c8cf0"/></linearGradient>
+          <linearGradient id="bootShine" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>
+          <linearGradient id="bootSweep" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".28"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+          <clipPath id="bootClip"><rect x="12" y="12" width="232" height="232" rx="54"/></clipPath>
+        </defs>
+        <g class="boot-tile">
+          <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#bootTile)"/>
+          <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#bootShine)"/>
+          <rect x="13" y="13" width="230" height="230" rx="53" fill="none" stroke="#fff" stroke-opacity=".1" stroke-width="2"/>
+          <g clip-path="url(#bootClip)"><rect class="boot-sweep" x="-120" y="-40" width="90" height="340" fill="url(#bootSweep)"/></g>
+        </g>
+        <rect class="boot-gem" x="68" y="68" width="120" height="120" rx="26" transform="rotate(45 128 128)" fill="none" stroke="url(#bootGem)" stroke-width="14" pathLength="100"/>
+        <path class="boot-prompt" d="M104 106 L130 128 L104 150" fill="none" stroke="#e9f7f3" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" pathLength="100"/>
+        <rect class="boot-cursor" x="138" y="143" width="28" height="12" rx="6" fill="#5fe0c6"/>
+      </svg>
+      <div class="boot-word" id="bootWord" aria-hidden="true"></div>
+      <div class="boot-greet" id="bootGreet" aria-live="polite"></div>
+      <div class="boot-actions" id="bootActions" hidden>
+        <button id="bootRetry" type="button">重试</button>
+        <button id="bootOffline" type="button">离线进入</button>
+      </div>
     </div>
+    <div class="boot-foot"><span id="bootBuild"></span><button class="boot-skip" id="bootSkip" type="button">双击或按 Esc 跳过</button></div>
   </div>
   <canvas id="fluid" aria-hidden="true"></canvas>
   <div id="wall" aria-hidden="true"></div>
