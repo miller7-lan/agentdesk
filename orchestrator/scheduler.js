@@ -247,7 +247,7 @@ class Scheduler {
     }
     task.quota = charged;
     // Recorded as an event without touching state or detail: apply() relies on detail === 'patches_ready'.
-    this.store.saveTask(task, { state: task.state, detail: 'quota_charged', quota: charged });
+    this.store.saveTask(task, { ...this.event(task, task.state, 'quota_charged'), quota: charged });
   }
 
   recordUsage(task, step, usage) {
@@ -273,11 +273,52 @@ class Scheduler {
     }));
   }
 
+  // A saved event is both a short human detail and a small structured record for the client. It never
+// contains step output, prompts or patches, so it is safe to hand to a project member.
+event(task, state, detail) {
+    const value = String(detail ?? '');
+    const step = value.includes(':') ? (task.steps || []).find((item) => item.id && value.startsWith(item.id + ':')) : undefined;
+    const data = this.eventData(value) ||
+      (value === 'owner_quota_cap' && task.waitingFor ? { capability: task.waitingFor } : undefined);
+    const stepId = step?.id || data?.stepId;
+    const related = step || (stepId && (task.steps || []).find((item) => item.id === stepId));
+    return {
+      state, detail: value, kind: this.eventKind(value), owner: task.owner || 'local',
+      ...(task.project && { project: task.project }),
+      ...(stepId && { stepId }), ...(related?.role && { role: related.role }), ...(data && { data }),
+    };
+  }
+
+  eventKind(detail) {
+    if (detail.startsWith('executor_waiting:') || detail === 'owner_quota_cap') return 'waiting';
+    if (detail.startsWith('triage_') || detail.startsWith('escalated:') || detail === 'rework_after_apply') return 'escalation';
+    if (detail.startsWith('acceptance_')) return 'acceptance';
+    if (detail.startsWith('review_')) return 'review';
+    if (detail.startsWith('test_') || detail.startsWith('windows_test_')) return 'test';
+    if (detail.startsWith('plan') || detail === 'submitted') return 'plan';
+    if (detail === 'quota_charged') return 'usage';
+    if (/^[\w-]+:(started|completed|failed|session|waiting|reassigned)/.test(detail)) return 'step';
+    return 'state';
+  }
+
+  eventData(detail) {
+    let match;
+    if ((match = /^executor_waiting:(\w+)$/.exec(detail))) return { capability: match[1] };
+    if ((match = /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail))) {
+      return { stepId: match[1], from: match[2], to: match[3], reason: match[4] };
+    }
+    if ((match = /^review_verdict:([^:]+):([a-z_]+)$/.exec(detail))) return { stepId: match[1], verdict: match[2] };
+    if ((match = /^triage_decision:([a-z_]+)$/.exec(detail))) return { decision: match[1] };
+    if ((match = /^acceptance_verdict:([a-z_]+)$/.exec(detail))) return { verdict: match[1] };
+    if ((match = /^test_failed:(\d+)$/.exec(detail))) return { failures: Number(match[1]) };
+    return undefined;
+  }
+
   save(task, state, detail, record = true) {
     task.state = state;
     task.detail = detail;
     this.updateMetrics(task, state);
-    if (record) this.store.saveTask(task, { state, detail });
+    if (record) this.store.saveTask(task, this.event(task, state, detail));
     else this.store.put('tasks', task.id, task);
   }
 

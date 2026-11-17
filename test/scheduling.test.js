@@ -140,7 +140,7 @@ test('a task whose whole route is over the owner daily cap waits for local midni
     };
     scheduler.tasks.set(prior.id, prior);
 
-    const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'change the fixture' });
+    const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'change the fixture', project: 'agentdesk' });
     task.base = head;
     scheduler.start(task);
     await until(() => task.state === 'queued' && task.detail === 'owner_quota_cap' && !scheduler.running.has(task.id));
@@ -150,6 +150,10 @@ test('a task whose whole route is over the owner daily cap waits for local midni
     assert.deepEqual(calls, []);
     const events = () => scheduler.store.events(task.id).filter((event) => event.detail === 'owner_quota_cap');
     assert.equal(events().length, 1);
+    assert.equal(events()[0].kind, 'waiting');
+    assert.equal(events()[0].owner, 'local');
+    assert.equal(events()[0].project, 'agentdesk');
+    assert.deepEqual(events()[0].data, { capability: 'plan' });
 
     const report = scheduler.control({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'report' } }, 'admin');
     assert.deepEqual(report.owners.local.usage, { claude: 10, codex: 5 });
@@ -260,7 +264,11 @@ test('a review verdict is parsed, stored and recorded as an event', async (t) =>
   assert.equal(review.verdict.findings[0].severity, 'nit');
   assert.equal(task.reviews.review.verdict, 'pass');
   assert.equal(task.reviews.review.role, 'grok');
-  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'review_verdict:review:pass'));
+  const verdictEvent = scheduler.store.events(task.id).find((event) => event.detail === 'review_verdict:review:pass');
+  assert.equal(verdictEvent.kind, 'review');
+  assert.equal(verdictEvent.stepId, 'review');
+  assert.equal(verdictEvent.role, 'grok');
+  assert.deepEqual(verdictEvent.data, { stepId: 'review', verdict: 'pass' });
 });
 
 test('a shared-worktree review that edits a writer file is rejected', async (t) => {
