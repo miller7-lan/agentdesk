@@ -123,7 +123,7 @@
 @media (max-width: 1050px) {
   .project-rail { display: none; }
 }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .group-roster button > span:last-child { display: none; }
   .group-roster button { min-width: 29px; min-height: 31px; padding: 2px; }
 }
@@ -156,3 +156,29 @@
 .group-status-members { display: flex; align-items: center; gap: 2px; }
 .group-status-members:empty { display: none; }
 .status-dot.failed { background: var(--danger); }
+
+/* Subscription quota: remaining share of the tighter window. Accent = normal, warn = stepping back, danger = stopped. */
+.sb-quota { gap: 5px; font-variant-numeric: tabular-nums; }
+.quota-mini { display: inline-block; width: 26px; height: 4px; border-radius: 2px; background: var(--hover); overflow: hidden; }
+.quota-mini i, .quota-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.sb-quota[data-level="reserved"], .quota-note[data-level="reserved"] { color: var(--warn); }
+.sb-quota[data-level="stopped"], .quota-note[data-level="stopped"] { color: var(--danger); }
+:is(.sb-quota, .quota-meters)[data-level="reserved"] i { background: var(--warn); }
+:is(.sb-quota, .quota-meters)[data-level="stopped"] i { background: var(--danger); }
+.quota-meters { display: grid; grid-template-columns: auto minmax(36px, 1fr) auto; align-items: center; gap: 3px 7px; margin-top: 4px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.quota-label { white-space: nowrap; }
+.quota-bar { height: 5px; border-radius: 3px; background: var(--hover); overflow: hidden; }
+.quota-value { min-width: 46px; text-align: right; white-space: nowrap; }
+.member-row .quota-note { font-size: 10.5px; }
+.member-row .quota-none { color: var(--faint); }
+.dispatch-quota { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 32px; }
+.dispatch-quota em { font-style: normal; color: var(--faint); font-size: 10.5px; line-height: 17px; }
+.dispatch-quota span { padding: 0 7px; border-radius: 9px; background: var(--hover); color: var(--muted); font-size: 10.5px; line-height: 17px; font-variant-numeric: tabular-nums; }
+.group-system { display: flex; align-items: center; gap: 9px; margin: 0; color: var(--muted); font-size: 11px; }
+.group-system::before, .group-system::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.selected-task .task-reassigned { margin: 0; color: var(--warn); font-size: 11.5px; }
+.quota-table { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.quota-table :is(th, td) { padding: 4px 6px; text-align: left; border-bottom: 1px solid var(--border); }
+.quota-table th { color: var(--muted); font-weight: 600; }
+.quota-table :is(th, td) + :is(th, td) { text-align: right; }
+@media (max-width: 1100px) { .quota-mini { display: none; } }

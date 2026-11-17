@@ -139,8 +139,12 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   await fs.stat(socket).catch(async () => wait(50));
   const quotas = await admin(socket, { kind: 'task.status', task_id: randomUUID(), body: { operation: 'quota_status' } });
   assert.deepEqual(quotas[0].buckets, [{ id: 'shared', fiveHour: { usedPercent: 13, resetsAt: null }, weekly: { usedPercent: 26, resetsAt: null } }]);
-  assert.deepEqual(quotas[1], { provider: 'claude', state: 'available', source: 'snapshot', observedAt,
+  assert.equal(quotas[0].used, 26);
+  assert.equal(quotas[0].level, 'ok');
+  const { used, level, policy, ...claudeQuota } = quotas[1];
+  assert.deepEqual(claudeQuota, { provider: 'claude', state: 'available', source: 'snapshot', observedAt,
     buckets: [{ id: 'shared', fiveHour: { usedPercent: 4, resetsAt: null }, weekly: null }] });
+  assert.deepEqual([used, level, policy.soft, policy.keepFor], [4, 'ok', 60, ['plan', 'accept']]);
   assert.equal(quotas[2].reason, 'no_quota_source');
   const stopBridge = startBridge({
     config: {
@@ -156,6 +160,8 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   const liveQuotas = await mcpRequest(path.join(dir, 'control.sock'), { operation: 'quota_status' });
   assert.equal(liveQuotas[0].state, 'available');
   assert.equal(liveQuotas[1].state, 'unavailable');
+  // The live reading has no Claude numbers, but routing uses the snapshot, and the bridge is told so.
+  assert.deepEqual([liveQuotas[1].used, liveQuotas[1].usedSource], [4, 'snapshot']);
   assert.ok(service.scheduler.store.all('received').every((record) =>
     !Array.isArray(record.reply?.body.value)));
   const bridgeStore = new Store(path.join(bridgeState, 'bridge.sqlite'));

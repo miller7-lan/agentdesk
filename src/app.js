@@ -626,7 +626,7 @@
       if (state.panelOpen && panelSession !== state.group) renderPanel();
       return;
     }
-    $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = true;
+    $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = true;
     $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ Codex';
     renderTimeline();
     $('#conversationTitle').textContent = s?.title || '';

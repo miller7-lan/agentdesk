@@ -4,7 +4,7 @@ const path = require('node:path');
 const { randomBytes } = require('node:crypto');
 const { messageId } = require('./transport');
 const { runAdapter, addUsage } = require('./adapters');
-const { Router, CAPABILITIES, ROLES } = require('./routing');
+const { Router, CAPABILITIES, ROLES, usedPercent } = require('./routing');
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
@@ -122,6 +122,20 @@ class Scheduler {
       return status;
     }).catch(() => this.quotaSnapshot || []).finally(() => { this.quotaReading = null; });
     return this.quotaReading;
+  }
+
+  // Adds what routing makes of each CLI's quota: the percent the router uses (live, or the cached snapshot when
+  // the live reading has none), its limits, and whether it is working normally, reserved for its main jobs, or stopped.
+  decorateQuota(list) {
+    const cached = this.quotaSnapshot || [];
+    return list.map((entry) => {
+      const routing = cached.find((item) => item.provider === entry.provider);
+      const used = usedPercent(entry) ?? usedPercent(routing);
+      const policy = this.router.quotaPolicy[entry.provider];
+      const level = used === null || !policy ? 'unknown' : used >= policy.hard ? 'stopped' : used >= policy.soft ? 'reserved' : 'ok';
+      return { ...entry, used, level, policy,
+        ...(usedPercent(entry) === null && used !== null && { usedSource: routing.source, usedObservedAt: routing.observedAt }) };
+    });
   }
 
   // Percent used per CLI and window, for comparing a task's start and end.
@@ -594,9 +608,12 @@ class Scheduler {
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
     if (body.operation === 'quota_status') {
-      if (route === 'admin') return quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true });
+      if (route === 'admin') {
+        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true }))
+          .then((list) => this.decorateQuota(list));
+      }
       if (named && Array.isArray(this.config.quotaBridges) && this.config.quotaBridges.includes(named)) {
-        return quotaStatus(this.config.adapters, { liveOnly: true });
+        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: true })).then((list) => this.decorateQuota(list));
       }
       throw new Error('quota_access_denied');
     }
@@ -605,7 +622,7 @@ class Scheduler {
       const port = this.files.endpoint;
       const relay = port[bridge ? 'relay:' + bridge : 'relay'];
       return { route: channel, ssh: Boolean(port[bridge ? 'ssh:' + bridge : 'ssh']?.ready), relay: Boolean(relay?.ready && relay.online),
-        ...(this.config.adapters?.gemini && { providers: this.availableRoles() }) };
+        providers: this.availableRoles() };
     }
     if (body.operation === 'select_route' && (route === 'admin' || named)) return this.setRoute(body.route, bridge);
     const task = this.tasks.get(id);

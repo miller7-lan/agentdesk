@@ -127,6 +127,7 @@
                   <option value="claude">Claude Code</option>
                   <option value="grok">Grok Build</option>
                   <option value="gemini">Gemini</option>
+                  <option value="antigravity">Antigravity</option>
                 </select>
               </label>
               <input id="groupModel" type="text" placeholder="模型 ID（可选）" aria-label="模型 ID" maxlength="128" hidden disabled />
@@ -167,6 +168,7 @@
     <span class="sb-item" id="sbState"><span class="dot ok"></span>空闲</span>
     <button class="sb-item clickable" id="sbGroupRoute" type="button" hidden></button>
     <div id="sbGroupMembers" class="group-status-members" hidden></div>
+    <div id="sbQuota" class="group-status-members sb-quotas" aria-label="订阅额度" hidden></div>
     <span class="sb-item" id="sbMode">每步询问</span>
     <div class="grow"></div>
     <button class="sb-item clickable desktop-status" id="sbDesktop" type="button" title="点击断开或恢复本机桌面控制">桌面控制</button>

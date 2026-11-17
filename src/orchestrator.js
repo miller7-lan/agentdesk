@@ -18,6 +18,7 @@
     claude: { name: 'Claude Code', initials: 'CL', role: '审查与执行' },
     grok: { name: 'Grok Build', initials: 'GK', role: '分析与执行' },
     gemini: { name: 'Gemini', initials: 'GM', role: '分析与审查' },
+    antigravity: { name: 'Antigravity', initials: 'AG', role: '侦察与简报' },
     local: { name: '本机', role: '工作区与桌面工具' },
   };
   const statuses = {
@@ -53,8 +54,10 @@
   const routeButtons = $$('[data-route]', dialog);
   const filterSelect = $('#groupMemberFilter');
   const suggestions = $('#groupSuggestions');
-  const recipients = ['lead', 'codex', 'claude', 'grok', 'gemini'];
-  const mentions = { lead: '组长', codex: 'Codex', claude: 'Claude', grok: 'Grok', gemini: 'Gemini' };
+  const recipients = ['lead', 'codex', 'claude', 'grok', 'gemini', 'antigravity'];
+  const mentions = { lead: '组长', codex: 'Codex', claude: 'Claude', grok: 'Grok', gemini: 'Gemini', antigravity: 'Antigravity' };
+  // Members that only take work when the orchestrator has them configured.
+  const optional = ['gemini', 'antigravity'];
   const availableCommands = { ls: '查看项目任务', stop: '取消指定任务', routes: '查看主控线路', avatars: '查看状态图鉴' };
   let suggestionItems = [];
   let suggestionIndex = 0;
@@ -139,9 +142,10 @@
   const taskLabel = (task) => '#' + esc(task.id.slice(0, 8));
   const selectedRoute = () => routeState.route?.split(':')[0];
   const hasRoute = () => Boolean(routeState[selectedRoute()]);
-  const canUseGemini = () => isExample(state.group) || routeState.providers?.includes('gemini');
-  function geminiAvailability() {
-    if (canUseGemini()) return isExample(state.group) ? '本地示例' : '可派活';
+  const canUse = (id) => !optional.includes(id) || isExample(state.group) || routeState.providers?.includes(id);
+  const canUseGemini = () => canUse('gemini');
+  function availability(id) {
+    if (canUse(id)) return isExample(state.group) ? '本地示例' : '可派活';
     if (!knownRoutes && supported) return '正在检测';
     return knownRoutes && !connected ? '主控离线' : '主控未配置';
   }
@@ -199,7 +203,7 @@
       button.querySelector('span').textContent = (knownRoutes ? (routeState[route] ? '在线' : '离线') : '检测中') + (route === selected ? ' · 当前' : '');
     }
     entry.querySelector('span').textContent = selected === 'relay' ? '主控线路 · Relay' : '主控线路';
-    $('#sbGroupMembers').hidden = !state.group;
+    $('#sbGroupMembers').hidden = $('#sbQuota').hidden = !state.group;
     routeStatus.hidden = !isLiveGroup() || !supported;
     routeStatus.textContent = !knownRoutes ? '主控检测中' : hasRoute() ? routeNames[selected] : '主控离线';
     routeStatus.classList.toggle('route-online', hasRoute());
@@ -267,6 +271,7 @@
       const card = `<button class="dispatch-card" type="button" data-task-id="${esc(task.id)}" data-task-view="graph">
         <span class="dispatch-top"><span class="dispatch-icon">${svg('term')}</span><strong>任务 <span class="mono">${taskLabel(task)}</span></strong>${pill(task.state)}</span>
         <span class="dispatch-detail">${esc(task.detail === 'patches_ready' ? textOf(task.detail) : [steps.length ? steps.length + ' 个步骤' : '', pathsOf(task).length ? pathsOf(task).length + ' 个文件' : '', elapsed(task)].filter(Boolean).join(' · ') || '查看调度图')}</span>
+        ${quotaCharge(task, { compact: true })}
       </button>`;
       const messages = [];
       const requiresReview = task.detail === 'patches_ready' || task.pendingRequest;
@@ -278,6 +283,9 @@
         messages.push(messageRow(sender, task.model || members[sender].role, card));
       }
       messages.push(...planMessages(task));
+      if (filter !== 'mine' && !filterSelect.value) {
+        for (const note of reassignments(task)) messages.push(`<p class="group-system">${esc(note)}</p>`);
+      }
       if (requiresReview && (!filterSelect.value || filterSelect.value === 'local')) {
         const title = task.detail === 'patches_ready' ? '待审核的本机补丁' : '待核对的本机操作';
         messages.push(messageRow('local', '工作区', `<div class="group-review">
@@ -312,24 +320,99 @@
     const count = taskCount();
     $('#groupSubtitle').textContent = Object.keys(members).length + ' 位成员' + (count ? ' · ' + count + ' 项未结任务' : '');
     $('#taskBadge').textContent = count || '';
-    const geminiOption = provider.querySelector('[value="gemini"]');
-    const geminiReady = canUseGemini();
-    geminiOption.disabled = !geminiReady;
-    geminiOption.textContent = geminiReady ? 'Gemini' : 'Gemini（' + geminiAvailability() + '）';
-    setHtml($('#groupRoster'), Object.keys(members).filter((id) => id !== 'you').map((id) =>
+    for (const id of optional) {
+      const option = provider.querySelector(`[value="${id}"]`);
+      option.disabled = !canUse(id);
+      option.textContent = canUse(id) ? members[id].name : members[id].name + '（' + availability(id) + '）';
+    }
+    const recipientReady = canUse(provider.value);
+    setHtml($('#groupRoster'), Object.keys(members).filter((id) => id !== 'you' && canUse(id)).map((id) =>
       `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 34, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
     setHtml($('#sbGroupMembers'), recipients.slice(1).flatMap((id) => {
       const { state: activity } = memberActivity(id);
       if (!activity) return [];
       return `<button type="button" class="sb-item clickable" data-status-member="${id}" title="${memberName(id)}"><span class="status-dot ${{ asking: 'waiting', done: 'done', failed: 'failed' }[activity] || 'running'}"></span>${avatars.members[id].short} ${avatars.states[activity].label}</button>`;
     }).join(''));
+    refreshQuotas();
+    setHtml($('#sbQuota'), quotaStatusBar());
     const canSend = isExample(state.group) || (supported && (currentGroup().planReply ? connected : hasRoute()));
-    $('#groupSend').disabled = busy || !canSend || (provider.value === 'gemini' && !geminiReady);
+    $('#groupSend').disabled = busy || !canSend || !recipientReady;
     $('#groupPlanReplyCancel').disabled = busy;
-    const connectionHint = provider.value === 'gemini' && !geminiReady ? '当前主控尚未启用 Gemini。' : isExample(state.group) ? '本地示例'
+    const connectionHint = !recipientReady ? `当前主控尚未启用 ${members[provider.value].name}。` : isExample(state.group) ? '本地示例'
       : !supported ? '此客户端尚未配置群聊主控。' : hasRoute() ? '' : knownRoutes ? '主控离线，请检查线路。' : '正在检查主控线路…';
     composerMessage.textContent = busy ? '正在处理…' : currentGroup().taskError || connectionHint;
     renderTimeline();
+  }
+
+  /* ---------- Quota (subscriptions: what runs out is quota, not tokens) ---------- */
+  // Example projects show sample numbers so the layout can be checked without a server.
+  const exampleQuotas = [
+    { provider: 'claude', used: 64, level: 'reserved', policy: { soft: 60, hard: 95, keepFor: ['plan', 'accept'] }, usedSource: 'snapshot',
+      buckets: [{ id: 'claude', fiveHour: { usedPercent: 38 }, weekly: { usedPercent: 64 } }] },
+    { provider: 'codex', used: 41, level: 'ok', policy: { soft: 70, hard: 95, keepFor: ['implement'] },
+      buckets: [{ id: 'codex', fiveHour: { usedPercent: 41 }, weekly: { usedPercent: 22 } }] },
+    { provider: 'grok', used: 97, level: 'stopped', policy: { soft: 95, hard: 95, keepFor: [] },
+      buckets: [{ id: 'grok', fiveHour: { usedPercent: 97 }, weekly: { usedPercent: 51 } }] },
+    { provider: 'gemini', used: 18, level: 'ok', policy: { soft: 95, hard: 95, keepFor: [] },
+      buckets: [{ id: 'gemini', fiveHour: { usedPercent: 18 }, weekly: { usedPercent: 9 } }] },
+  ];
+  const capabilityNames = { plan: '规划', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
+  const quotaList = () => isExample(state.group) ? exampleQuotas : connected ? quotas : [];
+  const quotaOf = (id) => quotaList().find((quota) => quota.provider === id);
+  const pct = (value) => Math.round(value) + '%';
+  function levelText(quota) {
+    if (quota.level === 'stopped') return '额度将尽，暂停派活';
+    if (quota.level === 'reserved') return '让位中，只做' + quota.policy.keepFor.map((name) => capabilityNames[name] || name).join('、');
+    return '';
+  }
+
+  // Status bar: Claude and Codex always (they are the scarce ones); others only when they are stepping back.
+  function quotaStatusBar() {
+    const shown = quotaList().filter((quota) => Number.isFinite(quota.used) &&
+      (['claude', 'codex'].includes(quota.provider) || quota.level === 'reserved' || quota.level === 'stopped'));
+    return shown.map((quota) => {
+      const left = Math.max(0, 100 - quota.used);
+      const note = levelText(quota);
+      return `<button type="button" class="sb-item clickable sb-quota" data-level="${quota.level}" data-status-member="${quota.provider}"
+        title="${esc(memberName(quota.provider))} 剩余 ${pct(left)}（取 5 小时和每周窗口中较紧的一个）${note ? ' · ' + note : ''}">
+        <span class="quota-mini" aria-hidden="true"><i style="width:${left}%"></i></span>${esc(avatars.members[quota.provider]?.short || quota.provider)} 剩 ${pct(left)}</button>`;
+    }).join('');
+  }
+
+  // Member panel: one meter per window, remaining quota, and what routing is doing with this member.
+  function quotaMarkup(provider) {
+    const quota = quotaOf(provider);
+    const bucket = quota?.buckets?.[0];
+    if (!quota || (!bucket && !Number.isFinite(quota.used))) return '<small class="quota-none">额度未取得</small>';
+    const meter = (label, window) => {
+      const left = window ? Math.max(0, 100 - window.usedPercent) : null;
+      return `<span class="quota-label">${label}</span><span class="quota-bar" aria-hidden="true">${left === null ? '' : `<i style="width:${left}%"></i>`}</span>
+        <span class="quota-value">${left === null ? '—' : '剩 ' + pct(left)}</span>`;
+    };
+    const rows = bucket ? meter('5 小时', bucket.fiveHour) + meter('每周', bucket.weekly)
+      : meter(quota.usedSource === 'snapshot' ? '快照' : '较紧窗口', { usedPercent: quota.used });
+    const note = levelText(quota);
+    return `<div class="quota-meters" data-level="${quota.level}">${rows}</div>${note ? `<small class="quota-note" data-level="${quota.level}">${note}</small>` : ''}`;
+  }
+
+  // What a task cost: the change in each member's quota between the task's start and end.
+  function quotaCharge(task, { compact = false } = {}) {
+    const entries = Object.entries(task.quota || {}).filter(([, windows]) => (windows.fiveHour || 0) + (windows.weekly || 0) > 0);
+    if (!entries.length) return '';
+    if (compact) {
+      return `<span class="dispatch-quota"><em>额度</em>${entries.slice(0, 3).map(([id, windows]) =>
+        `<span title="${esc(memberName(id))}：5 小时 +${windows.fiveHour ?? 0}% · 每周 +${windows.weekly ?? 0}%">${esc(avatars.members[id]?.short || id)} +${windows.fiveHour ?? windows.weekly}%</span>`).join('')}</span>`;
+    }
+    return `<table class="quota-table"><thead><tr><th>消耗额度</th><th>5 小时</th><th>每周</th></tr></thead><tbody>
+      ${entries.map(([id, windows]) => `<tr><td>${esc(memberName(id))}</td><td>+${windows.fiveHour ?? 0}%</td><td>+${windows.weekly ?? 0}%</td></tr>`).join('')}
+    </tbody></table><p class="panel-note">任务开始和结束时各读一次已用额度的差值，包含同一账号在这段时间里的其他使用。</p>`;
+  }
+
+  // "review:reassigned:grok->gemini:quota" → a one-line note in the thread.
+  function reassignments(task) {
+    return (task.events || []).map((event) => /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(event.detail || ''))
+      .filter(Boolean).map(([, , from, to, reason]) =>
+        `${memberName(from)} ${reason === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(to)} 接手`);
   }
 
   function panelMembers() {
@@ -339,33 +422,24 @@
       ${Object.entries(members).map(([id, member]) => {
         const { task, state: activity } = memberActivity(id);
         return `<div class="member-row ${focusMember === id ? 'member-focused' : ''}">${memberAvatar(id, 48, 'members')}<div>
-          <span class="member-caption"><strong>${member.name}</strong>${activity ? `<small>${avatars.states[activity].label}</small>` : ''}</span><small>${member.role}${id === 'gemini' && !canUseGemini() ? ' · ' + geminiAvailability() : ''}</small>
-          ${recipients.includes(id) && id !== 'lead' && isLiveGroup() ? quotaMarkup(id) : ''}
+          <span class="member-caption"><strong>${member.name}</strong>${activity ? `<small>${avatars.states[activity].label}</small>` : ''}</span><small>${member.role}${!canUse(id) ? ' · ' + availability(id) : ''}</small>
+          ${recipients.includes(id) && id !== 'lead' && (isLiveGroup() || isExample(state.group)) ? quotaMarkup(id) : ''}
           ${task ? `<button type="button" data-task-id="${esc(task.id)}" class="task-text-link">${taskLabel(task)} · ${statusName(task.state)}</button>` : ''}
         </div>${id === 'codex' ? '<button type="button" class="btn member-direct" data-direct-codex>单聊</button>' : ''}</div>`;
       }).join('')}</div>`;
   }
 
-  function quotaMarkup(provider) {
-    const buckets = connected ? quotas.find((quota) => quota.provider === provider)?.buckets : null;
-    const remaining = (window) => window ? Math.max(0, 100 - window.usedPercent).toLocaleString(undefined, { maximumFractionDigits: 1 }) + '%' : '未提供';
-    if (!buckets?.length) return '<small>5 小时额度未取得 · 周额度未取得</small>';
-    return buckets.map((bucket) => `<small>${buckets.length > 1 ? esc(bucket.label || bucket.id) + ' · ' : ''}
-      5 小时剩余 ${remaining(bucket.fiveHour)} · 周剩余 ${remaining(bucket.weekly)}</small>`).join('');
-  }
-
   function refreshQuotas() {
-    if (!supported || !isLiveGroup() || !connected || !state.panelOpen || state.panel !== 'members' ||
-        quotaCheck || Date.now() < nextQuotaAt) return;
+    if (!supported || !isLiveGroup() || !connected || quotaCheck || Date.now() < nextQuotaAt) return;
     const current = generation;
-    nextQuotaAt = Date.now() + 30000;
+    nextQuotaAt = Date.now() + 60000;
     quotaCheck = control('quota_status').then((result) => {
       if (current === generation) quotas = result;
     }).catch(() => {
       if (current === generation) quotas = [];
     }).finally(() => {
       quotaCheck = null;
-      if (current === generation && isLiveGroup() && state.panelOpen && state.panel === 'members') A.renderPanel();
+      if (current === generation && isLiveGroup()) repaint();
     });
   }
 
@@ -408,6 +482,8 @@
           ${task.prompt && terminal.has(task.state) ? '<button class="btn" type="button" data-task-operation="draft">重跑…</button>' : ''}
         </div>
         ${events.length ? `<ol class="task-events">${events.map((event) => `<li>${statusName(event.state)}</li>`).join('')}</ol>` : ''}
+        ${reassignments(task).map((note) => `<p class="task-reassigned">${esc(note)}</p>`).join('')}
+        ${quotaCharge(task)}
         ${logs ? `<h3>步骤输出</h3>${logs}` : ''}
       </section>` : ''}
     </div>`;
@@ -475,6 +551,7 @@
       unknown_task: '主控上找不到这项任务。',
       invalid_model_selection: '请输入该 CLI 支持的模型 ID。',
       gemini_not_configured: 'VPS 2 尚未配置 Gemini 执行服务。',
+      antigravity_not_configured: 'VPS 2 尚未配置 Antigravity。',
       unsupported_operation: '群聊规划需要更新主控和本机连接组件。',
       invalid_plan_reply: '请输入 1 至 2000 字的回复。',
       plan_changed: '方案已更新，请按最新一轮的问题或方案操作。',
@@ -568,7 +645,18 @@
       const round = task?.plan?.rounds.at(-1);
       if (round?.revision !== revision || !waitingForPlan(task)) throw new Error('方案已更新，请查看最新方案。');
       if (operation === 'plan_approve') {
-        updateTask(group, taskId, { state: 'completed', detail: '示例方案已确认。', plan: { ...task.plan, approved: revision } });
+        const now = Date.now();
+        const at = (seconds) => new Date(now - seconds * 1000).toISOString();
+        updateTask(group, taskId, {
+          state: 'completed', detail: '示例方案已确认。', plan: { ...task.plan, approved: revision },
+          steps: [
+            { id: 'edit', role: task.provider || 'codex', state: 'completed', output: '示例：已按确认的范围完成修改。', paths: ['src/example.js'] },
+            { id: 'review', role: 'gemini', state: 'completed', output: '示例：审查通过，没有阻塞问题。' },
+          ],
+          events: [{ state: 'planning', time: at(160) }, { state: 'running', time: at(150) },
+            { state: 'running', detail: 'review:reassigned:grok->gemini:quota', time: at(60) }, { state: 'completed', time: at(5) }],
+          quota: { claude: { fiveHour: 3, weekly: 1 }, codex: { fiveHour: 2, weekly: 0.5 }, gemini: { fiveHour: 1, weekly: 0 } },
+        });
       } else {
         const steps = [{ role: task.provider || 'codex',
           prompt: task.provider === 'gemini' ? '分析确认后的范围，核对验收条件并提出建议。' : '根据已确认的范围完成任务并核对验收条件。' }];
@@ -653,7 +741,7 @@
     const token = suggestionToken();
     if (!token) { hideSuggestions(); return; }
     const { query, kind } = token;
-    suggestionItems = kind === '@' ? recipients.filter((id) => (id !== 'gemini' || canUseGemini()) && memberName(id).toLowerCase().includes(query))
+    suggestionItems = kind === '@' ? recipients.filter((id) => canUse(id) && memberName(id).toLowerCase().includes(query))
       : Object.keys(availableCommands).filter((name) => name.startsWith(query));
     if (!suggestionItems.length) { hideSuggestions(); return; }
     suggestionIndex = Math.min(suggestionIndex, suggestionItems.length - 1);
@@ -752,12 +840,12 @@
     }
     if (handleCommand(draft) || (!isExample(group.id) && (!supported || !hasRoute()))) return;
     hideSuggestions();
-    const aliases = { '组长': '', codex: 'codex', claude: 'claude', 'claude code': 'claude', grok: 'grok', 'grok build': 'grok', gemini: 'gemini' };
-    const mention = /^@(组长|codex|claude(?: code)?|grok(?: build)?|gemini)(?:\s+|$)/i.exec(draft);
+    const aliases = { '组长': '', codex: 'codex', claude: 'claude', 'claude code': 'claude', grok: 'grok', 'grok build': 'grok', gemini: 'gemini', antigravity: 'antigravity' };
+    const mention = /^@(组长|codex|claude(?: code)?|grok(?: build)?|gemini|antigravity)(?:\s+|$)/i.exec(draft);
     const recipient = mention ? aliases[mention[1].toLowerCase()] : provider.value;
     const prompt = mention ? draft.slice(mention[0].length).trim() : draft;
-    if (recipient === 'gemini' && !canUseGemini()) {
-      group.taskError = '当前主控尚未启用 Gemini。';
+    if (recipient && !canUse(recipient)) {
+      group.taskError = `当前主控尚未启用 ${members[recipient].name}。`;
       render();
       return;
     }
@@ -816,6 +904,7 @@
   }
   $('#groupRoster').addEventListener('click', (event) => showMember(event.target.closest('[data-roster]')?.dataset.roster));
   $('#sbGroupMembers').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
+  $('#sbQuota').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
   $('#panelBody').addEventListener('change', (event) => {
     if (state.group && event.target.id === 'flowTask') selectTask(event.target.value, 'graph');
   });
