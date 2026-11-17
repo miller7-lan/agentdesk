@@ -1,7 +1,7 @@
 # AgentDesk 待办清单（2026-11-17 更新）
 
 > 汇总所有**还没完成**的事，按依赖顺序排列。以 `main`（`e46d666`，已合并 `fix/resume-active-writer` 和 `codex/agentdesk-dual-vps`）为准。
-> 详细背景：[视觉改版实施计划](VISUAL_PLAN.md) · [微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
+> 详细背景：[CLI 接入现状评估](CLI_REVIEW.md) · [视觉改版实施计划](VISUAL_PLAN.md) · [微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
 
 ## 已确定的决定
 
