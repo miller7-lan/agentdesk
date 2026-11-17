@@ -1,0 +1,32 @@
+[Unit]
+Description=AgentDesk VPS 2 Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentdesk
+Group=agentdesk
+ExecStart=/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/service.js /etc/agentdesk-orchestrator/config.json
+Environment=PATH=/opt/agentdesk-orchestrator:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/var/lib/agentdesk-orchestrator
+StateDirectory=agentdesk-orchestrator
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryHigh=2500M
+MemoryMax=3G
+TasksMax=128
+LimitNOFILE=1024
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

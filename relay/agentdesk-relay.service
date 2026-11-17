@@ -1,0 +1,37 @@
+[Unit]
+Description=AgentDesk TLS relay
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=agentdesk-relay
+Group=agentdesk-relay
+EnvironmentFile=/etc/agentdesk-relay/listen.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+StateDirectory=agentdesk-relay
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/agentdesk-relay/server.py --bind $RELAY_BIND --port $RELAY_PORT --cert /etc/agentdesk-relay/tls.crt --key /etc/agentdesk-relay/tls.key --devices /etc/agentdesk-relay/devices.json --database /var/lib/agentdesk-relay/receipts.sqlite3
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+MemoryHigh=128M
+MemoryMax=200M
+TasksMax=16
+LimitNOFILE=128
+LogNamespace=agentdesk-relay
+
+[Install]
+WantedBy=multi-user.target

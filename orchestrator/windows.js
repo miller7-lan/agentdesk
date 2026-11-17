@@ -1,0 +1,429 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { createHash, randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const { messageId } = require('./transport');
+
+const CHUNK = 64 * 1024;
+const MAX_FILE = 20 * 1024 * 1024;
+const sha = (data) => createHash('sha256').update(data).digest('hex');
+const validDigest = (value) => /^[a-f0-9]{64}$/.test(value);
+
+async function within(root, relative, { missing = false, directory = false } = {}) {
+  if (typeof relative !== 'string' || (relative === '' && !directory) || relative.length > 1024 ||
+      (relative && relative.split('/').some((part) =>
+        !part || /^\.{1,2}$/.test(part) || part.toLowerCase() === '.git' ||
+        /[\\:<>"|?*\x00-\x1f]/.test(part) || /[ .]$/.test(part) ||
+        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)))) throw new Error('invalid_path');
+  let target = root;
+  const parts = relative ? relative.split('/') : [];
+  for (const [index, part] of parts.entries()) {
+    target = path.join(target, part);
+    try {
+      const entry = await fs.lstat(target);
+      if (entry.isSymbolicLink()) throw new Error('symlink_denied');
+      const resolved = await fs.realpath(target);
+      const resolvedRelative = path.relative(root, resolved);
+      if (resolvedRelative.startsWith('..' + path.sep) || resolvedRelative === '..' || path.isAbsolute(resolvedRelative)) {
+        throw new Error('path_escape');
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT' || index !== parts.length - 1 || !missing) throw error;
+    }
+  }
+  return target;
+}
+
+async function version(filename) {
+  const stat = await fs.lstat(filename);
+  if (stat.isDirectory()) return { type: 'directory', version: sha(String(stat.mtimeMs)), size: 0 };
+  if (!stat.isFile() || stat.size > MAX_FILE) throw new Error('unsupported_file');
+  return { type: 'file', version: sha(await fs.readFile(filename)), size: stat.size };
+}
+
+async function checkVersion(filename, expected) {
+  if (expected !== null && !validDigest(expected)) throw new Error('expected_version_required');
+  const current = await version(filename).catch((error) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if ((current?.version ?? null) !== expected) throw new Error('version_conflict');
+  return current;
+}
+
+function execute(root, binary, args, timeout, signal, env = process.env) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, args, {
+      cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32',
+    });
+    let failure;
+    const stop = (reason) => {
+      if (failure) return;
+      failure = reason;
+      if (!child.pid) return;
+      if (process.platform === 'win32') {
+        const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+        killer.on('error', () => child.kill());
+        killer.once('exit', (code) => { if (code) child.kill(); });
+      } else {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+      }
+    };
+    const timer = setTimeout(() => stop(new Error('command_timeout')), timeout);
+    const abort = () => stop(signal.reason);
+    const output = { stdout: '', stderr: '' };
+    signal.addEventListener('abort', abort, { once: true });
+    for (const channel of Object.keys(output)) {
+      child[channel].setEncoding('utf-8').on('data', (chunk) => {
+        output[channel] = (output[channel] + chunk).slice(-16000);
+      });
+    }
+    child.once('error', reject);
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      if (failure) reject(failure);
+      else resolve({ code, ...output });
+    });
+  });
+}
+
+class WindowsOperations {
+  constructor({ config, store, desktop, recycle }) {
+    this.config = config;
+    this.store = store;
+    this.desktop = desktop;
+    this.recycle = recycle;
+    this.commands = new Map();
+    this.busyStreams = new Set();
+    this.busy = new Set();
+  }
+
+  async call(frame) {
+    const { task_id: taskId, message_id: requestId, kind, body } = frame;
+    if (kind === 'task.status' && body.operation === 'stream_status') {
+      const record = this.stream(taskId, body.stream_id);
+      return { stream_id: body.stream_id, next_offset: record.offset, state: record.closed ? 'complete' : 'open' };
+    }
+    if (kind === 'command.execute' && body.operation === 'cancel') {
+      const command = this.commands.get(body.request_id);
+      if (command?.taskId === taskId) command.controller.abort(new Error('command_cancelled'));
+      return { state: command?.taskId === taskId ? 'cancelling' : 'unknown' };
+    }
+    if (['stream.open', 'stream.chunk', 'stream.end'].includes(kind)) {
+      const id = body.stream_id;
+      if (this.busyStreams.has(id)) throw new Error('stream_busy');
+      this.busyStreams.add(id);
+      try {
+        if (kind === 'stream.open') return await this.open(taskId, body);
+        if (kind === 'stream.chunk') return await this.chunk(taskId, body);
+        return await this.end(taskId, body);
+      } finally {
+        this.busyStreams.delete(id);
+      }
+    }
+    if (kind === 'file.read' && body.operation === 'artifact') return this.artifact(taskId, body);
+    const workspaceName = body.workspace;
+    const workspace = Object.hasOwn(this.config.workspaces, workspaceName) && this.config.workspaces[workspaceName];
+    if (!workspace) throw new Error('workspace_not_authorized');
+    const root = await fs.realpath(workspace.root);
+    if (kind === 'file.read') return this.read(root, body);
+    if (kind === 'task.request' && body.operation === 'desktop') {
+      if (workspace.desktop !== true || !this.desktop.enabled || !/^desktop_(?:click|double_click|right_click|move|drag|scroll|type|press|key|screenshot|mouse_move|mouse_click|mouse_drag|mouse_wheel|snapshot|find|type_text|press_key)$/.test(body.tool)) {
+        throw new Error('desktop_not_authorized');
+      }
+      await this.desktop.specs();
+      this.desktop.active.set(requestId, taskId);
+      try {
+        const reply = await this.desktop.call({ threadId: taskId, turnId: requestId, tool: body.tool, arguments: body.arguments });
+        const contentItems = [];
+        for (const item of reply.contentItems) {
+          if (item.type === 'inputImage') {
+            const [, mimeType, data] = /^data:([^;]+);base64,(.*)$/.exec(item.imageUrl) || [];
+            if (data) contentItems.push({ type: 'artifact', mimeType, ...await this.saveArtifact(taskId, Buffer.from(data, 'base64')) });
+          } else contentItems.push({ type: 'text', text: item.text.slice(0, 10000) });
+        }
+        return { success: reply.success, contentItems };
+      } finally {
+        this.desktop.active.delete(requestId);
+      }
+    }
+    if (this.busy.has(root)) throw new Error('workspace_busy');
+    this.busy.add(root);
+    try {
+      if (kind === 'command.execute') return await this.command(taskId, requestId, workspace, root, body);
+      if (!workspace.write) throw new Error('workspace_write_denied');
+      if (kind === 'file.write') return await this.write(taskId, root, body);
+      if (kind === 'file.patch' && body.operation === 'apply') return await this.patch(taskId, root, body);
+      throw new Error('unsupported_operation');
+    } finally {
+      this.busy.delete(root);
+    }
+  }
+
+  async sweepStreams(now = Date.now()) {
+    for (const stream of this.store.all('streams')) {
+      if (stream.id && stream.updated < now - 24 * 60 * 60 * 1000 && !this.busyStreams.has(stream.id)) {
+        this.busyStreams.add(stream.id);
+        try {
+          await fs.rm(this.streamPath(stream.id), { force: true });
+          this.store.delete('streams', stream.id);
+        } finally {
+          this.busyStreams.delete(stream.id);
+        }
+      }
+    }
+  }
+
+  stream(taskId, id) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('invalid_stream');
+    const record = this.store.get('streams', id);
+    if (!record || record.taskId !== taskId) throw new Error('unknown_stream');
+    return record;
+  }
+
+  streamPath(id) {
+    return path.join(this.config.stateDir, 'streams', id);
+  }
+
+  async open(taskId, { stream_id: id, size }) {
+    if (!/^[0-9a-f-]{36}$/.test(id) || !Number.isSafeInteger(size) || size < 0 || size > MAX_FILE) throw new Error('invalid_stream');
+    const existing = this.store.get('streams', id);
+    if (existing) {
+      if (existing.taskId !== taskId || existing.size !== size) throw new Error('stream_conflict');
+      return { next_offset: existing.offset };
+    }
+    const allocated = this.store.all('streams').reduce((sum, stream) => sum + stream.size, 0);
+    if (allocated + size > 1024 * 1024 * 1024) throw new Error('stream_capacity');
+    await fs.mkdir(path.dirname(this.streamPath(id)), { recursive: true });
+    await fs.writeFile(this.streamPath(id), '', { flag: 'wx', mode: 0o600 });
+    this.store.put('streams', id, { id, taskId, size, offset: 0, updated: Date.now() });
+    return { next_offset: 0 };
+  }
+
+  async chunk(taskId, { stream_id: id, offset, data, sha256 }) {
+    const record = this.stream(taskId, id);
+    const bytes = decode(data);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > record.offset ||
+        !bytes.length || offset + bytes.length > record.size || sha(bytes) !== sha256) throw new Error('invalid_chunk');
+    const file = await fs.open(this.streamPath(id), 'r+');
+    try {
+      if (offset < record.offset) {
+        if (offset + bytes.length > record.offset) throw new Error('chunk_conflict');
+        const check = Buffer.alloc(bytes.length);
+        await file.read(check, 0, check.length, offset);
+        if (!bytes.equals(check)) throw new Error('chunk_conflict');
+        return { next_offset: record.offset };
+      }
+      if (record.closed) throw new Error('stream_closed');
+      if ((await file.write(bytes, 0, bytes.length, offset)).bytesWritten !== bytes.length) throw new Error('short_write');
+      await file.sync();
+      record.offset += bytes.length;
+      this.store.put('streams', id, { ...record, updated: Date.now() });
+      return { next_offset: record.offset };
+    } finally {
+      await file.close();
+    }
+  }
+
+  async end(taskId, { stream_id: id, size, sha256 }) {
+    const record = this.stream(taskId, id);
+    const bytes = await fs.readFile(this.streamPath(id));
+    if (record.size !== size || record.offset !== size || bytes.length !== size || sha(bytes) !== sha256) throw new Error('stream_checksum_mismatch');
+    this.store.put('streams', id, { ...record, closed: true, updated: Date.now() });
+    return { size, sha256 };
+  }
+
+  async saveArtifact(taskId, bytes) {
+    const id = randomUUID();
+    await this.open(taskId, { stream_id: id, size: bytes.length });
+    await fs.writeFile(this.streamPath(id), bytes);
+    this.store.put('streams', id, { id, taskId, size: bytes.length, offset: bytes.length, closed: true, updated: Date.now() });
+    return { stream_id: id, size: bytes.length, sha256: sha(bytes) };
+  }
+
+  async artifact(taskId, body) {
+    const record = this.stream(taskId, body.stream_id);
+    if (!record.closed) throw new Error('stream_incomplete');
+    return this.readChunk(this.streamPath(body.stream_id), record.size, body.offset);
+  }
+
+  async readChunk(filename, size, offset = 0) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > size) throw new Error('invalid_offset');
+    const file = await fs.open(filename, 'r');
+    try {
+      const chunk = Buffer.alloc(Math.min(size - offset, CHUNK));
+      const { bytesRead } = await file.read(chunk, 0, chunk.length, offset);
+      if (bytesRead !== chunk.length) throw new Error('file_changed');
+      return { offset, size, data: chunk.toString('base64'), sha256: sha(chunk) };
+    } finally {
+      await file.close();
+    }
+  }
+
+  async read(root, body) {
+    const filename = await within(root, body.path, { directory: true });
+    if (body.operation === 'stat') return version(filename);
+    if (body.operation === 'list' || body.operation === 'search') {
+      const items = [];
+      const search = body.operation === 'search';
+      let visited = 0;
+      let responseSize = 0;
+      if (search && (typeof body.query !== 'string' || !body.query || body.query.length > 200)) throw new Error('invalid_query');
+      async function walk(dir, prefix) {
+        for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+          if (++visited > 10000 || items.length >= 500 || responseSize >= 12000) return;
+          if (entry.isSymbolicLink() || entry.name.toLowerCase() === '.git') continue;
+          const rel = prefix + entry.name;
+          if (!search || rel.toLowerCase().includes(body.query.toLowerCase())) {
+            responseSize += rel.length + 35;
+            items.push({ path: rel, directory: entry.isDirectory() });
+          }
+          if (search && entry.isDirectory()) await walk(await within(root, rel, { directory: true }), rel + '/');
+        }
+      }
+      await walk(filename, body.path ? body.path + '/' : '');
+      return { items, truncated: visited > 10000 || items.length >= 500 || responseSize >= 12000 };
+    }
+    if (body.operation !== 'read') throw new Error('unsupported_file_operation');
+    const metadata = await version(filename);
+    if (metadata.type !== 'file' || (body.version && metadata.version !== body.version)) throw new Error('version_conflict');
+    return { ...await this.readChunk(filename, metadata.size, body.offset), version: metadata.version };
+  }
+
+  async write(taskId, root, body) {
+    const filename = await within(root, body.path, { missing: true });
+    const current = await checkVersion(filename, body.version);
+    if (body.operation === 'mkdir' && !current) {
+      await fs.mkdir(filename);
+    } else if (body.operation === 'move' && current) {
+      const destination = await within(root, body.destination, { missing: true });
+      await checkVersion(destination, null);
+      await fs.rename(filename, destination);
+      return version(destination);
+    } else if (body.operation === 'delete' && current) {
+      if (!this.recycle) throw new Error('recycle_unavailable');
+      await this.recycle(filename);
+      return { deleted: true };
+    } else if (body.operation === 'write' && current?.type !== 'directory') {
+      const record = this.stream(taskId, body.stream_id);
+      if (!record.closed) throw new Error('stream_incomplete');
+      const temporary = path.join(path.dirname(filename), '.agentdesk-' + randomUUID());
+      try {
+        await fs.copyFile(this.streamPath(body.stream_id), temporary, require('node:fs').constants.COPYFILE_EXCL);
+        await checkVersion(filename, body.version);
+        await fs.rename(temporary, filename);
+      } finally {
+        await fs.rm(temporary, { force: true });
+      }
+    } else {
+      throw new Error('invalid_file_operation');
+    }
+    return version(filename);
+  }
+
+  git(root, args, signal) {
+    return execute(root, this.config.git || 'git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], 30000, signal);
+  }
+
+  async baseline(root, signal) {
+    const head = await this.git(root, ['rev-parse', 'HEAD'], signal);
+    const status = await this.git(root, ['status', '--porcelain'], signal);
+    if (head.code || status.code) throw new Error('git_status_failed');
+    return { head: head.stdout.trim(), clean: !status.stdout };
+  }
+
+  async patch(taskId, root, body) {
+    const record = this.stream(taskId, body.stream_id);
+    if (!record.closed) throw new Error('stream_incomplete');
+    const signal = new AbortController().signal;
+    const before = await this.baseline(root, signal);
+    if (!before.clean || before.head !== body.base) throw new Error('version_conflict');
+    const filename = this.streamPath(body.stream_id);
+    const args = ['apply', '--binary', '--whitespace=nowarn', '--index', filename];
+    if ((await this.git(root, ['apply', '--check', ...args.slice(1)], signal)).code !== 0) throw new Error('patch_conflict');
+    if ((await this.git(root, args, signal)).code !== 0) throw new Error('patch_apply_failed');
+    return { applied: true, base: before.head };
+  }
+
+  async command(taskId, id, workspace, root, body) {
+    const controller = new AbortController();
+    if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
+    const spec = Object.hasOwn(workspace.commands || {}, body.command) && workspace.commands[body.command];
+    if (body.operation !== 'run' || body.permission !== 'development' || !Array.isArray(spec) ||
+        !spec.length || spec.some((arg) => typeof arg !== 'string') ||
+        !Number.isSafeInteger(body.timeout_ms) || body.timeout_ms < 1 || body.timeout_ms > 900000) {
+      throw new Error('command_not_authorized');
+    }
+    this.commands.set(id, { taskId, controller });
+    try {
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/KEY|TOKEN|SECRET|PASSWORD/i.test(key)));
+      return await execute(root, spec[0], spec.slice(1), body.timeout_ms, controller.signal, env);
+    } finally {
+      this.commands.delete(id);
+    }
+  }
+}
+
+function decode(data) {
+  if (typeof data !== 'string' || data.length > Math.ceil(CHUNK / 3) * 4) throw new Error('invalid_chunk');
+  const bytes = Buffer.from(data, 'base64');
+  if (bytes.toString('base64') !== data || bytes.length > CHUNK) throw new Error('invalid_chunk');
+  return bytes;
+}
+
+class RemoteFiles {
+  constructor(endpoint) {
+    this.endpoint = endpoint;
+  }
+
+  call(route, id, kind, body, timeout, signal) {
+    signal?.throwIfAborted();
+    return this.endpoint.request(route, id, kind, body, timeout, messageId(), signal);
+  }
+
+  async upload(route, taskId, bytes, id = randomUUID()) {
+    if (bytes.length > MAX_FILE) throw new Error('file_too_large');
+    const opened = await this.call(route, taskId, 'stream.open', { stream_id: id, size: bytes.length });
+    if (!Number.isSafeInteger(opened.next_offset) || opened.next_offset < 0 || opened.next_offset > bytes.length ||
+        (opened.next_offset !== bytes.length && opened.next_offset % CHUNK)) throw new Error('invalid_stream_offset');
+    for (let offset = opened.next_offset; offset < bytes.length; offset += CHUNK) {
+      const chunk = bytes.subarray(offset, offset + CHUNK);
+      await this.call(route, taskId, 'stream.chunk', {
+        stream_id: id, offset, data: chunk.toString('base64'), sha256: sha(chunk),
+      });
+    }
+    await this.call(route, taskId, 'stream.end', { stream_id: id, size: bytes.length, sha256: sha(bytes) });
+    return id;
+  }
+
+  async download(route, taskId, body) {
+    const chunks = [];
+    let size;
+    let version = body.version;
+    for (let offset = 0; size === undefined || offset < size;) {
+      const chunk = await this.call(route, taskId, 'file.read', { ...body, version, offset });
+      const bytes = decode(chunk.data);
+      size ??= chunk.size;
+      version ??= chunk.version;
+      if (!Number.isSafeInteger(size) || size > MAX_FILE || size < 0 || chunk.size !== size ||
+          chunk.offset !== offset || chunk.sha256 !== sha(bytes) || (!bytes.length && offset < size) ||
+          offset + bytes.length > size || (chunk.version && chunk.version !== version)) throw new Error('invalid_download');
+      chunks.push(bytes);
+      offset += bytes.length;
+    }
+    const buffer = Buffer.concat(chunks);
+    if ((version || body.sha256) && sha(buffer) !== (version || body.sha256)) throw new Error('download_checksum_mismatch');
+    return buffer;
+  }
+
+  async patch(route, taskId, workspace, base, bytes, requestId, signal) {
+    const id = await this.upload(route, taskId, bytes);
+    signal?.throwIfAborted();
+    return this.endpoint.request(route, taskId, 'file.patch',
+      { operation: 'apply', workspace, base, stream_id: id }, 90000, requestId, signal);
+  }
+}
+
+module.exports = { WindowsOperations, RemoteFiles, within };

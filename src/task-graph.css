@@ -1,0 +1,32 @@
+.flow-panel { min-width: 0; }
+.flow-select { display: grid; gap: 4px; color: var(--muted); font-size: 11.5px; }
+.flow-select select { width: 100%; min-width: 0; padding: 5px 7px; font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; }
+.flow-viewport { overflow: auto; max-height: 400px; border: 1px solid var(--border); border-radius: 8px; background: var(--main); }
+.flow-diagram { position: relative; margin-inline: auto; }
+.flow-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.flow-link { stroke: var(--faint); }
+.flow-link-active { stroke: var(--accent); }
+#flowArrow path { fill: var(--faint); stroke: none; }
+#flowArrowActive path { fill: var(--accent); stroke: none; }
+.flow-node { position: absolute; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 1px; padding: 5px 8px; text-align: left; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
+.flow-node:hover, .flow-node[aria-pressed="true"] { border-color: var(--accent); }
+.flow-node[aria-pressed="true"] { background: var(--accent-soft); }
+.flow-node > * { width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.flow-node .flow-node-title { display: flex; align-items: center; gap: 4px; }
+.flow-node-title strong { overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 12px; }
+.flow-node[data-flow-role="gemini"] { border-left: 3px solid var(--member-gemini); }
+.flow-node > span, .flow-node > small { font-size: 10.5px; color: var(--muted); }
+.flow-node:is([data-flow-state="running"], [data-flow-state="planning"], [data-flow-state="applying"], [data-flow-state="testing"]) > small { color: var(--accent); }
+.flow-node[data-flow-state="completed"] > small { color: var(--ok); }
+.flow-node[data-flow-state="failed"] > small { color: var(--danger); }
+.flow-node:is([data-flow-state="awaiting_approval"], [data-flow-state="awaiting_details"], [data-flow-state="needs_review"]) > small { color: var(--warn); }
+.flow-details { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); overflow-wrap: anywhere; }
+.flow-details h3 { color: var(--text); }
+.flow-details h3 span { margin-left: 4px; font-weight: 400; color: var(--muted); }
+.flow-details :is(h4,p,dl,ul,pre) { margin: 0; }
+.flow-details h4 { color: var(--muted); font-size: 11px; }
+.flow-details dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 6px; font-size: 11px; }
+.flow-details dt { color: var(--muted); }
+.flow-details dd { margin: 0; }
+.flow-details ul { padding-left: 16px; }
+.flow-details pre, .flow-description { white-space: pre-wrap; font-size: 11.5px; }

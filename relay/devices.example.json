@@ -1,0 +1,22 @@
+{
+  "windows-bridge": {
+    "role": "bridge",
+    "peer": "vps2-orchestrator",
+    "token_sha256": "<replace with bridge token SHA-256>"
+  },
+  "vps2-orchestrator": {
+    "role": "orchestrator",
+    "peer": "windows-bridge",
+    "token_sha256": "<replace with orchestrator token SHA-256>"
+  },
+  "mac-bridge": {
+    "role": "bridge",
+    "peer": "vps2-orchestrator-mac",
+    "token_sha256": "<replace with Mac bridge token SHA-256>"
+  },
+  "vps2-orchestrator-mac": {
+    "role": "orchestrator",
+    "peer": "mac-bridge",
+    "token_sha256": "<replace with Mac orchestrator token SHA-256>"
+  }
+}

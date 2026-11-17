@@ -7,7 +7,8 @@ const os = require('os');
 const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
 
-const ROOT = 'C:\\CodexSSH\\windows-dev';
+const mac = process.platform === 'darwin';
+const ROOT = process.env.AGENTDESK_ENROLLED || mac ? path.join(os.homedir(), 'AgentDeskWorkspace') : 'C:\\CodexSSH\\windows-dev';
 const ROOT_FWD = ROOT.replace(/\\/g, '/');
 const IGNORE = new Set(['.git', '.tools', '__pycache__', 'node_modules', '.venv', '.pytest_cache', '.mypy_cache']);
 const MAX_TREE = 3000;
@@ -63,6 +64,7 @@ class Workspace extends EventEmitter {
 
   async read(rel) {
     const abs = inside(rel);
+    if (mac && !(await fsp.realpath(abs)).startsWith((await fsp.realpath(ROOT)) + path.sep)) throw new Error('路径超出工作区');
     const st = await fsp.stat(abs);
     if (st.size > MAX_PREVIEW) return { tooLarge: true, size: st.size };
     const buf = await fsp.readFile(abs);
@@ -102,7 +104,7 @@ class Workspace extends EventEmitter {
     const work = await git(['diff', '--no-color', '--', rel]);
     let text = staged.out + work.out;
     if (!text.trim()) {                                          // 未跟踪文件：与空文件比较
-      const u = await git(['diff', '--no-index', '--no-color', '--', 'NUL', rel], { okCodes: [0, 1] });
+      const u = await git(['diff', '--no-index', '--no-color', '--', mac ? '/dev/null' : 'NUL', rel], { okCodes: [0, 1] });
       text = u.out;
     }
     return { text };

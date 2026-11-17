@@ -1,0 +1,31 @@
+{
+  "stateDir": "C:/Users/YourName/.agentdesk/bridge-state",
+  "workspaces": {
+    "project": {
+      "root": "D:/Projects/project",
+      "desktop": true,
+      "write": true,
+      "commands": {
+        "git-status": ["git.exe", "status", "--short"],
+        "java-build": ["javac.exe", "Main.java"],
+        "python-test": ["python.exe", "-m", "pytest"],
+        "node-build": ["node.exe", "scripts/build.js"],
+        "maven-test": ["cmd.exe", "/d", "/c", "C:/Tools/apache-maven/bin/mvn.cmd", "test"],
+        "gradle-test": ["cmd.exe", "/d", "/c", "gradlew.bat", "test"]
+      }
+    }
+  },
+  "ssh": {
+    "host": "orchestrator.example.invalid",
+    "port": 22,
+    "user": "agentdesk",
+    "key": "C:/Users/YourName/.agentdesk/bridge_ed25519"
+  },
+  "relay": {
+    "host": "relay.example.invalid",
+    "port": 22022,
+    "deviceId": "windows-bridge",
+    "tokenFile": "C:/Users/YourName/.agentdesk/relay.token",
+    "caFile": "C:/Users/YourName/.agentdesk/relay-ca.pem"
+  }
+}

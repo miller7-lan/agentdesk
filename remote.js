@@ -7,6 +7,7 @@ const fs = require('fs');
 
 const HOME = os.homedir();
 const DIR = path.join(HOME, '.agentdesk');
+const mac = process.platform === 'darwin';
 const DEFAULTS = {
   host: '',
   tunnelUser: 'windows-tunnel',
@@ -14,26 +15,33 @@ const DEFAULTS = {
   tunnelKey: path.join(DIR, 'tunnel_ed25519'),
   codexKey: path.join(DIR, 'codex_vps_ed25519'),
   knownHosts: path.join(HOME, '.ssh', 'known_hosts'),
-  remoteForward: '127.0.0.1:2222:127.0.0.1:22',
+  remoteForward: mac ? '' : '127.0.0.1:2222:127.0.0.1:22',
   workspace: '/home/codexdev/.local/share/codex-vps/workspace/windows-dev',
-  manageSshd: true,
+  manageSshd: !mac,
+  port: 22,
   idleMinutes: 10,          // 空闲时断开 Codex，输入时自动重连
 };
-const SSH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe');
+const bundledSSH = process.resourcesPath && path.join(process.resourcesPath, 'desktop-backend', 'openssh', 'ssh.exe');
+const SSH = process.platform === 'win32'
+  ? bundledSSH && fs.existsSync(bundledSSH) ? bundledSSH
+    : path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
+  : '/usr/bin/ssh';
+const sshPath = (value) => JSON.stringify(process.platform === 'win32' ? value.replace(/\\/g, '/') : value);
 
 function loadConfig() {
-  const f = path.join(DIR, 'remote.json');
+  const f = path.join(DIR, mac ? 'mac-remote.json' : 'remote.json');
   try { return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(f, 'utf8')) }; }
   catch { try { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify(DEFAULTS, null, 2)); } catch {} return { ...DEFAULTS }; }
 }
 
-const sshBase = (cfg, key) => [
+const sshBase = (cfg, key, certificate) => [
   '-F', 'none', '-T',
   '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
-  '-o', `UserKnownHostsFile=${cfg.knownHosts}`, '-o', 'HostKeyAlgorithms=ssh-ed25519',
+  '-o', `UserKnownHostsFile=${sshPath(cfg.knownHosts)}`, '-o', 'HostKeyAlgorithms=ssh-ed25519',
   '-o', 'UpdateHostKeys=no', '-o', 'IdentitiesOnly=yes', '-o', 'ForwardAgent=no',
   '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=20', '-o', 'ServerAliveCountMax=3',
   '-i', key,
+  ...(certificate ? ['-o', 'CertificateFile=' + sshPath(certificate)] : []),
 ];
 
 const sc = (...args) => new Promise((res) => execFile('sc.exe', args, { windowsHide: true, timeout: 8000 }, (err, out) => res({ err, out: String(out || '') })));
@@ -74,6 +82,14 @@ class Remote extends EventEmitter {
     this.codexStarting = false;
     this.idleTimer = setInterval(() => this.idleCheck(), 30000);
     this.idleTimer.unref?.();
+  }
+
+  openBridge(config) {
+    const knownHosts = config.knownHosts || this.cfg.knownHosts;
+    return this.spawnProcess(SSH, [
+      ...sshBase({ knownHosts }, config.key, config.certificate), '-p', String(config.port || 22),
+      '--', config.user + '@' + (config.host || this.cfg.host),
+    ], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
   }
 
   touch() { this.lastActivity = Date.now(); }
@@ -208,7 +224,7 @@ class Remote extends EventEmitter {
     const c = this.cfg;
     let child;
     try {
-      child = this.spawnProcess(SSH, [...sshBase(c, c.codexKey), c.codexUser + '@' + c.host],
+      child = this.spawnProcess(SSH, [...sshBase(c, c.codexKey, c.codexCertificate), '-p', String(c.port || 22), c.codexUser + '@' + c.host],
         { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) { this.scheduleRetry('codex', error.message); return; }
     const connection = { child, output: '', buffer: '', ready: false, heartbeatPending: false };
