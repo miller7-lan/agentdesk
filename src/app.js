@@ -248,7 +248,7 @@
     }
     state.collapsed.delete(project);
     renderAll();
-    G().refresh();
+    Promise.resolve(window.AgentDeskProjects?.select(project)).finally(() => G().refresh());
   }
 
   function openSession(id) {
@@ -261,6 +261,7 @@
     }
     const prev = state.active;
     state.active = id;
+    window.AgentDeskProjects?.select(sess(id)?.project);
     L()?.onOpen?.(prev, id);
     renderAll();
   }
@@ -686,7 +687,7 @@
       if (state.panelOpen && panelSession !== state.group) renderPanel();
       return;
     }
-    $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = true;
+    $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = true;
     $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ Codex';
     renderTimeline();
     $('#conversationTitle').textContent = s?.title || '';

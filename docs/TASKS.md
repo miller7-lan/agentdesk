@@ -1,6 +1,6 @@
 # AgentDesk 待办清单（2026-11-17 更新）
 
-> 汇总所有**还没完成**的事，按依赖顺序排列。以 `main`（`e46d666`，已合并 `fix/resume-active-writer` 和 `codex/agentdesk-dual-vps`）为准。
+> 阶段 3 和产品化工作按本地分支验收。Docker 隔离仍在独立分支，待 VPS2 实机验收。
 > 详细背景：[任务分配方案](ROUTING_PLAN.md) · [CLI 接入现状评估](CLI_REVIEW.md) · [视觉改版实施计划](VISUAL_PLAN.md) · [微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
 
 ## 已确定的决定
@@ -31,7 +31,7 @@
 | 微信入口 | 已排除 |
 | 安全底线（P0） | ✅ 5 项已修复 |
 | CI | ✅ Windows / macOS / Linux 的 Node 测试和中转服务的 Python 测试 |
-| 签名、自动更新、首次运行向导 | ⬜ |
+| 签名、更新检查、首次运行向导 | ✅ 本地实现和打包验证，正式签名依赖发布凭据 |
 
 ## 0. 安全底线与 CI（1～2 天）
 
@@ -131,13 +131,14 @@
 
 范围仅保留历史来源标签。
 
-## 5. 产品化收尾（持续）
+## 5. 产品化收尾
 
-- [ ] 首次运行向导：在现有密码注册的基础上，引导完成主机指纹确认和 CLI 检测
-- [ ] 日志文件、审计日志、导出诊断包
-- [ ] Windows 代码签名、macOS 签名和公证、自动更新
-- [ ] 去掉写死的工作区路径 `C:\CodexSSH\windows-dev`，支持多项目
-- [ ] 用户文档：安装、权限说明、故障排查
+- [x] 多工作区配置与旧文件迁移，支持本机 Git 和云端项目。
+- [x] 首次运行向导，含 SSH 指纹、登记、工作区、CLI 检查和外观。
+- [x] 滚动日志、审计日志和脱敏诊断包。
+- [x] Windows SHA-256、macOS hardened runtime、公证钩子、手动发布工作流和可选更新检查。
+- [x] 用户文档：[安装](INSTALL.md) · [权限](PERMISSIONS.md) · [排查](TROUBLESHOOTING.md) · [签名与发布](SIGNING.md)。
+- [ ] Windows 实机启动、正式签名与公证、VPS2 实机验证。
 
 ## 4 GB 内存预算（VPS2）
 
@@ -145,7 +146,6 @@
 |---|---|
 | 系统 + Docker | 约 0.4 GB |
 | 主控 + Codex App Server | 约 0.4 GB |
-| OpenClaw（微信） | 待实测 |
 | 任务容器 × 2 | 每个上限 1 GB |
 | 余量 | 约 0.5～1 GB，swap 2 GB 兜底 |
 

@@ -17,7 +17,10 @@
     input.focus();
   };
   dialog.addEventListener('cancel', (event) => event.preventDefault());
-  api.onExpired(() => show('连接已过期，请重新输入密码。'));
+  api.onExpired(async () => {
+    const setup = await window.desk.onboarding?.status();
+    if (!setup?.enabled || setup.complete || setup.confirmed) show('连接已过期，请重新输入密码。');
+  });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const password = input.value;
@@ -28,6 +31,7 @@
       const answer = await api.login(password);
       if (!answer.ok) throw Error(answer.error);
       dialog.close();
+      window.dispatchEvent(new Event('agentdesk:enrollment-complete'));
     } catch (error) {
       status.textContent = messages[error.message] || '无法连接登录服务。';
     } finally {
@@ -35,5 +39,8 @@
       if (dialog.open) input.focus();
     }
   });
-  show();
+  window.AgentDeskEnrollment = { show };
+  window.dispatchEvent(new Event('agentdesk:enrollment-ready'));
+  const setup = await window.desk.onboarding?.status();
+  if ((!setup?.enabled || setup.complete) && !await api.ready()) show();
 })();

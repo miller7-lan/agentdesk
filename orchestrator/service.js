@@ -274,7 +274,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after, workspace: requestedWorkspace }) => {
       try {
         const id = taskId || randomUUID();
         const status = async () => {
@@ -290,7 +290,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'onboarding_check', 'diagnostics'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -303,7 +303,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
           body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
           const workspaces = config.controlWorkspaces || {};
-          const workspace = Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace;
+          const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace);
           if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
           if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
             Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });

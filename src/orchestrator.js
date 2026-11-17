@@ -298,7 +298,7 @@
       button.querySelector('span').textContent = (knownRoutes ? (routeState[route] ? '在线' : '离线') : '检测中') + (route === selected ? ' · 当前' : '');
     }
     entry.querySelector('span').textContent = selected === 'relay' ? '主控线路 · Relay' : '主控线路';
-    $('#sbGroupMembers').hidden = $('#sbQuota').hidden = !state.group;
+    $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = !state.group;
     routeStatus.hidden = !isLiveGroup() || !supported;
     routeStatus.textContent = !knownRoutes ? '主控检测中' : hasRoute() ? routeNames[selected] : '主控离线';
     routeStatus.classList.toggle('route-online', hasRoute());
@@ -884,7 +884,8 @@
   }
 
   async function control(operation, extra) {
-    const answer = await api.control({ operation, ...extra });
+    const project = A.proj(state.group);
+    const answer = await api.control({ operation, ...(project?.configured && { projectId: project.id }), ...extra });
     if (answer.ok) return answer.value;
     const explanations = {
       bridge_offline: '没有可用线路，请检查 SSH 或 Relay。',
@@ -901,6 +902,7 @@
       patch_too_large: '补丁超出 24 KiB 预览上限。',
       no_review_changes: '没有可审查的改动。',
       duo_requires_two_reviewers: '主控需要配置两名不同的审查者。',
+      team_requires_two_slots: '组队任务需要两个调度槽位。',
       review_snapshot_failed: '无法读取工作区改动。',
       ENOENT: '产物尚未生成或已清理。',
     };
@@ -933,7 +935,8 @@
       syncProjectChoices();
       if (connected && !busy) await Promise.all([...groups.values()].filter((group) => !isExample(group.id)).map(async (group) => {
         try {
-          const summaries = await control('project_tasks', { project: projectOf(group) });
+          const project = A.proj(group.id);
+          const summaries = await control('project_tasks', { project: projectOf(group), projectId: project.configured ? project.id : undefined });
           if (current !== generation || !Array.isArray(summaries)) return;
           const visible = new Set(summaries.map((summary) => summary.id));
           for (const [id, task] of group.records) {

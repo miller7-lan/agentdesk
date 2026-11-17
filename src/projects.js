@@ -1,0 +1,133 @@
+(function () {
+  const api = window.desk?.projects;
+  if (!api) return;
+  const A = window.__desk;
+  const { $, D, esc } = A;
+  const dialog = $('#workspaceDialog');
+  const form = $('#workspaceForm');
+  const list = $('#workspaceList');
+  const name = $('#workspaceName');
+  const kind = $('#workspaceKind');
+  const remote = $('#workspaceRemote');
+  const binding = $('#workspaceBinding');
+  const choose = $('#workspacePick');
+  const status = $('#workspaceStatus');
+  let snapshot;
+  let editing;
+  let switching;
+
+  function apply(result) {
+    if (!result || !Array.isArray(result.projects)) return;
+    const old = new Set(D.projects.filter((item) => item.configured).map(({ id }) => id));
+    const records = result.projects.map((item) => ({
+      ...item, branch: 'main', live: true, configured: true,
+    }));
+    const retained = D.projects.filter((item) => !item.configured && item.id !== 'live');
+    D.projects.splice(0, D.projects.length, ...records, ...retained);
+    const valid = new Set(D.projects.map(({ id }) => id));
+    for (let index = D.sessions.length - 1; index >= 0; index--) {
+      if (old.has(D.sessions[index].project) && !valid.has(D.sessions[index].project)) D.sessions.splice(index, 1);
+    }
+    snapshot = result;
+    if (A.state.group ? !valid.has(A.state.group) : !A.sess(A.state.active)) openProject(result.activeProject);
+    if (dialog.open) render();
+    A.renderAll();
+  }
+
+  function render() {
+    list.innerHTML = snapshot?.projects.map((project) =>
+      `<div class="workspace-row"><strong>${esc(project.name)}</strong>
+        <small>${esc(project.localRoot || project.remoteCwd || '云端默认目录')}</small>
+        <button type="button" class="btn" data-workspace-select="${esc(project.id)}"
+          ${project.id === snapshot.activeProject ? 'disabled' : ''}>切换</button>
+        <button type="button" class="btn" data-workspace-edit="${esc(project.id)}">编辑</button></div>`).join('') || '<p>暂无工作区</p>';
+    if (snapshot?.configError) status.textContent = '配置文件无法读取，修复后可编辑。';
+  }
+
+  function details(project) {
+    editing = project?.id;
+    form.reset();
+    name.value = project?.name || '';
+    kind.value = project?.kind || 'local';
+    remote.value = project?.remoteCwd || '';
+    binding.value = project?.orchestratorWorkspace || '';
+    $('#workspaceExisting').textContent = project?.localRoot || '';
+    $('#workspaceRemove').hidden = !editing;
+    $('#workspaceSave').textContent = editing ? '保存' : '添加';
+    status.textContent = '';
+  }
+
+  function select(id) {
+    if (!snapshot?.projects.some((project) => project.id === id)) return Promise.resolve(false);
+    if (snapshot.activeProject === id && !switching) return Promise.resolve(true);
+    const request = api.select(id).then((result) => {
+      if (result.ok) apply(result);
+      else A.toast(result.error);
+      return result.ok;
+    });
+    switching = request;
+    request.finally(() => { if (switching === request) switching = undefined; });
+    return request;
+  }
+
+  function openProject(id) {
+    const target = D.sessions.find((session) => session.project === id);
+    if (target) A.openSession(target.id);
+    else if (id) A.newDirect(id);
+    else {
+      const example = D.sessions.find((session) => !session.live);
+      if (example) A.openSession(example.id);
+    }
+  }
+
+  $('#workspaceSettings').hidden = false;
+  $('#workspaceSettings').addEventListener('click', () => {
+    details();
+    dialog.showModal();
+    render();
+  });
+  $('#workspaceClose').addEventListener('click', () => dialog.close());
+  $('#workspaceNew').addEventListener('click', () => { details(); name.focus(); });
+  list.addEventListener('click', async (event) => {
+    const edit = event.target.closest('[data-workspace-edit]');
+    if (edit) {
+      details(snapshot.projects.find(({ id }) => id === edit.dataset.workspaceEdit));
+      name.focus();
+    }
+    const selection = event.target.closest('[data-workspace-select]');
+    if (selection && await select(selection.dataset.workspaceSelect)) {
+      dialog.close();
+      openProject(selection.dataset.workspaceSelect);
+    }
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const request = {
+      id: editing, name: name.value, kind: kind.value, remoteCwd: remote.value.trim(),
+      orchestratorWorkspace: binding.value.trim(), pickLocal: choose.checked,
+    };
+    const result = await (editing ? api.update(request) : api.add(request));
+    if (!result.ok) {
+      if (!result.cancelled) status.textContent = result.error;
+      return;
+    }
+    apply(result);
+    dialog.close();
+    openProject(result.activeProject);
+  });
+  $('#workspaceRemove').addEventListener('click', async () => {
+    if (!editing) return;
+    const result = await api.remove(editing);
+    if (!result.ok) { status.textContent = result.error; return; }
+    apply(result);
+    dialog.close();
+    openProject(result.activeProject);
+  });
+  api.onChanged(apply);
+  window.AgentDeskProjects = { select, openSettings: () => $('#workspaceSettings').click() };
+  api.list().then((result) => {
+    if (!result.ok) return;
+    apply(result);
+    if (result.activeProject && result.activeProject !== A.sess(A.state.active)?.project) openProject(result.activeProject);
+  });
+})();

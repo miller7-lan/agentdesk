@@ -30,8 +30,28 @@ contextBridge.exposeInMainWorld('desk', {
   },
   enrollment: {
     required: () => ipcRenderer.invoke('enrollment:required'),
+    ready: () => ipcRenderer.invoke('enrollment:ready'),
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
     onExpired: on('enrollment:expired'),
+  },
+  updates: { check: () => ipcRenderer.invoke('updates:check') },
+  diagnostics: {
+    preview: () => ipcRenderer.invoke('diagnostics:preview'),
+    export: () => ipcRenderer.invoke('diagnostics:export'),
+  },
+  onboarding: {
+    status: () => ipcRenderer.invoke('onboarding:status'),
+    advance: (request) => ipcRenderer.invoke('onboarding:advance', request),
+    complete: () => ipcRenderer.invoke('onboarding:complete'),
+    reset: () => ipcRenderer.invoke('onboarding:reset'),
+  },
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    add: (project) => ipcRenderer.invoke('projects:add', project),
+    update: (project) => ipcRenderer.invoke('projects:update', project),
+    remove: (id) => ipcRenderer.invoke('projects:remove', { id }),
+    select: (id) => ipcRenderer.invoke('projects:select', { id }),
+    onChanged: on('projects:changed'),
   },
   orchestrator: { control: (frame) => ipcRenderer.invoke('orchestrator:control', frame) },
   desktop: {
