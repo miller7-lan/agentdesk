@@ -90,6 +90,28 @@ test('a blocked implementer keeps the task queued and resumes without planning a
   }
 });
 
+test('task metadata is validated and stored for reports and benchmarks', async (t) => {
+  const { dir, mirror } = await repository(t);
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const scheduler = new Scheduler({
+    config: { stateDir: dir, quota: false, adapters: adapters('codex', 'claude'), workspaces: { mac: { repository: mirror } } },
+    store, files: { endpoint: {} }, adapter: async () => ({ output: 'x' }),
+  });
+  const task = scheduler.submit(randomUUID(), {
+    workspace: 'mac', prompt: 'change', project: 'agentdesk', tags: [' ui ', 'ui', 'tests'],
+    benchmarkId: 'bench-1', arm: 'multi',
+  });
+  assert.equal(task.project, 'agentdesk');
+  assert.deepEqual(task.tags, ['ui', 'tests']);
+  assert.equal(task.benchmarkId, 'bench-1');
+  assert.equal(task.arm, 'multi');
+  assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'x', tags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }),
+    /invalid_task/);
+  assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'x', project: 'Bad Project' }), /invalid_task/);
+  assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'x', arm: 'team' }), /invalid_task/);
+});
+
 test('Claude waiting does not hand acceptance or triage to another CLI', () => {
   const router = new Router({ adapters: adapters('codex', 'claude', 'grok') });
   router.block('claude', 'quota', 60_000);

@@ -13,6 +13,7 @@ const {
   REVIEW_INSTRUCTION, ACCEPTANCE_INSTRUCTION, parseReviewVerdict, reviewConflicts, mergeFindings,
 } = require('./review');
 const { TRIAGE_INSTRUCTION, parseTriageDecision } = require('./triage');
+const { summarize, benchmark, toTable, toCsv } = require('./report');
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 const MAX_TRIAGE = 2;
@@ -230,21 +231,69 @@ class Scheduler {
   }
 
   list() {
-    return [...this.tasks.values()].slice(-50).reverse().map(({ id, owner, workspace, prompt, state, detail, steps, quota, usage }) => ({
-      id, owner: owner || 'local', workspace, state, detail, prompt: prompt.slice(0, 80), roles: [...new Set(steps.map((step) => step.role))], quota, usage,
+    return [...this.tasks.values()].slice(-50).reverse().map(({ id, owner, workspace, prompt, state, detail, stage, steps, quota, usage, project, tags, metrics }) => ({
+      id, owner: owner || 'local', workspace, state, detail, stage, project, tags, prompt: prompt.slice(0, 80),
+      roles: [...new Set(steps.map((step) => step.role))], quota, usage, metrics,
     }));
   }
 
   save(task, state, detail) {
     task.state = state;
     task.detail = detail;
+    this.updateMetrics(task, state);
     this.store.saveTask(task, { state, detail });
+  }
+
+  // Metrics live with the task so reports work after a restart. They are counts, never transcripts or
+  // prompts. A task that leaves a resting state (needs_review -> applying) clears its end time so the
+  // eventual terminal state records the full duration.
+  updateMetrics(task, state) {
+    const metrics = task.metrics ||= {};
+    const now = new Date().toISOString();
+    if (!metrics.startedAt && !['queued', 'awaiting_details', 'awaiting_approval', 'submitted'].includes(state)) {
+      metrics.startedAt = now;
+    }
+    const roleCalls = {};
+    let reassignments = 0;
+    for (const step of task.steps || []) {
+      if (step.role) roleCalls[step.role] = (roleCalls[step.role] || 0) + (step.attempts || 0);
+      reassignments += step.tried?.length || 0;
+    }
+    metrics.stepCount = (task.steps || []).length;
+    metrics.roleCalls = roleCalls;
+    metrics.reassignments = reassignments;
+    metrics.testFailures = task.testFailures || 0;
+    metrics.reviewConflicts = task.reviewConflicts || 0;
+    metrics.reworkRounds = task.reworkRounds || 0;
+    metrics.triageRounds = task.triageRounds || 0;
+    if (terminal.has(state)) {
+      if (!metrics.endedAt) {
+        metrics.endedAt = now;
+        const start = Date.parse(metrics.startedAt || '');
+        metrics.durationMs = Number.isFinite(start) ? Math.max(0, Date.parse(now) - start) : 0;
+      }
+      metrics.result = state;
+      const accepted = state === 'completed' || ['accept', 'pass', 'accept_with_risk'].includes(task.acceptance?.verdict);
+      metrics.accepted = accepted;
+      metrics.firstPass = accepted && !metrics.testFailures && !metrics.reviewConflicts &&
+        !metrics.reworkRounds && !metrics.triageRounds;
+    } else {
+      delete metrics.endedAt;
+      delete metrics.durationMs;
+      delete metrics.result;
+      delete metrics.accepted;
+      delete metrics.firstPass;
+    }
   }
 
   submit(id, body, groupPlan = false) {
     const existing = this.tasks.get(id);
     if (existing) {
-      if (Boolean(existing.groupPlan) !== groupPlan || existing.prompt !== body.prompt || existing.workspace !== body.workspace || existing.command !== body.command || existing.provider !== body.provider || existing.model !== body.model) {
+      if (Boolean(existing.groupPlan) !== groupPlan || existing.prompt !== body.prompt || existing.workspace !== body.workspace ||
+          existing.command !== body.command || existing.provider !== body.provider || existing.model !== body.model ||
+          existing.project !== body.project || existing.benchmarkId !== body.benchmarkId || existing.arm !== body.arm ||
+          JSON.stringify(existing.tags || []) !== JSON.stringify(Array.isArray(body.tags)
+            ? [...new Set(body.tags.map((tag) => typeof tag === 'string' ? tag.trim() : tag))] : body.tags || [])) {
         throw new Error('task_id_conflict');
       }
       return existing;
@@ -260,9 +309,23 @@ class Scheduler {
     if ((body.provider !== undefined && !ROLES.includes(body.provider)) ||
         (body.model !== undefined && (!body.provider || typeof body.model !== 'string' ||
           !modelId.test(body.model)))) throw new Error('invalid_model_selection');
+    const tags = body.tags ?? [];
+    if (!Array.isArray(tags) || tags.length > 8 ||
+        tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 32)) throw new Error('invalid_task');
+    if (body.project !== undefined && (typeof body.project !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(body.project))) {
+      throw new Error('invalid_task');
+    }
+    if (body.benchmarkId !== undefined && (typeof body.benchmarkId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.benchmarkId))) {
+      throw new Error('invalid_task');
+    }
+    if (body.arm !== undefined && !['single', 'multi', 'manual'].includes(body.arm)) throw new Error('invalid_task');
     if (this.tasks.size >= 10000) throw new Error('task_capacity');
+    const normalizedTags = [...new Set(tags.map((tag) => tag.trim()))];
     const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [],
-      owner: this.ownerOf(body.workspace) };
+      owner: this.ownerOf(body.workspace), tags: normalizedTags,
+      ...(body.project !== undefined && { project: body.project }),
+      ...(body.benchmarkId !== undefined && { benchmarkId: body.benchmarkId }),
+      ...(body.arm !== undefined && { arm: body.arm }) };
     if (groupPlan) task.groupPlan = { rounds: [] };
     this.tasks.set(id, task);
     this.save(task, 'queued', 'submitted');
@@ -1237,6 +1300,15 @@ class Scheduler {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw new Error('invalid_task_id');
     const named = /^(?:ssh|relay):([a-z0-9]+)$/.exec(route)?.[1];
     const bridge = route === 'admin' ? frame.bridge : named;
+    if (frame.kind === 'task.status' && route === 'admin' && ['report', 'benchmark'].includes(body.operation)) {
+      if (body.format !== undefined && !['json', 'table', 'csv'].includes(body.format)) throw new Error('invalid_report_format');
+      const value = body.operation === 'report'
+        ? summarize([...this.tasks.values()], body)
+        : benchmark([...this.tasks.values()], { benchmarkId: body.benchmarkId });
+      if (body.format === 'table') return { format: 'table', output: toTable(value), summary: value };
+      if (body.format === 'csv') return { format: 'csv', output: toCsv(value), summary: value };
+      return value;
+    }
     const startPlan = frame.kind === 'task.status' && body.operation === 'start_plan';
     if (frame.kind === 'task.request' || startPlan) {
       if (named && this.config.workspaces[body.workspace]?.sshBridge !== named) throw new Error('workspace_not_authorized');

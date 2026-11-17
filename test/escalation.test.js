@@ -85,6 +85,12 @@ test('two consecutive test failures trigger one triage and a retry can complete 
   assert.equal(triagePrompts, 1);
   assert.equal(tests, 3);
   assert.equal(task.steps.filter((step) => step.capability === 'triage').length, 1);
+  assert.equal(task.metrics.accepted, true);
+  assert.equal(task.metrics.firstPass, false);    // the retry after triage is not a first pass
+  assert.equal(task.metrics.triageRounds, 1);
+  assert.equal(task.metrics.roleCalls.gemini, 1);
+  assert.equal(task.metrics.roleCalls.claude, 1);
+  assert.ok(task.metrics.durationMs >= 0);
   const events = scheduler.store.events(task.id).map((event) => event.detail);
   assert.equal(events.filter((detail) => detail === 'triage_started').length, 1);
   assert.ok(events.includes('triage_decision:retry'));
