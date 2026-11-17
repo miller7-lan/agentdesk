@@ -154,6 +154,27 @@ test('a review sees the writer worktree and cannot claim the writer patch', asyn
   assert.equal(task.detail, 'patches_ready');
 });
 
+test('a review verdict is parsed, stored and recorded as an event', async (t) => {
+  const { task, scheduler } = await reviewFixture(t, async ({ name, cwd }) => {
+    if (name === 'codex') {
+      await fs.writeFile(path.join(cwd, 'README.md'), 'updated\n');
+      return { output: 'edited' };
+    }
+    return { output: 'All good.\n```json\n' + JSON.stringify({
+      verdict: 'pass', summary: 'Small and correct',
+      findings: [{ severity: 'nit', file: 'README.md', line: 1, issue: 'Wording', suggestion: 'Tighten it' }],
+      tests: 'fixture only',
+    }) + '\n```' };
+  });
+  await scheduler.run(task, new AbortController().signal);
+  const review = task.steps.find((step) => step.id === 'review');
+  assert.equal(review.verdict.verdict, 'pass');
+  assert.equal(review.verdict.findings[0].severity, 'nit');
+  assert.equal(task.reviews.review.verdict, 'pass');
+  assert.equal(task.reviews.review.role, 'grok');
+  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'review_verdict:review:pass'));
+});
+
 test('a shared-worktree review that edits a writer file is rejected', async (t) => {
   const { task, scheduler } = await reviewFixture(t, async ({ name, cwd }) => {
     if (name === 'codex') {

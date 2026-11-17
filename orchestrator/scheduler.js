@@ -9,6 +9,9 @@ const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
 const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief } = require('./summary');
+const {
+  REVIEW_INSTRUCTION, ACCEPTANCE_INSTRUCTION, parseReviewVerdict, reviewConflicts, mergeFindings,
+} = require('./review');
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 
@@ -644,6 +647,19 @@ class Scheduler {
     await worktree(repo, folder, 'agentdesk/' + task.id + '/' + step.id, task.base, signal);
   }
 
+  // Records one conflict event per set of competing review verdicts. Two negative reviews are not a
+  // conflict: their findings are merged for whoever reworks the change.
+  trackReviewConflict(task) {
+    const reviews = task.steps.filter((step) => step.capability === 'review' && step.verdict);
+    if (reviews.length > 1) task.mergedFindings = mergeFindings(reviews.map((step) => step.verdict));
+    if (!reviewConflicts(reviews.map((step) => step.verdict))) return;
+    const key = reviews.map((step) => step.id).sort().join(',');
+    if (task.reviewConflictKey === key) return;
+    task.reviewConflictKey = key;
+    task.reviewConflicts = (task.reviewConflicts || 0) + 1;
+    this.save(task, task.state, 'review_conflict');
+  }
+
   async runStep(task, step, repo, root, signal) {
     // A review of a writer's work must look at that writer's uncommitted changes, so it shares the
     // writer's worktree. Any change made while the reviewer runs is detected and rejected below.
@@ -680,9 +696,13 @@ class Scheduler {
           // No raw upstream transcripts, logs or patches are sent to the lead.
           prompt = step.prompt + '\n\nBrief (summaries only, not raw logs): ' + JSON.stringify(brief);
         }
+        if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
+        else if (step.capability === 'accept') prompt += '\n\n' + ACCEPTANCE_INSTRUCTION;
         const { output } = await this.execute(task, step, folder, signal, prompt);
         signal.throwIfAborted();
         step.output = output;
+        const verdict = ['review', 'accept'].includes(step.capability) ? parseReviewVerdict(output) : null;
+        if (verdict) step.verdict = verdict;
         if (sharedWriter) {
           if (await worktreeState(folder, signal) !== before) throw new Error('readonly_step_changed_files');
           // The writer's patch belongs to the writer step; a review must not claim it.
@@ -696,6 +716,12 @@ class Scheduler {
         }
         step.state = 'completed';
         this.save(task, 'running', step.id + ':completed');
+        if (verdict) {
+          task.reviews ||= {};
+          task.reviews[step.id] = { ...verdict, role: step.role, capability: step.capability };
+          this.save(task, 'running', 'review_verdict:' + step.id + ':' + verdict.verdict);
+          this.trackReviewConflict(task);
+        }
         return;
       } catch (error) {
         if (signal.aborted) throw signal.reason;
