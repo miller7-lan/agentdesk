@@ -24,6 +24,21 @@
       status.textContent = error.message || '无法生成预览。';
     }
   });
+  const update = $('updatesCheck');
+  update.addEventListener('click', async () => {
+    update.disabled = true;
+    try {
+      const result = await window.desk.updates.check();
+      status.textContent = {
+        available: '发现更新 ' + (result.version || ''),
+        current: '当前已是最新版本。',
+        disabled: '此安装未启用更新检查。',
+        unsupported: '此安装包不支持更新检查。',
+        failed: '更新检查失败。',
+      }[result.status];
+    } finally { update.disabled = false; }
+  });
+
   save.addEventListener('click', async () => {
     save.disabled = true;
     try {

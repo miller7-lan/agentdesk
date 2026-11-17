@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('desk', {
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
     onExpired: on('enrollment:expired'),
   },
+  updates: { check: () => ipcRenderer.invoke('updates:check') },
   diagnostics: {
     preview: () => ipcRenderer.invoke('diagnostics:preview'),
     export: () => ipcRenderer.invoke('diagnostics:export'),

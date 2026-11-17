@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const os = require('node:os');
+const { createUpdateChecks } = require('./updates');
 const { createLogger } = require('./logger');
 const { collectDiagnostics, exportDiagnostics } = require('./diagnostics');
 const { AppConfig, migrate } = require('./app-config');
@@ -54,6 +55,8 @@ const OVERLAY = {
 let win;
 let appConfig;
 let logger;
+let updateChecks;
+let updateTimer;
 let configError;
 let trustedHost = { host: '', fingerprints: [] };
 let connectivityStarted = false;
@@ -645,6 +648,9 @@ function diagnosticSnapshot() {
   });
 }
 
+ipcMain.handle('updates:check', (event) => fromMainWindow(event) && updateChecks
+  ? updateChecks.check() : { ok: true, status: 'disabled' });
+
 ipcMain.handle('diagnostics:preview', async (event) => {
   if (!fromMainWindow(event)) return { ok: false };
   try {
@@ -731,6 +737,7 @@ app.on('before-quit', (e) => {
   if (ending) return;
   ending = true; e.preventDefault();
   clearTimeout(enrollmentExpiry);
+  clearTimeout(updateTimer);
   stopBridge?.();
   stopMacDesktop?.();
   clearLocalTools();
@@ -743,6 +750,19 @@ app.whenReady().then(async () => {
   logger.log('application_start', { status: configError ? 'config_error' : 'ok' });
   trustedHost = await configuredHost(enrollment, remote.cfg);
   createWindow();
+  if (!process.env.AGENTDESK_OFFLINE && !process.env.AGENTDESK_SHOT) {
+    updateChecks = createUpdateChecks({ app, settings: appConfig.value.update, logger });
+    if (updateChecks) {
+      const schedule = (delay) => {
+        updateTimer = setTimeout(async () => {
+          await updateChecks.check();
+          if (!ending) schedule(24 * 60 * 60_000);
+        }, delay);
+        updateTimer.unref();
+      };
+      schedule(30_000);
+    }
+  }
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
     startConnectivity();
     powerMonitor.on('resume', () => { if (!ending && hostConfirmed() && (!enrollment || enrolledSession)) remote.reconnect(); });

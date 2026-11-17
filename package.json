@@ -10,9 +10,11 @@
     "prestart": "npm run prepare:desktop",
     "start": "electron .",
     "predist": "npm run prepare:desktop -- --win",
-    "dist": "electron-builder --win portable nsis",
+    "dist": "electron-builder --win portable nsis --x64",
     "predist:mac": "npm run prepare:desktop -- --mac",
-    "dist:mac": "electron-builder --mac dir"
+    "dist:mac": "electron-builder --mac dir",
+    "predist:mac:release": "npm run prepare:desktop -- --mac",
+    "dist:mac:release": "electron-builder --mac dmg zip"
   },
   "build": {
     "appId": "local.agentdesk.ui",
@@ -34,7 +36,8 @@
       "src/**/*",
       "desktop.js",
       "windows-files.js",
-      "orchestrator/*.js"
+      "orchestrator/*.js",
+      "updates.js"
     ],
     "win": {
       "target": [
@@ -42,7 +45,12 @@
         "nsis"
       ],
       "icon": "build/icon.ico",
-      "signAndEditExecutable": true
+      "signAndEditExecutable": true,
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      }
     },
     "portable": {
       "artifactName": "AgentDesk-${version}-portable.exe"
@@ -66,16 +74,24 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "identity": null,
       "target": "dir",
       "extendInfo": {
         "NSAppleEventsUsageDescription": "AgentDesk 使用本机桌面工具协助你操作已授权的应用。"
-      }
-    }
+      },
+      "hardenedRuntime": true,
+      "notarize": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "afterSign": "build/notarize.js"
   },
   "devDependencies": {
+    "@electron/notarize": "3.1.2",
     "agent-desktop": "1.3.1",
     "electron": "^45.3.0",
     "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
   }
 }

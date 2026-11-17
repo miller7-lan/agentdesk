@@ -121,3 +121,36 @@ test('logs rotate, audit logs are private, and diagnostics exclude credentials a
   assert.match(tar, /audit\.jsonl/);
   assert.doesNotMatch(tar, /not-for-log|token-secret|private raw output|private key|private\/workspace|must-not-appear|internal host/);
 });
+
+test('updater checks only enabled packaged apps and never downloads or installs automatically', async () => {
+  const { createUpdateChecks } = require('../updates');
+  const settings = { enabled: true, feedUrl: 'https://updates.example.com/agentdesk/' };
+  const audit = [];
+  let calls = 0;
+  let allowResult;
+  const updater = {
+    on() {},
+    checkForUpdates() {
+      calls++;
+      return new Promise((resolve) => { allowResult = resolve; });
+    },
+  };
+  const create = (args) => {
+    assert.deepEqual(args, { provider: 'generic', url: settings.feedUrl });
+    return updater;
+  };
+  const options = { logger: { audit: (...args) => audit.push(args) }, settings, platform: 'darwin', createUpdater: create };
+  assert.equal(createUpdateChecks({ ...options, app: { isPackaged: false } }), null);
+  assert.equal(createUpdateChecks({ ...options, app: { isPackaged: true }, settings: { ...settings, enabled: false } }), null);
+  assert.equal(createUpdateChecks({ ...options, app: { isPackaged: true }, settings: { ...settings, feedUrl: 'http://unsafe.example' } }), null);
+  const checks = createUpdateChecks({ ...options, app: { isPackaged: true } });
+  assert.equal(updater.autoDownload, false);
+  assert.equal(updater.autoInstallOnAppQuit, false);
+  assert.equal(updater.allowDowngrade, false);
+  const first = checks.check();
+  assert.equal(checks.check(), first);
+  allowResult({ isUpdateAvailable: true, updateInfo: { version: '2.0.0' } });
+  assert.deepEqual(await first, { ok: true, status: 'available', version: '2.0.0' });
+  assert.equal(calls, 1);
+  assert.deepEqual(audit, [['update_check', { status: 'available' }]]);
+});
