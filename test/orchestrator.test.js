@@ -314,8 +314,10 @@ test('Node endpoints interoperate with the Python TLS Relay and use chunked file
 
 test('recovers a persisted pending Windows operation for reconciliation', async (t) => {
   const stateDir = await folder(t);
+  // Closed in finally rather than t.after: after-hooks run in registration order, so the folder
+  // would be deleted while the database is still open, which Windows refuses (EBUSY).
   const store = new Store(path.join(stateDir, 'state.db'));
-  t.after(() => store.close());
+  try {
   const id = randomUUID();
   const pendingRequest = messageId();
   store.saveTask({ id, state: 'testing', pendingRequest, pendingKind: 'test', steps: [] }, { state: 'testing' });
@@ -330,6 +332,9 @@ test('recovers a persisted pending Windows operation for reconciliation', async 
   const result = await scheduler.reconcile(scheduler.tasks.get(id));
   assert.equal(result.state, 'completed');
   assert.equal(result.pendingRequest, undefined);
+  } finally {
+    store.close();
+  }
 });
 
 test('manual route selection persists independently for each bridge', () => {
