@@ -2,6 +2,7 @@
   "stateDir": "/var/lib/agentdesk-orchestrator",
   "cliTimeoutMs": 900000,
   "quotaBridges": [],
+  "maxConcurrentTasks": 2,
   "adapters": {
     "codex": {
       "bin": "/usr/local/bin/codex",

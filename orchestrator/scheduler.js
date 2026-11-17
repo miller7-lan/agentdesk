@@ -68,6 +68,10 @@ class Scheduler {
     this.adapter = adapter;
     this.router = new Router(config);
     this.running = new Map();
+    // Several people share one VPS: tasks run in parallel up to maxConcurrentTasks, but each CLI runs one
+    // process at a time across all tasks, because every task uses the same subscription login for that CLI.
+    this.cliBusy = new Map();     // role -> number of processes running
+    this.cliWaiters = new Map();  // role -> queue of { resolve } waiting for that CLI
     this.tasks = new Map(store.all('tasks').map((task) => [task.id, task]));
     this.route = store.get('settings', 'route')?.value || 'ssh';
     for (const task of this.tasks.values()) {
@@ -186,8 +190,8 @@ class Scheduler {
   }
 
   list() {
-    return [...this.tasks.values()].slice(-50).reverse().map(({ id, workspace, prompt, state, detail, steps, quota, usage }) => ({
-      id, workspace, state, detail, prompt: prompt.slice(0, 80), roles: [...new Set(steps.map((step) => step.role))], quota, usage,
+    return [...this.tasks.values()].slice(-50).reverse().map(({ id, owner, workspace, prompt, state, detail, steps, quota, usage }) => ({
+      id, owner: owner || 'local', workspace, state, detail, prompt: prompt.slice(0, 80), roles: [...new Set(steps.map((step) => step.role))], quota, usage,
     }));
   }
 
@@ -215,7 +219,8 @@ class Scheduler {
         (body.model !== undefined && (!body.provider || typeof body.model !== 'string' ||
           !modelId.test(body.model)))) throw new Error('invalid_model_selection');
     if (this.tasks.size >= 10000) throw new Error('task_capacity');
-    const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [] };
+    const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [],
+      owner: this.ownerOf(body.workspace) };
     if (groupPlan) task.groupPlan = { rounds: [] };
     this.tasks.set(id, task);
     this.save(task, 'queued', 'submitted');
@@ -266,9 +271,48 @@ class Scheduler {
     return this.status(task.id);
   }
 
+  // Whose task this is: the bridge (one per person's machine) its workspace belongs to.
+  ownerOf(workspace) {
+    return this.config.workspaces?.[workspace]?.sshBridge || 'local';
+  }
+
+  slots() {
+    const limit = this.config.maxConcurrentTasks ?? 2;
+    return Number.isSafeInteger(limit) && limit >= 1 && limit <= 8 ? limit : 2;
+  }
+
+  async acquireCli(task, step, signal) {
+    const role = step.role;
+    const limit = this.config.cliConcurrency?.[role] ?? 1;
+    if ((this.cliBusy.get(role) || 0) >= limit) {
+      this.save(task, task.state, `${step.id}:waiting:${role}`);
+      await new Promise((resolve, reject) => {
+        const queue = this.cliWaiters.get(role) || [];
+        const waiter = { resolve };
+        queue.push(waiter);
+        this.cliWaiters.set(role, queue);
+        signal.addEventListener('abort', () => {
+          const at = queue.indexOf(waiter);
+          if (at >= 0) queue.splice(at, 1);
+          reject(signal.reason);
+        }, { once: true });
+      });
+    }
+    this.cliBusy.set(role, (this.cliBusy.get(role) || 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.cliBusy.set(role, this.cliBusy.get(role) - 1);
+      this.cliWaiters.get(role)?.shift()?.resolve();
+    };
+  }
+
   setRoute(route, bridge) {
     if (!['ssh', 'relay'].includes(route)) throw new Error('invalid_route');
-    if (this.running.size) throw new Error('operations_in_progress');
+    // Only this bridge's own running work blocks a switch; other people's tasks carry on.
+    const busy = [...this.running.keys()].some((id) => bridge === undefined || this.tasks.get(id)?.owner === bridge);
+    if (busy) throw new Error('operations_in_progress');
     if (bridge !== undefined) {
       if (!this.config.sshBridges?.includes(bridge)) throw new Error('unknown_ssh_bridge');
       if (route === 'relay' && !Object.hasOwn(this.config.relayBridges || {}, bridge)) {
@@ -302,16 +346,38 @@ class Scheduler {
     return (relay ? 'relay:' : 'ssh:') + name;
   }
 
+  // Fills free slots. The next slot goes to the person with the fewest tasks running, then to the oldest task,
+  // so one person's queue cannot hold everyone else back.
   pump() {
-    if (this.stopped || this.running.size) return;
-    const task = [...this.tasks.values()].find((candidate) => {
-      if (candidate.state !== 'queued') return false;
+    while (!this.stopped && this.running.size < this.slots()) {
+      const task = this.nextTask();
+      if (!task) return;
+      this.start(task);
+    }
+  }
+
+  nextTask() {
+    const runningBy = new Map();
+    for (const id of this.running.keys()) {
+      const owner = this.tasks.get(id)?.owner || 'local';
+      runningBy.set(owner, (runningBy.get(owner) || 0) + 1);
+    }
+    const ready = [...this.tasks.values()].filter((candidate) => {
+      if (candidate.state !== 'queued' || this.running.has(candidate.id)) return false;
       if (!this.files.endpoint) return true;
       const route = this.bridgeRoute(candidate.workspace);
       const port = this.files.endpoint[route];
       return port?.ready && (!route.startsWith('relay') || port.online);
     });
-    if (!task) return;
+    let best;
+    for (const candidate of ready) {     // insertion order is submission order, so ties go to the oldest
+      const load = runningBy.get(candidate.owner || 'local') || 0;
+      if (!best || load < best.load) best = { task: candidate, load };
+    }
+    return best?.task;
+  }
+
+  start(task) {
     const controller = new AbortController();
     this.running.set(task.id, controller);
     this.run(task, controller.signal).catch((error) => {
@@ -334,6 +400,7 @@ class Scheduler {
     const config = this.config.adapters[step.role];
     if (!config) throw new Error(step.role + '_not_configured');
     const mcp = step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
+    const release = await this.acquireCli(task, step, signal);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace });
     try {
@@ -351,6 +418,7 @@ class Scheduler {
       });
     } finally {
       mcp?.capabilities.delete(capability);
+      release();
     }
   }
 
@@ -536,7 +604,7 @@ class Scheduler {
   }
 
   async apply(task) {
-    if (!task || task.state !== 'needs_review' || task.pendingRequest || this.running.size ||
+    if (!task || task.state !== 'needs_review' || task.pendingRequest || this.running.has(task.id) ||
       task.detail !== 'patches_ready') {
       throw new Error('patch_not_applicable');
     }

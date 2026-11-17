@@ -83,10 +83,20 @@ Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述�
 
 3. 用 `ad submit project '只读：总结 README' ` 加 `ad status` 验证一次；步骤里应出现 `antigravity` 并有输出。Antigravity 如果有地方能读到额度，可以像 Claude 一样写成快照文件（`quotaFile`）。
 
+### 多人同时使用（2～3 人）
+
+每个人的电脑通过密码登记（见 [ENROLLMENT.md](ENROLLMENT.md)）或静态配置各有一个 Bridge 和自己的工作区，任务互不可见；同一项目可以让多个工作区指向同一个 Git 镜像（`repository`）。
+
+- **并行**：主控同时跑 `maxConcurrentTasks` 个任务（默认 2，最多 8）。空出的位置先给当前正在跑的任务最少的那个人，再按提交先后，避免一个人的一长串任务挡住其他人。
+- **每个 CLI 同一时间只跑一个进程**：所有人共用 VPS2 上同一个订阅登录，同时跑两个会互相覆盖令牌刷新。轮到的步骤如果它的 CLI 正忙，会等待并记录「等待 xxx 空闲」。确认某个 CLI 支持并发后，可以在 `cliConcurrency` 里调高，例如 `{"grok": 2}`。
+- **额度是共享的**：三个人用的是同一份订阅额度。`ad ls` 按人（`owner`）列出每个任务消耗的额度，便于看谁用得多。
+- **互不阻塞**：应用补丁只检查自己的任务；切换线路只在这台电脑自己的任务运行时被拒绝。
+- **内存预算（4 GB + 2 GB swap）**：每个在线的人有一个聊天用的 Codex App Server 进程，任务步骤另算。3 人同时在线时建议保持 `maxConcurrentTasks: 2`；如果 `free -m` 显示开始频繁用 swap，先降到 1。
+
 ### 管理命令补充
 
 ```sh
-ad ls          # 最近 50 个任务：状态、用到的 CLI、消耗的额度
+ad ls          # 最近 50 个任务：谁提交的、状态、用到的 CLI、消耗的额度
 ad doctor      # 各 CLI 是否安装、版本、当前额度、被停用的 CLI 和原因、分配顺序和额度阈值
 ```
 

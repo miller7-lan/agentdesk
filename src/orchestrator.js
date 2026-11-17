@@ -154,7 +154,14 @@
   const waitingForPlan = (task) => ['awaiting_details', 'awaiting_approval'].includes(task.state);
   const statusName = (status) => statuses[status] || '待同步';
   const pill = (status) => `<span class="group-pill" data-status="${statuses[status] ? status : 'unknown'}">${statusName(status)}</span>`;
-  const textOf = (detail) => details[detail] || detail;
+  function textOf(detail) {
+    if (details[detail]) return details[detail];
+    const waiting = /:waiting:(\w+)$/.exec(detail || '');
+    if (waiting) return `等待 ${memberName(waiting[1])} 空闲：同一时间每个 AI 只跑一个任务，可能有其他成员正在使用。`;
+    const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
+    if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
+    return detail;
+  }
   const pathsOf = (task) => [...new Set((task?.steps || []).flatMap((step) => step.paths || []))];
   function elapsed(task) {
     const start = task.events?.find((event) => ['planning', 'running'].includes(event.state));
