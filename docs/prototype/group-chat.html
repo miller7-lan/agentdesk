@@ -230,7 +230,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:f
 }
 @media (prefers-reduced-motion: reduce) { .proj .chev { transition: none; } }
 
-/* ================= Aqua glass skin + boot sequence + OS chrome ================= */
+/* ================= Aqua glass skin + OS chrome ================= */
 :root {
   --hue: 212; --blur: 22px; --frost: .42; --read-floor: .72; --bright: 1; --wall-blur: 0px;
   --glass-rgb: 14, 22, 38; --glass-line: rgba(255,255,255,.12); --glass-card: rgba(255,255,255,.06); --glass-card-line: rgba(255,255,255,.1);
@@ -311,44 +311,13 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:f
 .look .aqua-only { display: contents; }
 :root:not([data-skin="aqua"]) .look .aqua-only { display: none; }
 
-/* boot sequence: white blueprint HUD, one fixed look (deliberately not theme-dependent) */
-.boot { position: fixed; inset: 0; z-index: 50; overflow: hidden; background: #f5f8fc; color: #1b2b44;
-  transition: opacity .7s ease, filter .7s ease, transform .7s ease; font-family: var(--font); cursor: default; }
-.boot.leaving { opacity: 0; filter: blur(8px); transform: scale(1.06); pointer-events: none; }
-.boot canvas#bootCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.boot-node { position: absolute; transform: translate(-50%, -50%); pointer-events: none; }
-.boot-label { position: absolute; transform: translate(-50%, 0); text-align: center; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .35s ease; }
-.boot-label b { display: block; font-size: 12.5px; font-weight: 600; color: #1b2b44; letter-spacing: .2px; }
-.boot-label span { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .8px; color: #6b7c94; }
-.boot-label span span { display: inline; }
-.boot-label .ok { color: #1a7f4e; } .boot-label .warn { color: #a3660a; }
-.boot-hud { position: absolute; font-family: var(--mono); font-size: 10.5px; letter-spacing: 1px; color: #6b7c94; line-height: 1.6; pointer-events: none; }
-.boot-hud.tl { top: max(18px, env(safe-area-inset-top, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); }
-.boot-hud.tr { top: max(18px, env(safe-area-inset-top, 0px)); right: max(18px, env(safe-area-inset-right, 0px)); text-align: right; }
-.boot-hud.bl { bottom: max(18px, env(safe-area-inset-bottom, 0px)); left: max(18px, env(safe-area-inset-left, 0px)); max-width: min(360px, 60vw); }
-.boot-hud b { color: #1b2b44; font-weight: 600; }
-.boot-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.boot-log .ok { color: #1a7f4e; } .boot-log .warn { color: #a3660a; }
-.boot-skip { position: absolute; right: max(18px, env(safe-area-inset-right, 0px)); bottom: max(18px, env(safe-area-inset-bottom, 0px)); height: 28px; padding: 0 12px; border-radius: 14px;
-  border: 1px solid rgba(40,90,170,.25); color: #3d5577; font-size: 12px; background: rgba(255,255,255,.7); }
-.boot-skip:hover { border-color: #2f6fe0; color: #1b2b44; }
-@media (max-width: 560px) { .boot-hud.tr, .boot-hud.bl, .boot-label .role { display: none; } }
-.app.booting { opacity: 0; transform: scale(.985); filter: blur(6px); }
 @media (prefers-reduced-motion: reduce) {
-  .boot, .app { transition: opacity .3s linear; }
+  .app { transition: opacity .3s linear; }
 }
 </style>
 
 <canvas id="fluid" aria-hidden="true"></canvas>
 <div id="wall" aria-hidden="true"></div>
-<div class="boot" id="boot" role="dialog" aria-label="AgentDesk 正在启动" hidden>
-  <canvas id="bootCanvas" aria-hidden="true"></canvas>
-  <div id="bootNodes"></div>
-  <div class="boot-hud tl"><b>AGENTDESK</b> // BOOT SEQUENCE<br>BUILD 0.3.0 · <span id="bootOs">WIN</span></div>
-  <div class="boot-hud tr"><span id="bootClock">--:--:--.---</span><br>VPS2 · 4 GB · DOCKER</div>
-  <div class="boot-hud bl boot-log" id="bootLog" aria-live="polite"></div>
-  <button class="boot-skip" id="bootSkip" type="button">双击任意处或按 Esc 进入</button>
-</div>
 <div class="app" id="app">
   <header class="titlebar">
     <div class="mac-lights" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -375,9 +344,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:f
         <label class="tb-btn" for="wallFile" style="display:inline-grid;place-items:center;cursor:pointer">选择图片</label><input id="wallFile" type="file" accept="image/*" hidden></div>
       <label class="row" for="rWall">壁纸模糊<input id="rWall" type="range" min="0" max="30" step="1"><output id="oWall"></output></label>
     </div>
-    <div class="line"><span>开机动画</span><div class="seg" data-key="boot"><button type="button" data-v="each">每次启动</button><button type="button" data-v="off">关闭</button></div>
-      <button class="tb-btn" id="replayBoot" type="button">播放</button></div>
-    <p class="hintline">原型里「系统」用来预览两种标题栏；正式版按实际系统自动选择。开机动画只在每次启动 App 时播放，最小化后恢复不会再播。</p>
+    <p class="hintline">原型里「系统」用来预览两种标题栏；正式版按实际系统自动选择。开机动画见正式版 src/boot.js（预览 docs/boot-preview.mp4）。</p>
   </div>
 
   <div class="workbench">
@@ -1316,7 +1283,7 @@ const store = {
 if (!document.documentElement.dataset.theme) document.documentElement.dataset.theme = store.get('theme', 'light');
 const look = {
   os: store.get('os', /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? 'mac' : 'win'),
-  skin: store.get('skin', 'aqua'), layout: store.get('layout', 'float'), wall: 'off', boot: store.get('boot', 'each'),
+  skin: store.get('skin', 'aqua'), layout: store.get('layout', 'float'), wall: 'off', 
   blur: store.get('blur', 28), frost: store.get('frost', 78), hue: store.get('hue', 212), bright: store.get('bright', 100), wallBlur: store.get('wallBlur', 6),
 };
 let wallUrl = null;
@@ -1348,8 +1315,7 @@ $('#wallFile').addEventListener('change', (e) => {
   wallUrl = URL.createObjectURL(f); look.wall = 'on'; applyLook();
 });
 $('#lookBtn').addEventListener('click', () => { const box = $('#look'); box.hidden = !box.hidden; $('#lookBtn').setAttribute('aria-expanded', !box.hidden); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#look').hidden && $('#boot').hidden) { $('#look').hidden = true; $('#lookBtn').setAttribute('aria-expanded', 'false'); } });
-$('#replayBoot').addEventListener('click', () => { $('#look').hidden = true; runBoot(true); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#look').hidden) { $('#look').hidden = true; $('#lookBtn').setAttribute('aria-expanded', 'false'); } });
 
 // Flowing background: a few large soft colour fields drifting slowly, drawn small and scaled up.
 const fluid = $('#fluid'); const fctx = fluid.getContext('2d');
@@ -1377,214 +1343,9 @@ function fluidFrame(now, force) {
 (function fluidLoop(now) { fluidFrame(now, false); requestAnimationFrame(fluidLoop); })(performance.now());
 addEventListener('resize', () => fluidFrame(performance.now(), true));
 
-/* ---------------- boot sequence: Claude brings the network online ----------------
-   Plays once per app launch (main-process start); minimising/restoring or reopening from the tray does not replay it.
-   Real app: each node and log line is a real startup check (remote.js status, orchestrator route, CLI login/quota).
-   Here the checks are simulated. White blueprint look, about 5 s, silent; double-click or Esc enters at any time. */
-const BP = { bg: '#f5f8fc', grid: 'rgba(40,90,170,.16)', line: '#2f6fe0', soft: 'rgba(47,111,224,.35)', faint: 'rgba(47,111,224,.14)',
-  glow: 'rgba(80,150,255,.55)', ink: '#13294b', cyan: '#18b6d8', warn: '#d48a12' };
-const BOOT_NODES = [   // id, name, role, status kind, readout
-  ['cx', 'Codex', '改代码', 'ok', 'ONLINE · 41ms'],
-  ['ag', 'Antigravity', '侦察', 'ok', 'ONLINE · 56ms'],
-  ['gk', 'Grok Build', '审查', 'warn', 'QUOTA 0% · 18:00'],
-  ['local', '本机 Bridge', '桌面与文件', 'ok', 'AUTHORIZED'],
-];
-const BOOT_LOG = [
-  [0.15, 'link vps2 · ssh', 'ok', 'OK 38ms'], [0.45, 'orchestrator', 'ok', 'ONLINE'], [0.7, 'docker · containers', 'ok', '0/2'],
-  [0.95, 'claude-code · lead', 'ok', 'READY'], [1.55, 'codex', 'ok', 'READY'], [2.0, 'antigravity', 'ok', 'READY'],
-  [2.45, 'grok-build', 'warn', 'QUOTA 0% · 18:00'], [2.9, 'local bridge', 'ok', 'AUTH'], [4.3, 'system', 'ok', 'READY 100%'],
-];
-const T = { grid: 0, rings: 0.25, lead: 0.9, node0: 1.35, nodeStep: 0.45, link: 0.32, words: 3.05, solid: 3.95, scan: 4.15, out: 5.0 };
-const clamp01 = (x) => Math.max(0, Math.min(1, x));
-const ease = (x) => 1 - Math.pow(1 - clamp01(x), 3);
-let bootRun = null;
-
-function shouldBoot() { return look.boot !== 'off'; }
-function endBoot() {
-  const boot = $('#boot'); if (boot.hidden || boot.classList.contains('leaving')) return;
-  if (bootRun) { bootRun.stop = true; bootRun.timers.forEach(clearTimeout); }
-  boot.classList.add('leaving'); $('#app').classList.remove('booting');
-  setTimeout(() => { boot.hidden = true; boot.classList.remove('leaving'); bootRun = null; $('#input').focus({ preventScroll: true }); }, reduceMotion.matches ? 300 : 700);
-}
-function bootLayout(W, H, dpr) {
-  const narrow = W / dpr < 560;
-  const R = narrow ? Math.min(W * 0.33, H * 0.17) : Math.min(W * 0.27, H * 0.2);
-  const cx = W / 2, cy = H * (narrow ? 0.34 : 0.4);
-  const fs = Math.max(30 * dpr, Math.min(W * (narrow ? 0.11 : 0.075), 84 * dpr));
-  const nodes = BOOT_NODES.map((n, i) => { const a = -Math.PI * 0.82 + i * (Math.PI * 1.64 / (BOOT_NODES.length - 1)) - Math.PI / 2 + Math.PI / 2; return { a, x: cx + Math.cos(a - Math.PI / 2) * R, y: cy + Math.sin(a - Math.PI / 2) * R }; });
-  const lowest = Math.max(...nodes.map((n) => n.y));          // keep the wordmark clear of the lower labels
-  return { R, cx, cy, fs, narrow, wy: Math.max(cy + R + fs * 1.55, lowest + (narrow ? 84 : 100) * dpr + fs * 0.6), nodes };
-}
-function wordPoints(fs, dpr) {
-  const c = document.createElement('canvas'), x = c.getContext('2d');
-  x.font = `700 ${fs}px ${getComputedStyle(document.documentElement).getPropertyValue('--font')}`;
-  const w = Math.ceil(x.measureText('AgentDesk').width) + 4, h = Math.ceil(fs * 1.25);
-  c.width = w; c.height = h;
-  x.font = `700 ${fs}px ${getComputedStyle(document.documentElement).getPropertyValue('--font')}`; x.textBaseline = 'middle'; x.fillStyle = '#000';
-  x.fillText('AgentDesk', 2, h / 2);
-  const data = x.getImageData(0, 0, w, h).data, pts = [], step = Math.max(2, Math.round(fs / 22));
-  for (let yy = 0; yy < h; yy += step) for (let xx = 0; xx < w; xx += step) if (data[(yy * w + xx) * 4 + 3] > 140) pts.push([xx - w / 2, yy - h / 2]);
-  while (pts.length > 1600) pts.splice(Math.floor(Math.random() * pts.length), 1);
-  return { pts, w, h };
-}
-function runBoot(force) {
-  if (!force && !shouldBoot()) return;
-  if (bootRun) { bootRun.stop = true; bootRun.timers.forEach(clearTimeout); }
-  const boot = $('#boot'), cv = $('#bootCanvas'), ctx = cv.getContext('2d'), nodesEl = $('#bootNodes'), logEl = $('#bootLog');
-  $('#bootOs').textContent = look.os === 'mac' ? 'MACOS' : 'WINDOWS';
-  nodesEl.innerHTML = ''; logEl.innerHTML = '';
-  boot.hidden = false; boot.classList.remove('leaving'); $('#app').classList.add('booting');
-  $('#bootSkip').focus({ preventScroll: true });
-  const quick = reduceMotion.matches;
-  const run = { stop: false, timers: [], t0: performance.now() - (quick ? (T.out - 0.2) * 1000 : 0), logged: 0, woke: new Set() };
-  bootRun = run;
-  // DOM bots: lead in the centre, workers on the ring
-  const small = innerWidth < 560;
-  const leadBot = makeBot('lead', small ? 56 : 72, { state: 'idle' }); leadBot.className = 'boot-node'; nodesEl.appendChild(leadBot);
-  const leadLabel = document.createElement('div'); leadLabel.className = 'boot-label'; leadLabel.innerHTML = '<b>Claude · 组长</b><span class="ok">ORCHESTRATING</span>'; nodesEl.appendChild(leadLabel);
-  const nodeEls = BOOT_NODES.map(([id, name, role, kind, readout]) => {
-    const bot = makeBot(id, small ? 40 : 52, { state: 'idle' }); bot.className = 'boot-node'; bot.style.opacity = '0'; nodesEl.appendChild(bot);
-    const label = document.createElement('div'); label.className = 'boot-label';
-    label.innerHTML = `<b>${esc(name)}</b><span><span class="role">${esc(role)} · </span><span class="${kind}">${esc(readout)}</span></span>`; nodesEl.appendChild(label);
-    return { bot, label, kind };
-  });
-  let word = null, parts = null, lastW = 0, lastH = 0;
-
-  function frame(now) {
-    if (run.stop) return;
-    const t = (now - run.t0) / 1000;
-    const dpr = Math.min(2, devicePixelRatio || 1), W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
-    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
-    const L = bootLayout(W, H, dpr);
-    if (!word || W !== lastW || H !== lastH) {
-      lastW = W; lastH = H; word = wordPoints(L.fs, dpr);
-      parts = word.pts.map(([px, py]) => {
-        const src = Math.random() < 0.3 ? { x: L.cx, y: L.cy } : L.nodes[Math.floor(Math.random() * L.nodes.length)];
-        return { tx: L.cx + px, ty: L.wy + py, sx: src.x + (Math.random() - 0.5) * 40 * dpr, sy: src.y + (Math.random() - 0.5) * 40 * dpr, d: Math.random() * 0.35, r: (0.8 + Math.random() * 0.9) * dpr };
-      });
-    }
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = BP.bg; ctx.fillRect(0, 0, W, H);
-
-    // 1. blueprint dot grid + crosshair + first scan line
-    const g = ease((t - T.grid) / 0.6), sp = 26 * dpr;
-    ctx.fillStyle = BP.grid; ctx.globalAlpha = g;
-    for (let y = (L.cy % sp); y < H; y += sp) for (let x = (L.cx % sp); x < W; x += sp) ctx.fillRect(x - dpr * 0.6, y - dpr * 0.6, dpr * 1.2, dpr * 1.2);
-    ctx.strokeStyle = BP.faint; ctx.lineWidth = dpr; ctx.beginPath(); ctx.moveTo(0, L.cy); ctx.lineTo(W, L.cy); ctx.moveTo(L.cx, 0); ctx.lineTo(L.cx, H); ctx.stroke();
-    ctx.globalAlpha = 1;
-    if (t < 1.3) {
-      const y = ease(t / 1.3) * H, band = ctx.createLinearGradient(0, y - 60 * dpr, 0, y);
-      band.addColorStop(0, 'rgba(47,111,224,0)'); band.addColorStop(1, 'rgba(47,111,224,.22)');
-      ctx.fillStyle = band; ctx.fillRect(0, y - 60 * dpr, W, 60 * dpr);
-      ctx.fillStyle = BP.line; ctx.globalAlpha = 0.6; ctx.fillRect(0, y, W, dpr); ctx.globalAlpha = 1;
-    }
-
-    // 2. HUD rings around the lead
-    const rp = ease((t - T.rings) / 1.0), spin = t;
-    ctx.save(); ctx.translate(L.cx, L.cy); ctx.lineCap = 'round';
-    ctx.strokeStyle = BP.soft; ctx.lineWidth = 1.2 * dpr; ctx.setLineDash([2 * dpr, 6 * dpr]);
-    ctx.beginPath(); ctx.arc(0, 0, L.R * 0.36, spin * 0.5, spin * 0.5 + rp * Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
-    const ticks = 120;
-    for (let i = 0; i < ticks * rp; i++) {
-      const a = i / ticks * Math.PI * 2 - Math.PI / 2, long = i % 10 === 0, r0 = L.R * 0.5, r1 = r0 + (long ? 9 : 4) * dpr;
-      ctx.strokeStyle = long ? BP.line : BP.soft; ctx.lineWidth = (long ? 1.4 : 1) * dpr;
-      ctx.beginPath(); ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0); ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.stroke();
-    }
-    ctx.strokeStyle = BP.line; ctx.lineWidth = 2.2 * dpr;
-    for (let k = 0; k < 3; k++) { const a0 = -spin * 0.9 + k * Math.PI * 2 / 3; ctx.beginPath(); ctx.arc(0, 0, L.R * 0.62, a0, a0 + 0.55 * rp); ctx.stroke(); }
-    ctx.strokeStyle = BP.faint; ctx.lineWidth = dpr; ctx.beginPath(); ctx.arc(0, 0, L.R, -Math.PI / 2, -Math.PI / 2 + rp * Math.PI * 2); ctx.stroke();
-    if (ctx.createConicGradient && rp > 0.3) {   // radar sweep
-      const cg = ctx.createConicGradient(spin * 1.4, 0, 0);
-      cg.addColorStop(0, 'rgba(47,111,224,.16)'); cg.addColorStop(0.12, 'rgba(47,111,224,0)'); cg.addColorStop(1, 'rgba(47,111,224,0)');
-      ctx.fillStyle = cg; ctx.globalAlpha = rp; ctx.beginPath(); ctx.arc(0, 0, L.R * 0.98, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
-    }
-    ctx.restore();
-
-    // 3. links from the lead to each agent, data packets, node frames
-    L.nodes.forEach((n, i) => {
-      const t0 = T.node0 + i * T.nodeStep, p = ease((t - t0) / T.link);
-      if (p <= 0) return;
-      const dx = n.x - L.cx, dy = n.y - L.cy, d = Math.hypot(dx, dy), ux = dx / d, uy = dy / d;
-      const x0 = L.cx + ux * L.R * 0.4, y0 = L.cy + uy * L.R * 0.4, x1 = x0 + (n.x - ux * 34 * dpr - x0) * p, y1 = y0 + (n.y - uy * 34 * dpr - y0) * p;
-      const warn = BOOT_NODES[i][3] === 'warn';
-      const lg = ctx.createLinearGradient(x0, y0, x1, y1); lg.addColorStop(0, 'rgba(47,111,224,.15)'); lg.addColorStop(1, warn ? BP.warn : BP.line);
-      ctx.strokeStyle = lg; ctx.lineWidth = 1.6 * dpr; ctx.shadowColor = warn ? 'rgba(212,138,18,.5)' : BP.glow; ctx.shadowBlur = 8 * dpr;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.shadowBlur = 0;
-      if (p >= 1) {
-        for (let k = 0; k < 2; k++) {   // packets
-          const q = ((t - t0) * 0.9 + k * 0.5) % 1, px = x0 + (x1 - x0) * q, py = y0 + (y1 - y0) * q;
-          ctx.fillStyle = warn ? BP.warn : BP.cyan; ctx.beginPath(); ctx.arc(px, py, 2.4 * dpr, 0, Math.PI * 2); ctx.fill();
-        }
-        const pop = ease((t - t0 - T.link) / 0.35), nr = (30 + (1 - pop) * 14) * dpr;
-        ctx.strokeStyle = warn ? BP.warn : BP.line; ctx.globalAlpha = pop; ctx.lineWidth = 1.3 * dpr;
-        ctx.beginPath(); ctx.arc(n.x, n.y, nr, 0, Math.PI * 2); ctx.stroke();
-        for (let k = 0; k < 4; k++) { const a0 = t * 1.2 + k * Math.PI / 2; ctx.beginPath(); ctx.arc(n.x, n.y, nr + 6 * dpr, a0, a0 + 0.5); ctx.stroke(); }
-        ctx.globalAlpha = 1;
-      }
-    });
-
-    // 4. particles converge into the wordmark, then the solid wordmark and a scan sweep
-    if (t > T.words) {
-      const solid = ease((t - T.solid) / 0.5);
-      ctx.fillStyle = BP.line;
-      for (const pt of parts) {
-        const q = ease((t - T.words - pt.d) / 0.85); if (q <= 0) continue;
-        ctx.globalAlpha = (1 - solid * 0.85) * Math.min(1, q * 2);
-        ctx.fillRect(pt.sx + (pt.tx - pt.sx) * q - pt.r / 2, pt.sy + (pt.ty - pt.sy) * q - pt.r / 2, pt.r, pt.r);
-      }
-      ctx.globalAlpha = solid;
-      ctx.font = `700 ${L.fs}px ${getComputedStyle(document.documentElement).getPropertyValue('--font')}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.shadowColor = BP.glow; ctx.shadowBlur = 22 * dpr; ctx.fillStyle = BP.ink; ctx.fillText('AgentDesk', L.cx, L.wy);
-      ctx.shadowBlur = 0;
-      if (t > T.scan && t < T.scan + 0.8) {   // light sweep that only lights the letters
-        const sx = L.cx - word.w / 2 + (t - T.scan) / 0.8 * word.w, bw = 46 * dpr;
-        const sg = ctx.createLinearGradient(sx - bw, 0, sx + bw, 0);
-        sg.addColorStop(0, 'rgba(110,190,255,0)'); sg.addColorStop(0.5, 'rgba(150,215,255,1)'); sg.addColorStop(1, 'rgba(110,190,255,0)');
-        ctx.fillStyle = sg; ctx.fillText('AgentDesk', L.cx, L.wy);
-      }
-      ctx.globalAlpha = solid; ctx.font = `500 ${11 * dpr}px ${getComputedStyle(document.documentElement).getPropertyValue('--mono')}`; ctx.fillStyle = '#6b7c94';
-      const pct = Math.round(clamp01((t - T.node0) / (T.scan - T.node0)) * 100);
-      const state = `SYSTEM ${pct < 100 ? 'SYNC' : 'READY'} ${pct}%`;
-      ctx.fillText(L.narrow ? state : `CLAUDE 统筹 · 多 AGENT 协作   //   ${state}`, L.cx, L.wy + L.fs * 0.85);
-      ctx.globalAlpha = 1;
-    }
-
-    // DOM: position bots and labels, wake them as links connect
-    const css = 1 / dpr;
-    leadBot.style.left = L.cx * css + 'px'; leadBot.style.top = L.cy * css + 'px';
-    leadLabel.style.left = L.cx * css + 'px'; leadLabel.style.top = (L.cy + L.R * 0.5) * css + 14 + 'px'; leadLabel.style.opacity = t > T.lead && !L.narrow ? 1 : 0;
-    if (t > T.lead && !run.woke.has('lead')) { run.woke.add('lead'); leadBot._bot.fixed = 'juggling'; leadBot._bot.fixedSince = performance.now(); }
-    nodeEls.forEach((n, i) => {
-      const P = L.nodes[i], t0 = T.node0 + i * T.nodeStep + T.link;
-      n.bot.style.left = P.x * css + 'px'; n.bot.style.top = P.y * css + 'px'; n.bot.style.opacity = t > t0 ? Math.min(1, (t - t0) / 0.25) : 0;
-      const below = P.y > L.cy, gap = (small ? 26 : 34) + 6;
-      n.label.style.left = P.x * css + 'px'; n.label.style.top = (P.y * css + (below ? gap : -gap)) + 'px';
-      n.label.style.transform = below ? 'translate(-50%, 0)' : 'translate(-50%, -100%)';
-      n.label.style.opacity = t > t0 + 0.1 ? 1 : 0;
-      if (t > t0 && !run.woke.has(i)) {
-        run.woke.add(i); n.bot._bot.fixed = n.kind === 'warn' ? 'limited' : 'done'; n.bot._bot.fixedSince = performance.now();
-        if (n.kind !== 'warn') run.timers.push(setTimeout(() => { n.bot._bot.fixed = 'idle'; }, 1300));
-      }
-    });
-    while (run.logged < BOOT_LOG.length && t >= BOOT_LOG[run.logged][0]) {
-      const [, k, kind, v] = BOOT_LOG[run.logged++];
-      const row = document.createElement('div'); row.innerHTML = `&gt; ${esc(k)} <span>${'.'.repeat(Math.max(2, 22 - k.length))}</span> <span class="${kind}">${esc(v)}</span>`;
-      logEl.appendChild(row); while (logEl.children.length > 6) logEl.firstChild.remove();
-    }
-    const d = new Date(); $('#bootClock').textContent = d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
-    if (t >= T.out) { endBoot(); return; }
-    requestAnimationFrame(frame);
-  }
-  if (quick) run.timers.push(setTimeout(endBoot, 900));
-  requestAnimationFrame(frame);
-}
-$('#bootSkip').addEventListener('click', endBoot);
-$('#boot').addEventListener('dblclick', endBoot);   // a single click does nothing, so a stray click never skips it
-document.addEventListener('keydown', (e) => { if (!$('#boot').hidden && ['Escape', 'Enter', ' '].includes(e.key)) { e.preventDefault(); endBoot(); } });
 
 startScenario(false);
 openConv('g-agentdesk');
 applyLook();
-runBoot(false);
 })();
 </script>

@@ -3,7 +3,8 @@
 // 1.4s  four land on the corners of the AgentDesk diamond, the lead (Claude) lands in the middle
 // 1.5s  the diamond is drawn through them; 1.95s the dark glass tile condenses behind it with a shock ring
 // 2.2s  the lead becomes the ">" prompt and the cursor starts blinking; a light sweep crosses the tile
-// 2.6s  the wordmark rises letter by letter; 3.3s a greeting with the real connection state
+// 2.6s  the wordmark rises letter by letter; 2.75s the members' logos peek out from behind the tile, looking round
+// 3.3s  a greeting with the real connection state; 3.5s each logo's face shows that member's real state
 // 5.0s  everything dissolves into the app (or offers retry / offline when the cloud is unreachable)
 // The SVG mark and text are animated by boot.css; this file draws the light, the members and their trails.
 (function () {
@@ -174,19 +175,52 @@
       ring(view.cx, view.cy, radius, lerp(2.2, 0.6, shock), '#5fa8d8', 0.38 * (1 - shock));
       ring(view.cx, view.cy, radius * 0.86, 1, '#5fe0c6', 0.22 * (1 - shock));
     }
+  }
 
-    // Afterwards the team keeps circling the mark, small and quiet.
-    const after = window01(t, 2.9, 3.6);
-    if (after > 0) {
-      members.forEach((m, i) => {
-        const a = -Math.PI / 2 + i * TAU / 5 + t * 0.35;
-        const r = view.s * 1.05;
-        const x = view.cx + r * Math.cos(a);
-        const y = view.cy + r * Math.sin(a) * 0.38 + view.s * 0.02;
-        const front = (Math.sin(a) + 1) / 2;
-        glow(x, y, m.color, after * (0.3 + 0.6 * front), 9 + 5 * front);
-      });
-      ctx.globalAlpha = 1;
+  // Where each logo ends up, as a share of the icon's size, and its tilt. Left, upper left, top, upper right, right:
+  // like a team crowding round behind a sign.
+  const PEEKERS = [
+    { id: 'grok', x: -0.58, y: -0.04, r: -16 },
+    { id: 'codex', x: -0.47, y: -0.47, r: -28 },
+    { id: 'lead', x: 0, y: -0.57, r: 0 },
+    { id: 'gemini', x: 0.47, y: -0.47, r: 28 },
+    { id: 'antigravity', x: 0.58, y: -0.04, r: 16 },
+  ];
+  const MOOD_AT = 3.5;   // until then they look around; afterwards their face shows their real state
+
+  function mood(node) {
+    if (!node || !Number.isFinite(node.at)) return 'thinking';
+    return { READY: 'done', 'QUOTA 0%': 'limited', 'LOGIN REQUIRED': 'asking', 'NOT CONFIGURED': 'asleep', OFFLINE: 'failed' }[node.status] || 'thinking';
+  }
+
+  function avatar(id, state, still) {
+    return window.AgentDeskAvatars.html(id, { state, size: 96, key: 'boot-peek:' + id, still });
+  }
+
+  function placePeekers(still) {
+    const layer = $('bootPeek');
+    layer.replaceChildren(...PEEKERS.map((p, i) => {
+      const outer = document.createElement('div');
+      outer.className = 'boot-peeker';
+      outer.dataset.member = p.id;
+      outer.style.setProperty('--i', i);
+      outer.style.setProperty('--x', `calc(var(--mark) * ${p.x})`);
+      outer.style.setProperty('--y', `calc(var(--mark) * ${p.y})`);
+      outer.style.setProperty('--r', p.r + 'deg');
+      const bob = document.createElement('div');
+      bob.className = 'bob';
+      bob.innerHTML = avatar(p.id, 'thinking', still);
+      outer.append(bob);
+      return outer;
+    }));
+  }
+
+  function moods(data, still) {
+    for (const outer of $('bootPeek').children) {
+      const id = outer.dataset.member;
+      const state = mood(data.nodes.find((node) => node.id === id));
+      const canvas = outer.querySelector('canvas');
+      if (canvas?.dataset.avatarState !== state) outer.firstChild.innerHTML = avatar(id, state, still);
     }
   }
 
@@ -220,6 +254,7 @@
     if (!run) return;
     cancelAnimationFrame(run.frame);
     clearTimeout(run.timer);
+    clearTimeout(run.moodTimer);
     run.cancelChecks();
     run = null;
     const hide = () => {
@@ -251,6 +286,7 @@
       return span;
     }));
     $('bootGreet').dataset.key = '';
+    placePeekers(motion.matches);
     void boot.offsetWidth;   // restart the CSS timeline on a replay
     const quick = motion.matches;
     boot.classList.add(quick ? 'still' : 'run');
@@ -258,9 +294,13 @@
     const active = { data: feed.buildBootData(), start: performance.now() };
     run = active;
     status(active.data);
+    active.moody = quick;
+    if (quick) moods(active.data, true);
+    else active.moodTimer = setTimeout(() => { active.moody = true; moods(active.data, false); }, MOOD_AT * 1000);
     active.cancelChecks = feed.collect(window.desk, (data) => {
       active.data = data;
       status(data);
+      if (active.moody) moods(data, quick);
     });
     const end = () => {
       cancelAnimationFrame(active.frame);
@@ -294,6 +334,8 @@
         animation.pause();
         animation.currentTime = t * 1000;
       }
+      clearTimeout(run.moodTimer);
+      if (t >= MOOD_AT) moods(run.data, false);
       draw(t);
     },
   };

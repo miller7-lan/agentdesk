@@ -12,7 +12,15 @@ html[data-bootplay="yes"] #boot { display: block; }
 
 .boot-stage { --mark: clamp(108px, 23vh, 184px); position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
   display: flex; flex-direction: column; align-items: center; transition: transform .75s cubic-bezier(.4, 0, .2, 1); }
-.boot-mark { width: var(--mark); height: var(--mark); overflow: visible; }
+.boot-emblem { position: relative; width: var(--mark); height: var(--mark); }
+.boot-mark { position: relative; z-index: 1; display: block; width: var(--mark); height: var(--mark); overflow: visible; }
+
+/* the team peeks out from behind the tile: each logo starts hidden behind it and pops out past one edge */
+.boot-peek { position: absolute; inset: 0; z-index: 0; --av: calc(var(--mark) * .4); }
+.boot-peeker { position: absolute; left: 50%; top: 50%; width: var(--av); height: var(--av); margin: calc(var(--av) / -2) 0 0 calc(var(--av) / -2);
+  opacity: 0; transform: translate(calc(var(--x) * .25), calc(var(--y) * .25)) rotate(0deg) scale(.7); }
+.boot-peeker .bob { width: 100%; height: 100%; }
+.boot-peeker canvas { width: 100% !important; height: 100% !important; display: block; }
 
 /* the dark glass tile condenses behind the drawn diamond */
 .boot-tile { transform-origin: 128px 128px; opacity: 0; filter: drop-shadow(0 18px 30px rgba(20, 40, 70, .22)); }
@@ -50,6 +58,8 @@ html[data-bootplay="yes"] #boot { display: block; }
 .boot.run .boot-word span { animation: boot-letter .8s cubic-bezier(.2, .8, .2, 1) calc(2.6s + var(--i) * 45ms) forwards; }
 .boot.run .boot-greet { animation: boot-rise .7s cubic-bezier(.2, .8, .2, 1) 3.3s forwards; }
 .boot.run .boot-foot { animation: boot-fade .6s ease .9s forwards; }
+.boot.run .boot-peeker { animation: boot-peek .75s cubic-bezier(.3, 1.55, .5, 1) calc(2.75s + var(--i) * 90ms) forwards; }
+.boot.run .boot-peeker .bob { animation: boot-bob 2.6s ease-in-out calc(3.6s + var(--i) * 230ms) infinite; }
 
 @keyframes boot-draw { to { stroke-dashoffset: 0; } }
 @keyframes boot-tile { from { opacity: 0; transform: scale(.82); filter: blur(10px) drop-shadow(0 18px 30px rgba(20, 40, 70, 0)); }
@@ -59,9 +69,12 @@ html[data-bootplay="yes"] #boot { display: block; }
 @keyframes boot-letter { from { opacity: 0; transform: translateY(14px); filter: blur(8px); } to { opacity: 1; transform: none; filter: blur(0); } }
 @keyframes boot-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes boot-fade { to { opacity: 1; } }
+@keyframes boot-peek { 0% { opacity: 0; } 12% { opacity: 1; } 100% { opacity: 1; transform: translate(var(--x), var(--y)) rotate(var(--r)) scale(1); } }
+@keyframes boot-bob { 0%, 100% { transform: none; } 50% { transform: translate(calc(var(--x) * .04), calc(var(--y) * .04)); } }
 
 /* reduced motion, or a replay that must show the end state at once */
 .boot.still .boot-gem, .boot.still .boot-prompt { stroke-dashoffset: 0; }
+.boot.still .boot-peeker { opacity: 1; transform: translate(var(--x), var(--y)) rotate(var(--r)); }
 .boot.still .boot-tile, .boot.still .boot-cursor, .boot.still .boot-word span, .boot.still .boot-greet, .boot.still .boot-foot { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { .boot, .boot-stage { transition: none; } }
 @media (max-height: 520px) { .boot-greet { display: none; } }

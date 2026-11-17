@@ -16,6 +16,8 @@
   <div class="boot" id="boot" role="dialog" aria-label="AgentDesk 正在启动">
     <canvas id="bootCanvas" aria-hidden="true"></canvas>
     <div class="boot-stage" id="bootStage">
+      <div class="boot-emblem">
+        <div class="boot-peek" id="bootPeek" aria-hidden="true"></div>
       <svg class="boot-mark" id="bootMark" viewBox="0 0 256 256" aria-hidden="true">
         <defs>
           <linearGradient id="bootTile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#25343a"/><stop offset="1" stop-color="#11181b"/></linearGradient>
@@ -34,6 +36,7 @@
         <path class="boot-prompt" d="M104 106 L130 128 L104 150" fill="none" stroke="#e9f7f3" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" pathLength="100"/>
         <rect class="boot-cursor" x="138" y="143" width="28" height="12" rx="6" fill="#5fe0c6"/>
       </svg>
+      </div>
       <div class="boot-word" id="bootWord" aria-hidden="true"></div>
       <div class="boot-greet" id="bootGreet" aria-live="polite"></div>
       <div class="boot-actions" id="bootActions" hidden>
