@@ -12,8 +12,10 @@ const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, clip } = require
 const {
   REVIEW_INSTRUCTION, ACCEPTANCE_INSTRUCTION, parseReviewVerdict, reviewConflicts, mergeFindings,
 } = require('./review');
+const { TRIAGE_INSTRUCTION, parseTriageDecision } = require('./triage');
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
+const MAX_TRIAGE = 2;
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -332,7 +334,18 @@ class Scheduler {
   // Called by the service timer: refresh cached quota (a Codex read starts an App Server) and retry
   // tasks whose executor may have become available.
   tick() {
-    this.refreshQuota().catch(() => {}).finally(() => this.pump());
+    this.refreshQuota().catch(() => {}).finally(() => {
+      // A triage that was waiting for Claude is retried in place; the task is not lent to another CLI.
+      const now = Date.now();
+      for (const task of this.tasks.values()) {
+        if (task.state === 'triaging' && !this.running.has(task.id) && (!task.notBefore || task.notBefore <= now)) {
+          delete task.notBefore;
+          delete task.waitingFor;
+          this.save(task, 'queued', 'triage_retry');
+        }
+      }
+      this.pump();
+    });
   }
 
   slots() {
@@ -507,6 +520,13 @@ class Scheduler {
       await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
       task.base = head;
     }
+    if (task.pendingTriage || task.escalation?.active) {
+      // consumePendingTriage also runs the triage it starts; only a triage recovered from an earlier
+      // crash reaches runTriage directly.
+      if (task.pendingTriage) await this.consumePendingTriage(task, repo, root, signal);
+      else await this.runTriage(task, repo, root, signal);
+      return;
+    }
     if (!task.steps.length && task.provider) {
       task.steps = [{ id: task.provider, role: task.provider, model: task.model, prompt: task.prompt,
         dependsOn: [], write: task.provider !== 'gemini', state: 'queued', attempts: 0 }];
@@ -549,6 +569,11 @@ class Scheduler {
         if (failed) throw failed.reason;
       }
       signal.throwIfAborted();
+      // Competing review verdicts are escalated before acceptance; the triage may add fix steps.
+      if (task.pendingTriage) {
+        await this.consumePendingTriage(task, repo, root, signal);
+        return;
+      }
       const outcome = await this.finalize(task, repo, root, signal);
       if (outcome === 'rework') continue;
       if (outcome !== 'accept') return;
@@ -571,7 +596,13 @@ class Scheduler {
       this.save(task, 'needs_review', 'patches_ready');
       return;
     }
-    if (task.command) await this.test(task, signal);
+    if (task.command) {
+      const passed = await this.runTests(task, signal);
+      if (!passed) {
+        if (task.pendingTriage) await this.consumePendingTriage(task, repo, root, signal);
+        return;
+      }
+    }
     this.save(task, 'completed', 'completed');
   }
 
@@ -685,7 +716,7 @@ class Scheduler {
       return this.handleAcceptance(task, latest);
     }
     if (task.acceptance) {
-      if (['accept', 'pass'].includes(task.acceptance.verdict)) return 'accept';
+      if (['accept', 'pass', 'accept_with_risk'].includes(task.acceptance.verdict)) return 'accept';
       if (['reject', 'blocked'].includes(task.acceptance.verdict)) return 'reject';
       if (task.acceptance.verdict === 'unknown') return 'unknown';
       if (task.acceptance.verdict === 'limit') return 'limit';
@@ -801,6 +832,9 @@ class Scheduler {
     if (task.reviewConflictKey === key) return;
     task.reviewConflictKey = key;
     task.reviewConflicts = (task.reviewConflicts || 0) + 1;
+    // One escalation request per stage; a second conflicting review while triage is pending is the same
+    // problem, not a new one.
+    if (!task.escalation?.active) task.pendingTriage ||= { reason: 'review_conflict', applied: Boolean(task.applied) };
     this.save(task, task.state, 'review_conflict');
   }
 
@@ -849,6 +883,7 @@ class Scheduler {
         }
         if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
         else if (step.capability === 'accept') prompt += '\n\n' + ACCEPTANCE_INSTRUCTION;
+        else if (step.capability === 'triage') prompt += '\n\n' + TRIAGE_INSTRUCTION;
         const { output } = await this.execute(task, step, folder, signal, prompt);
         signal.throwIfAborted();
         step.output = output;
@@ -904,14 +939,236 @@ class Scheduler {
     if (task.testResult.code !== 0) throw new Error('windows_test_failed');
   }
 
+  // Runs the task command with one immediate retry. A success clears the consecutive-failure count; two
+  // failures in a row request a lead triage instead of failing silently or looping forever.
+  async runTests(task, signal) {
+    task.testFailures ||= 0;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.test(task, signal);
+        task.testFailures = 0;
+        delete task.lastTestFailure;
+        return true;
+      } catch (error) {
+        if (error.message !== 'windows_test_failed') throw error;
+        task.testFailures += 1;
+        task.lastTestFailure = 'windows_test_failed';
+        this.save(task, task.state, 'test_failed:' + task.testFailures);
+      }
+    }
+    task.pendingTriage ||= { reason: 'test_failures', applied: Boolean(task.applied) };
+    return false;
+  }
+
+  // Only one escalation is pending at a time. beginTriage decides whether the task is allowed to start
+  // another triage round at all.
+  beginTriage(task, reason, { applied = false } = {}) {
+    if (task.escalation?.active) return false;
+    if ((task.triageRounds || 0) >= MAX_TRIAGE) {
+      this.save(task, 'needs_review', 'triage_limit');
+      return false;
+    }
+    task.escalation = { reason, applied: Boolean(applied), active: true, requestedAt: new Date().toISOString() };
+    task.stage = 'triaging';
+    this.save(task, 'triaging', 'triage_started');
+    return true;
+  }
+
+  async consumePendingTriage(task, repo, root, signal) {
+    const pending = task.pendingTriage;
+    if (!pending) return false;
+    delete task.pendingTriage;
+    if (task.escalation?.active) {
+      // The pending request is the same escalation arriving twice; keep the running one.
+      await this.runTriage(task, repo, root, signal);
+      return true;
+    }
+    if (!this.beginTriage(task, pending.reason, { applied: pending.applied })) return false;
+    await this.runTriage(task, repo, root, signal);
+    return true;
+  }
+
+  async runTriage(task, repo, root, signal) {
+    const escalation = task.escalation;
+    if (!escalation?.active) return;
+    const lead = this.pickForTask(task, 'triage');
+    if (!lead) {
+      const configured = (this.router.routes.triage || []).filter((role) => this.router.configured(role));
+      if (!configured.length) {
+        escalation.active = false;
+        this.save(task, 'needs_review', 'triage_unavailable');
+        return;
+      }
+      // Claude is the only triage role. Wait for it; never hand the decision to Codex.
+      task.waitingFor = 'triage';
+      task.notBefore = Date.now() + 60_000;
+      this.save(task, 'triaging', 'triage_unavailable');
+      return;
+    }
+    let step = escalation.stepId && task.steps.find((item) => item.id === escalation.stepId);
+    if (!step) {
+      const round = (task.triageRounds || 0) + 1;
+      step = {
+        id: 'triage-' + round, role: lead, capability: 'triage', write: false, usesBrief: true,
+        state: 'queued', attempts: 0, dependsOn: [], reason: escalation.reason,
+        prompt: 'Diagnose this escalation and choose exactly one next action.',
+        brief: buildTriageBrief(task, escalation.reason),
+      };
+      escalation.stepId = step.id;
+      task.steps.push(step);
+    }
+    if (step.state !== 'completed') {
+      try {
+        await this.runStep(task, step, repo, root, signal);
+      } catch (error) {
+        if (error.message.startsWith('executor_waiting:')) {
+          task.waitingFor = 'triage';
+          task.notBefore = Date.now() + 60_000;
+          this.save(task, 'triaging', 'triage_unavailable');
+          return;
+        }
+        throw error;
+      }
+    }
+    signal.throwIfAborted();
+    const fresh = !escalation.decision;
+    const decision = escalation.decision || parseTriageDecision(step.output);
+    if (fresh) {
+      escalation.decision = decision;
+      task.triageRounds = (task.triageRounds || 0) + 1;
+    }
+    this.save(task, 'triaging', 'triage_decision:' + decision.decision);
+    await this.applyTriageDecision(task, decision, signal);
+  }
+
+  async applyTriageDecision(task, decision, signal) {
+    const escalation = task.escalation || (task.escalation = {});
+    if (decision.decision === 'retry') {
+      escalation.active = false;
+      task.stage = 'executing';
+      if (escalation.reason !== 'test_failures') {
+        const failed = task.steps.filter((step) => step.state === 'failed');
+        const retryable = failed.length ? failed : task.steps.filter((step) => step.capability === 'review' && step.verdict);
+        if (!retryable.length) {
+          this.save(task, 'needs_review', 'triage_retry_required');
+          return 'retry';
+        }
+        for (const step of retryable) {
+          step.state = 'queued';
+          step.attempts = 0;
+          delete step.error;
+          delete step.verdict;
+          delete step.output;
+        }
+        delete task.reviewConflictKey;
+        this.save(task, 'queued', 'triage_retry');
+        return 'retry';
+      }
+      if (!task.command) {
+        this.save(task, 'completed', 'completed');
+        return 'retry';
+      }
+      task.testFailures = 0;
+      try {
+        await this.test(task, signal);
+        this.save(task, 'completed', 'completed');
+      } catch (error) {
+        if (error.message !== 'windows_test_failed') throw error;
+        task.testFailures = 1;
+        task.lastTestFailure = 'windows_test_failed';
+        this.save(task, 'needs_review', 'triage_retry_failed');
+      }
+      return 'retry';
+    }
+    if (decision.decision === 'rework') {
+      if (escalation.applied) {
+        escalation.active = false;
+        this.save(task, 'needs_review', 'rework_after_apply');
+        return 'rework';
+      }
+      let steps;
+      try {
+        steps = this.buildTriageSteps(task, decision);
+      } catch (error) {
+        if (error.message.startsWith('executor_waiting:')) {
+          task.waitingFor = error.message.slice('executor_waiting:'.length);
+          task.notBefore = Date.now() + 60_000;
+          this.save(task, 'triaging', 'triage_unavailable');
+          return 'rework';
+        }
+        throw error;
+      }
+      task.steps.push(...steps);
+      task.reworkRounds = (task.reworkRounds || 0) + 1;
+      delete task.acceptance;
+      escalation.active = false;
+      task.stage = 'reworking';
+      this.save(task, 'queued', 'triage_rework');
+      return 'rework';
+    }
+    if (decision.decision === 'accept_with_risk') {
+      escalation.active = false;
+      task.acceptance = {
+        verdict: 'accept_with_risk', round: (task.acceptance?.round || 0) + 1, stepId: escalation.stepId,
+        summary: clip(decision.reason || decision.instructions, 600), findings: [], at: new Date().toISOString(),
+      };
+      task.stage = 'accepted';
+      this.save(task, 'needs_review', 'accepted_with_risk');
+      return 'risk';
+    }
+    if (decision.decision === 'fail') {
+      escalation.active = false;
+      this.save(task, 'failed', 'rejected_by_lead');
+      return 'fail';
+    }
+    escalation.active = false;
+    this.save(task, 'needs_review', 'triage_unparseable');
+    return 'unknown';
+  }
+
+  // Turns a lead decision into executable steps. Claude never appears here: each step goes through the
+  // same capability router as a planned step, and a rework chains onto the active writer's worktree.
+  buildTriageSteps(task, decision) {
+    const raw = decision.steps.length ? decision.steps : [{
+      capability: 'implement',
+      prompt: decision.instructions || decision.reason || 'Fix the problems reported by the tests and reviews.',
+    }];
+    const used = new Set(task.steps.map((step) => step.id));
+    const steps = [];
+    let parent = [...task.steps].reverse().find((step) => step.write && step.paths?.length && !step.supersededBy);
+    for (const item of raw.slice(0, 4)) {
+      const capability = item.capability || 'implement';
+      const role = this.pickForTask(task, capability);
+      if (!role) {
+        const configured = (this.router.routes[capability] || []).filter((candidate) => this.router.configured(candidate));
+        throw new Error(configured.length ? 'executor_waiting:' + capability : 'no_executor:' + capability);
+      }
+      let next = 1;
+      while (used.has('fix-' + next)) next += 1;
+      const id = 'fix-' + next;
+      used.add(id);
+      const dependsOn = steps.length ? [steps.at(-1).id] : [];
+      if (capability === 'review' && parent && !dependsOn.includes(parent.id)) dependsOn.push(parent.id);
+      const step = {
+        id, role, capability, write: CAPABILITIES[capability].write && this.router.canWrite(role),
+        state: 'queued', attempts: 0, dependsOn,
+        prompt: item.prompt,
+      };
+      if (capability === 'implement' && parent) step.reworkOf = parent.id;
+      if (step.write) parent = step;
+      steps.push(step);
+    }
+    return steps;
+  }
+
   async apply(task, force = false) {
     if (!task || task.state !== 'needs_review' || task.pendingRequest || this.running.has(task.id) ||
-      task.detail !== 'patches_ready') {
+      !['patches_ready', 'accepted_with_risk'].includes(task.detail)) {
       throw new Error('patch_not_applicable');
     }
     // A patch is only applicable once the lead accepted it. Turning acceptance off in configuration
     // removes the gate, and an administrator can force a recovery apply explicitly.
-    if (!force && this.acceptanceRequired(task) && !['accept', 'pass'].includes(task.acceptance?.verdict) &&
+    if (!force && this.acceptanceRequired(task) && !['accept', 'pass', 'accept_with_risk'].includes(task.acceptance?.verdict) &&
         task.detail !== 'accepted') {
       throw new Error('acceptance_required');
     }
@@ -927,7 +1184,15 @@ class Scheduler {
         Buffer.concat(patches), task.pendingRequest, controller.signal);
       delete task.pendingRequest;
       delete task.pendingKind;
-      if (task.command && !controller.signal.aborted) await this.test(task, controller.signal);
+      if (task.command && !controller.signal.aborted) {
+        const passed = await this.runTests(task, controller.signal);
+        if (!passed) {
+          // The patches are already applied. Diagnose the failure before changing anything else; a
+          // triage rework is deliberately not auto-applied on top of applied changes.
+          this.save(task, 'queued', 'triage_pending');
+          return this.status(task.id);
+        }
+      }
       if (!controller.signal.aborted) this.save(task, 'completed', 'completed');
     } catch (error) {
       if (error.remoteConfirmed) {
