@@ -58,14 +58,36 @@
     if (current.codex !== 'ready') ready = false;
     toast('正在连接 VPS 上的 Codex…');
     const ok = await rm.wake();
-    for (let i = 0; i < 20 && ok && !ready; i++) await new Promise((r) => setTimeout(r, 100));
-    if (!ready) toast('Codex 暂时连不上，请看状态栏的连接详情');
-    return ready;
+    // Handshake can take up to ~30s; keep polling until renderer ready matches main status.
+    for (let i = 0; i < 100 && ok && !ready; i++) await new Promise((r) => setTimeout(r, 100));
+    const st = await rm.status();
+    if (!(ready && st.codex === 'ready')) {
+      toast('Codex 暂时连不上，请看状态栏的连接详情');
+      return false;
+    }
+    return true;
+  }
+  async function waitLoaded(s) {
+    for (let i = 0; i < 200 && s.loading; i++) await new Promise((r) => setTimeout(r, 50));
+  }
+  async function resumeThread(threadId, params = {}) {
+    let last = { ok: false, error: '未知错误' };
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 300 * attempt));
+      if (!(await ensureReady())) return { ok: false, error: 'Codex 未连接' };
+      last = await cx.request('thread/resume', { threadId, ...params });
+      if (last.ok) return last;
+      if (!/active writer/i.test(last.error || '')) break;
+    }
+    return last;
   }
   async function subscribe(s) {
     if (!s.threadId || s.subscribed) return true;
-    const r = await cx.request('thread/resume', { threadId: s.threadId, excludeTurns: true });
-    if (!r.ok) { toast('恢复会话失败：' + r.error); return false; }
+    await waitLoaded(s);
+    if (s.subscribed) return true;
+    const r = await resumeThread(s.threadId, { excludeTurns: true });
+    if (!r.ok) { toast('恢复会话失败：' + r.error); s.resumeError = r.error; return false; }
+    s.resumeError = '';
     s.subscribed = true; byThread.set(s.threadId, s); return true;
   }
 
@@ -123,11 +145,14 @@
       return { kind: win ? (item.tool === 'ssh_exec' ? '在 Windows 上运行' : 'Windows · ' + item.tool) : `${item.server} · ${item.tool}`, icon: win ? 'term' : 'spark',
         arg: String(cmd).replace(/\s+/g, ' ').slice(0, 140), input: typeof cmd === 'string' ? cmd : JSON.stringify(a, null, 2) };
     }
-    if (item.type === 'dynamicToolCall' && item.tool.startsWith('desktop_')) {
+    if (item.type === 'dynamicToolCall' && typeof item.tool === 'string' && item.tool.startsWith('desktop_')) {
       return { kind: '本机桌面 · ' + item.tool, icon: 'spark', arg: '', input: '' };
     }
-    if (item.type === 'dynamicToolCall' && item.tool.startsWith('windows_file_')) {
+    if (item.type === 'dynamicToolCall' && typeof item.tool === 'string' && item.tool.startsWith('windows_file_')) {
       return { kind: '本机文件 · ' + item.tool.slice('windows_file_'.length), icon: 'file', arg: item.arguments?.path || '', input: '' };
+    }
+    if (item.type === 'sleep') {
+      return { kind: '等待', icon: 'spark', arg: item.durationMs != null ? (item.durationMs / 1000).toFixed(1) + 's' : '', input: '' };
     }
     if (item.type === 'fileChange') {
       const ch = item.changes || [];
@@ -393,7 +418,7 @@
       const r = await cx.request('thread/start', { cwd: cfg.workspace, approvalPolicy, sandbox, approvalsReviewer: 'user', model });
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
-    } else if (!(await subscribe(s))) return fail(s, '会话恢复失败');
+    } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const r = await cx.request('turn/start', {
       threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
       effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
@@ -481,18 +506,22 @@
   async function openHistory(s) {
     if (s.loaded || s.loading) return;
     s.loading = true; A.renderAll();
-    if (!(await ensureReady())) { s.loading = false; A.renderAll(); return; }
-    const r = await cx.request('thread/resume', { threadId: s.threadId });
-    s.loading = false;
-    if (!r.ok) { sysNote(s, '载入历史失败：' + r.error, true); A.renderAll(); return; }
-    s.items = [];
-    for (const turn of r.result.thread.turns || []) {
-      for (const item of turn.items || []) onItemCompleted(s, item, true);
-      if (turn.status === 'failed') sysNote(s, '这一轮失败了：' + (turn.error?.message || ''), true);
-      if (turn.status === 'interrupted') sysNote(s, '已停止。');
+    try {
+      if (!(await ensureReady())) return;
+      const r = await resumeThread(s.threadId);
+      if (!r.ok) { sysNote(s, '载入历史失败：' + r.error, true); return; }
+      s.items = [];
+      for (const turn of r.result.thread.turns || []) {
+        for (const item of turn.items || []) {
+          try { onItemCompleted(s, item, true); } catch (_) { /* skip malformed history items */ }
+        }
+        if (turn.status === 'failed') sysNote(s, '这一轮失败了：' + (turn.error?.message || ''), true);
+        if (turn.status === 'interrupted') sysNote(s, '已停止。');
+      }
+      s.loaded = true; s.subscribed = true; byThread.set(s.threadId, s);
+    } finally {
+      s.loading = false; A.renderAll();
     }
-    s.loaded = true; s.subscribed = true; byThread.set(s.threadId, s);
-    A.renderAll();
   }
   function onOpen(prevId, id) {
     const prev = sess(prevId);

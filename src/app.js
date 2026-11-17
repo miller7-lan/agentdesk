@@ -185,13 +185,44 @@
     return '';
   }
 
+  function toolRepeatKey(it) {
+    if (!it || it.t !== 'tool') return null;
+    return (it.kind || '') + '\n' + (it.arg || it.input || '');
+  }
+
+  function timelineHtml(s) {
+    if (!s.items.length) return '<div class="empty-note">新的会话。在下方描述你的任务吧。</div>';
+    if (!s.repeatExpand) s.repeatExpand = new Set();
+    const parts = [];
+    for (let i = 0; i < s.items.length;) {
+      const key = toolRepeatKey(s.items[i]);
+      if (!key) { parts.push(itemHtml(s.items[i], i)); i += 1; continue; }
+      let j = i + 1;
+      while (j < s.items.length && toolRepeatKey(s.items[j]) === key) j += 1;
+      const count = j - i;
+      const shown = Math.min(3, count);
+      for (let k = 0; k < shown; k++) parts.push(itemHtml(s.items[i + k], i + k));
+      if (count > 3) {
+        const id = i + '-' + j;
+        const open = s.repeatExpand.has(id);
+        if (open) for (let k = 3; k < count; k++) parts.push(itemHtml(s.items[i + k], i + k));
+        const n = count - 3;
+        parts.push(`<button type="button" class="repeat-toggle ${open ? 'open' : ''}" data-repeat="${id}">${
+          open ? `收起后面 ${n} 条重复指令` : `已隐藏 ${n} 条相同指令 · 点击展开`
+        }</button>`);
+      }
+      i = j;
+    }
+    return parts.join('');
+  }
+
   function renderTimeline() {
     const tl = $('#timeline');
     const s = sess(state.active);
     if (!s) { tl.innerHTML = '<div class="tl-inner"><div class="empty-note">没有打开的会话。从左侧选择或新建一个。</div></div>'; return; }
     const atBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80 || tl.dataset.sid !== s.id;
     tl.dataset.sid = s.id;
-    tl.innerHTML = `<div class="tl-inner">${s.loading ? '<div class="empty-note">正在载入历史记录…</div>' : ''}${s.items.length ? s.items.map(itemHtml).join('') : '<div class="empty-note">新的会话。在下方描述你的任务吧。</div>'}</div>`;
+    tl.innerHTML = `<div class="tl-inner">${s.loading ? '<div class="empty-note">正在载入历史记录…</div>' : ''}${timelineHtml(s)}</div>`;
     if (atBottom) tl.scrollTop = tl.scrollHeight;
   }
 
@@ -199,6 +230,14 @@
     const s = sess(state.active);
     const go = e.target.closest('[data-goto]');
     if (go) { showPanel(go.dataset.goto); return; }
+    const rep = e.target.closest('[data-repeat]');
+    if (rep && s) {
+      if (!s.repeatExpand) s.repeatExpand = new Set();
+      const id = rep.dataset.repeat;
+      if (s.repeatExpand.has(id)) s.repeatExpand.delete(id); else s.repeatExpand.add(id);
+      renderTimeline();
+      return;
+    }
     const head = e.target.closest('.tool-head');
     if (head) { const card = head.parentElement; const it = s.items[+card.dataset.idx]; it.open = !it.open; card.classList.toggle('open', it.open); return; }
     const btn = e.target.closest('.approval [data-act]');
@@ -244,7 +283,9 @@
   }
 
   function send(ev) {
-    if (sess(state.active)?.live) return L()?.send(sess(state.active), !!(ev && ev.type === 'click'));
+    // Enter 与发送按钮走同一路径：运行中空输入 = 停止；有输入 = 插话/发送
+    const fromButton = !ev || ev.type === 'click' || ev.type === 'keydown';
+    if (sess(state.active)?.live) return L()?.send(sess(state.active), fromButton);
     if (state.busy) { // 停止
       clearTimeout(state.timer);
       const s = sess(state.active);
@@ -293,7 +334,9 @@
   function autosize() { ta.style.height = 'auto'; ta.style.height = Math.min(200, ta.scrollHeight) + 'px'; }
   ta.addEventListener('input', autosize);
   ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    send(e); // 与发送键相同：发送 / 插话 / 停止
   });
 
   $('#modeSelect').addEventListener('change', (e) => { $('#sbMode').textContent = e.target.selectedOptions[0].text; toast('权限模式：' + e.target.selectedOptions[0].text); });

@@ -232,9 +232,10 @@ ipcMain.handle('files:uploadData', async (_e, name, b64) => {
 ipcMain.handle('remote:config', () => ({ workspace: remote.cfg.workspace, host: remote.cfg.host }));
 ipcMain.handle('codex:request', async (_e, method, params) => {
   try {
-    if (method === 'thread/start') {
+    if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
       params = { ...params, dynamicTools: [...desktopSpecs, ...windowsFiles.specs] };
+      if (method === 'thread/resume' && desktop.enabled && params?.threadId) desktopThreads.add(params.threadId);
     }
     if (method === 'turn/start') {
       if (desktop.enabled) {
