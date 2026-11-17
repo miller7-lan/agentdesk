@@ -16,8 +16,18 @@ contextBridge.exposeInMainWorld('desk', {
     os: flag('os', process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux'),
     build: Number(flag('build', '0')) || 0,
     material: flag('material', 'drawn'),
+    version: flag('version', ''),
+  },
+  launch: {
+    id: flag('launch', ''),
+    boot: flag('boot', 'on'),
   },
   platformInfo: () => ipcRenderer.invoke('platform:info'),
+  appearance: {
+    pickWallpaper: () => ipcRenderer.invoke('appearance:pickWallpaper'),
+    wallpaper: () => ipcRenderer.invoke('appearance:wallpaper'),
+    apply: (settings) => ipcRenderer.invoke('appearance:set', settings),
+  },
   enrollment: {
     required: () => ipcRenderer.invoke('enrollment:required'),
     login: (password) => ipcRenderer.invoke('enrollment:login', password),

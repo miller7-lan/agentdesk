@@ -425,6 +425,18 @@ body.dragging iframe, body.dragging .timeline { pointer-events: none; }
 .orchestrator-dialog button:not(:disabled):hover { border-color: var(--accent); cursor: pointer; }
 .orchestrator-dialog button:disabled { opacity: .55; }
 .orchestrator-dialog button[aria-pressed="true"] { opacity: 1; background: var(--accent-soft); border-color: var(--accent); }
+
+/* 外观设置 */
+.appearance-dialog { width: min(460px, calc(100vw - 40px)); }
+.appearance-fields { display: grid; gap: 10px; }
+.appearance-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 10px; }
+.appearance-row > span { color: var(--muted); font-size: 12px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.appearance-row output { color: var(--faint); font-variant-numeric: tabular-nums; }
+.appearance-row input[type="range"] { width: 100%; accent-color: var(--accent); padding: 0; border: 0; background: transparent; }
+.appearance-row select { width: 100%; }
+.appearance-wallpaper { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.appearance-wallpaper #lookWallName { color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.appearance-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .orchestrator-routes, .orchestrator-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .orchestrator-routes { margin-bottom: 16px; }
 .orchestrator-routes button { display: grid; gap: 4px; text-align: left; padding: 10px 12px; }
