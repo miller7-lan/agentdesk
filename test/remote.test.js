@@ -240,3 +240,34 @@ test('a broken remote.json is reported and never overwritten; a missing one gets
   await fsp.writeFile(broken, '{"host":"vps.example.invalid"}');
   assert.equal(loadConfig(broken).host, 'vps.example.invalid');
 });
+
+test('server settings bundled in the installer override a stale remote.json; keys stay local', async (t) => {
+  const os = require('node:os');
+  const fsp = require('node:fs/promises');
+  const path = require('node:path');
+  const { loadConfig, bundledServer } = require('../remote');
+  const { configuredHost } = require('../onboarding');
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'agentdesk-bundle-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const local = path.join(dir, 'remote.json');
+  await fsp.writeFile(local, JSON.stringify({ host: '198.51.100.1', tunnelKey: 'C:/keys/tunnel', idleMinutes: 5 }));
+  const bundle = path.join(dir, 'agentdesk-server.json');
+  const key = 'AAAAC3NzaC1lZDI1NTE5AAAAI' + 'A'.repeat(43);
+  await fsp.writeFile(bundle, JSON.stringify({ host: '203.0.113.10', port: 2222, knownHosts: '[203.0.113.10]:2222 ssh-ed25519 ' + key }));
+
+  assert.equal(bundledServer(path.join(dir, 'missing.json')), null);
+  const config = loadConfig(local, bundledServer(bundle));
+  assert.equal(config.host, '203.0.113.10');           // the new server wins over the old install's host
+  assert.equal(config.port, 2222);
+  assert.equal(config.tunnelKey, 'C:/keys/tunnel');    // keys and personal settings stay as the person set them
+  assert.equal(config.idleMinutes, 5);
+  const trusted = await configuredHost(null, config);
+  assert.equal(trusted.host, '203.0.113.10');
+  assert.equal(trusted.fingerprints.length, 1);        // the bundled host key is offered for confirmation
+
+  assert.equal(loadConfig(local, null).host, '198.51.100.1');
+  await fsp.writeFile(bundle, JSON.stringify({ host: 'bad host; rm -rf /' }));
+  const rejected = loadConfig(local, bundledServer(bundle));
+  assert.match(rejected.configError, /格式不对/);
+  assert.equal(rejected.host, '198.51.100.1');
+});

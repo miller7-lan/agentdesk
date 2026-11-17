@@ -36,7 +36,7 @@ function hostFingerprints(contents, host, port) {
 async function configuredHost(enrollment, config) {
   const host = enrollment?.host || config.host || '';
   if (!host) return { host, fingerprints: [], records: new Map() };
-  let contents = enrollment?.knownHosts;
+  let contents = enrollment?.knownHosts || (!enrollment && config.bundledKnownHosts) || '';
   if (!contents && config.knownHosts) {
     try { contents = await readFile(config.knownHosts, 'utf8'); } catch {}
   }

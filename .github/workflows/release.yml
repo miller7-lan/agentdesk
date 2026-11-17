@@ -25,6 +25,26 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # Bake the server address into the installer. The values live in repository secrets, not in Git:
+      #   AGENTDESK_SERVER_JSON      host, port and SSH host key (key-based login, see docs/INSTALL.md)
+      #   AGENTDESK_ENROLLMENT_JSON  optional; switches the build to password login (orchestrator/ENROLLMENT.md)
+      - name: Bundle server settings
+        shell: bash
+        env:
+          SERVER_JSON: ${{ secrets.AGENTDESK_SERVER_JSON }}
+          ENROLLMENT_JSON: ${{ secrets.AGENTDESK_ENROLLMENT_JSON }}
+        run: |
+          for pair in "agentdesk-server.json:SERVER_JSON" "agentdesk-enrollment.json:ENROLLMENT_JSON"; do
+            file="${pair%%:*}"; name="${pair##*:}"; value="${!name}"
+            [ -z "$value" ] && continue
+            printf '%s' "$value" > "$file"
+            # Never echo the content: a parse error would print it into the public log.
+            node -e "try { const v = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')); if (typeof v.host !== 'string' || !v.host) throw 0 } catch { console.error('::error::' + process.argv[1] + ' is not valid JSON with a host'); process.exit(1) }" "$file"
+            echo "bundled $file"
+          done
+          if [ ! -f agentdesk-server.json ] && [ ! -f agentdesk-enrollment.json ]; then
+            echo "::warning::No server settings bundled; the app will read ~/.agentdesk/remote.json on each computer."
+          fi
       - if: matrix.platform == 'mac'
         run: npm run dist:mac:release -- --publish never
         env:

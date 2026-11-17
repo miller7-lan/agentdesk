@@ -29,9 +29,41 @@ const sshPath = (value) => JSON.stringify(process.platform === 'win32' && typeof
 
 const VERSION = require('./package.json').version;
 
+// Server settings baked into the installer by the release workflow (agentdesk-server.json next to the app's
+// resources). They take precedence over ~/.agentdesk/remote.json, so a new build reaches the server it was built
+// for even when an older install left a different host behind. Keys are never bundled; they stay on the machine.
+const BUNDLED_SERVER = process.resourcesPath ? path.join(process.resourcesPath, 'agentdesk-server.json') : null;
+
+function bundledServer(file = BUNDLED_SERVER) {
+  if (!file) return null;
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) {
+    return error.code === 'ENOENT' ? null : { configError: '安装包内的服务器配置无法读取：' + error.message };
+  }
+  const user = (name) => value[name] === undefined || /^[a-z_][a-z0-9_-]{0,31}$/.test(value[name]);
+  if (!value || typeof value !== 'object' || typeof value.host !== 'string' || !/^[A-Za-z0-9.:-]{1,253}$/.test(value.host) ||
+      (value.port !== undefined && !(Number.isInteger(value.port) && value.port > 0 && value.port < 65536)) ||
+      !user('tunnelUser') || !user('codexUser') ||
+      (value.knownHosts !== undefined && (typeof value.knownHosts !== 'string' || value.knownHosts.length > 16384)) ||
+      (value.workspace !== undefined && typeof value.workspace !== 'string')) {
+    return { configError: '安装包内的服务器配置格式不对' };
+  }
+  const result = { host: value.host, bundledHost: true };
+  for (const name of ['port', 'tunnelUser', 'codexUser', 'workspace']) if (value[name] !== undefined) result[name] = value[name];
+  if (value.knownHosts) result.bundledKnownHosts = value.knownHosts;
+  return result;
+}
+
 // A missing file gets a template. A file that exists but cannot be parsed is left untouched:
 // overwriting it would silently throw away the user's host and key settings.
-function loadConfig(f = path.join(DIR, mac ? 'mac-remote.json' : 'remote.json')) {
+function loadConfig(f = path.join(DIR, mac ? 'mac-remote.json' : 'remote.json'), bundled = bundledServer()) {
+  const local = readLocalConfig(f);
+  if (!bundled) return local;
+  if (bundled.configError) return { ...local, configError: bundled.configError };
+  return { ...local, ...bundled };
+}
+
+function readLocalConfig(f) {
   let text;
   try { text = fs.readFileSync(f, 'utf8'); } catch (error) {
     if (error.code === 'ENOENT') {
@@ -502,3 +534,4 @@ class Remote extends EventEmitter {
 module.exports = new Remote();
 module.exports.Remote = Remote;
 module.exports.loadConfig = loadConfig;
+module.exports.bundledServer = bundledServer;

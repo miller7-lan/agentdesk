@@ -68,7 +68,8 @@
       {
         "from": ".",
         "filter": [
-          "agentdesk-enrollment.json"
+          "agentdesk-enrollment.json",
+          "agentdesk-server.json"
         ]
       }
     ],
