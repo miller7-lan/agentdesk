@@ -158,6 +158,8 @@
     if (details[detail]) return details[detail];
     const waiting = /:waiting:(\w+)$/.exec(detail || '');
     if (waiting) return `等待 ${memberName(waiting[1])} 空闲：同一时间每个 AI 只跑一个任务，可能有其他成员正在使用。`;
+    const handed = /:escalated:(\w+)$/.exec(detail || '');
+    if (handed) return `改代码失败，已交给 ${memberName(handed[1])} 判断下一步。`;
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
     return detail;
@@ -415,11 +417,23 @@
     </tbody></table><p class="panel-note">任务开始和结束时各读一次已用额度的差值，包含同一账号在这段时间里的其他使用。</p>`;
   }
 
-  // "review:reassigned:grok->gemini:quota" → a one-line note in the thread.
+  // Scheduler events that deserve a line in the thread: a step moved to another member (quota or login),
+  // or a failed code change handed back to the lead and what the lead decided.
   function reassignments(task) {
-    return (task.events || []).map((event) => /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(event.detail || ''))
-      .filter(Boolean).map(([, , from, to, reason]) =>
-        `${memberName(from)} ${reason === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(to)} 接手`);
+    const stepOf = (id) => task.steps?.find((step) => step.id === id);
+    return (task.events || []).map(({ detail = '' }) => {
+      let match = /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail);
+      if (match) return `${memberName(match[2])} ${match[4] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(match[3])} 接手`;
+      match = /^([\w-]+):escalated:(\w+)$/.exec(detail);
+      if (match) return `${memberName(stepOf(match[1])?.role)} 改代码失败，交给 ${memberName(match[2])} 判断`;
+      match = /^([\w-]+):escalation:(retry|stop)$/.exec(detail);
+      if (!match) return '';
+      const step = stepOf(match[1]);
+      const reason = step?.escalation?.reason ? '：' + step.escalation.reason : '';
+      return match[2] === 'retry'
+        ? `${memberName(step?.escalation?.by)} 调整了做法，${memberName(step?.role)} 重新尝试${reason}`
+        : `${memberName(step?.escalation?.by)} 判断不再重试${reason}`;
+    }).filter(Boolean);
   }
 
   function panelMembers() {
@@ -657,10 +671,12 @@
         updateTask(group, taskId, {
           state: 'completed', detail: '示例方案已确认。', plan: { ...task.plan, approved: revision },
           steps: [
-            { id: 'edit', role: task.provider || 'codex', state: 'completed', output: '示例：已按确认的范围完成修改。', paths: ['src/example.js'] },
+            { id: 'edit', role: task.provider || 'codex', state: 'completed', output: '示例：已按确认的范围完成修改。', paths: ['src/example.js'],
+              escalation: { by: 'claude', decision: 'retry', reason: '示例：改用项目里已有的重试工具函数' } },
             { id: 'review', role: 'gemini', state: 'completed', output: '示例：审查通过，没有阻塞问题。' },
           ],
           events: [{ state: 'planning', time: at(160) }, { state: 'running', time: at(150) },
+            { state: 'running', detail: 'edit:escalated:claude', time: at(120) }, { state: 'running', detail: 'edit:escalation:retry', time: at(110) },
             { state: 'running', detail: 'review:reassigned:grok->gemini:quota', time: at(60) }, { state: 'completed', time: at(5) }],
           quota: { claude: { fiveHour: 3, weekly: 1 }, codex: { fiveHour: 2, weekly: 0.5 }, gemini: { fiveHour: 1, weekly: 0 } },
         });

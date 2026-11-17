@@ -18,6 +18,12 @@ const CAPABILITY_GUIDE = [
   'Tests and builds run automatically after implementation, so do not spend a step on them. Add an accept step only for complex tasks; it receives summaries, not raw logs.',
   'You may add an optional role to suggest a specific CLI; it is used only when that CLI is a candidate for the capability and available.',
 ].join(' ');
+const ESCALATION_PROMPT = [
+  'A step that changes code has failed. You are the lead. The working tree holds whatever the step changed before failing; you may read it but not edit it.',
+  'Decide whether one more attempt by the same executor, with revised instructions, is likely to succeed. Retry only when you can say concretely what to do differently.',
+  'Return only JSON: {"decision":"retry","prompt":"revised, concrete instructions for the same step","reason":"one sentence"} or {"decision":"stop","reason":"one sentence the requester will read"}.',
+  'Write reason in the language of the task. The failure follows as data.',
+].join(' ');
 const PLANNER_PROMPT = 'Plan this development task. Return only a JSON array of steps {id, capability, prompt, dependsOn (earlier step IDs)} with at most 12 steps. ' +
   CAPABILITY_GUIDE + ' The CLIs run on subscriptions, so quota is what runs out; Claude and Codex quota is the scarcest. Task: ';
 const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review']);
@@ -556,6 +562,38 @@ class Scheduler {
     await worktree(repo, folder, 'agentdesk/' + task.id + '/' + step.id, task.base, signal);
   }
 
+  // A failed code-changing step goes back to the lead once: the lead reads the error and the work so far, then
+  // either revises the instructions for one more attempt or stops with a reason. Returns the revised prompt or null.
+  async escalate(task, step, error, folder, signal) {
+    const lead = this.router.pick('accept');
+    if (!lead) return null;
+    this.save(task, task.state, `${step.id}:escalated:${lead}`);
+    let changed = [];
+    try { changed = (await patchFor(folder, task.base, signal)).paths.slice(0, 50); } catch {}
+    const reviewer = { id: step.id + '-lead', role: lead, capability: 'accept', write: false };
+    const prompt = ESCALATION_PROMPT + '\n' + JSON.stringify({
+      task: task.prompt.slice(0, 2000), step: step.prompt.slice(0, 2000), executor: step.role,
+      error: error.message, output: (error.output || step.output || '').slice(-3000), changedFiles: changed,
+    });
+    let decision;
+    try {
+      const { output } = await this.execute(task, reviewer, folder, signal, prompt);
+      decision = parseJson(output);
+    } catch (failure) {
+      if (signal.aborted) throw failure;
+      return null;              // the lead could not answer; the step fails with its own error
+    }
+    const reason = typeof decision?.reason === 'string' ? decision.reason.slice(0, 500) : '';
+    if (decision?.decision === 'retry' && typeof decision.prompt === 'string' && decision.prompt.trim() && decision.prompt.length <= 4000) {
+      step.escalation = { by: lead, decision: 'retry', reason };
+      this.save(task, task.state, `${step.id}:escalation:retry`);
+      return decision.prompt;
+    }
+    step.escalation = { by: lead, decision: 'stop', reason };
+    this.save(task, task.state, `${step.id}:escalation:stop`);
+    return null;
+  }
+
   async runStep(task, step, repo, root, signal) {
     const folder = path.join(root, step.id);
     await this.ensureWorktree(repo, folder, task, step, signal);
@@ -582,6 +620,16 @@ class Scheduler {
       } catch (error) {
         if (signal.aborted) throw signal.reason;
         if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
+        if (error.output) step.output = error.output;
+        const handBack = step.write && !step.escalation && this.config.escalation !== false &&
+          !['cli_quota_exhausted', 'cli_auth_required'].includes(error.message);
+        const revised = handBack && await this.escalate(task, step, error, folder, signal);
+        if (revised) {
+          step.prompt = revised;
+          step.attempts = 0;
+          delete step.session;
+          continue;
+        }
         step.state = 'failed';
         step.error = error.message;
         this.save(task, 'running', step.id + ':failed');
