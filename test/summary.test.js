@@ -129,7 +129,8 @@ test('a step marked usesBrief receives a summary, not upstream raw output', asyn
     return { output: '{"verdict":"accept"}' };
   };
   const scheduler = new Scheduler({
-    config: { stateDir: dir, quota: false, adapters: adapters('codex', 'claude'), workspaces: { mac: { repository: mirror } } },
+    config: { stateDir: dir, quota: false, acceptance: { mode: 'off' },
+      adapters: adapters('codex', 'claude'), workspaces: { mac: { repository: mirror } } },
     store, files: { endpoint: {} }, adapter,
   });
   const original = task();

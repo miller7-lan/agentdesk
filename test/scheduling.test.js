@@ -56,7 +56,7 @@ test('a blocked implementer keeps the task queued and resumes without planning a
     return { output: name === 'claude' ? PLAN : 'done' };
   };
   const config = {
-    stateDir: dir, quota: false, maxConcurrentTasks: 1,
+    stateDir: dir, quota: false, maxConcurrentTasks: 1, acceptance: { mode: 'off' },
     adapters: adapters('codex', 'claude', 'grok'),
     workspaces: { mac: { repository: mirror } },
   };
@@ -118,7 +118,7 @@ function reviewFixture(t, adapter) {
     t.after(() => store.close());
     const scheduler = new Scheduler({
       config: {
-        stateDir: dir, quota: false, maxConcurrentTasks: 1,
+        stateDir: dir, quota: false, maxConcurrentTasks: 1, acceptance: { mode: 'off' },
         adapters: adapters('codex', 'claude', 'grok'),
         workspaces: { mac: { repository: mirror } },
       },

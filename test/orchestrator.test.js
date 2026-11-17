@@ -136,7 +136,8 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
     buckets: [{ id: 'shared', fiveHour: { usedPercent: 4 }, weekly: { usedPercent: 33, resetsAt: 1 } }],
   }));
   const service = start({
-    stateDir, adapters: bins, sshBridges: ['mac'], quotaBridges: ['mac'], workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
+    stateDir, adapters: bins, sshBridges: ['mac'], quotaBridges: ['mac'], acceptance: { mode: 'off' },
+    workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
   });
   t.after(service.close);
   const socket = path.join(stateDir, 'admin.sock');

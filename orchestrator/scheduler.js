@@ -8,7 +8,7 @@ const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent }
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
-const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief } = require('./summary');
+const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, clip } = require('./summary');
 const {
   REVIEW_INSTRUCTION, ACCEPTANCE_INSTRUCTION, parseReviewVerdict, reviewConflicts, mergeFindings,
 } = require('./review');
@@ -25,6 +25,15 @@ const CAPABILITY_GUIDE = [
 const PLANNER_PROMPT = 'Plan this development task. Return only a JSON array of steps {id, capability, prompt, dependsOn (earlier step IDs)} with at most 12 steps. ' +
   CAPABILITY_GUIDE + ' The CLIs run on subscriptions, so quota is what runs out; Claude and Codex quota is the scarcest. Task: ';
 const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review']);
+
+function validateAcceptance(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_acceptance');
+  const mode = value.mode ?? 'auto';
+  const maxRework = value.maxRework ?? 2;
+  if (!['auto', 'always', 'off'].includes(mode) || (value.enabled !== undefined && typeof value.enabled !== 'boolean') ||
+      !Number.isSafeInteger(maxRework) || maxRework < 0 || maxRework > 5) throw new Error('invalid_acceptance');
+  return { enabled: value.enabled !== false && mode !== 'off', mode, maxRework };
+}
 
 // Fingerprints the uncommitted state of a worktree: which files are dirty (including untracked ones)
 // and the exact tracked diff. A read-only step must leave this unchanged.
@@ -88,6 +97,7 @@ class Scheduler {
     this.files = files;
     this.adapter = adapter;
     this.router = new Router(config);
+    this.acceptance = validateAcceptance(config.acceptance);
     this.running = new Map();
     // Several people share one VPS: tasks run in parallel up to maxConcurrentTasks, but each CLI runs one
     // process at a time across all tasks, because every task uses the same subscription login for that CLI.
@@ -98,7 +108,7 @@ class Scheduler {
     for (const task of this.tasks.values()) {
       if (task.state === 'applying' || task.state === 'testing') {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
-      } else if (task.state === 'planning' || task.state === 'running') {
+      } else if (['planning', 'running', 'awaiting_acceptance', 'triaging'].includes(task.state)) {
         for (const step of task.steps) {
           if (step.state === 'running') step.state = 'queued';
         }
@@ -527,18 +537,25 @@ class Scheduler {
       delete task.planRaw;
     }
     this.save(task, 'running', 'plan_ready');
-    while (task.steps.some((step) => step.state === 'queued')) {
+    for (;;) {
+      while (task.steps.some((step) => !this.isAcceptStep(step) && step.state === 'queued')) {
+        signal.throwIfAborted();
+        const ready = task.steps.filter((step) => step.state === 'queued' && !this.isAcceptStep(step) &&
+          step.dependsOn.every((id) => task.steps.find((dep) => dep.id === id).state === 'completed'));
+        const wave = ready.filter((step, i) => ready.findIndex((other) => other.role === step.role) === i);
+        if (!wave.length) throw new Error('dependency_failed');
+        const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
+        const failed = results.find((result) => result.status === 'rejected');
+        if (failed) throw failed.reason;
+      }
       signal.throwIfAborted();
-      const ready = task.steps.filter((step) => step.state === 'queued' &&
-        step.dependsOn.every((id) => task.steps.find((dep) => dep.id === id).state === 'completed'));
-      const wave = ready.filter((step, i) => ready.findIndex((other) => other.role === step.role) === i);
-      if (!wave.length) throw new Error('dependency_failed');
-      const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
-      const failed = results.find((result) => result.status === 'rejected');
-      if (failed) throw failed.reason;
+      const outcome = await this.finalize(task, repo, root, signal);
+      if (outcome === 'rework') continue;
+      if (outcome !== 'accept') return;
+      break;
     }
     signal.throwIfAborted();
-    const writers = task.steps.filter((step) => step.write && step.paths?.length);
+    const writers = task.steps.filter((step) => step.write && step.paths?.length && !step.supersededBy);
     const seen = new Set();
     for (const step of writers) {
       for (const file of step.paths) {
@@ -642,6 +659,133 @@ class Scheduler {
     this.save(task, 'awaiting_approval', 'plan_proposed');
   }
 
+  isAcceptStep(step) {
+    return /^accept-\d+$/.test(step.id);
+  }
+
+  acceptanceRequired(task) {
+    if (!this.acceptance.enabled) return false;
+    return this.acceptance.mode === 'always' || task.steps.some((step) => step.write) || task.steps.length >= 2;
+  }
+
+  // Runs after the execution steps and before overlaps are checked. A rework adds steps and sends the
+  // task back through the execution loop; acceptance therefore sees the final tree, not the first draft.
+  async finalize(task, repo, root, signal) {
+    if (task.acceptance?.verdict === 'rework' && !task.acceptance.reworkDone) {
+      return this.appendRework(task, task.acceptance);
+    }
+    const acceptSteps = task.steps.filter((step) => this.isAcceptStep(step));
+    const pending = acceptSteps.find((step) => ['queued', 'running'].includes(step.state));
+    if (pending) {
+      pending.state = 'queued';
+      return this.runAcceptance(task, pending, repo, root, signal);
+    }
+    const latest = acceptSteps.at(-1);
+    if (latest?.state === 'completed' && latest.verdict && task.acceptance?.stepId !== latest.id) {
+      return this.handleAcceptance(task, latest);
+    }
+    if (task.acceptance) {
+      if (['accept', 'pass'].includes(task.acceptance.verdict)) return 'accept';
+      if (['reject', 'blocked'].includes(task.acceptance.verdict)) return 'reject';
+      if (task.acceptance.verdict === 'unknown') return 'unknown';
+      if (task.acceptance.verdict === 'limit') return 'limit';
+      // A rework that already ran falls through to a fresh acceptance round.
+    }
+    if (!this.acceptanceRequired(task)) {
+      this.save(task, task.state, 'acceptance_skipped');
+      return 'accept';
+    }
+    const lead = this.pickForTask(task, 'accept');
+    if (!lead) {
+      const configured = (this.router.routes.accept || []).filter((role) => this.router.configured(role));
+      throw new Error(configured.length ? 'executor_waiting:accept' : 'no_executor:accept');
+    }
+    const round = acceptSteps.length + 1;
+    const step = {
+      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true,
+      state: 'queued', attempts: 0,
+      dependsOn: task.steps.filter((item) => !this.isAcceptStep(item) && item.state === 'completed').map((item) => item.id),
+      prompt: 'You are the lead accepting this task. Decide whether the work satisfies the request and the plan.',
+      brief: buildAcceptanceBrief(task),
+    };
+    task.steps.push(step);
+    task.stage = 'awaiting_acceptance';
+    return this.runAcceptance(task, step, repo, root, signal);
+  }
+
+  async runAcceptance(task, step, repo, root, signal) {
+    task.stage = 'awaiting_acceptance';
+    this.save(task, 'awaiting_acceptance', 'acceptance_started');
+    delete step.verdict;
+    await this.runStep(task, step, repo, root, signal);
+    signal.throwIfAborted();
+    return this.handleAcceptance(task, step);
+  }
+
+  handleAcceptance(task, step) {
+    const verdict = step.verdict || parseReviewVerdict(step.output);
+    step.verdict ||= verdict;
+    const findings = (verdict.findings || []).slice(0, 20).map((finding) => ({
+      severity: finding.severity,
+      ...(finding.file && { file: clip(finding.file, 200) }),
+      ...(finding.line && { line: finding.line }),
+      issue: clip(finding.issue, 400),
+      ...(finding.suggestion && { suggestion: clip(finding.suggestion, 400) }),
+    }));
+    const round = task.steps.filter((item) => this.isAcceptStep(item)).indexOf(step) + 1;
+    task.acceptance = {
+      verdict: verdict.verdict, round, stepId: step.id, summary: clip(verdict.summary, 600), findings,
+      at: new Date().toISOString(), reworkDone: false,
+    };
+    this.save(task, task.state, 'acceptance_verdict:' + verdict.verdict);
+    if (['accept', 'pass'].includes(verdict.verdict)) {
+      task.stage = 'accepted';
+      return 'accept';
+    }
+    if (verdict.verdict === 'rework') {
+      if ((task.reworkRounds || 0) >= this.acceptance.maxRework) {
+        task.acceptance.verdict = 'limit';
+        this.save(task, 'needs_review', 'acceptance_limit');
+        return 'limit';
+      }
+      task.stage = 'reworking';
+      return this.appendRework(task, task.acceptance);
+    }
+    if (['reject', 'blocked'].includes(verdict.verdict)) {
+      this.save(task, 'failed', 'rejected_by_lead');
+      return 'reject';
+    }
+    this.save(task, 'needs_review', 'acceptance_unparseable');
+    return 'unknown';
+  }
+
+  // One implementation step per rework round. When there is a writer to build on, the rework runs in
+  // that writer's worktree and its cumulative patch supersedes the writer's earlier patch.
+  appendRework(task, acceptance) {
+    const role = this.pickForTask(task, 'implement');
+    if (!role) {
+      const configured = (this.router.routes.implement || []).filter((candidate) => this.router.configured(candidate));
+      throw new Error(configured.length ? 'executor_waiting:implement' : 'no_executor:implement');
+    }
+    const parent = [...task.steps].reverse()
+      .find((step) => step.write && step.paths?.length && !step.supersededBy);
+    const findings = (acceptance.findings || []).map((finding) =>
+      [finding.severity, finding.file, finding.line, finding.issue, finding.suggestion].filter(Boolean).join(': ')).join('\n');
+    const step = {
+      id: 'rework-' + ((task.reworkRounds || 0) + 1), role, capability: 'implement', write: true,
+      state: 'queued', attempts: 0, dependsOn: [],
+      prompt: 'Address the acceptance findings and finish the task.' +
+        (acceptance.summary ? '\nAcceptance summary: ' + acceptance.summary : '') +
+        (findings ? '\nFindings:\n' + findings : ''),
+      ...(parent && { reworkOf: parent.id }),
+    };
+    task.steps.push(step);
+    task.reworkRounds = (task.reworkRounds || 0) + 1;
+    acceptance.reworkDone = true;
+    this.save(task, 'queued', 'acceptance_rework');
+    return 'rework';
+  }
+
   async ensureWorktree(repo, folder, task, step, signal) {
     if (await readFile(path.join(folder, '.git'), 'utf8').then(() => true, () => false)) return;
     await worktree(repo, folder, 'agentdesk/' + task.id + '/' + step.id, task.base, signal);
@@ -668,22 +812,29 @@ class Scheduler {
       const writers = task.steps.filter((dep) => dep.write && step.dependsOn.includes(dep.id));
       if (writers.length > 1) throw new Error('ambiguous_review_target');
       [sharedWriter] = writers;
+    } else if (step.reworkOf) {
+      sharedWriter = task.steps.find((dep) => dep.id === step.reworkOf);
+      if (!sharedWriter?.write) throw new Error('invalid_rework_target');
     }
+    const readonlyStep = step.capability === 'review' && Boolean(sharedWriter);
     const folder = path.join(root, sharedWriter?.id || step.id);
     await this.ensureWorktree(repo, folder, task, sharedWriter || step, signal);
     const dependencies = task.steps.filter((dep) => step.dependsOn.includes(dep.id))
       .map((dep) => ({ id: dep.id, output: dep.output?.slice(0, 4000), paths: dep.paths?.slice(0, 50),
         patch: dep.paths?.length ? path.join(root, dep.id + '.patch') : undefined,
       }));
-    const before = sharedWriter ? await worktreeState(folder, signal) : undefined;
+    const before = readonlyStep ? await worktreeState(folder, signal) : undefined;
+    const savedState = () => ['awaiting_acceptance', 'triaging'].includes(task.state) ? task.state : 'running';
     for (;;) {
       step.state = 'running';
       step.attempts += 1;
-      this.save(task, 'running', step.id + ':started');
+      this.save(task, savedState(), step.id + ':started');
       try {
         let prompt = dependencies.length ? step.prompt + '\nUpstream results: ' + JSON.stringify(dependencies) : step.prompt;
-        if (sharedWriter) {
+        if (readonlyStep) {
           prompt += `\nReview the uncommitted changes in this working tree (writer step: ${sharedWriter.id}). Do not change files.`;
+        } else if (sharedWriter) {
+          prompt += `\nContinue in the existing working tree of ${sharedWriter.id}; your change builds on it.`;
         }
         if (step.usesBrief) {
           const stage = step.capability === 'accept' ? 'acceptance'
@@ -703,7 +854,7 @@ class Scheduler {
         step.output = output;
         const verdict = ['review', 'accept'].includes(step.capability) ? parseReviewVerdict(output) : null;
         if (verdict) step.verdict = verdict;
-        if (sharedWriter) {
+        if (readonlyStep) {
           if (await worktreeState(folder, signal) !== before) throw new Error('readonly_step_changed_files');
           // The writer's patch belongs to the writer step; a review must not claim it.
           step.paths = [];
@@ -713,13 +864,15 @@ class Scheduler {
           if (!step.write && paths.length) throw new Error('readonly_step_changed_files');
           if (paths.length) await writeFile(path.join(root, step.id + '.patch'), patch, { mode: 0o600 });
           step.paths = paths;
+          // A rework patch is cumulative over its parent, so only the newest patch is applied.
+          if (sharedWriter) sharedWriter.supersededBy = step.id;
         }
         step.state = 'completed';
-        this.save(task, 'running', step.id + ':completed');
+        this.save(task, savedState(), step.id + ':completed');
         if (verdict) {
           task.reviews ||= {};
           task.reviews[step.id] = { ...verdict, role: step.role, capability: step.capability };
-          this.save(task, 'running', 'review_verdict:' + step.id + ':' + verdict.verdict);
+          this.save(task, savedState(), 'review_verdict:' + step.id + ':' + verdict.verdict);
           this.trackReviewConflict(task);
         }
         return;
@@ -732,7 +885,7 @@ class Scheduler {
         if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
         step.state = 'failed';
         step.error = error.message;
-        this.save(task, 'running', step.id + ':failed');
+        this.save(task, savedState(), step.id + ':failed');
         throw error;
       }
     }
@@ -751,15 +904,21 @@ class Scheduler {
     if (task.testResult.code !== 0) throw new Error('windows_test_failed');
   }
 
-  async apply(task) {
+  async apply(task, force = false) {
     if (!task || task.state !== 'needs_review' || task.pendingRequest || this.running.has(task.id) ||
       task.detail !== 'patches_ready') {
       throw new Error('patch_not_applicable');
     }
+    // A patch is only applicable once the lead accepted it. Turning acceptance off in configuration
+    // removes the gate, and an administrator can force a recovery apply explicitly.
+    if (!force && this.acceptanceRequired(task) && !['accept', 'pass'].includes(task.acceptance?.verdict) &&
+        task.detail !== 'accepted') {
+      throw new Error('acceptance_required');
+    }
     const controller = new AbortController();
     this.running.set(task.id, controller);
     try {
-      const patches = await Promise.all(task.steps.filter((step) => step.write && step.paths?.length)
+      const patches = await Promise.all(task.steps.filter((step) => step.write && step.paths?.length && !step.supersededBy)
         .map((step) => readFile(path.join(this.config.stateDir, 'worktrees', task.id, step.id + '.patch'))));
       task.pendingRequest = messageId();
       task.pendingKind = 'patch';
@@ -847,7 +1006,7 @@ class Scheduler {
     if (['plan_reply', 'plan_approve'].includes(body.operation) && (route === 'admin' || named)) return this.updatePlan(task, body);
     if (body.operation === 'reconcile' && (route === 'admin' || named)) return this.reconcile(task);
     if (body.operation === 'cancel' && task) return this.cancel(task);
-    if (body.operation === 'apply' && (route === 'admin' || named)) return this.apply(task);
+    if (body.operation === 'apply' && (route === 'admin' || named)) return this.apply(task, route === 'admin' && body.force === true);
     throw new Error('unsupported_operation');
   }
 }
