@@ -134,6 +134,7 @@ class Router {
 
   available(role) {
     if (!this.configured(role)) return false;
+    if (this.config.adapters[role].authRequired) return false;
     const block = this.blocked.get(role);
     if (block && block.until > this.now()) return false;
     if (block) this.blocked.delete(role);

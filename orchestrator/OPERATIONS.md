@@ -69,6 +69,8 @@ sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /us
 
 官方安装入口为 `https://antigravity.google/cli/install.sh`。安装后，以主控服务账户和专用 HOME 启动一次 `agy` 完成 Google 登录。旧 Gemini OAuth 文件不等于已登录 Antigravity；应实际验证 `agy -p` 返回成功。远程 SSH 登录会提供浏览器授权 URL 和粘贴授权码的入口。参考 [官方认证说明](https://antigravity.google/docs/install?tab=cli) 和 [无交互模式](https://antigravity.google/docs/cli/headless/)。登录资料只保留在 VPS，不进入 Git 仓库。
 
+如果暂不登录，在 `adapters.antigravity` 设置 `"authRequired": true`：诊断显示需要登录，自动分配跳过此 CLI。完成登录并验证后删除该标记或设为 `false`，重启主控恢复分配。此标记不删除任何登录资料，也不关闭其他 CLI。
+
 Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述它的命令行。**先在 VPS2 上确认参数**，再填配置：
 
 1. 用服务账户运行 `agy --help`，确认：无交互执行一次提示的参数、只读和可写的参数、指定模型的参数、恢复会话的参数、能否输出 JSON。

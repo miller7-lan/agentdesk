@@ -24,6 +24,13 @@ test('the router picks the first available candidate and skips blocked CLIs unti
   assert.equal(router.pick('implement', ['codex']), null);   // implementation never falls back to Claude
 });
 
+test('a configured CLI awaiting interactive login is retained but never dispatched', () => {
+  const router = new Router({ adapters: { antigravity: { authRequired: true }, grok: {} } });
+  assert.ok(router.roles().includes('antigravity'));
+  assert.equal(router.available('antigravity'), false);
+  assert.equal(router.pick('scout'), 'grok');
+});
+
 test('routing overrides are validated; a read-only CLI can never be routed to implementation', () => {
   assert.deepEqual(validateRoutes({ review: ['grok'] }).review, ['grok']);
   assert.throws(() => validateRoutes({ review: ['claude'] }), /invalid_routing:review:lead_reserved/);

@@ -300,7 +300,7 @@ class Scheduler {
     return {
       clis: clis.map(({ role, ok, version }) => {
         const block = this.router.blocked.get(role);
-        const state = !ok ? 'unavailable' : block?.until > this.now()
+        const state = !ok ? 'unavailable' : this.config.adapters[role].authRequired ? 'auth_required' : block?.until > this.now()
           ? block.reason === 'auth' ? 'auth_required' : 'quota_limited' : 'ready';
         return { provider: role, state, ...(version && { version: version.match(/\b\d+(?:\.\d+){1,3}\b/)?.[0] }) };
       }),

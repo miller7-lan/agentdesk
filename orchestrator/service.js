@@ -62,7 +62,8 @@ function providerSettings(settings, name, home) {
     if (key !== permitted[name]) throw new Error('unsupported_provider_credential');
     env[key] = fs.readFileSync(filename, 'utf8').trim();
   }
-  const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile };
+  const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile,
+    authRequired: settings.authRequired === true };
   if (settings.template !== undefined || name === 'antigravity') adapter.template = validateTemplate(settings.template, name);
   if (name !== 'gemini' || adapter.template) return adapter;
   fs.accessSync(settings.bin, fs.constants.X_OK);
