@@ -22,7 +22,7 @@ const { validateOwnerCaps, allow: ownerAllow, nextReset, ownerUsageReport } = re
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 const MAX_TRIAGE = 2;
-const taskModes = new Set(['normal', 'chat', 'duo', 'team', 'review_only']);
+const taskModes = new Set(['normal', 'chat', 'duo', 'team', 'review_only', 'edit']);
 const readOnlyMode = (mode) => mode === 'chat' || mode === 'review_only';
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const projectIdPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -419,7 +419,7 @@ event(task, state, detail) {
         (body.broadcastId !== undefined && (typeof body.broadcastId !== 'string' || !taskIdPattern.test(body.broadcastId))) ||
         (body.reviewOf !== undefined && (mode !== 'review_only' || typeof body.reviewOf !== 'string' || !taskIdPattern.test(body.reviewOf))) ||
         (body.via !== undefined && !['desktop', 'wechat'].includes(body.via))) throw new Error('invalid_task');
-    groupPlan = !readOnlyMode(mode) && (groupPlan || mode === 'duo' || mode === 'team');
+    groupPlan = mode !== 'edit' && !readOnlyMode(mode) && (groupPlan || mode === 'duo' || mode === 'team');
     const existing = this.tasks.get(id);
     if (existing) {
       if (Boolean(existing.groupPlan) !== groupPlan || existing.prompt !== body.prompt || existing.workspace !== body.workspace ||
@@ -442,7 +442,9 @@ event(task, state, detail) {
     // The lead role is reserved for planning, triage and acceptance; a caller cannot pin a task to Claude.
     if (mode === 'team' && this.slots() < 2) throw new Error('team_requires_two_slots');
     if (mode === 'duo' && body.provider) throw new Error('duo_uses_group_routing');
-    if (body.provider === LEAD_ROLE) throw new Error('claude_reserved');
+    const directWriter = this.config.writeProviders?.includes(body.provider);
+    if (mode === 'edit' && (!directWriter || !this.router.configured(body.provider))) throw new Error('provider_write_not_enabled');
+    if (body.provider === LEAD_ROLE && !(directWriter && ['edit', 'chat'].includes(mode))) throw new Error('claude_reserved');
     if ((body.provider !== undefined && !ROLES.includes(body.provider)) ||
         (body.model !== undefined && (!body.provider || typeof body.model !== 'string' ||
           !modelId.test(body.model)))) throw new Error('invalid_model_selection');
@@ -560,7 +562,7 @@ event(task, state, detail) {
       this.router.quotaAllows('codex', capability) && this.ownerAllows(task, 'codex').allowed ? 'codex' : null;
     const role = task.provider || this.pickForTask(task, capability) || fallback;
     if (!role) throw new Error('executor_waiting:' + capability);
-    if (task.provider && (role === LEAD_ROLE || !this.router.available(role) || !this.router.quotaAllows(role, capability) ||
+    if (task.provider && ((role === LEAD_ROLE && !this.config.writeProviders?.includes(role)) || !this.router.available(role) || !this.router.quotaAllows(role, capability) ||
         !this.ownerAllows(task, role).allowed)) throw new Error('executor_waiting:' + capability);
     if (task.mode === 'review_only' && !this.router.routes.review.includes(role)) throw new Error('invalid_review_provider');
     const prompt = (task.mode === 'chat' ? 'Respond in read-only mode. Do not modify files or run write operations. Request: '
@@ -914,8 +916,12 @@ event(task, state, detail) {
       return;
     }
     if (!task.steps.length && task.provider) {
+      if (task.mode === 'edit' && (!this.router.available(task.provider) ||
+          !this.router.quotaAllowsDirect(task.provider) || !this.ownerAllows(task, task.provider).allowed)) {
+        throw new Error('executor_waiting:implement');
+      }
       task.steps = [{ id: task.provider, role: task.provider, model: task.model, prompt: task.prompt,
-        dependsOn: [], write: task.provider !== 'gemini', state: 'queued', attempts: 0 }];
+        dependsOn: [], write: this.router.canWrite(task.provider), state: 'queued', attempts: 0 }];
     }
     if (!task.steps.length) {
       this.save(task, 'planning', 'planning_started');
@@ -1085,6 +1091,8 @@ event(task, state, detail) {
   }
 
   acceptanceRequired(task) {
+    // A direct edit is reviewed by its owner through the existing patch preview/apply flow.
+    if (task.mode === 'edit') return false;
     if (readOnlyMode(task.mode)) return false;
     if (task.mode === 'duo') return true;
     if (!this.acceptance.enabled) return false;
@@ -1701,7 +1709,8 @@ event(task, state, detail) {
       const port = this.files.endpoint;
       const relay = port[bridge ? 'relay:' + bridge : 'relay'];
       return { route: channel, ssh: Boolean(port[bridge ? 'ssh:' + bridge : 'ssh']?.ready), relay: Boolean(relay?.ready && relay.online),
-        providers: this.availableRoles(), projects: named ? this.projectsFor(named) : Object.keys(this.config.projects || {}) };
+        providers: this.availableRoles(), writeProviders: (this.config.writeProviders || []).filter((role) => this.router.configured(role)),
+        projects: named ? this.projectsFor(named) : Object.keys(this.config.projects || {}) };
     }
     if (body.operation === 'select_route' && (route === 'admin' || named)) return this.setRoute(body.route, bridge);
     if (body.operation === 'compact_project' && (route === 'admin' || named)) return this.compact(body.project, named, body.workspace);

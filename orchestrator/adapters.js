@@ -37,8 +37,8 @@ const providers = {
     promptArg: true,
   },
   gemini: {
-    args: (_prompt, _readonly, session) => [
-      '--output-format', 'stream-json', '--approval-mode', 'default',
+    args: (_prompt, readonly, session) => [
+      '--output-format', 'stream-json', '--approval-mode', readonly ? 'default' : 'auto_edit',
       ...(session ? ['--resume', session] : []),
     ],
     session: (event) => event.type === 'init' && event.session_id,
@@ -110,7 +110,10 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     onSession(session);
   }
   const args = provider.args(prompt, readonly, session, model);
-  if (name === 'gemini' && !provider.template) args.push('--admin-policy', config.reviewPolicy);
+  if (name === 'gemini' && !provider.template) {
+    if (!readonly && !config.writePolicy) throw new Error('provider_write_not_enabled');
+    args.push('--admin-policy', readonly ? config.reviewPolicy : config.writePolicy);
+  }
   if (model && !provider.template) {
     if (name === 'codex') {
       args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model=' + JSON.stringify(model));

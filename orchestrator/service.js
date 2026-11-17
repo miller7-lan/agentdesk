@@ -75,7 +75,18 @@ toolName = ["read_file", "list_directory", "glob", "grep_search"]
 decision = "allow"
 priority = 990
 `, { mode: 0o600 });
-  return { ...adapter, reviewPolicy };
+  const writePolicy = path.join(home, 'agentdesk-write.toml');
+  if (settings.allowWrites) fs.writeFileSync(writePolicy, `[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 980
+
+[[rule]]
+toolName = ["read_file", "list_directory", "glob", "grep_search", "write_file", "replace"]
+decision = "allow"
+priority = 990
+`, { mode: 0o600 });
+  return { ...adapter, reviewPolicy, ...(settings.allowWrites && { writePolicy }) };
 }
 
 function start(config) {
@@ -83,7 +94,7 @@ function start(config) {
   // Codex and Claude are required (implementation and planning); the others join when configured.
   const namesOfAdapters = ['codex', 'claude', ...['grok', 'gemini', 'antigravity'].filter((name) => config.adapters[name])];
   config.adapters = Object.fromEntries(namesOfAdapters.map((name) =>
-    [name, providerSettings(config.adapters[name], name, path.join(config.stateDir, 'homes', name))]));
+    [name, providerSettings({ ...config.adapters[name], allowWrites: config.writeProviders?.includes(name) }, name, path.join(config.stateDir, 'homes', name))]));
   const store = new Store(path.join(config.stateDir, 'orchestrator.sqlite'));
   const endpoint = new Endpoint(store, (frame, route) => scheduler.control(frame, route));
   endpoint.on('fault', (code) => console.error('endpoint:', code));

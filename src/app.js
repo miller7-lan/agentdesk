@@ -183,7 +183,7 @@
           <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
         </button>` : ''}${items.map((s) => `
           <div class="sess ${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.title)}" role="button" tabindex="0">
-            ${avatars.html('codex', { size: 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.title)}</span><span class="s-time">${esc(s.time)}</span>
+            ${avatars.html(s.provider || 'codex', { size: 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.title)}</span><span class="s-time">${esc(s.time)}</span>
           </div>`).join('')}
         </div></div>`;
     }
@@ -221,7 +221,9 @@
     $('#sessionList').querySelector('.sess.active')?.focus();
   });
 
-  function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1')) {
+  function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), provider) {
+    if (LIVE && !provider && window.__providerDirect) return window.__providerDirect.choose(project);
+    if (provider && provider !== 'codex' && window.__providerDirect) return window.__providerDirect.create(project, provider);
     const p = proj(project);
     if (!p) return;
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
@@ -273,7 +275,7 @@
     if (it.t === 'assist' || it.t === 'thinking') {
       const thinking = it.t === 'thinking';
       const content = thinking ? `<i></i><i></i><i></i>${esc(it.text || '思考中')}` : it.html;
-      return `<div class="msg-assist"><span class="direct-avatar">${avatars.html('codex', { size: 32, still: true })}</span>
+      return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(sess(state.active)?.provider || 'codex', { size: 32, still: true })}</span>
         <div class="msg-body${thinking ? ' thinking' : ''}">${content}</div></div>`;
     }
     if (it.t === 'tool') return `<div class="tool ${it.open ? 'open' : ''} ${it.err ? 'err' : ''}" data-idx="${idx}">
@@ -688,7 +690,9 @@
       return;
     }
     $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = true;
-    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ Codex';
+    const provider = s?.provider || 'codex';
+    const providerName = window.__providerDirect?.names[provider] || 'Codex';
+    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ ' + providerName;
     renderTimeline();
     $('#conversationTitle').textContent = s?.title || '';
     if (s) {
@@ -697,11 +701,12 @@
       const key = s.id + ':' + status;
       if (avatar.dataset.rendered !== key) {
         avatar.dataset.rendered = key;
-        avatar.innerHTML = avatars.html('codex', { size: 36, key: 'direct-header:' + s.id, state: status });
+        avatar.innerHTML = avatars.html(provider, { size: 36, key: 'direct-header:' + s.id, state: status });
       }
     }
     if (s?.live) setBusy(!!s.busy);
     else renderSessionStatus();
+    window.__providerDirect?.render(s);
     if (state.panelOpen && (state.panel === 'diff' || panelSession !== state.active)) renderPanel();
     else if (state.panelOpen && state.panel === 'terminal') renderTerm();
   }

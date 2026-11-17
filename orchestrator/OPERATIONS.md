@@ -127,6 +127,14 @@ ad gc          # 立即清理一次，返回清理了哪些任务、释放了多
 
 ## Windows 连接
 
+### 各 AI 单聊修改
+
+`writeProviders` 显式列出允许生成本机项目补丁的执行者，例如 `["codex","claude","grok","gemini","antigravity"]`。它只启用指定成员的直接修改任务，不改变群聊默认的 Claude 组长与能力分工。未安装、未登录或额度用尽的执行者不会因此变为可用。
+
+桌面「新建单聊」可以选择执行者，成员面板也分别提供单聊入口。单聊的计划模式仍只读；其他模式使用 `edit` 任务在 VPS 独立 worktree 生成改动，用户先查看差异，再确认应用到授权本机项目。群聊可使用 `/edit @Grok 任务内容`（也支持 Claude、Gemini 等），直接指定修改者。直接修改不额外唤醒 Claude 验收，由提交人在现有补丁确认流程中审核。补丁写回仍检查本机 Git 基线、冲突与工作区授权。
+
+Gemini 的写入模式只开放文件读取、`write_file` 与 `replace`，不开放 shell；只读模式继续使用独立的只读策略。Antigravity 仍须先核实实际 CLI 的模板参数与登录状态。
+
 1. 将 `windows-bridge.example.json` 复制到 Windows 用户的 `.agentdesk` 目录，填写项目路径、已授权命令、Windows 自有 Relay 令牌和 VPS 2 SSH 配置。命令使用固定的程序与参数数组。若需要执行 Maven 或 Gradle 的批处理文件，可配置固定的 `cmd.exe /d /c` 参数数组。项目设为 `write:true` 才能改文件，启用 `desktop:true` 后再通过 AgentDesk 桌面开关启停本机控制。
 2. 给 Windows Bridge 一把独立 SSH 密钥。在 VPS 2 为 `agentdesk` 用户登记其公钥，限制为下面的强制命令。保留独立的现有 Codex App Server 公钥，以继续使用原 AgentDesk 界面。核对 SSH 主机指纹后更新 Windows 的 `known_hosts`。
 3. 在 Windows 的 `.agentdesk/remote.json` 加上 `orchestratorBridge`，值是 Bridge 配置的绝对路径，然后重启 AgentDesk。主路和备用路会分别连接，VPS 2 默认选择 SSH。只使用新版 Windows Bridge 时可将旧 SSH MCP 隧道设为 `"remoteForward":""` 和 `"manageSshd":false`。

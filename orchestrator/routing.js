@@ -96,6 +96,8 @@ class Router {
   constructor(config, now = () => Date.now()) {
     this.config = config;
     this.now = now;
+    if (config.writeProviders !== undefined && (!Array.isArray(config.writeProviders) ||
+        config.writeProviders.some((role) => !ROLES.includes(role)))) throw new Error('invalid_write_providers');
     this.routes = validateRoutes(config.routing);
     this.quotaPolicy = validateQuotaPolicy(config.quotaPolicy);
     this.blocked = new Map();   // role -> { until, reason }
@@ -114,6 +116,12 @@ class Router {
     const { soft, hard, keepFor } = this.quotaPolicy[role];
     if (used === undefined || used < soft) return true;
     return used < hard && capability !== undefined && keepFor.includes(capability);
+  }
+
+  quotaAllowsDirect(role) {
+    // Explicit user assignments may use quota reserved by automatic routing, but never exhausted quota.
+    const used = this.quota[role];
+    return used === undefined || used < this.quotaPolicy[role].hard;
   }
 
   configured(role) {
@@ -151,7 +159,7 @@ class Router {
   }
 
   canWrite(role) {
-    return !READ_ONLY_ROLES.has(role);
+    return this.config.writeProviders?.includes(role) || !READ_ONLY_ROLES.has(role);
   }
 
   status() {

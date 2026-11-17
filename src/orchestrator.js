@@ -88,10 +88,10 @@
   const mentions = { lead: '组长', codex: 'Codex', grok: 'Grok', gemini: 'Gemini', antigravity: 'Antigravity' };
   // Members that only take work when the orchestrator has them configured.
   const optional = ['gemini', 'antigravity'];
-  const availableCommands = { ls: '查看项目任务', stop: '取消指定任务', routes: '查看主控线路', avatars: '查看状态图鉴',
+  const availableCommands = { edit: '指定成员修改，确认补丁后写入本机', ls: '查看项目任务', stop: '取消指定任务', routes: '查看主控线路', avatars: '查看状态图鉴',
     duo: '双人审查', team: '独占多步骤任务', compact: '生成项目简报', review: '审查改动',
     broadcast: '只读广播', chat: '自由发言' };
-  const modeLabels = { chat: '只读发言', duo: '双人审查', team: '组队', review_only: '只读审查' };
+  const modeLabels = { chat: '只读发言', edit: '指定成员修改', duo: '双人审查', team: '组队', review_only: '只读审查' };
   let suggestionItems = [];
   let suggestionIndex = 0;
   let filter = 'all';
@@ -713,7 +713,7 @@
           ${task && [...taskStats(task, id), usageText(task, id)].filter(Boolean).length
             ? `<small class="member-task-stats">${esc([...taskStats(task, id), usageText(task, id)].filter(Boolean).join(' · '))}</small>` : ''}
           ${task ? `<button type="button" data-task-id="${esc(task.id)}" class="task-text-link">${taskLabel(task)} · ${statusName(task.state)}</button>` : ''}
-        </div>${id === 'codex' ? '<button type="button" class="btn member-direct" data-direct-codex>单聊</button>' : ''}</div>`;
+        </div>${['codex','claude','grok','gemini','antigravity'].includes(id) ? `<button type="button" class="btn member-direct" data-direct-provider="${id}">单聊</button>` : ''}</div>`;
       }).join('')}</div>`;
   }
 
@@ -1178,9 +1178,9 @@
   });
 
   function groupDraft(draft, group) {
-    const command = /^[/](duo|team|compact|review|broadcast|chat)(?:\s+|$)/i.exec(draft);
+    const command = /^[/](duo|team|compact|review|broadcast|chat|edit)(?:\s+|$)/i.exec(draft);
     const all = /^@all(?:\s+|$)/i.exec(draft);
-    const modes = { duo: 'duo', team: 'team', review: 'review_only', chat: 'chat' };
+    const modes = { duo: 'duo', team: 'team', review: 'review_only', chat: 'chat', edit: 'edit' };
     const kind = all ? 'broadcast' : command?.[1].toLowerCase();
     let prompt = command || all ? draft.slice((command || all)[0].length).trim() : draft;
     let reviewOf;
@@ -1197,13 +1197,15 @@
     const aliases = { '组长': '', codex: 'codex', claude: '', 'claude code': '', grok: 'grok', 'grok build': 'grok', gemini: 'gemini', antigravity: 'antigravity' };
     const mention = /^@(组长|codex|claude(?: code)?|grok(?: build)?|gemini|antigravity)(?:\s+|$)/i.exec(prompt);
     let recipient = mention ? aliases[mention[1].toLowerCase()] : provider.value;
+    if (kind === 'edit' && mention && /^claude/i.test(mention[1])) recipient = 'claude';
+    if (kind === 'edit' && !recipient) throw new Error('请用 /edit @成员 任务内容 指定修改者。');
     if (['duo', 'team', 'review', 'broadcast', 'compact'].includes(kind)) recipient = '';
     if (mention) prompt = prompt.slice(mention[0].length).trim();
     if (recipient && !canUse(recipient)) throw new Error(`当前主控尚未启用 ${members[recipient].name}。`);
     if (!prompt && kind !== 'compact') throw new Error('请输入任务内容。');
     const mode = modes[kind] || 'normal';
     const operation = kind === 'compact' ? 'compact_project' : kind === 'broadcast' ? 'broadcast'
-      : mode === 'review_only' || mode === 'chat' ? 'submit' : 'start_plan';
+      : ['review_only', 'chat', 'edit'].includes(mode) ? 'submit' : 'start_plan';
     return {
       operation,
       request: {
@@ -1415,10 +1417,12 @@
       const action = event.target.closest('[data-task-operation]');
       if (task) selectTask(task.dataset.taskId, task.dataset.taskView);
       if (action) taskAction(action.dataset.taskOperation);
-      if (event.target.closest('[data-direct-codex]')) {
-        const direct = A.D.sessions.find((session) => session.project === state.group);
+      const directButton = event.target.closest('[data-direct-provider]');
+      if (directButton) {
+        const provider = directButton.dataset.directProvider;
+        const direct = A.D.sessions.find((session) => session.project === state.group && (session.provider || 'codex') === provider);
         if (direct) A.openSession(direct.id);
-        else A.newDirect(state.group);
+        else A.newDirect(state.group, provider);
       }
     });
   }
