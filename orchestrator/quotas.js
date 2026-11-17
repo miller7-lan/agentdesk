@@ -5,7 +5,7 @@ const { readFile, rename, rm, writeFile } = require('node:fs/promises');
 const { createInterface } = require('node:readline');
 const { modelId } = require('./model-profiles');
 
-const providers = ['codex', 'claude', 'grok', 'gemini'];
+const providers = ['codex', 'claude', 'grok', 'gemini', 'antigravity'];
 
 function quotaWindow(window) {
   if (!Number.isFinite(window?.usedPercent) || window.usedPercent < 0) return null;

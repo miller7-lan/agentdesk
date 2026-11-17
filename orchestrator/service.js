@@ -30,6 +30,26 @@ function unixServer(filename, handler) {
   return server;
 }
 
+// A CLI configured by template (see OPERATIONS.md): which flags to pass, how the prompt is given and
+// which JSON fields hold the reply, the session ID and token use. Every value is checked here.
+function validateTemplate(template, name) {
+  if (!template || typeof template !== 'object' || Array.isArray(template)) throw new Error(name + '_template_required');
+  const lists = ['args', 'readonlyArgs', 'writeArgs', 'modelArgs', 'resumeArgs'];
+  const fields = ['outputField', 'sessionField', 'usageField'];
+  const allowed = new Set([...lists, ...fields, 'prompt', 'output', 'session']);
+  if (Object.keys(template).some((key) => !allowed.has(key)) ||
+      lists.some((key) => template[key] !== undefined && (!Array.isArray(template[key]) || template[key].length > 32 ||
+        template[key].some((arg) => typeof arg !== 'string' || arg.length > 200))) ||
+      fields.some((key) => template[key] !== undefined && (typeof template[key] !== 'string' || !/^[A-Za-z0-9_.]{1,80}$/.test(template[key]))) ||
+      !['stdin', 'arg'].includes(template.prompt ?? 'stdin') || !['plain', 'jsonl'].includes(template.output ?? 'plain') ||
+      !['none', 'generate', 'field'].includes(template.session ?? 'none') ||
+      (template.prompt === 'arg' && !(template.args || []).some((arg) => arg.includes('{prompt}'))) ||
+      (template.output === 'jsonl' && !template.outputField)) {
+    throw new Error('invalid_' + name + '_template');
+  }
+  return { prompt: 'stdin', output: 'plain', session: 'none', ...structuredClone(template) };
+}
+
 function providerSettings(settings, name, home) {
   const safe = ['PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'TZ'];
   const env = Object.fromEntries(safe.filter((name) => process.env[name]).map((name) => [name, process.env[name]]));
@@ -41,7 +61,8 @@ function providerSettings(settings, name, home) {
     env[key] = fs.readFileSync(filename, 'utf8').trim();
   }
   const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile };
-  if (name !== 'gemini') return adapter;
+  if (settings.template !== undefined || name === 'antigravity') adapter.template = validateTemplate(settings.template, name);
+  if (name !== 'gemini' || adapter.template) return adapter;
   fs.accessSync(settings.bin, fs.constants.X_OK);
   const reviewPolicy = path.join(home, 'agentdesk-review.toml');
   fs.writeFileSync(reviewPolicy, `[[rule]]
@@ -59,8 +80,8 @@ priority = 990
 
 function start(config) {
   fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
-  const namesOfAdapters = ['codex', 'claude', 'grok'];
-  if (config.adapters.gemini) namesOfAdapters.push('gemini');
+  // Codex and Claude are required (implementation and planning); the others join when configured.
+  const namesOfAdapters = ['codex', 'claude', ...['grok', 'gemini', 'antigravity'].filter((name) => config.adapters[name])];
   config.adapters = Object.fromEntries(namesOfAdapters.map((name) =>
     [name, providerSettings(config.adapters[name], name, path.join(config.stateDir, 'homes', name))]));
   const store = new Store(path.join(config.stateDir, 'orchestrator.sqlite'));
@@ -69,9 +90,9 @@ function start(config) {
   const files = new RemoteFiles(endpoint);
   const capabilities = new Map();
   config.mcp = { socket: path.join(config.stateDir, 'mcp.sock'), capabilities };
-  const grokDir = path.join(config.adapters.grok.env.HOME, '.grok');
-  fs.mkdirSync(grokDir, { recursive: true, mode: 0o700 });
-  try {
+  const grokDir = config.adapters.grok && path.join(config.adapters.grok.env.HOME, '.grok');
+  if (grokDir) fs.mkdirSync(grokDir, { recursive: true, mode: 0o700 });
+  if (grokDir) try {
     const args = [path.join(__dirname, 'mcp.js'), '${AGENTDESK_MCP_SOCKET}', '${AGENTDESK_MCP_CAPABILITY}'];
     fs.writeFileSync(path.join(grokDir, 'config.toml'),
       '[mcp_servers.agentdesk_windows]\ncommand = ' + JSON.stringify(process.execPath) +
@@ -314,4 +335,4 @@ if (require.main === module) {
   process.once('SIGINT', close);
 }
 
-module.exports = { start, startBridge, relayConfig, providerSettings };
+module.exports = { start, startBridge, relayConfig, providerSettings, validateTemplate };

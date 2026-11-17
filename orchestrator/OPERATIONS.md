@@ -2,7 +2,7 @@
 
 ## 安装
 
-在 Ubuntu 上安装 Node.js 24（默认 `/usr/bin/node`，独立安装时通过 `AGENTDESK_NODE_BIN` 指定路径）、Git 和三个供应商的官方 CLI，并把 CLI 可执行文件安装在系统服务可访问的位置。用各供应商的认证方式给专用服务账户配置凭证。样例使用各自的 API Key 文件，也可以删掉该项并使用已登录的独立 CLI home。输入 VPS root 密码时使用本地 SSH 提示。
+在 Ubuntu 上安装 Node.js 24（默认 `/usr/bin/node`，独立安装时通过 `AGENTDESK_NODE_BIN` 指定路径）、Git 和要用的各家官方 CLI（Codex、Claude Code 必装；Grok Build、Gemini、Antigravity 按需），并把 CLI 可执行文件安装在系统服务可访问的位置。样例按订阅登录配置（见下文「订阅登录」）；也可以在 `credentials` 里改用 API Key 文件。输入 VPS root 密码时使用本地 SSH 提示。
 
 ```sh
 sudo bash orchestrator/install-ubuntu.sh
@@ -19,6 +19,61 @@ Codex 在 Ubuntu 上需要可用的 `bubblewrap` 才能用 `workspace-write` 写
 sudo systemctl enable --now agentdesk-orchestrator
 sudo systemctl status agentdesk-orchestrator
 sudo journalctl -u agentdesk-orchestrator -n 30
+```
+
+## 订阅登录、任务分配和 Antigravity
+
+### 订阅登录
+
+样例配置按订阅登录写，不放 API Key。每个 CLI 用自己的 home（`/var/lib/agentdesk-orchestrator/homes/<cli>`），以服务账户各登录一次：
+
+```sh
+sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/claude /usr/local/bin/claude      # 按 CLI 自己的登录流程完成
+sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /usr/local/bin/agy
+```
+
+登录后用 `ad doctor` 确认每个 CLI 都能启动并读到版本。任务执行中如果某个 CLI 报告掉登录或额度用尽，主控会暂时停用它（额度 30 分钟、登录 6 小时），把步骤交给下一个候选；`ad doctor` 会列出当前被停用的 CLI 和原因。
+
+### 按能力分配任务
+
+规划者（默认 Claude）给每一步标一种能力，主控按 `routing` 里的顺序挑第一个可用的 CLI：
+
+| 能力 | 含义 | 默认候选顺序 |
+|---|---|---|
+| `plan` | 规划和拆分任务 | claude → codex |
+| `scout` | 读代码、日志、文档并写简报 | antigravity → gemini → grok → claude |
+| `implement` | 改代码（唯一可以写文件的能力） | codex → claude |
+| `review` | 审查改动 | grok → antigravity → gemini → claude |
+| `research` | 查资料 | grok → antigravity → gemini |
+| `accept` | 按摘要验收 | claude → codex |
+
+在 `config.json` 的 `routing` 里改顺序即可调整，未配置的 CLI 会被跳过。Gemini 只能读，不能放进 `implement`。每个任务的 token 用量按 CLI 汇总在任务状态的 `usage` 里，可以据此调整顺序。
+
+### 用模板接入 Antigravity
+
+Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述它的命令行。**先在 VPS2 上确认参数**，再填配置：
+
+1. 用服务账户运行 `agy --help`，确认：无交互执行一次提示的参数、只读和可写的参数、指定模型的参数、恢复会话的参数、能否输出 JSON。
+2. 按结果填写模板：
+
+| 字段 | 含义 |
+|---|---|
+| `args` | 每次都带的参数；`{prompt}` 是提示内容，`{session}` 是会话 ID |
+| `prompt` | `arg`（提示放在参数里，`args` 必须包含 `{prompt}`）或 `stdin`（默认） |
+| `readonlyArgs` / `writeArgs` | 只读步骤 / 可写步骤额外带的参数 |
+| `modelArgs` | 指定模型时带的参数，`{model}` 是模型 ID |
+| `resumeArgs` | 恢复会话时带的参数，`{session}` 是会话 ID |
+| `output` | `plain`（整段文本就是回复，默认）或 `jsonl`（每行一个 JSON） |
+| `outputField` / `sessionField` / `usageField` | `jsonl` 时回复、会话 ID、token 用量所在的字段，可以用点号写嵌套字段，例如 `result.text` |
+| `session` | `none`（默认）、`generate`（主控生成 ID 填进 `{session}`）或 `field`（从输出读取） |
+
+3. 用 `ad submit project '只读：总结 README' ` 加 `ad status` 验证一次；输出的 `usage` 里应出现 `antigravity`。
+
+### 管理命令补充
+
+```sh
+ad ls          # 最近 50 个任务：状态、用到的 CLI、token 用量
+ad doctor      # 各 CLI 是否安装、版本、被停用的 CLI 和原因、当前分配顺序
 ```
 
 ## Windows 连接

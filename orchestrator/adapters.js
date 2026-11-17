@@ -11,6 +11,7 @@ const providers = {
       : ['exec', '--json', '--sandbox', readonly ? 'read-only' : 'workspace-write', '-'],
     session: (event) => event.thread_id,
     output: (event) => event.item?.type === 'agent_message' && event.item.text,
+    usage: (event) => event.type === 'turn.completed' && event.usage,
   },
   claude: {
     args: (_prompt, readonly, session) => [
@@ -21,6 +22,8 @@ const providers = {
     ],
     session: (event) => event.session_id,
     output: (event) => event.type === 'result' && event.result,
+    usage: (event) => event.type === 'result' && { ...event.usage, cost_usd: event.total_cost_usd },
+    failure: (event) => event.type === 'result' && event.is_error && String(event.result || event.subtype || 'error'),
   },
   grok: {
     args: (prompt, readonly, session) => [
@@ -29,6 +32,7 @@ const providers = {
       ...(readonly ? ['--deny', 'Edit'] : []), '--deny', 'Bash', '--session-id', session, '-p', prompt,
     ],
     plain: true,
+    promptArg: true,
   },
   gemini: {
     args: (_prompt, _readonly, session) => [
@@ -38,19 +42,74 @@ const providers = {
     session: (event) => event.type === 'init' && event.session_id,
     output: (event) => event.type === 'message' && event.role === 'assistant' && event.content,
     append: (event) => event.delta === true,
+    usage: (event) => event.type === 'result' && (event.stats || event.usage),
   },
 };
 
+const field = (value, dotted) => dotted && String(dotted).split('.').reduce((node, key) => node?.[key], value);
+const fill = (list, values) => (list || []).map((arg) => arg.replace(/\{(prompt|model|session)\}/g, (_, key) => values[key] ?? ''));
+
+// A CLI described entirely by configuration, so a new subscription CLI (Antigravity first) can be added
+// after checking its flags on the server, without code changes. See orchestrator/OPERATIONS.md.
+function templateProvider(t) {
+  return {
+    template: true,
+    plain: t.output !== 'jsonl',
+    promptArg: t.prompt === 'arg',
+    generateSession: t.session === 'generate',
+    args: (prompt, readonly, session, model) => [
+      ...fill(session ? t.resumeArgs : [], { session }),
+      ...fill(readonly ? t.readonlyArgs : t.writeArgs, {}),
+      ...fill(model ? t.modelArgs : [], { model }),
+      ...fill(t.args, { prompt, session }),
+    ],
+    session: (event) => field(event, t.sessionField),
+    output: (event) => field(event, t.outputField),
+    usage: (event) => field(event, t.usageField),
+  };
+}
+
+// Token counts in whatever shape a CLI reports them, reduced to one shape.
+function normalizeUsage(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const pick = (...names) => names.map((name) => raw[name]).find((value) => Number.isFinite(value));
+  const usage = {
+    input: pick('input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokenCount'),
+    cachedInput: pick('cached_input_tokens', 'cache_read_input_tokens', 'cachedInputTokens', 'cachedContentTokenCount'),
+    cacheWrite: pick('cache_creation_input_tokens'),
+    output: pick('output_tokens', 'outputTokens', 'completion_tokens', 'candidatesTokenCount'),
+    costUsd: pick('cost_usd', 'total_cost_usd'),
+  };
+  return Object.values(usage).some((value) => value !== undefined)
+    ? Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== undefined)) : null;
+}
+
+function addUsage(total, usage) {
+  if (!usage) return total;
+  const sum = { ...(total || {}) };
+  for (const [key, value] of Object.entries(usage)) sum[key] = (sum[key] || 0) + value;
+  return sum;
+}
+
+// Exit text that means "this CLI cannot work right now" rather than "the task failed".
+// Login problems are checked first: an expired session often also mentions limits.
+function classifyFailure(text) {
+  if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired/i.test(text)) return 'cli_auth_required';
+  if (/usage limit|rate[ -]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
+  return null;
+}
+
 async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, mcp }) {
   if (signal.aborted) throw signal.reason;
-  const provider = providers[name];
-  if (provider.plain && !session) {
+  const provider = config.template ? templateProvider(config.template) : providers[name];
+  if (!provider) throw new Error(name + '_not_supported');
+  if ((provider.plain && !provider.template && !session) || (provider.generateSession && !session)) {
     session = randomUUID();
     onSession(session);
   }
-  const args = provider.args(prompt, readonly, session);
-  if (name === 'gemini') args.push('--admin-policy', config.reviewPolicy);
-  if (model) {
+  const args = provider.args(prompt, readonly, session, model);
+  if (name === 'gemini' && !provider.template) args.push('--admin-policy', config.reviewPolicy);
+  if (model && !provider.template) {
     if (name === 'codex') {
       args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model=' + JSON.stringify(model));
     } else {
@@ -58,7 +117,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
-  if (mcp && name !== 'gemini') {
+  if (mcp && !provider.template && name !== 'gemini') {
     const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
     if (name === 'codex') {
       args.splice(args[1] === 'resume' ? 2 : 1, 0,
@@ -87,6 +146,9 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   let stopped;
   let output = '';
   let bytes = 0;
+  let usage = null;
+  let failure = null;
+  let tail = '';                // last lines of both streams, used to tell quota and login errors apart
   function terminate(reason) {
     if (stopped) return;
     stopped = reason;
@@ -108,6 +170,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
         return;
       }
       stream.write(channel + ' ' + safe + '\n');
+      if (channel === 'stderr' || provider.plain) tail = (tail + safe + '\n').slice(-4000);   // JSON output holds the model's own text
       if (channel === 'stderr') return;
       if (provider.plain) {
         output = (output + safe + '\n').slice(-12000);
@@ -119,16 +182,22 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
         if (typeof id === 'string') onSession(id);
         const message = provider.output(event);
         if (typeof message === 'string') output = (provider.append?.(event) ? output + redact(message) : redact(message)).slice(0, 12000);
+        usage = addUsage(usage, normalizeUsage(provider.usage?.(event)));
+        const failed = provider.failure?.(event);
+        if (failed) failure = redact(failed);
       } catch {}
     });
   }
   child.stdin.on('error', () => {});
-  child.stdin.end(name === 'grok' ? undefined : prompt);
+  child.stdin.end(provider.promptArg ? undefined : prompt);
   try {
     const [code] = await once(child, 'close');
     if (stopped) throw stopped;
-    if (code !== 0) throw new Error('cli_exit_' + code);
-    return { output };
+    if (code !== 0 || failure) {
+      const kind = classifyFailure((failure || '') + '\n' + tail);
+      throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')), { provider: name, usage });
+    }
+    return { output, usage };
   } finally {
     clearTimeout(timer);
     clearTimeout(killTimer);
@@ -140,4 +209,4 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   }
 }
 
-module.exports = { providers, runAdapter };
+module.exports = { providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure };

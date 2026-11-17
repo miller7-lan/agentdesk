@@ -5,6 +5,7 @@ const abilities = {
   claude: 'Independent design and code review, reasoning about edge cases, and synthesizing findings.',
   grok: 'Research, quick second opinions, and alternative approaches. The integration exposes web search.',
   gemini: 'Read-only repository investigation, comparison, and synthesis in group collaboration.',
+  antigravity: 'Reading large codebases, logs and documents, and writing short briefs; a second opinion in review.',
 };
 
 function modelProfiles(settings) {

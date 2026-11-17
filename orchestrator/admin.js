@@ -11,6 +11,9 @@ async function main([socketPath, command, id, argument, ...rest]) {
   if (command === 'quotas') {
     return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'quota_status' } });
   }
+  if (command === 'ls' || command === 'doctor') {
+    return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: command === 'ls' ? 'list' : 'doctor' } });
+  }
   if (command === 'submit' && id && argument) {
     return send({ kind: 'task.request', task_id: randomUUID(), body: { workspace: id, prompt: argument, command: rest[0] } });
   }
@@ -39,7 +42,7 @@ async function main([socketPath, command, id, argument, ...rest]) {
     await fs.writeFile(argument, bytes, { flag: 'wx', mode: 0o600 });
     return { path: argument, size: bytes.length };
   }
-  throw new Error('Usage: admin.js <socket> submit <workspace> <prompt> [test-command] | status <task-id> [after] | cancel <task-id> | apply <task-id> | reconcile <task-id> | route <ssh|relay> | bridge <task-id> <kind> <json> | upload <task-id> <file> [stream-id] | download <task-id> <output> <json>');
+  throw new Error('Usage: admin.js <socket> ls | doctor | quotas | submit <workspace> <prompt> [test-command] | status <task-id> [after] | cancel <task-id> | apply <task-id> | reconcile <task-id> | route <ssh|relay> | bridge <task-id> <kind> <json> | upload <task-id> <file> [stream-id] | download <task-id> <output> <json>');
 }
 
 main(process.argv.slice(2)).then((value) => {

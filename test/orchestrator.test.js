@@ -99,7 +99,6 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
       "process.stdin.on('end', () => {",
       "setTimeout(() => {",
       "if (name === 'grok') { console.log('research complete'); return; }",
-      "if (name === 'claude') { console.log(JSON.stringify({ type: 'result', result: 'review complete', session_id: 'review-id' })); return; }",
       "if (name === 'gemini') {",
       "if (!process.argv.includes('fixture-model') || !process.argv.includes('default') || !process.argv.some(arg => arg.endsWith('agentdesk-review.toml')) || !input.includes('confirmed scope')) process.exit(42);",
       "console.log(JSON.stringify({ type: 'init', session_id: 'gemini-fixture' }));",
@@ -113,8 +112,11 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
       "text = JSON.stringify(context.rounds.length < 2 ? { questions: ['Clarify round ' + context.rounds.length] } : { summary: 'Update and verify', steps: [{id:'edit', role:context.preferredExecutor,prompt:'Implement with the confirmed scope', dependsOn:[]}] });",
       "}",
       "else if (input.startsWith('Plan this')) text = JSON.stringify(['codex', 'claude', 'grok'].map((role) => ({ id: role, role, prompt: 'fixture', dependsOn: [] })));",
+      "else if (name === 'claude') text = 'review complete';",
       "else fs.writeFileSync('README.md', 'updated\\n');",
+      "if (name === 'claude') { console.log(JSON.stringify({ type: 'result', result: text, session_id: 'review-id', usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 400 }, total_cost_usd: 0.01 })); return; }",
       "console.log(JSON.stringify({ thread_id: 'fixture', item: { type: 'agent_message', text } }));",
+      "console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 50, cached_input_tokens: 10, output_tokens: 5 } }));",
       '}, 300);',
       '});',
     ].join('\n'), { mode: 0o700 });
@@ -178,6 +180,12 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   const status = await admin(socket, { kind: 'task.status', task_id, body: { operation: 'status' } });
   assert.equal(status.detail, 'patches_ready');
   assert.equal(status.steps.find((step) => step.role === 'grok').output.trim(), 'research complete');
+  // Claude planned (one call) and reviewed (one call); Codex implemented. Token use is kept per CLI.
+  assert.deepEqual(status.usage.claude, { input: 240, cachedInput: 800, output: 60, costUsd: 0.02 });
+  assert.deepEqual(status.usage.codex, { input: 50, cachedInput: 10, output: 5 });
+  assert.equal(status.steps.find((step) => step.role === 'codex').write, true);
+  const listed = await admin(socket, { kind: 'task.status', task_id: randomUUID(), body: { operation: 'list' } });
+  assert.equal(listed[0].id, task_id);
   assert.equal(await fs.readFile(path.join(workspace, 'README.md'), 'utf8'), 'base\n');
   const result = await admin(socket, { kind: 'task.status', task_id, body: { operation: 'apply' } });
   assert.equal(result.state, 'completed');

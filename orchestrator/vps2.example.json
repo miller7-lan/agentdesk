@@ -8,13 +8,8 @@
       "models": {
         "gpt-5.4": {
           "strengths": "Complex coding, multi-file changes, and debugging.",
-          "billing": "api",
-          "inputUsdPerMillion": 2.5,
-          "outputUsdPerMillion": 15
+          "billing": "subscription"
         }
-      },
-      "credentials": {
-        "OPENAI_API_KEY": "/etc/agentdesk-orchestrator/openai.key"
       }
     },
     "claude": {
@@ -22,13 +17,8 @@
       "models": {
         "claude-sonnet-5-5": {
           "strengths": "Balanced code review, reasoning, and synthesis.",
-          "billing": "api",
-          "inputUsdPerMillion": 2,
-          "outputUsdPerMillion": 10
+          "billing": "subscription"
         }
-      },
-      "credentials": {
-        "ANTHROPIC_API_KEY": "/etc/agentdesk-orchestrator/anthropic.key"
       }
     },
     "grok": {
@@ -36,13 +26,8 @@
       "models": {
         "grok-build-0.1": {
           "strengths": "Quick code investigation and web development research.",
-          "billing": "api",
-          "inputUsdPerMillion": 1,
-          "outputUsdPerMillion": 2
+          "billing": "subscription"
         }
-      },
-      "credentials": {
-        "XAI_API_KEY": "/etc/agentdesk-orchestrator/xai.key"
       }
     },
     "gemini": {
@@ -50,15 +35,65 @@
       "models": {
         "gemini-2.5-flash-lite": {
           "strengths": "Low-cost classification, extraction, and summarization.",
-          "billing": "api",
-          "inputUsdPerMillion": 0.1,
-          "outputUsdPerMillion": 0.4
+          "billing": "subscription"
+        }
+      }
+    },
+    "antigravity": {
+      "bin": "/usr/local/bin/agy",
+      "models": {
+        "default": {
+          "strengths": "Reading large codebases, logs and documents; short briefs for the implementer.",
+          "billing": "subscription"
         }
       },
-      "credentials": {
-        "GEMINI_API_KEY": "/etc/agentdesk-orchestrator/gemini.key"
+      "template": {
+        "prompt": "arg",
+        "output": "plain",
+        "session": "none",
+        "args": [
+          "-p",
+          "{prompt}"
+        ],
+        "readonlyArgs": [],
+        "writeArgs": [],
+        "modelArgs": [
+          "--model",
+          "{model}"
+        ]
       }
     }
+  },
+  "routing": {
+    "plan": [
+      "claude",
+      "codex"
+    ],
+    "scout": [
+      "antigravity",
+      "gemini",
+      "grok",
+      "claude"
+    ],
+    "implement": [
+      "codex",
+      "claude"
+    ],
+    "review": [
+      "grok",
+      "antigravity",
+      "gemini",
+      "claude"
+    ],
+    "research": [
+      "grok",
+      "antigravity",
+      "gemini"
+    ],
+    "accept": [
+      "claude",
+      "codex"
+    ]
   },
   "workspaces": {
     "project": {
