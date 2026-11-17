@@ -78,6 +78,7 @@ test('failure text is classified as a login or quota problem, and usage shapes a
   assert.equal(classifyFailure('Error: Not logged in. Please run login.'), 'cli_auth_required');
   assert.equal(classifyFailure('You have hit your usage limit. Resets at 18:00'), 'cli_quota_exhausted');
   assert.equal(classifyFailure('429 Too Many Requests'), 'cli_quota_exhausted');
+  assert.equal(classifyFailure("You've hit your 5-hour limit · resets 7:20pm (UTC)"), 'cli_quota_exhausted');
   assert.equal(classifyFailure('TypeError: cannot read properties'), null);
   assert.deepEqual(normalizeUsage({ input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 1, cost_usd: 0.5 }),
     { input: 5, cachedInput: 7, output: 1, costUsd: 0.5 });

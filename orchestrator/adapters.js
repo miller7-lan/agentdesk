@@ -97,7 +97,7 @@ function addUsage(total, usage) {
 // Login problems are checked first: an expired session often also mentions limits.
 function classifyFailure(text) {
   if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired/i.test(text)) return 'cli_auth_required';
-  if (/usage limit|rate[ -]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
+  if (/usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|hit your \d+[ -]hour limit|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
   return null;
 }
 
