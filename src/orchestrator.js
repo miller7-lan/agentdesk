@@ -8,7 +8,7 @@
   const api = window.desk?.orchestrator;
   const enrollment = window.desk?.enrollment;
   const temporary = await enrollment?.required();
-  const supported = api && (window.desk.platform === 'darwin' || temporary);
+  const supported = Boolean(api && (await api.available()));
   const liveProject = 'live';
   const isExample = (id) => !A.proj(id)?.live;
   const isLiveGroup = () => Boolean(state.group && A.proj(state.group)?.live);

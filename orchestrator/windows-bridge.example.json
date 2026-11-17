@@ -1,5 +1,7 @@
 {
   "stateDir": "C:/Users/YourName/.agentdesk/bridge-state",
+  "controlSocket": "\\\\.\\pipe\\agentdesk-windows-control",
+  "controlWorkspace": "project",
   "workspaces": {
     "project": {
       "root": "D:/Projects/project",

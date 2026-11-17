@@ -75,6 +75,19 @@ test('validates the task graph and generates Relay UUIDv7 IDs', () => {
   assert.equal(steps[1].write, true);
 });
 
+test('desktop control uses a Windows named pipe and reports an offline bridge accurately', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-pipe-'));
+  const socket = process.platform === 'win32' ? '\\\\.\\pipe\\agentdesk-test-' + randomUUID() : path.join(dir, 'control.sock');
+  const stop = startBridge({
+    config: { stateDir: path.join(dir, 'bridge'), controlSocket: socket, workspaces: {} },
+    desktop: { enabled: false },
+  });
+  t.after(async () => { stop(); await wait(50); await fs.rm(dir, { recursive: true, force: true }); });
+  await wait(30);
+  assert.deepEqual(await mcpRequest(socket, { operation: 'routes' }), { route: null, ssh: false, relay: false });
+  await assert.rejects(mcpRequest(socket, { operation: 'start_plan', prompt: 'hello' }), /bridge_offline/);
+});
+
 test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an authorized command', { skip: process.platform === 'win32' }, async (t) => {
   const { dir, workspace, mirror } = await repository(t);
   const stateDir = path.join(dir, 'vps');

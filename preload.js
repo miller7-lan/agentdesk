@@ -53,7 +53,10 @@ contextBridge.exposeInMainWorld('desk', {
     select: (id) => ipcRenderer.invoke('projects:select', { id }),
     onChanged: on('projects:changed'),
   },
-  orchestrator: { control: (frame) => ipcRenderer.invoke('orchestrator:control', frame) },
+  orchestrator: {
+    available: () => ipcRenderer.invoke('orchestrator:available'),
+    control: (frame) => ipcRenderer.invoke('orchestrator:control', frame),
+  },
   desktop: {
     enabled: () => ipcRenderer.invoke('desktop:enabled'),
     toggle: () => ipcRenderer.invoke('desktop:toggle'),

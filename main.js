@@ -636,12 +636,12 @@ const orchestrationOperations = new Set([
 const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
 
 async function orchestratorControl(frame) {
-  if ((!mac && !enrollment) || !frame || !orchestrationOperations.has(frame.operation)) {
+  if ((!mac && !enrollment && !bridgeControlSocket) || !frame || !orchestrationOperations.has(frame.operation)) {
     return { ok: false, error: '无权操作主控线路' };
   }
   const { request } = require('./orchestrator/mcp');
   if (!hostConfirmed() || (enrollment && !enrolledSession)) return { ok: false, error: 'sign_in_required' };
-  const socket = enrolledSession?.controlSocket || path.join(macBridgeState, 'control.sock');
+  const socket = enrolledSession?.controlSocket || bridgeControlSocket || path.join(macBridgeState, 'control.sock');
   const { projectId, ...operation } = frame;
   const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
   if (projectId !== undefined && !project) return { ok: false, error: 'project_not_found' };
@@ -662,6 +662,7 @@ async function orchestratorControl(frame) {
 }
 
 ipcMain.handle('orchestrator:control', (event, frame) => fromMainWindow(event) ? orchestratorControl(frame) : { ok: false });
+ipcMain.handle('orchestrator:available', (event) => fromMainWindow(event) && Boolean(mac || enrollment || bridgeControlSocket));
 
 function diagnosticSnapshot() {
   return collectDiagnostics({
@@ -739,6 +740,7 @@ ipcMain.handle('enrollment:login', async (event, password) => {
 });
 
 let stopBridge;
+let bridgeControlSocket;
 function startOrchestratorBridge() {
   const config = remote.cfg.orchestratorBridge;
   if (!config) return;
@@ -753,6 +755,7 @@ function startOrchestratorBridge() {
       recycle: (target) => shell.trashItem(target),
       spawnSsh: (ssh) => remote.openBridge(ssh),
     });
+    bridgeControlSocket = settings.controlSocket;
   } catch (error) {
     console.error('AgentDesk Orchestrator Bridge:', error.message);
   }

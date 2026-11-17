@@ -131,6 +131,8 @@ ad gc          # 立即清理一次，返回清理了哪些任务、释放了多
 2. 给 Windows Bridge 一把独立 SSH 密钥。在 VPS 2 为 `agentdesk` 用户登记其公钥，限制为下面的强制命令。保留独立的现有 Codex App Server 公钥，以继续使用原 AgentDesk 界面。核对 SSH 主机指纹后更新 Windows 的 `known_hosts`。
 3. 在 Windows 的 `.agentdesk/remote.json` 加上 `orchestratorBridge`，值是 Bridge 配置的绝对路径，然后重启 AgentDesk。主路和备用路会分别连接，VPS 2 默认选择 SSH。只使用新版 Windows Bridge 时可将旧 SSH MCP 隧道设为 `"remoteForward":""` 和 `"manageSshd":false`。
 
+Windows Bridge 的 `controlSocket` 使用本机命名管道（样例为 `\\.\pipe\agentdesk-windows-control`），`controlWorkspace` 指定主控已登记的工作区 ID。桌面应用使用该管道发送群聊和成员请求；未配置 Bridge 的 Windows 客户端不开放主控入口。各台电脑使用独立 SSH 公钥和私有工作区。在应用「工作区」里为项目填写相同的主控工作区 ID，并选择已有提交、工作区干净的本机 Git 仓库。
+
 ```text
 restrict,command="/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/ssh-gateway.js /var/lib/agentdesk-orchestrator/bridge.sock" ssh-ed25519 <WINDOWS_BRIDGE_PUBLIC_KEY>
 ```
