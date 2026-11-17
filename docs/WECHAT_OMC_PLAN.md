@@ -1,5 +1,7 @@
 # 方案 v2：微信一对一 → OpenClaw → 容器化云任务（多 CLI 协作）
 
+> **2026-11-17 补充**：VPS 有两台，现阶段只开发 **VPS2（4 GB + 2 GB swap）**，主控、四个 CLI、任务容器和微信网关都放在这台；隔离方式确定用 **Docker**。最新待办见 [TASKS.md](TASKS.md)。
+>
 > 2026-11-16 更新。已确定的条件：
 > - VPS 内存 4 GB，另有 2 GB swap。
 > - 微信入口**只做一对一单聊**，不做群聊；用 **OpenClaw** 作为消息网关（个人微信 ClawBot 为主，企业微信官方插件为补充）。AgentDesk 端以群聊呈现，见 [GROUP_CHAT_UI.md](GROUP_CHAT_UI.md)。
