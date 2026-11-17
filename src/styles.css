@@ -54,9 +54,23 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* Platform-specific typography. platform.js also writes these as inline variables before first paint. */
+:root[data-os="mac"] {
+  --font: -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", system-ui, sans-serif;
+  --mono: "SF Mono", Menlo, ui-monospace, "PingFang SC", monospace;
+}
+:root[data-os="win"] {
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+:root[data-os="linux"] {
+  --font: system-ui, "Noto Sans CJK SC", "Ubuntu", Cantarell, sans-serif;
+  --mono: ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono", monospace;
+}
+
 body {
   background: var(--main); color: var(--text);
-  font: 13px/1.6 system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  font: 13px/1.6 var(--font, system-ui, "PingFang SC", "Microsoft YaHei UI", sans-serif);
   display: flex; flex-direction: column; overflow: hidden; user-select: none;
 }
 svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
@@ -64,7 +78,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 kbd { font: inherit; white-space: nowrap; }
 .grow { flex: 1; }
-code, pre, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Consolas, monospace); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -398,9 +412,11 @@ body.dragging iframe, body.dragging .timeline { pointer-events: none; }
 /* hidden 属性必须真正隐藏（否则会被各组件的 display 规则覆盖，例如拖放遮罩一直挂在界面上） */
 [hidden] { display: none !important; }
 
-.native-mac .titlebar { padding-left: 84px; }
-.native-mac .titlebar .brand { width: 169px; }
-.native-mac .title-spacer { min-width: 20px; }
+/* macOS traffic lights sit inside the 49px titlebar; Windows caption buttons overlay the right edge. */
+:root[data-os="mac"] .titlebar { padding-left: 78px; }
+:root[data-os="mac"] .titlebar .brand { width: 169px; }
+:root[data-os="mac"] .title-spacer { min-width: 20px; }
+:root[data-os="win"] .titlebar { padding-right: 146px; }
 .orchestrator-dialog { width: min(560px, calc(100vw - 50px)); padding: 22px; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); }
 .orchestrator-dialog::backdrop { background: rgba(16, 17, 29, .48); backdrop-filter: blur(3px); }
 .orchestrator-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
@@ -409,6 +425,18 @@ body.dragging iframe, body.dragging .timeline { pointer-events: none; }
 .orchestrator-dialog button:not(:disabled):hover { border-color: var(--accent); cursor: pointer; }
 .orchestrator-dialog button:disabled { opacity: .55; }
 .orchestrator-dialog button[aria-pressed="true"] { opacity: 1; background: var(--accent-soft); border-color: var(--accent); }
+
+/* 外观设置 */
+.appearance-dialog { width: min(460px, calc(100vw - 40px)); }
+.appearance-fields { display: grid; gap: 10px; }
+.appearance-row { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 10px; }
+.appearance-row > span { color: var(--muted); font-size: 12px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.appearance-row output { color: var(--faint); font-variant-numeric: tabular-nums; }
+.appearance-row input[type="range"] { width: 100%; accent-color: var(--accent); padding: 0; border: 0; background: transparent; }
+.appearance-row select { width: 100%; }
+.appearance-wallpaper { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.appearance-wallpaper #lookWallName { color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.appearance-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .orchestrator-routes, .orchestrator-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .orchestrator-routes { margin-bottom: 16px; }
 .orchestrator-routes button { display: grid; gap: 4px; text-align: left; padding: 10px 12px; }

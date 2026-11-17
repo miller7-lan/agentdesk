@@ -30,3 +30,6 @@
 .flow-details dd { margin: 0; }
 .flow-details ul { padding-left: 16px; }
 .flow-details pre, .flow-description { white-space: pre-wrap; font-size: 11.5px; }
+.flow-node:is([data-flow-state="triaging"], [data-flow-state="awaiting_acceptance"]) > small { color: var(--accent); }
+.flow-node:is([data-flow-state="auth_expired"], [data-flow-state="quota_limited"]) > small { color: var(--warn); }
+.flow-node[data-flow-state="accepted"] > small { color: var(--ok); }

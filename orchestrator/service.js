@@ -274,7 +274,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after }) => {
       try {
         const id = taskId || randomUUID();
         const status = async () => {
@@ -290,18 +290,25 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'select_route', 'quota_status'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
         const selected = operation === 'select_route' ? route : active;
         // Management and status can travel on either live channel, including when the selected route is down.
         const channel = value[selected] ? selected : value.ssh ? 'ssh' : value.relay ? 'relay' : null;
-        if (!channel || (['submit', 'start_plan'].includes(operation) && !value[active])) throw new Error('bridge_offline');
+        if (!channel || (['submit', 'start_plan', 'broadcast'].includes(operation) && !value[active])) throw new Error('bridge_offline');
         const kind = operation === 'submit' ? 'task.request' : 'task.status';
-        const body = ['submit', 'start_plan'].includes(operation)
-          ? { operation, workspace: config.controlWorkspace, prompt, provider, model }
-          : { operation, route, revision, reply };
+        const body = { operation, route, revision, reply, project, after, stepId, artifact };
+        if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
+          body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
+          const workspaces = config.controlWorkspaces || {};
+          const workspace = Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace;
+          if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
+          if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
+            Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });
+          }
+        }
         const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : 10000);
         wire.send({ ok: true, value: answer });
       } catch (error) {

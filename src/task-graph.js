@@ -2,6 +2,7 @@
   const states = {
     queued: '排队中', planning: '规划中', awaiting_details: '待你补充', awaiting_approval: '待你确认',
     running: '执行中', applying: '应用补丁', testing: '验证中', needs_review: '待处理',
+    triaging: '升级诊断', awaiting_acceptance: '待验收', auth_expired: '登录过期', quota_limited: '额度受限', accepted: '已验收',
     completed: '已完成', failed: '失败', cancelled: '已取消', pending: '未开始', proposed: '拟执行',
   };
   const endStates = new Set(['completed', 'failed', 'cancelled']);
@@ -76,11 +77,15 @@
         patches_ready: '等待你审核并应用补丁',
         interrupted_windows_operation: '等待核对本机操作',
       }[task.detail];
+      const event = task.events?.at(-1);
+      const waitingFor = /executor_waiting|owner_quota_cap/.test(task.detail || '');
+      const liveState = event?.data?.reason === 'auth' ? 'auth_expired' : event?.data?.reason === 'quota' ? 'quota_limited'
+        : waitingFor && task.detail === 'owner_quota_cap' ? 'quota_limited' : task.stage === 'accepted' ? 'accepted' : task.state;
       add({
         key: 'result', depth: Math.max(...nodes.map((node) => node.depth)) + 1,
         title: stopped ? '任务结束' : '汇总结果',
         subtitle: detail || (task.state === 'applying' || task.state === 'testing' ? states[task.state] : '汇总各执行步骤'),
-        state: ['needs_review', 'applying', 'testing'].includes(task.state) || endStates.has(task.state) ? task.state : 'pending',
+        state: ['needs_review', 'applying', 'testing', 'triaging', 'awaiting_acceptance', 'auth_expired', 'quota_limited', 'accepted'].includes(liveState) || endStates.has(liveState) ? liveState : 'pending',
         parents: terminalSteps.map((node) => node.key),
       });
     }

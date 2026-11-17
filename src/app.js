@@ -3,6 +3,10 @@
   const avatars = window.AgentDeskAvatars;
   // 真实连接：VPS 上的 Codex（通过 SSH 操作 Windows 开发机）
   const LIVE = !!(window.desk && window.desk.codex);
+  const navigatorOs = /Mac/i.test(navigator.platform) ? 'mac' : /Win/i.test(navigator.platform) ? 'win' : 'linux';
+  if (window.AgentDeskPlatform) {
+    window.__agentdeskSystem = window.AgentDeskPlatform.applyPlatform(document, window.desk?.system || { os: navigatorOs });
+  }
   document.documentElement.classList.toggle('native-mac', window.desk?.platform === 'darwin');
   if (LIVE) {
     D.projects.forEach((p) => { p.name += '（示例）'; });
@@ -17,6 +21,15 @@
     get(k, d) { try { const v = localStorage.getItem('agentdesk.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem('agentdesk.' + k, JSON.stringify(v)); } catch {} },
   };
+
+  const lookApi = window.AgentDeskAppearance;
+  const appearanceApi = window.desk && window.desk.appearance;
+  let look = lookApi ? lookApi.load(localStorage) : null;
+  let wallpaperName = '';
+  if (look) {
+    lookApi.applySettings(document, look);
+    window.AgentDeskFluid?.setOptions(look);
+  }
 
   const ICON = {
     file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
@@ -35,7 +48,7 @@
   const svg = (n) => `<svg viewBox="0 0 24 24">${ICON[n] || ''}</svg>`;
 
   const state = {
-    theme: store.get('theme', 'dark'),
+    theme: store.get('theme', 'light'),
     active: LIVE ? 'L1' : 's1',
     previousConversation: null,
     panel: 'diff',
@@ -85,9 +98,56 @@
     const themeButton = $('#themeToggle');
     themeButton.querySelector('span').textContent = state.theme === 'dark' ? '浅色模式' : '深色模式';
     window.desk && window.desk.setTheme(state.theme);
+    appearanceApi?.apply({ theme: state.theme, skin: look?.skin || 'aqua' }).catch(() => {});
     store.set('theme', state.theme);
   }
   function toggleTheme() { state.theme = state.theme === 'dark' ? 'light' : 'dark'; applyTheme(); }
+
+  /* ---------- 外观 ---------- */
+  function setWallpaper(url, name) {
+    const wall = $('#wall');
+    if (wall) wall.style.backgroundImage = url ? 'url(' + url + ')' : '';
+    wallpaperName = name || '';
+    const label = $('#lookWallName');
+    if (label) label.textContent = wallpaperName || '未选择';
+  }
+  function refreshLookForm() {
+    if (!look) return;
+    $('#lookSkin').value = look.skin;
+    $('#lookLayout').value = look.layout;
+    $('#lookBlur').value = look.blur;
+    $('#lookFrost').value = look.frost;
+    $('#lookHue').value = look.hue;
+    $('#lookBright').value = look.bright;
+    $('#lookWallBlur').value = look.wallpaperBlur;
+    $('#lookBoot').value = look.boot;
+    $('#lookBlurOut').textContent = look.blur + 'px';
+    $('#lookFrostOut').textContent = look.frost + '%';
+    $('#lookHueOut').textContent = String(look.hue);
+    $('#lookBrightOut').textContent = Math.round(look.bright * 100) + '%';
+    $('#lookWallBlurOut').textContent = look.wallpaperBlur + 'px';
+    $('#lookWallName').textContent = look.wallpaper === 'custom' ? (wallpaperName || '自定义壁纸') : '未选择';
+  }
+  function applyAppearance(patch = {}) {
+    if (!lookApi || !look) return;
+    const previous = look;
+    look = lookApi.normalizeSettings({ ...look, ...patch });
+    lookApi.applySettings(document, look);
+    lookApi.save(localStorage, look);
+    refreshLookForm();
+    if (look.wallpaper === 'none' && previous.wallpaper === 'custom') setWallpaper('', '');
+    appearanceApi?.apply({ theme: state.theme, skin: look.skin }).catch(() => {});
+    window.AgentDeskFluid?.setOptions(look);
+    if (look.boot !== previous.boot) window.__boot?.setEnabled?.(look.boot !== 'off');
+  }
+  async function restoreWallpaper() {
+    if (!appearanceApi || !look || look.wallpaper !== 'custom') return;
+    try {
+      const file = await appearanceApi.wallpaper();
+      if (file?.url) setWallpaper(file.url, file.name);
+      else applyAppearance({ wallpaper: 'none' });
+    } catch { /* a missing wallpaper is not fatal */ }
+  }
 
   /* ---------- 提示 ---------- */
   let toastT;
@@ -120,7 +180,7 @@
             ${G() && !hasGroup ? `<button type="button" data-new-group="${esc(p.id)}" aria-label="${esc(p.name)}：新建群聊">＋ 新建群聊</button>` : ''}
           </div>
           ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
-          <span class="channel-mark">#</span><span class="s-title">群聊</span>
+          <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
         </button>` : ''}${items.map((s) => `
           <div class="sess ${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.title)}" role="button" tabindex="0">
             ${avatars.html('codex', { size: 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.title)}</span><span class="s-time">${esc(s.time)}</span>
@@ -655,6 +715,57 @@
     $('#ctxHint').textContent = '上下文 18%';
     $('#sbTokens').textContent = '12.4k tokens';
   }
+  /* ---------- 外观面板 ---------- */
+  function setupAppearance() {
+    const dialog = $('#appearanceDialog');
+    if (!dialog || !look) return;
+    refreshLookForm();
+    $('#appearanceBtn').addEventListener('click', () => { refreshLookForm(); dialog.showModal(); });
+    const bindings = {
+      lookSkin: 'skin', lookLayout: 'layout', lookBlur: 'blur', lookFrost: 'frost', lookHue: 'hue',
+      lookBright: 'bright', lookWallBlur: 'wallpaperBlur', lookBoot: 'boot',
+    };
+    for (const [id, key] of Object.entries(bindings)) {
+      const el = $('#' + id);
+      el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => applyAppearance({ [key]: el.value }));
+    }
+    $('#lookWallPick').addEventListener('click', async () => {
+      if (!appearanceApi) { toast('当前环境不支持自定义壁纸'); return; }
+      try {
+        const file = await appearanceApi.pickWallpaper();
+        if (!file) return;
+        setWallpaper(file.url, file.name);
+        applyAppearance({ wallpaper: 'custom' });
+        toast('壁纸已更新');
+      } catch (error) {
+        toast(String(error && error.message).includes('too_large') ? '壁纸不能超过 8 MB' : '壁纸选择失败');
+      }
+    });
+    $('#lookWallClear').addEventListener('click', () => {
+      setWallpaper('', '');
+      applyAppearance({ wallpaper: 'none' });
+    });
+    $('#lookReplay').addEventListener('click', () => {
+      dialog.close();
+      if (window.__boot && window.__boot.replay) window.__boot.replay();
+      else toast('开机动画尚未加载');
+    });
+    $('#lookReset').addEventListener('click', () => {
+      look = lookApi.normalizeSettings(lookApi.DEFAULTS);
+      lookApi.applySettings(document, look);
+      lookApi.save(localStorage, look);
+      setWallpaper('', '');
+      refreshLookForm();
+      appearanceApi?.apply({ theme: state.theme, skin: look.skin }).catch(() => {});
+      window.AgentDeskFluid?.setOptions(look);
+      window.__boot?.setEnabled?.(look.boot !== 'off');
+      toast('已恢复默认外观');
+    });
+  }
+  setupAppearance();
+  restoreWallpaper();
+  window.__appearance = { get: () => ({ ...look }), apply: applyAppearance };
+
   $('#sbPet').addEventListener('click', () => refreshPet(true));
   applyTheme(); applyLayout(); renderAll(); setBusy(false); autosize();
   refreshPet(false); setInterval(() => refreshPet(false), 5000);

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 const bootstrapPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'agentdesk-enrollment.json');
 const enrollment = fs.existsSync(bootstrapPath) && JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
 if (enrollment) process.env.AGENTDESK_ENROLLED = '1';
@@ -11,7 +12,21 @@ const { Desktop, desktopExecutable } = require('./desktop');
 const desktop = new Desktop(desktopExecutable(app));
 const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
+const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
+const platformName = detectOs({ platform: process.platform });
+const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
+const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
+const windowMaterial = materialFor({ os: platformName, build: windowsBuild });
+const translucentWindow = windowMaterial === 'vibrancy' || windowMaterial === 'acrylic';
+// One id per app launch: a renderer reload inside the same process must not replay the boot.
+const launchId = randomUUID();
+let bootMode = process.env.AGENTDESK_SHOT_SKIP_BOOT === '1' ? 'off' : 'on';
+if (process.env.AGENTDESK_APPEARANCE) {
+  try {
+    if (JSON.parse(process.env.AGENTDESK_APPEARANCE).boot === 'off') bootMode = 'off';
+  } catch (_) {}
+}
 const fileTurns = new Map();
 const fullAccessThreads = new Set();
 
@@ -40,15 +55,29 @@ function createWindow() {
     minHeight: 600,
     title: 'AgentDesk',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    backgroundColor: OVERLAY.dark.color,
+    // macOS vibrancy and Windows 11 acrylic only show through a transparent window background.
+    backgroundColor: translucentWindow ? '#00000000' : OVERLAY.light.color,
+    ...(platformName === 'mac' ? { vibrancy: 'under-window', visualEffectState: 'active' } : {}),
+    ...(windowMaterial === 'acrylic' ? { backgroundMaterial: 'acrylic' } : {}),
     titleBarStyle: mac ? 'hiddenInset' : 'hidden',
-    titleBarOverlay: mac ? false : OVERLAY.dark,
+    // Aqua is the default skin, so the first frame uses the light caption colours; app.js corrects
+    // this to the saved theme once the renderer boots.
+    titleBarOverlay: mac ? false : OVERLAY.light,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Synchronous platform information for the preload bridge: no async flash before first paint.
+      additionalArguments: [
+        '--agentdesk-os=' + platformName,
+        '--agentdesk-build=' + windowsBuild,
+        '--agentdesk-material=' + windowMaterial,
+        '--agentdesk-version=' + app.getVersion(),
+        '--agentdesk-launch=' + launchId,
+        '--agentdesk-boot=' + bootMode,
+      ],
     },
   });
   win.setMenuBarVisibility(false);
@@ -84,7 +113,19 @@ function createWindow() {
   if (shot) {
     win.webContents.on('console-message', (e) => console.log('[renderer]', e.message));
     win.webContents.once('did-finish-load', () => setTimeout(async () => {
-      if (process.env.AGENTDESK_THEME) await win.webContents.executeJavaScript(`document.getElementById('themeToggle').click()`);
+      if (process.env.AGENTDESK_THEME) {
+        const theme = process.env.AGENTDESK_THEME === 'dark' ? 'dark' : 'light';
+        await win.webContents.executeJavaScript(
+          `(() => { if (window.__desk.state.theme !== ${JSON.stringify(theme)}) document.getElementById('themeToggle').click(); })()`);
+      }
+      if (process.env.AGENTDESK_APPEARANCE) {
+        let settings;
+        try { settings = JSON.parse(process.env.AGENTDESK_APPEARANCE); } catch (_) {}
+        if (settings && win && !win.isDestroyed()) {
+          await win.webContents.executeJavaScript(
+            `window.__appearance && window.__appearance.apply(${JSON.stringify(settings)})`);
+        }
+      }
       await new Promise((r) => setTimeout(r, 400));
       const img = await win.webContents.capturePage();
       require('fs').writeFileSync(shot, img.toPNG());
@@ -97,9 +138,76 @@ ipcMain.on('theme:set', (_e, theme) => {
   const t = theme === 'light' ? 'light' : 'dark';
   nativeTheme.themeSource = t;
   if (win && !win.isDestroyed()) {
+    // The caption-button colours follow the skin; the window itself stays transparent for vibrancy.
     try { win.setTitleBarOverlay(OVERLAY[t]); } catch (_) {}
-    win.setBackgroundColor(OVERLAY[t].color);
+    if (!translucentWindow) win.setBackgroundColor(OVERLAY[t].color);
   }
+});
+
+ipcMain.handle('platform:info', () => ({
+  os: platformName,
+  build: windowsBuild,
+  material: windowMaterial,
+  isWindows11: isWindows11(windowsBuild),
+  version: app.getVersion(),
+  electron: process.versions.electron,
+}));
+
+const WALLPAPER_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+const WALLPAPER_MAX = 8 * 1024 * 1024;
+const wallpaperFile = () => Object.keys(WALLPAPER_TYPES)
+  .map((ext) => path.join(app.getPath('userData'), 'wallpaper' + ext))
+  .find((file) => fs.existsSync(file));
+
+function readWallpaper(file) {
+  const mime = WALLPAPER_TYPES[path.extname(file).toLowerCase()];
+  return mime ? 'data:' + mime + ';base64,' + fs.readFileSync(file).toString('base64') : null;
+}
+
+ipcMain.handle('appearance:pickWallpaper', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    title: '选择壁纸',
+    properties: ['openFile'],
+    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  const source = result.filePaths[0];
+  const stat = fs.statSync(source);
+  if (!stat.isFile()) throw new Error('wallpaper_invalid');
+  if (stat.size > WALLPAPER_MAX) throw new Error('wallpaper_too_large');
+  const ext = path.extname(source).toLowerCase();
+  if (!WALLPAPER_TYPES[ext]) throw new Error('wallpaper_type');
+  const dir = app.getPath('userData');
+  for (const old of Object.keys(WALLPAPER_TYPES)) {
+    try { fs.unlinkSync(path.join(dir, 'wallpaper' + old)); } catch (_) {}
+  }
+  const target = path.join(dir, 'wallpaper' + ext);
+  fs.copyFileSync(source, target);
+  return { name: path.basename(source), url: readWallpaper(target) };
+});
+
+ipcMain.handle('appearance:wallpaper', () => {
+  const file = wallpaperFile();
+  return file ? { name: path.basename(file), url: readWallpaper(file) } : null;
+});
+
+ipcMain.handle('appearance:set', (_e, settings = {}) => {
+  const theme = settings.theme === 'dark' ? 'dark' : 'light';
+  const skin = settings.skin === 'classic' ? 'classic' : 'aqua';
+  nativeTheme.themeSource = theme;
+  if (win && !win.isDestroyed()) {
+    try { win.setTitleBarOverlay(OVERLAY[theme]); } catch (_) {}
+    if (platformName === 'win' && isWindows11(windowsBuild)
+        && typeof win.setBackgroundMaterial === 'function') {
+      try {
+        win.setBackgroundMaterial(skin === 'aqua' ? 'acrylic' : 'none');
+        win.setBackgroundColor(skin === 'aqua' ? '#00000000' : OVERLAY[theme].color);
+      } catch (_) {}
+    } else if (!translucentWindow) {
+      win.setBackgroundColor(skin === 'aqua' ? (theme === 'dark' ? '#060b15' : '#eef3f9') : OVERLAY[theme].color);
+    }
+  }
+  return { theme, skin };
 });
 
 // 远程 Codex：状态、事件、审批请求转发给界面
@@ -317,7 +425,7 @@ function startMacDesktop() {
 
 ipcMain.handle('orchestrator:control', async (event, frame) => {
   if ((!mac && !enrollment) || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
-      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status'].includes(frame.operation)) {
+      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts'].includes(frame.operation)) {
     return { ok: false, error: '无权操作主控线路' };
   }
   const { request } = require('./orchestrator/mcp');

@@ -310,7 +310,9 @@
   /* ---------- 审批 ---------- */
   function onServerRequest(m) {
     const p = m.params || {};
-    const s = (p.threadId && byThread.get(p.threadId)) || sess(state.active);
+    const session = p.threadId && byThread.get(p.threadId);
+    if (session?.live && window.__group?.acceptApproval(session.project, m)) return;
+    const s = session || (!p.threadId && sess(state.active));
     if (!s || !s.live) return cx.respond(m.id, null, { code: -32603, message: 'no session' });
     const base = { t: 'approval', reqId: m.id, method: m.method, state: 'pending' };
     let card;

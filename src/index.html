@@ -1,14 +1,33 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light" data-skin="aqua" data-layout="float">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>AgentDesk</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="group.css" />
   <link rel="stylesheet" href="task-graph.css" />
+  <link rel="stylesheet" href="aqua.css" />
+  <link rel="stylesheet" href="boot.css" />
+  <script src="platform.js"></script>
+  <script src="boot-init.js"></script>
 </head>
 <body>
+  <div class="boot" id="boot" role="dialog" aria-label="AgentDesk 正在启动">
+    <canvas id="bootCanvas" aria-hidden="true"></canvas>
+    <div id="bootNodes"></div>
+    <div class="boot-hud tl"><b>AGENTDESK // BOOT SEQUENCE</b><br /><span id="bootBuild"></span> · <span id="bootOs"></span></div>
+    <div class="boot-hud tr"><span id="bootClock"></span></div>
+    <div class="boot-hud bl boot-log" id="bootLog" aria-live="polite"></div>
+    <button class="boot-skip" id="bootSkip" type="button">双击任意处或按 Esc 进入</button>
+    <div class="boot-actions" id="bootActions" hidden>
+      <span>云端连接离线</span>
+      <button id="bootRetry" type="button">重试</button>
+      <button id="bootOffline" type="button">离线进入</button>
+    </div>
+  </div>
+  <canvas id="fluid" aria-hidden="true"></canvas>
+  <div id="wall" aria-hidden="true"></div>
   <header class="titlebar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 7 5 5-5 5m8 0h6"/></svg></span>
@@ -21,20 +40,23 @@
   <div class="workbench">
     <nav class="project-rail" aria-label="导航">
       <button class="icon-btn" id="railProjects" type="button" title="项目列表" aria-label="项目列表"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg></button>
-      <button class="icon-btn" id="railSearch" type="button" title="搜索对话 (Ctrl+K)" aria-label="搜索对话"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
+      <button class="icon-btn" id="railSearch" type="button" title="搜索对话" data-shortcut-title="搜索对话|K" aria-label="搜索对话"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
     </nav>
     <aside class="sidebar" id="sidebar" aria-label="项目与对话">
       <label class="side-search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
         <input id="sessionSearch" aria-label="搜索项目与对话" placeholder="搜索项目与对话" />
-        <kbd>Ctrl K</kbd>
+        <kbd data-shortcut="K">Ctrl K</kbd>
       </label>
-      <div class="side-title">项目</div>
+      <div class="side-title">项目 <button type="button" class="task-text-link" id="newGroupProject" hidden>新建项目</button></div>
       <div class="side-list" id="sessionList"></div>
       <div class="side-footer">
         <button class="side-action" id="sbOrchestrator" type="button" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="5" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M12 8v4m-5.5 4v-4h11v4"/></svg>
           <span>主控线路</span>
+        </button>
+        <button class="side-action" id="appearanceBtn" type="button" title="外观设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span>外观</span>
         </button>
         <button class="side-action" id="themeToggle" type="button" title="切换深浅色">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg><span>深色模式</span>
@@ -45,12 +67,12 @@
 
     <main class="center">
       <div class="session-strip">
-        <button class="icon-btn strip-toggle" id="toggleSidebar" type="button" title="切换侧栏 (Ctrl+B)" aria-label="会话侧栏" aria-controls="sidebar">
+        <button class="icon-btn strip-toggle" id="toggleSidebar" type="button" title="切换侧栏" data-shortcut-title="切换侧栏|B" aria-label="会话侧栏" aria-controls="sidebar">
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14"/></svg>
         </button>
         <div class="group-breadcrumb" id="directBreadcrumb"></div>
         <div id="groupBreadcrumb" class="group-breadcrumb" hidden></div>
-        <button class="icon-btn strip-toggle" id="sbPanel" type="button" title="切换工作区面板 (Ctrl+J)" aria-label="工作区面板" aria-controls="panel">
+        <button class="icon-btn strip-toggle" id="sbPanel" type="button" title="切换工作区面板" data-shortcut-title="切换工作区面板|J" aria-label="工作区面板" aria-controls="panel">
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/></svg>
         </button>
       </div>
@@ -117,14 +139,14 @@
           <div class="group-compose-box">
             <div id="groupSuggestions" class="group-suggestions" aria-label="成员和命令建议" hidden></div>
             <div id="groupPlanReply" class="group-plan-reply" hidden><span id="groupPlanReplyText"></span><button class="btn" type="button" id="groupPlanReplyCancel">取消回复</button></div>
-            <textarea id="groupInput" rows="2" maxlength="12000" placeholder="向组长描述任务…" aria-label="群聊消息" title="输入 @Codex、@Claude、@Grok 或 @Gemini 可指定方案确认后的执行者" required></textarea>
+            <div id="groupReference" class="group-plan-reply" hidden><span id="groupReferenceLabel"></span><button class="btn" type="button" id="groupReferenceClear">取消引用</button></div>
+            <textarea id="groupInput" rows="2" maxlength="12000" placeholder="向组长描述任务…" aria-label="群聊消息" title="输入 @ 选择成员，输入 / 查看群聊命令" required></textarea>
             <div class="group-compose-controls">
               <button type="button" class="group-mention-button" id="groupMention" aria-label="选择成员" title="选择成员">@</button>
               <label class="group-recipient">执行者
                 <select id="groupRecipient" aria-label="方案确认后的执行者">
                   <option value="">由组长分派</option>
                   <option value="codex">Codex</option>
-                  <option value="claude">Claude Code</option>
                   <option value="grok">Grok Build</option>
                   <option value="gemini">Gemini</option>
                   <option value="antigravity">Antigravity</option>
@@ -148,7 +170,7 @@
     <section class="panel" id="panel" aria-labelledby="panelTitle">
       <div class="panel-heading">
         <h2 id="panelTitle">检查工作区</h2>
-        <button class="icon-btn" id="closePanel" type="button" title="收起面板 (Ctrl+J)" aria-label="收起工作区面板"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        <button class="icon-btn" id="closePanel" type="button" title="收起面板" data-shortcut-title="收起面板|J" aria-label="收起工作区面板"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div class="panel-tabs">
         <button class="ptab" data-panel="members" data-group-panel hidden>成员</button>
@@ -169,6 +191,7 @@
     <button class="sb-item clickable" id="sbGroupRoute" type="button" hidden></button>
     <div id="sbGroupMembers" class="group-status-members" hidden></div>
     <div id="sbQuota" class="group-status-members sb-quotas" aria-label="订阅额度" hidden></div>
+    <div id="sbResources" class="group-status-members" aria-label="主控资源"></div>
     <span class="sb-item" id="sbMode">每步询问</span>
     <div class="grow"></div>
     <button class="sb-item clickable desktop-status" id="sbDesktop" type="button" title="点击断开或恢复本机桌面控制">桌面控制</button>
@@ -198,12 +221,68 @@
       <p id="enrollmentStatus" role="status" aria-live="polite"></p>
     </form>
   </dialog>
+  <dialog id="groupProjectDialog" class="orchestrator-dialog" aria-labelledby="groupProjectTitle">
+    <form id="groupProjectForm" class="group-project-form">
+      <h2 id="groupProjectTitle">新建项目</h2>
+      <label>项目名称 <input id="groupProjectName" maxlength="60" required /></label>
+      <label>主控项目 <select id="groupProjectBinding"><option value="">本地示例</option></select></label>
+      <div class="task-actions"><button class="btn primary" type="submit">创建</button><button class="btn" id="groupProjectClose" type="button">关闭</button></div>
+    </form>
+  </dialog>
+  <dialog id="appearanceDialog" class="orchestrator-dialog appearance-dialog" aria-labelledby="appearanceTitle">
+    <form method="dialog" class="orchestrator-heading">
+      <h2 id="appearanceTitle">外观</h2>
+      <button type="submit" class="orchestrator-close" aria-label="关闭">×</button>
+    </form>
+    <div class="appearance-fields">
+      <label class="appearance-row"><span>皮肤</span>
+        <select id="lookSkin"><option value="aqua">Aqua 玻璃</option><option value="classic">经典</option></select>
+      </label>
+      <label class="appearance-row"><span>布局</span>
+        <select id="lookLayout"><option value="float">悬浮</option><option value="flat">贴合</option></select>
+      </label>
+      <label class="appearance-row"><span>模糊 <output id="lookBlurOut">22px</output></span>
+        <input id="lookBlur" type="range" min="0" max="40" step="1" />
+      </label>
+      <label class="appearance-row"><span>磨砂 <output id="lookFrostOut">72%</output></span>
+        <input id="lookFrost" type="range" min="50" max="95" step="1" />
+      </label>
+      <label class="appearance-row"><span>色相 <output id="lookHueOut">212</output></span>
+        <input id="lookHue" type="range" min="0" max="359" step="1" />
+      </label>
+      <label class="appearance-row"><span>亮度 <output id="lookBrightOut">100%</output></span>
+        <input id="lookBright" type="range" min="0.6" max="1.3" step="0.05" />
+      </label>
+      <div class="appearance-row"><span>壁纸</span>
+        <div class="appearance-wallpaper">
+          <button type="button" class="btn" id="lookWallPick">选择图片</button>
+          <button type="button" class="btn" id="lookWallClear">清除</button>
+          <span id="lookWallName">未选择</span>
+        </div>
+      </div>
+      <label class="appearance-row"><span>壁纸模糊 <output id="lookWallBlurOut">0px</output></span>
+        <input id="lookWallBlur" type="range" min="0" max="30" step="1" />
+      </label>
+      <label class="appearance-row"><span>开机动画</span>
+        <select id="lookBoot"><option value="always">每次启动</option><option value="off">关闭</option></select>
+      </label>
+      <div class="appearance-actions">
+        <button type="button" class="btn" id="lookReplay">立即重播</button>
+        <button type="button" class="btn" id="lookReset">恢复默认</button>
+      </div>
+    </div>
+  </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="data.js"></script>
   <script src="avatars.js"></script>
+  <script src="boot-feed.js"></script>
+  <script src="boot.js"></script>
+  <script src="appearance.js"></script>
+  <script src="fluid.js"></script>
   <script src="app.js"></script>
   <script src="live.js"></script>
   <script src="task-graph.js"></script>
+  <script src="approvals.js"></script>
   <script src="orchestrator.js"></script>
   <script src="enrollment.js"></script>
 </body>
