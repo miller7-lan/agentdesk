@@ -15,6 +15,8 @@ class Desktop {
     this.pending = new Map();
     this.id = 0;
     this.tools = null;
+    this.timeoutMs = 40_000;
+    this.timeouts = 0;          // consecutive timeouts; the backend is restarted after three
   }
 
   async start() {
@@ -37,12 +39,13 @@ class Desktop {
       if (!request) return;
       this.pending.delete(response.id);
       clearTimeout(request.timer);
+      this.timeouts = 0;
       if (response.error) request.reject(new Error(response.error.message));
       else request.resolve(response.result);
     });
     await this.send('initialize', {
       protocolVersion: '2024-11-05', capabilities: {},
-      clientInfo: { name: 'AgentDesk', version: '0.2.5' },
+      clientInfo: { name: 'AgentDesk', version: require('./package.json').version },
     });
     this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
     const { tools } = await this.send('tools/list', {});
@@ -71,7 +74,12 @@ class Desktop {
   send(method, params) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.stop('Windows desktop operation timed out'), 40_000);
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('Windows desktop operation timed out'));
+        if (++this.timeouts >= 3) this.stop('Windows desktop backend stopped responding');
+      }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
     });

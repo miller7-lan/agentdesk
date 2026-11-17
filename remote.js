@@ -28,10 +28,25 @@ const SSH = process.platform === 'win32'
   : '/usr/bin/ssh';
 const sshPath = (value) => JSON.stringify(process.platform === 'win32' ? value.replace(/\\/g, '/') : value);
 
-function loadConfig() {
-  const f = path.join(DIR, mac ? 'mac-remote.json' : 'remote.json');
-  try { return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(f, 'utf8')) }; }
-  catch { try { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify(DEFAULTS, null, 2)); } catch {} return { ...DEFAULTS }; }
+const VERSION = require('./package.json').version;
+
+// A missing file gets a template. A file that exists but cannot be parsed is left untouched:
+// overwriting it would silently throw away the user's host and key settings.
+function loadConfig(f = path.join(DIR, mac ? 'mac-remote.json' : 'remote.json')) {
+  let text;
+  try { text = fs.readFileSync(f, 'utf8'); } catch (error) {
+    if (error.code === 'ENOENT') {
+      try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(DEFAULTS, null, 2), { flag: 'wx' }); } catch {}
+    }
+    return { ...DEFAULTS };
+  }
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置必须是一个 JSON 对象');
+    return { ...DEFAULTS, ...value };
+  } catch (error) {
+    return { ...DEFAULTS, configError: `${path.basename(f)} 无法解析，文件未改动：${error.message}` };
+  }
 }
 
 const sshBase = (cfg, key, certificate) => [
@@ -121,8 +136,8 @@ class Remote extends EventEmitter {
     this.stopping = false;
     const id = ++this.startId;
     const task = (async () => {
-      if (!this.cfg.host) {
-        this.set({ codex: 'error', detail: '请先在 ~/.agentdesk/remote.json 配置 VPS 地址并重启 AgentDesk' });
+      if (this.cfg.configError || !this.cfg.host) {
+        this.set({ codex: 'error', detail: this.cfg.configError || '请先在 ~/.agentdesk/remote.json 配置 VPS 地址并重启 AgentDesk' });
         return;
       }
       try { await this.ensureSshd(); } catch (error) {
@@ -239,7 +254,7 @@ class Remote extends EventEmitter {
     child.on('exit', (code) => { connection.ended = true; fail(this.exitReason(connection.output, code, 'Codex 连接断开')); });
     child.on('close', (code) => { connection.ended = true; fail(this.exitReason(connection.output, code, 'Codex 连接已关闭')); });
     this.request('initialize', {
-      clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: '0.2.7' },
+      clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: VERSION },
       capabilities: { experimentalApi: true, mcpServerOpenaiFormElicitation: true },
     }, { timeoutMs: this.timing.handshake, connection, internal: true }).then((info) => {
       if (this.codexConnection !== connection) return;
@@ -486,3 +501,4 @@ class Remote extends EventEmitter {
 
 module.exports = new Remote();
 module.exports.Remote = Remote;
+module.exports.loadConfig = loadConfig;

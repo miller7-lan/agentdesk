@@ -54,6 +54,11 @@ function createWindow() {
   win.setMenuBarVisibility(false);
   // 拖进来的文件由页面处理；万一漏到窗口上也不要跳转去打开它
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Links in model output never open a new Electron window; http(s) goes to the system browser.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   win.once('ready-to-show', () => win.show());
 
@@ -243,9 +248,13 @@ ipcMain.handle('codex:request', async (_e, method, params) => {
       if (method === 'thread/resume' && desktop.enabled && params?.threadId) desktopThreads.add(params.threadId);
     }
     if (method === 'turn/start') {
-      if (desktop.enabled) {
+      // A read-only (plan) turn must not be able to click, type or take screenshots.
+      const readOnly = params.sandboxPolicy?.type === 'readOnly';
+      if (desktop.enabled && !readOnly) {
         await desktop.specs();
         desktopThreads.add(params.threadId);
+      } else {
+        desktopThreads.delete(params.threadId);
       }
       if (params.approvalPolicy === 'never' && params.sandboxPolicy?.type === 'dangerFullAccess') {
         fullAccessThreads.add(params.threadId);

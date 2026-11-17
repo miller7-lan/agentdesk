@@ -219,3 +219,24 @@ test('stop cancels retries and resolves waiters, including connection failures w
   assert.equal(remote.pending.size, 0);
   assert.equal(remote.retryTimers.size, 0);
 });
+
+test('a broken remote.json is reported and never overwritten; a missing one gets a template', async (t) => {
+  const os = require('node:os');
+  const fsp = require('node:fs/promises');
+  const path = require('node:path');
+  const { loadConfig } = require('../remote');
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'agentdesk-config-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const broken = path.join(dir, 'remote.json');
+  const text = '{ "host": "vps.example.invalid", }';
+  await fsp.writeFile(broken, text);
+  const loaded = loadConfig(broken);
+  assert.match(loaded.configError, /无法解析/);
+  assert.equal(loaded.host, '');
+  assert.equal(await fsp.readFile(broken, 'utf8'), text);
+  const fresh = path.join(dir, 'new', 'remote.json');
+  assert.equal(loadConfig(fresh).configError, undefined);
+  assert.equal(JSON.parse(await fsp.readFile(fresh, 'utf8')).host, '');
+  await fsp.writeFile(broken, '{"host":"vps.example.invalid"}');
+  assert.equal(loadConfig(broken).host, 'vps.example.invalid');
+});
