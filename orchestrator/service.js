@@ -54,6 +54,8 @@ function providerSettings(settings, name, home) {
   const safe = ['PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'TZ'];
   const env = Object.fromEntries(safe.filter((name) => process.env[name]).map((name) => [name, process.env[name]]));
   env.HOME = home;
+  // Scheduler worktrees are created from the user's authorized repository, never an arbitrary folder.
+  if (name === 'gemini') env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   for (const [key, filename] of Object.entries(settings.credentials || {})) {
     const permitted = { codex: 'OPENAI_API_KEY', claude: 'ANTHROPIC_API_KEY', grok: 'XAI_API_KEY', gemini: 'GEMINI_API_KEY' };

@@ -64,6 +64,14 @@ test('Gemini edit permission does not change its read-only invocation', () => {
   assert.equal(write[write.indexOf('--approval-mode') + 1], 'auto_edit');
 });
 
+test('Grok headless edits receive an explicit Edit allow rule while read-only mode denies it', () => {
+  const read = providers.grok.args('hello', true, 'session');
+  const write = providers.grok.args('hello', false, 'session');
+  assert.ok(read.some((arg, i) => arg === '--deny' && read[i + 1] === 'Edit'));
+  assert.ok(write.some((arg, i) => arg === '--allow' && write[i + 1] === 'Edit'));
+  assert.ok(write.some((arg, i) => arg === '--deny' && write[i + 1] === 'Bash'));
+});
+
 test('explicit direct edits can use reserved Claude quota but cannot bypass the hard quota limit', () => {
   const router = new Router({ adapters: { claude: {} }, writeProviders: ['claude'] });
   router.setQuota([{ provider: 'claude', buckets: [{ weekly: { usedPercent: 63 } }] }]);

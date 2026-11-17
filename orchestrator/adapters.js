@@ -31,7 +31,7 @@ const providers = {
     args: (prompt, readonly, session) => [
       '--no-auto-update', '--output-format', 'plain', '--permission-mode', readonly ? 'dontAsk' : 'acceptEdits',
       '--allow', 'Read', '--allow', 'Grep', '--allow', 'WebSearch',
-      ...(readonly ? ['--deny', 'Edit'] : []), '--deny', 'Bash', '--session-id', session, '-p', prompt,
+      ...(readonly ? ['--deny', 'Edit'] : ['--allow', 'Edit']), '--deny', 'Bash', '--session-id', session, '-p', prompt,
     ],
     plain: true,
     promptArg: true,
@@ -96,7 +96,7 @@ function addUsage(total, usage) {
 // Exit text that means "this CLI cannot work right now" rather than "the task failed".
 // Login problems are checked first: an expired session often also mentions limits.
 function classifyFailure(text) {
-  if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired/i.test(text)) return 'cli_auth_required';
+  if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired|IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported/i.test(text)) return 'cli_auth_required';
   if (/usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|hit your \d+[ -]hour limit|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
   return null;
 }

@@ -9,7 +9,7 @@
   const labels = { queued: '等待执行或额度恢复', running: '执行中', planning: '规划中',
     completed: '已完成', failed: '失败', cancelled: '已停止', needs_review: '等待确认', applying: '正在写入本机' };
   const errors = { provider_write_not_enabled: '服务器尚未启用此 AI 的修改能力。',
-    cli_quota_exhausted: '该 AI 当前额度已用尽。', cli_auth_required: '该 AI 需要在 VPS 上重新登录。',
+    cli_quota_exhausted: '该 AI 当前额度已用尽。', cli_auth_required: '该 AI 的登录或账号不可用，需要在 VPS 上处理。',
     windows_workspace_dirty: '本机项目有未提交的改动，请先处理后再生成补丁。',
     bridge_offline: 'Windows Bridge 尚未连接。', claude_reserved: '服务器需要更新以支持 Claude 单聊。' };
   const saved = store.get('providerDirectSessions', []);
