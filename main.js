@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
@@ -771,6 +771,11 @@ app.on('before-quit', (e) => {
 });
 
 app.whenReady().then(async () => {
+  // The app never needs the camera, microphone, location or similar browser permissions, and Electron grants
+  // them by default, so refuse everything except writing to the clipboard (the "copy" buttons).
+  const allowed = new Set(['clipboard-sanitized-write']);
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => callback(allowed.has(permission)));
+  session.defaultSession.setPermissionCheckHandler((_contents, permission) => allowed.has(permission));
   logger = createLogger(path.join(app.getPath('userData'), 'logs'), { onError: () => console.error('AgentDesk 日志写入失败') });
   await loadAppConfig();
   logger.log('application_start', { status: configError ? 'config_error' : 'ok' });

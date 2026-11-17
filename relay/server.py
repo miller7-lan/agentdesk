@@ -38,10 +38,58 @@ class RateLimit:
         self.bytes -= size
 
 
+class AddressGuard:
+    """Per-address limits in front of authentication. One address may hold only a few connections that have
+    not yet authenticated, and an address that keeps presenting bad tokens is turned away for a while, so a
+    scanner or a stale client cannot fill the relay's few connection slots or keep guessing."""
+
+    def __init__(self, pending=4, failures=8, window=600, ban=900, clock=time.monotonic):
+        self.limit, self.max_failures, self.window, self.ban = pending, failures, window, ban
+        self.clock = clock
+        self.pending = {}
+        self.failures = {}
+        self.banned = {}
+
+    def admit(self, address):
+        now = self.clock()
+        until = self.banned.get(address)
+        if until is not None:
+            if until > now:
+                return False
+            del self.banned[address]
+        if self.pending.get(address, 0) >= self.limit:
+            return False
+        self.pending[address] = self.pending.get(address, 0) + 1
+        return True
+
+    def settled(self, address):
+        count = self.pending.get(address, 0) - 1
+        if count > 0:
+            self.pending[address] = count
+        else:
+            self.pending.pop(address, None)
+
+    def fail(self, address):
+        now = self.clock()
+        recent = [t for t in self.failures.get(address, []) if now - t < self.window] + [now]
+        self.failures[address] = recent
+        if len(recent) >= self.max_failures:
+            self.banned[address] = now + self.ban
+            del self.failures[address]
+
+    def sweep(self):
+        now = self.clock()
+        self.banned = {a: t for a, t in self.banned.items() if t > now}
+        self.failures = {a: r for a, r in self.failures.items() if any(now - t < self.window for t in r)}
+
+
 class Connection:
-    def __init__(self, reader, writer):
+    def __init__(self, reader, writer, address=None, guard=None):
         self.reader = reader
         self.writer = writer
+        self.address = address
+        self.guard = guard
+        self.pending = guard is not None
         self.name = None
         self.device = None
         self.lock = asyncio.Lock()
@@ -68,7 +116,13 @@ class Connection:
                 self.close()
                 return False
 
+    def settle(self):
+        if self.pending:
+            self.pending = False
+            self.guard.settled(self.address)
+
     def close(self):
+        self.settle()
         self.writer.transport.abort()
 
 
@@ -78,6 +132,7 @@ class Relay:
         self.devices = load_devices(devices_path)
         self.receipts = Receipts(database)
         self.online = {}
+        self.guard = None
 
     def peer(self, connection):
         peer = self.online.get(connection.device.peer)
@@ -97,7 +152,10 @@ class Relay:
                 and type(frame["version"]) is int and frame["version"] == 1, "invalid_hello")
         name = frame["device_id"]
         device = authenticate(self.devices, name, frame["token"])
+        if device is None and connection.guard:
+            connection.guard.fail(connection.address)
         require(device is not None, "unauthorized")
+        connection.settle()
         connection.name, connection.device = name, device
         previous = self.online.get(name)
         if previous:
@@ -205,11 +263,13 @@ class Relay:
         while True:
             await asyncio.sleep(60)
             self.receipts.sweep()
+            if self.guard:
+                self.guard.sweep()
             self.receipts.db.execute("PRAGMA wal_checkpoint(PASSIVE)")
             LOG.info("health devices_online=%d receipts=%d", len(self.online), self.receipts.count)
 
 
-async def handle_socket(sock, tls, relay):
+async def handle_socket(sock, tls, relay, address=None):
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader(limit=MAX_FRAME)
     protocol = asyncio.StreamReaderProtocol(reader)
@@ -219,9 +279,11 @@ async def handle_socket(sock, tls, relay):
         )
     except (OSError, asyncio.TimeoutError, TimeoutError):
         sock.close()
+        if relay.guard:
+            relay.guard.settled(address)
         return
     writer = asyncio.StreamWriter(transport, protocol, reader, loop)
-    await relay.serve(Connection(reader, writer))
+    await relay.serve(Connection(reader, writer, address, relay.guard))
 
 
 async def run(args):
@@ -229,6 +291,7 @@ async def run(args):
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(args.cert, args.key)
     relay = Relay(args.devices, args.database)
+    relay.guard = AddressGuard(pending=args.pending_per_address)
     loop = asyncio.get_running_loop()
     clients = set()
     stop = asyncio.Event()
@@ -257,12 +320,13 @@ async def run(args):
 
         async def accept():
             while True:
-                sock, _ = await loop.sock_accept(listener)
-                if len(clients) >= MAX_CONNECTIONS:
+                sock, peer = await loop.sock_accept(listener)
+                address = peer[0] if isinstance(peer, tuple) else str(peer)
+                if len(clients) >= MAX_CONNECTIONS or not relay.guard.admit(address):
                     sock.close()
                     await asyncio.sleep(0)
                     continue
-                task = asyncio.create_task(handle_socket(sock, tls, relay))
+                task = asyncio.create_task(handle_socket(sock, tls, relay, address))
                 clients.add(task)
                 task.add_done_callback(client_done)
 
@@ -286,6 +350,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=22022)
+    parser.add_argument("--pending-per-address", type=int, default=4,
+                        help="connections one address may hold before it authenticates")
     for option in ("cert", "key", "devices", "database"):
         parser.add_argument("--" + option, type=Path, required=True)
     args = parser.parse_args()

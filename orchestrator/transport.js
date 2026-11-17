@@ -54,6 +54,8 @@ class Lines extends EventEmitter {
   }
 }
 
+const REJECTED_RETRY_MS = 10 * 60_000;
+
 class Relay extends EventEmitter {
   constructor(config) {
     super();
@@ -81,6 +83,9 @@ class Relay extends EventEmitter {
     });
     wire.on('frame', (frame) => {
       if (frame.type === 'protocol_error') {
+        // A rejected token will not start working on its own: wait for a new enrollment instead of retrying
+        // every few seconds, which would also get this address turned away by the relay.
+        this.rejected = frame.code === 'unauthorized';
         this.emit('fault', frame.code);
         socket.destroy();
         return;
@@ -124,7 +129,9 @@ class Relay extends EventEmitter {
       this.ready = this.online = false;
       this.emit('closed');
       if (!this.stopped) {
-        this.retry = setTimeout(() => this.dial(), this.delay * (0.8 + Math.random() * 0.2));
+        const wait = this.rejected ? REJECTED_RETRY_MS : this.delay;
+        this.rejected = false;
+        this.retry = setTimeout(() => this.dial(), wait * (0.8 + Math.random() * 0.2));
         this.delay = Math.min(30000, this.delay * 2);
       }
     });

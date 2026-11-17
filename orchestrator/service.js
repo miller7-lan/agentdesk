@@ -287,8 +287,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
     session.on('error', (error) => log('bridge SSH:', error.code || error.message));
     session.once('close', () => {
       if (stopped) return;
-      restart = setTimeout(connect, delay);
-      delay = Math.min(30000, delay * 2);
+      restart = setTimeout(connect, delay * (0.8 + Math.random() * 0.2));
+      delay = Math.min(60000, delay * 2);
     });
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {

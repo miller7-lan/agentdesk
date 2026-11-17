@@ -70,7 +70,7 @@ class Remote extends EventEmitter {
     this.service = service;
     this.timing = {
       handshake: 30000, request: 60000, heartbeat: 20000, heartbeatReply: 15000,
-      tunnel: 30000, retry: [1000, 3000, 5000, 10000, 20000, 30000], ...timing,
+      tunnel: 30000, retry: [1000, 3000, 5000, 10000, 20000, 30000, 60000], ...timing,
     };
     this.state = { sshd: 'unknown', tunnel: 'idle', codex: 'idle', detail: '' };
     this.stopping = false;
@@ -119,7 +119,8 @@ class Remote extends EventEmitter {
     if (this.stopping || (channel === 'codex' && this.sleeping)) return;
     const attempt = channel === 'codex' ? this.codexRetry++ : this.tunnelRetry++;
     const delays = this.timing.retry;
-    const delay = delays[Math.min(attempt, delays.length - 1)];
+    // Up to 20% earlier at random, so several clients cut off by the same network fault do not all redial at once.
+    const delay = Math.round(delays[Math.min(attempt, delays.length - 1)] * (0.8 + Math.random() * 0.2));
     this.set({ [channel]: 'retry', detail: reason + '，' + Math.ceil(delay / 1000) + ' 秒后自动重连' });
     const timer = setTimeout(() => {
       this.retryTimers.delete(channel);

@@ -19,8 +19,37 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from protocol import MAX_CHUNK, MAX_FRAME, ProtocolError, decode, message_expiry, validate_data
-from server import RateLimit
+from server import AddressGuard, RateLimit
 from state import MAX_CONNECTIONS, Receipts, load_devices
+
+
+class AddressGuardTest(unittest.TestCase):
+    def test_pending_cap_and_ban(self):
+        now = [0.0]
+        guard = AddressGuard(pending=2, failures=3, window=60, ban=120, clock=lambda: now[0])
+        self.assertTrue(guard.admit("a"))
+        self.assertTrue(guard.admit("a"))
+        self.assertFalse(guard.admit("a"))
+        self.assertTrue(guard.admit("b"))
+        guard.settled("a")
+        self.assertTrue(guard.admit("a"))
+        for _ in range(3):
+            guard.settled("a")
+        for _ in range(3):
+            guard.fail("a")
+        self.assertFalse(guard.admit("a"))
+        self.assertTrue(guard.admit("c"))
+        now[0] = 121
+        guard.sweep()
+        self.assertTrue(guard.admit("a"))
+
+    def test_failures_outside_window_do_not_ban(self):
+        now = [0.0]
+        guard = AddressGuard(pending=5, failures=3, window=60, ban=120, clock=lambda: now[0])
+        for _ in range(5):
+            guard.fail("a")
+            now[0] += 40
+        self.assertTrue(guard.admit("a"))
 
 
 def message_id(created=None):
@@ -171,6 +200,7 @@ class IntegrationTests(unittest.TestCase):
             sys.executable, str(ROOT / "server.py"), "--bind", "127.0.0.1", "--port", "0",
             "--cert", str(self.certs / "cert"), "--key", str(self.certs / "key"),
             "--devices", str(self.registry), "--database", str(self.folder / "receipts.db"),
+            "--pending-per-address", "64",
         ], stderr=subprocess.PIPE, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
         line = self.process.stderr.readline()
         if "listening" not in line:
