@@ -1,5 +1,7 @@
 # CLI 接入现状评估（2026-11-17，基于 `main` `0c8305d`）
 
+> **更新**：第 4 节的第 1～5 项和第 7 项中的管理命令已经实现，见 [ROUTING_PLAN.md](ROUTING_PLAN.md) 的「实现状态」。下文保留评估时的原始记录。
+
 > 范围：VPS2 主控 `orchestrator/` 对各家 CLI 的接入：`adapters.js`、`scheduler.js`、`quotas.js`、`mcp.js`、`admin.js`、`vps2.example.json`。
 > 结论：**「规划 → 分步执行 → 补丁审核 → 写回本机」的主流程已经能跑通，但离全面还有明显差距**：缺 Antigravity，规划不是 Claude，只有 Codex 有实时额度，不记录 token 用量，agent 在执行中碰不到本机的命令和桌面。
 

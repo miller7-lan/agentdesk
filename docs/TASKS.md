@@ -1,7 +1,7 @@
 # AgentDesk 待办清单（2026-11-17 更新）
 
 > 汇总所有**还没完成**的事，按依赖顺序排列。以 `main`（`e46d666`，已合并 `fix/resume-active-writer` 和 `codex/agentdesk-dual-vps`）为准。
-> 详细背景：[CLI 接入现状评估](CLI_REVIEW.md) · [视觉改版实施计划](VISUAL_PLAN.md) · [微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
+> 详细背景：[任务分配方案](ROUTING_PLAN.md) · [CLI 接入现状评估](CLI_REVIEW.md) · [视觉改版实施计划](VISUAL_PLAN.md) · [微信与分工方案](WECHAT_OMC_PLAN.md) · [群聊界面设计](GROUP_CHAT_UI.md) · [界面实现对照](GROUP_CHAT_UI_STATUS.md)（在 `main` 上）· [可点击原型](prototype/group-chat.html) · [路线图](ROADMAP.md)
 
 ## 已确定的决定
 
@@ -11,6 +11,7 @@
 | 隔离方式 | **Docker**：每个任务步骤一个容器 |
 | 分支 | 已合并进 `main`；之后的开发都基于 `main` |
 | 组长 | Claude：整体规划、把控方向、分配任务、验收，只看摘要 |
+| 任务分配 | 按能力派活，候选顺序可配置，额度用尽或掉登录时自动改派；按实测调整（见 [ROUTING_PLAN.md](ROUTING_PLAN.md)） |
 | 视觉 | 白色为主的玻璃质感，背景带一点流动，**阅读区域优先保证清晰** |
 | 开机动画 | 默认**每次启动 App** 播放；最小化后恢复、从托盘重新打开都不算启动；**双击直接进入** |
 
@@ -22,31 +23,34 @@
 | 主控：任务记录、独立 worktree、补丁审核后写回、双线路切换 | ✅ 在 `main` |
 | 密码注册、限时证书、实时额度、按额度调度 | ✅ 在 `main` |
 | 群聊界面基础：项目树、群聊 / 单聊、任务卡片、调度图、成员头像和 12 种动画状态、`@` 提及、`/ls` `/stop` | ✅ 在 `main`（差距见 `GROUP_CHAT_UI_STATUS.md`） |
-| Claude 当组长、Antigravity 分担、省额度流程 | ⬜ 规划仍由 Codex 执行；没有 Antigravity 适配器（有只读的 Gemini） |
+| Claude 当组长、按能力派活、自动改派、token 用量 | ✅ 已实现；Antigravity 通过配置模板接入，待在 VPS2 上确认参数 |
 | Docker 隔离与定期清理 | ⬜ |
 | 白色玻璃主题、开机动画、Windows / macOS 双平台外观 | 🟡 只有原型 |
 | 微信入口 | ⬜ |
-| 安全底线（P0） | ⬜ 4 项还在 `main` 上（见第 0 步） |
-| CI、签名、自动更新、首次运行向导 | ⬜ |
+| 安全底线（P0） | ✅ 5 项已修复 |
+| CI | ✅ Windows / macOS / Linux 的 Node 测试和中转服务的 Python 测试 |
+| 签名、自动更新、首次运行向导 | ⬜ |
 
 ## 0. 安全底线与 CI（1～2 天）
 
 - [x] 合并两个功能分支到 `main`（冲突已解决：`main.js`、`src/app.js`、`src/index.html`；Node 18 个、Python 8 个测试通过）
-- [ ] P0-1：`remote.json` 解析失败时不再用默认值覆盖（`remote.js` 的 `loadConfig`）
-- [ ] P0-2：只读 / 计划模式下不注册桌面工具（`main.js` 的 `codex:request`）
-- [ ] P0-3：拦截新窗口，外部链接改用系统浏览器（`setWindowOpenHandler` + `shell.openExternal`）
-- [ ] P0-4：桌面工具单次超时只让该请求失败，不停掉整个后端（`desktop.js`）
-- [ ] P0-5：版本号统一从 `package.json` 读取（`desktop.js` 仍写死 `0.2.5`）
-- [ ] GitHub Actions：Windows、macOS、Linux 跑 `node --test`，Linux 跑 `relay/tests`（注意：注册测试依赖 `ssh-keygen`）
+- [x] P0-1：`remote.json` 解析失败时不再用默认值覆盖（`remote.js` 的 `loadConfig`）
+- [x] P0-2：只读 / 计划模式下不注册桌面工具（`main.js` 的 `codex:request`）
+- [x] P0-3：拦截新窗口，外部链接改用系统浏览器（`setWindowOpenHandler` + `shell.openExternal`）
+- [x] P0-4：桌面工具单次超时只让该请求失败，不停掉整个后端（`desktop.js`）
+- [x] P0-5：版本号统一从 `package.json` 读取（`desktop.js` 仍写死 `0.2.5`）
+- [x] GitHub Actions：Windows、macOS、Linux 跑 `node --test`，Linux 跑 `relay/tests`（注意：注册测试依赖 `ssh-keygen`）
 
 ## 1. VPS2：主控按确定的分工工作（约 1 周）
 
-- [ ] 规划步骤改由 Claude 执行（`orchestrator/scheduler.js` 第 250 行的 `planner` 和第 302 行的 `group-planner` 目前都是 Codex）
-- [ ] 新增 Antigravity 适配器（订阅登录；先在 VPS2 上确认无交互调用参数和输出格式）
-- [ ] 固定任务流程：Antigravity 侦察 → Claude 规划 → Antigravity 写简报 → Codex 改代码 → 自动测试 → Grok 审查 → Antigravity 汇总 → Claude 验收
+- [x] 规划步骤改由 Claude 执行（`orchestrator/scheduler.js` 第 250 行的 `planner` 和第 302 行的 `group-planner` 目前都是 Codex）
+- [x] 新增 Antigravity 适配器（通过配置模板；**待在 VPS2 上确认参数后填写**）（订阅登录；先在 VPS2 上确认无交互调用参数和输出格式）
+- [x] ~~固定流水线~~ → 改为按能力派活、按任务大小分档（[ROUTING_PLAN.md](ROUTING_PLAN.md)）
+- [x] 额度用尽 / 掉登录时暂停该 CLI 并改派
+- [x] 管理命令 `ad ls`、`ad doctor`
 - [ ] Claude 只在规划、出问题、验收时被唤醒，拿到的都是摘要
 - [ ] 升级规则：测试连续失败 2 次、审查意见冲突时交回 Claude，并记录成一条事件
-- [ ] 在现有实时额度的基础上，记录每一步的 token 用量
+- [x] 在现有实时额度的基础上，记录每一步的 token 用量（Codex、Claude）
 - [ ] 对照实测：10 个真实任务，单独完成 vs 多 agent 流程，比较 Claude / Codex 额度消耗和返工次数
 
 ## 2. VPS2：Docker 隔离与清理（3～4 天）
