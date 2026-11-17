@@ -95,6 +95,38 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
   });
 }
 
+// What another member of the same project may see: progress and verdicts, never the owner's prompt,
+// raw CLI output, file paths, patches, logs or workspace name. The owner and an admin still receive
+// the full status through Scheduler.status.
+function publicTask(task) {
+  const metrics = task.metrics;
+  const acceptance = task.acceptance;
+  const container = task.container;
+  return {
+    id: task.id, owner: task.owner || 'local', project: task.project,
+    state: task.state, detail: task.detail, stage: task.stage, createdAt: task.createdAt,
+    ...(metrics && { metrics: {
+      startedAt: metrics.startedAt, endedAt: metrics.endedAt, durationMs: metrics.durationMs,
+      stepCount: metrics.stepCount, roleCalls: metrics.roleCalls, reassignments: metrics.reassignments,
+      testFailures: metrics.testFailures, reviewConflicts: metrics.reviewConflicts,
+      reworkRounds: metrics.reworkRounds, triageRounds: metrics.triageRounds,
+    } }),
+    steps: (task.steps || []).map((step) => ({
+      id: step.id, role: step.role, capability: step.capability, state: step.state,
+      attempts: step.attempts, dependsOn: step.dependsOn,
+      ...(step.verdict && { verdict: { verdict: step.verdict.verdict, summary: step.verdict.summary } }),
+    })),
+    ...(acceptance && { acceptance: {
+      verdict: acceptance.verdict, summary: acceptance.summary, round: acceptance.round, at: acceptance.at,
+    } }),
+    ...(task.testResult && Number.isFinite(task.testResult.code) && { testResult: { code: task.testResult.code } }),
+    ...(container && { container: {
+      name: container.name, image: container.image, id: container.id, memPeak: container.memPeak,
+    } }),
+    redacted: true,
+  };
+}
+
 class Scheduler {
   constructor({ config, store, files, adapter = runAdapter, now = () => Date.now() }) {
     this.config = config;
@@ -320,6 +352,16 @@ class Scheduler {
     if (body.project !== undefined && (typeof body.project !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(body.project))) {
       throw new Error('invalid_task');
     }
+    const owner = this.ownerOf(body.workspace);
+    const project = body.project !== undefined ? this.config.projects?.[body.project] : undefined;
+    if (project) {
+      // A project belongs to a fixed set of bridges. The local admin may submit on any workspace, but a
+      // named bridge must be a member and, when a per-member workspace is declared, use that workspace.
+      if (owner !== 'local' && !project.members?.includes(owner)) throw new Error('project_access_denied');
+      if (owner !== 'local' && project.workspaces?.[owner] !== undefined && project.workspaces[owner] !== body.workspace) {
+        throw new Error('project_workspace_mismatch');
+      }
+    }
     if (body.benchmarkId !== undefined && (typeof body.benchmarkId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(body.benchmarkId))) {
       throw new Error('invalid_task');
     }
@@ -327,7 +369,7 @@ class Scheduler {
     if (this.tasks.size >= 10000) throw new Error('task_capacity');
     const normalizedTags = [...new Set(tags.map((tag) => tag.trim()))];
     const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [],
-      owner: this.ownerOf(body.workspace), tags: normalizedTags,
+      owner, tags: normalizedTags,
       ...(body.project !== undefined && { project: body.project }),
       ...(body.benchmarkId !== undefined && { benchmarkId: body.benchmarkId }),
       ...(body.arm !== undefined && { arm: body.arm }) };
@@ -384,6 +426,16 @@ class Scheduler {
   // Whose task this is: the bridge (one per person's machine) its workspace belongs to.
   ownerOf(workspace) {
     return this.config.workspaces?.[workspace]?.sshBridge || 'local';
+  }
+
+  isProjectMember(projectId, bridge) {
+    return Boolean(projectId && bridge && this.config.projects?.[projectId]?.members?.includes(bridge));
+  }
+
+  projectsFor(bridge) {
+    return Object.entries(this.config.projects || {})
+      .filter(([, project]) => Array.isArray(project?.members) && project.members.includes(bridge))
+      .map(([id]) => id);
   }
 
   // Whether this person may still spend one more step of this CLI today.
@@ -1366,6 +1418,7 @@ class Scheduler {
     const startPlan = frame.kind === 'task.status' && body.operation === 'start_plan';
     if (frame.kind === 'task.request' || startPlan) {
       if (named && this.config.workspaces[body.workspace]?.sshBridge !== named) throw new Error('workspace_not_authorized');
+      if (named && body.project !== undefined && !this.isProjectMember(body.project, named)) throw new Error('project_access_denied');
       const existing = this.tasks.get(id);
       const groupPlan = startPlan || Boolean(named && (!existing || existing.groupPlan));
       return this.status(this.submit(id, body, groupPlan).id);
@@ -1391,15 +1444,37 @@ class Scheduler {
         providers: this.availableRoles() };
     }
     if (body.operation === 'select_route' && (route === 'admin' || named)) return this.setRoute(body.route, bridge);
+    if (body.operation === 'project_tasks') {
+      const projects = named ? this.projectsFor(named) : null;
+      if (named && body.project !== undefined && !projects.includes(body.project)) throw new Error('project_access_denied');
+      const selected = body.project !== undefined ? [body.project] : projects;
+      return [...this.tasks.values()]
+        .filter((candidate) => selected ? selected.includes(candidate.project) : body.project === undefined || candidate.project === body.project)
+        .slice(-50).reverse().map((candidate) => named && candidate.owner !== named ? publicTask(candidate) : this.status(candidate.id));
+    }
     const task = this.tasks.get(id);
-    if (named && this.config.workspaces[task?.workspace]?.sshBridge !== named) throw new Error('unknown_task');
-    if (body.operation === 'status') return this.status(id, body.after);
-    if (['plan_reply', 'plan_approve'].includes(body.operation) && (route === 'admin' || named)) return this.updatePlan(task, body);
-    if (body.operation === 'reconcile' && (route === 'admin' || named)) return this.reconcile(task);
-    if (body.operation === 'cancel' && task) return this.cancel(task);
-    if (body.operation === 'apply' && (route === 'admin' || named)) return this.apply(task, route === 'admin' && body.force === true);
+    const sameProject = named && this.isProjectMember(task?.project, named);
+    if (named && this.config.workspaces[task?.workspace]?.sshBridge !== named && !sameProject) throw new Error('unknown_task');
+    const owner = route === 'admin' || (named && task?.owner === named);
+    if (body.operation === 'status') return owner || route === 'admin' ? this.status(id, body.after) : publicTask(task);
+    if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.updatePlan(task, body);
+    }
+    if (body.operation === 'reconcile') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.reconcile(task);
+    }
+    if (body.operation === 'cancel') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.cancel(task);
+    }
+    if (body.operation === 'apply') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.apply(task, route === 'admin' && body.force === true);
+    }
     throw new Error('unsupported_operation');
   }
 }
 
-module.exports = { Scheduler, parsePlan };
+module.exports = { Scheduler, parsePlan, publicTask };

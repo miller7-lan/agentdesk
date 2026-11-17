@@ -5,12 +5,13 @@ const Store = require('../orchestrator/store');
 const { Scheduler } = require('../orchestrator/scheduler');
 
 // Two people (bridges "alice" and "bob"), each with their own workspace.
-function setup({ maxConcurrentTasks } = {}) {
+function setup({ maxConcurrentTasks, projects } = {}) {
   const store = new Store(':memory:');
   const config = {
     maxConcurrentTasks, sshBridges: ['alice', 'bob'], quota: false,
     workspaces: { a: { sshBridge: 'alice' }, b: { sshBridge: 'bob' } },
     adapters: { codex: { bin: 'codex', env: {} }, claude: { bin: 'claude', env: {} } },
+    ...(projects && { projects }),
   };
   const scheduler = new Scheduler({ config, store, files: {} });
   const started = [];
@@ -75,6 +76,77 @@ test('one process per CLI across tasks: a second Codex step waits for the first'
   await assert.rejects(cancelled, /cancelled/);
   hold();
   assert.equal(scheduler.cliBusy.get('codex'), 0);
+});
+
+test('project members see a redacted status, cannot control another owner, and lose access when removed', (t) => {
+  const { store, scheduler } = setup({
+    projects: {
+      shared: { members: ['alice', 'bob'], workspaces: { alice: 'a', bob: 'b' } },
+      secret: { members: ['bob'], workspaces: { bob: 'b' } },
+    },
+  });
+  t.after(() => store.close());
+  scheduler.stopped = true;
+  const id = (name) => '00000000-0000-4000-8000-' + name.padStart(12, '0');
+  const status = (bridge, task) => scheduler.control({ kind: 'task.status', task_id: task.id, body: { operation: 'status' } }, bridge);
+  const aliceTask = scheduler.submit(id('a1'), { workspace: 'a', prompt: 'alice private prompt', project: 'shared' });
+  aliceTask.steps = [{
+    id: 'edit', role: 'codex', capability: 'implement', state: 'completed', attempts: 1, dependsOn: [],
+    prompt: 'private step prompt', output: 'raw private output', paths: ['src/alice-secret.js'],
+    verdict: { verdict: 'pass', summary: 'fine', findings: [{ file: 'src/alice-secret.js' }] },
+  }];
+  aliceTask.base = 'deadbeef';
+  aliceTask.container = { name: 'agentdesk-alice', image: 'codex:1', id: 'abc', memPeak: 123 };
+  aliceTask.testResult = { code: 0, stdout: 'private test log', stderr: '' };
+  aliceTask.acceptance = {
+    verdict: 'accept', summary: 'looks right', round: 1, at: '2026-11-17T00:00:00.000Z',
+    findings: [{ file: 'src/alice-secret.js', issue: 'private' }],
+  };
+
+  const view = status('ssh:bob', aliceTask);
+  assert.equal(view.redacted, true);
+  assert.equal(view.owner, 'alice');
+  assert.equal(view.project, 'shared');
+  assert.equal(view.prompt, undefined);
+  assert.equal(view.workspace, undefined);
+  assert.equal(view.base, undefined);
+  assert.equal(view.steps[0].prompt, undefined);
+  assert.equal(view.steps[0].output, undefined);
+  assert.equal(view.steps[0].paths, undefined);
+  assert.deepEqual(view.steps[0].verdict, { verdict: 'pass', summary: 'fine' });
+  assert.deepEqual(view.acceptance, { verdict: 'accept', summary: 'looks right', round: 1, at: '2026-11-17T00:00:00.000Z' });
+  assert.deepEqual(view.testResult, { code: 0 });
+  assert.equal(view.container.memPeak, 123);
+  assert.equal(status('ssh:alice', aliceTask).redacted, undefined);
+  assert.equal(status('ssh:alice', aliceTask).workspace, 'a');
+  assert.equal(status('ssh:alice', aliceTask).steps[0].output, 'raw private output');
+  assert.equal(status('admin', aliceTask).workspace, 'a');
+
+  assert.throws(() => scheduler.control({ kind: 'task.status', task_id: aliceTask.id, body: { operation: 'cancel' } }, 'ssh:bob'),
+    /task_access_denied/);
+  assert.throws(() => scheduler.control({ kind: 'task.status', task_id: aliceTask.id, body: { operation: 'apply' } }, 'ssh:bob'),
+    /task_access_denied/);
+
+  const bobTask = scheduler.submit(id('b1'), { workspace: 'b', prompt: 'bob shared', project: 'shared' });
+  const bobSecret = scheduler.submit(id('b2'), { workspace: 'b', prompt: 'bob secret', project: 'secret' });
+  assert.throws(() => status('ssh:alice', bobSecret), /unknown_task/);
+
+  const projectTasks = scheduler.control({ kind: 'task.status', task_id: id('c1'), body: { operation: 'project_tasks' } }, 'ssh:alice');
+  assert.deepEqual(projectTasks.map((task) => task.id).sort(), [aliceTask.id, bobTask.id].sort());
+  assert.equal(projectTasks.find((task) => task.id === aliceTask.id).workspace, 'a');
+  assert.equal(projectTasks.find((task) => task.id === bobTask.id).redacted, true);
+  assert.throws(() => scheduler.control({ kind: 'task.status', task_id: id('c2'), body: { operation: 'project_tasks', project: 'secret' } }, 'ssh:alice'),
+    /project_access_denied/);
+
+  assert.throws(() => scheduler.submit(id('s1'), { workspace: 'a', prompt: 'not a member', project: 'secret' }),
+    /project_access_denied/);
+  scheduler.config.workspaces.c = { sshBridge: 'alice' };
+  assert.throws(() => scheduler.submit(id('s2'), { workspace: 'c', prompt: 'wrong workspace', project: 'shared' }),
+    /project_workspace_mismatch/);
+
+  scheduler.config.projects.shared.members = ['bob'];
+  assert.throws(() => status('ssh:alice', bobTask), /unknown_task/);
+  assert.deepEqual(scheduler.control({ kind: 'task.status', task_id: id('c3'), body: { operation: 'project_tasks' } }, 'ssh:alice'), []);
 });
 
 test("one person's running task does not stop another person switching lines", async (t) => {
