@@ -51,6 +51,7 @@
       <div class="side-title">项目 <button type="button" class="task-text-link" id="newGroupProject" hidden>新建项目</button></div>
       <div class="side-list" id="sessionList"></div>
       <div class="side-footer">
+        <button class="side-action" id="workspaceSettings" type="button" hidden>工作区</button>
         <button class="side-action" id="sbOrchestrator" type="button" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="5" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M12 8v4m-5.5 4v-4h11v4"/></svg>
           <span>主控线路</span>
@@ -221,6 +222,24 @@
       <p id="enrollmentStatus" role="status" aria-live="polite"></p>
     </form>
   </dialog>
+  <dialog id="workspaceDialog" class="orchestrator-dialog" aria-labelledby="workspaceTitle">
+    <h2 id="workspaceTitle">工作区</h2>
+    <div id="workspaceList"></div>
+    <form id="workspaceForm" class="group-project-form">
+      <button class="task-text-link" id="workspaceNew" type="button">添加工作区</button>
+      <label>项目名称 <input id="workspaceName" maxlength="60" required /></label>
+      <label>工作区类型 <select id="workspaceKind"><option value="local">本机 Git 仓库</option><option value="remote">云端</option></select></label>
+      <label><span><input id="workspacePick" type="checkbox" /> 重新选择本机目录</span><small id="workspaceExisting"></small></label>
+      <label>云端 Git 目录 <input id="workspaceRemote" placeholder="/srv/git/project" maxlength="1024" /></label>
+      <label>主控工作区标识 <input id="workspaceBinding" maxlength="64" /></label>
+      <div class="task-actions">
+        <button class="btn primary" id="workspaceSave" type="submit">添加</button>
+        <button class="btn danger" id="workspaceRemove" type="button" hidden>移除</button>
+        <button class="btn" id="workspaceClose" type="button">关闭</button>
+      </div>
+      <p id="workspaceStatus" role="status"></p>
+    </form>
+  </dialog>
   <dialog id="groupProjectDialog" class="orchestrator-dialog" aria-labelledby="groupProjectTitle">
     <form id="groupProjectForm" class="group-project-form">
       <h2 id="groupProjectTitle">新建项目</h2>
@@ -285,5 +304,6 @@
   <script src="approvals.js"></script>
   <script src="orchestrator.js"></script>
   <script src="enrollment.js"></script>
+  <script src="projects.js"></script>
 </body>
 </html>

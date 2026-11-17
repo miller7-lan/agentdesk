@@ -2,6 +2,9 @@ const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, p
 const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
+const os = require('node:os');
+const { AppConfig, migrate } = require('./app-config');
+const { normalizeSettings } = require('./src/appearance');
 const bootstrapPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'agentdesk-enrollment.json');
 const enrollment = fs.existsSync(bootstrapPath) && JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
 if (enrollment) process.env.AGENTDESK_ENROLLED = '1';
@@ -46,6 +49,71 @@ const OVERLAY = {
 };
 
 let win;
+let appConfig;
+let configError;
+const legacyDir = path.join(os.homedir(), '.agentdesk');
+const preferredRoot = (() => {
+  if (mac || enrollment) return path.join(os.homedir(), 'AgentDeskWorkspace');
+  const previous = 'C:\\CodexSSH\\windows-dev';
+  return fs.existsSync(previous) ? previous : undefined;
+})();
+
+function activateProject() {
+  const project = appConfig?.active;
+  ws.setRoot(project?.localRoot || null);
+  toUi('projects:changed', appConfig.list());
+}
+
+async function loadAppConfig() {
+  const legacyFiles = (mac ? ['remote.json', 'mac.json', 'mac-remote.json'] : ['mac.json', 'remote.json', 'windows.json'])
+    .map((name) => path.join(legacyDir, name));
+  appConfig = new AppConfig(path.join(app.getPath('userData'), 'config.json'), {
+    legacyFiles, localRoot: preferredRoot, remoteCwd: remote.cfg.workspace,
+    name: mac ? 'Mac 工作区' : 'Windows 开发机',
+  });
+  try {
+    await appConfig.load();
+  } catch (error) {
+    configError = error.code || error.message;
+    appConfig.value = await migrate(legacyFiles, appConfig.defaults);
+  }
+  if (!process.env.AGENTDESK_APPEARANCE && appConfig.value.appearance?.boot === 'off') bootMode = 'off';
+  activateProject();
+}
+
+function fromMainWindow(event) {
+  return Boolean(win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame);
+}
+
+function currentRemoteDirectory(projectId) {
+  const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
+  if (projectId !== undefined && !project) throw new Error('project_not_found');
+  return project?.remoteCwd || enrolledSession?.remote.workspace;
+}
+
+for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
+  ipcMain.handle('projects:' + operation, async (event, request = {}) => {
+    if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+    try {
+      if (operation === 'list') return { ok: true, ...appConfig.list(), configError };
+      if (configError) throw new Error('配置文件无法读取，请修复或移走后再修改。');
+      const { id, name, kind, remoteCwd, orchestratorWorkspace, pickLocal } = request;
+      if (operation === 'add' || operation === 'update') {
+        let localRoot;
+        if (kind === 'local' && (pickLocal || operation === 'add')) {
+          const picked = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择 Git 工作区' });
+          if (picked.canceled) return { ok: false, cancelled: true };
+          [localRoot] = picked.filePaths;
+        }
+        await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot);
+      } else await appConfig[operation](id);
+      activateProject();
+      return { ok: true, ...appConfig.list() };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  });
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -207,6 +275,13 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
       win.setBackgroundColor(skin === 'aqua' ? (theme === 'dark' ? '#060b15' : '#eef3f9') : OVERLAY[theme].color);
     }
   }
+  if (appConfig && !configError && !process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_LIVETEST) {
+    const appearance = { ...normalizeSettings(settings), theme };
+    appConfig.mutate((draft) => {
+      if (JSON.stringify(draft.appearance) === JSON.stringify(appearance)) return false;
+      draft.appearance = appearance;
+    }).catch((error) => console.error('appearance:', error.code || 'config_write_failed'));
+  }
   return { theme, skin };
 });
 
@@ -303,8 +378,12 @@ const skillCache = new Map();
 ipcMain.handle('skills:local', () => ws.localSkills().catch(() => []));
 ipcMain.handle('skills:upload', async (_e, skill) => {
   try {
-    const pack = await ws.packSkill(skill.dir);
-    const dest = path.posix.join(remote.cfg.workspace, '.agentdesk-skills', skill.folder.replace(/[^\w.-]/g, '_'));
+    const approved = (await ws.localSkills()).find(({ folder, name }) => folder === skill?.folder && name === skill?.name);
+    if (!approved) throw new Error('找不到本机技能。');
+    const pack = await ws.packSkill(approved.dir);
+    const workspace = currentRemoteDirectory();
+    if (!workspace) throw new Error('请配置远程工作区目录。');
+    const dest = path.posix.join(workspace, '.agentdesk-skills', skill.folder.replace(/[^\w.-]/g, '_'));
     if (skillCache.get(dest) !== pack.sig) { await remote.upload(dest, pack.files); skillCache.set(dest, pack.sig); }
     return { ok: true, path: path.posix.join(dest, 'SKILL.md') };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
@@ -314,7 +393,9 @@ remote.on('codex-down', () => skillCache.clear());
 // 附件：选择或粘贴的文件上传到 VPS 的 .agentdesk-uploads（VPS 端 7 天后自动清理）
 async function uploadOne(name, b64) {
   const safe = Date.now() + '-' + String(name).replace(/[^\w.\-一-龥]/g, '_').slice(-80);
-  const dir = path.posix.join(remote.cfg.workspace, '.agentdesk-uploads');
+  const workspace = currentRemoteDirectory();
+  if (!workspace) throw new Error('请配置远程工作区目录。');
+  const dir = path.posix.join(workspace, '.agentdesk-uploads');
   const [full] = await remote.upload(dir, [{ rel: safe, b64 }]);
   return { name, path: full, image: /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) };
 }
@@ -346,9 +427,15 @@ ipcMain.handle('files:uploadData', async (_e, name, b64) => {
   try { if (b64.length > 14 * 1024 * 1024) throw new Error('图片超过 10 MB'); return { ok: true, file: await uploadOne(name, b64) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
-ipcMain.handle('remote:config', () => ({ workspace: remote.cfg.workspace, host: remote.cfg.host, localWorkspace: ws.root }));
-ipcMain.handle('codex:request', async (_e, method, params) => {
+ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), host: remote.cfg.host, localWorkspace: ws.root, projectId: appConfig?.active?.id }));
+ipcMain.handle('codex:request', async (event, method, params) => {
   try {
+    if (!fromMainWindow(event)) throw new Error('invalid_request');
+    const { projectId, ...request } = params || {};
+    params = request;
+    const directory = currentRemoteDirectory(projectId);
+    if (method === 'thread/start' || method === 'thread/list') params = { ...params, cwd: directory };
+    if (method === 'skills/list') params = { ...params, cwds: directory ? [directory] : [] };
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
@@ -432,7 +519,11 @@ ipcMain.handle('orchestrator:control', async (event, frame) => {
   if (enrollment && !enrolledSession) return { ok: false, error: 'sign_in_required' };
   const socket = enrolledSession?.controlSocket || path.join(macBridgeState, 'control.sock');
   try {
-    const value = await request(socket, frame, frame.operation === 'apply' ? 310000 : 16000);
+    const { projectId, ...operation } = frame;
+    const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
+    if (projectId !== undefined && !project) throw new Error('project_not_found');
+    const workspace = project?.orchestratorWorkspace;
+    const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : 16000);
     return { ok: true, value };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -452,7 +543,7 @@ ipcMain.handle('enrollment:login', async (event, password) => {
   let session;
   try {
     const { createSession } = require('./orchestrator/enrollment-client');
-    session = await createSession(enrollment, password, ws.root);
+    session = await createSession(enrollment, password, ws.root || preferredRoot);
     Object.assign(remote.cfg, session.remote);
     const { startBridge } = require('./orchestrator/service');
     stopBridge = startBridge({
@@ -506,7 +597,8 @@ app.on('before-quit', (e) => {
   Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await loadAppConfig();
   createWindow();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
     if (!enrollment) {

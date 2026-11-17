@@ -5,9 +5,10 @@
   const { D, state, $, esc, svg, store, sess, toast, pet, setBusy } = A;
   const cx = window.desk.codex, rm = window.desk.remote, wsApi = window.desk.ws, skApi = window.desk.skills, fileApi = window.desk.files;
   const isMac = window.desk.platform === 'darwin';
-  let WIN_ROOT = 'C:\\CodexSSH\\windows-dev';
+  let localRoot = '';
+  let workspaceRevision = 0;
 
-  let cfg = { workspace: undefined };
+  let cfg = { workspace: undefined, projectId: undefined };
   let ready = false;
   let conn = {};
   const byThread = new Map();
@@ -43,7 +44,7 @@
     if (d < 86400) return Math.round(d / 3600) + ' 小时'; if (d < 172800) return '昨天';
     return Math.round(d / 86400) + ' 天前';
   };
-  const winPath = (r) => isMac ? WIN_ROOT + '/' + r : WIN_ROOT + '\\' + String(r).replace(/\//g, '\\');
+  const winPath = (r) => isMac ? localRoot + '/' + r : localRoot + '\\' + String(r).replace(/\//g, '\\');
   let rafPending = false;
   function render() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; A.renderAll(); }); }
   const isActive = (s) => s && s.id === state.active;
@@ -320,7 +321,7 @@
       const meta = p._meta || {}; const tp = meta.tool_params || {}; const win = p.serverName === 'ssh';
       card = { ...base, sessionable: false,
         title: win ? `请求在 Windows 上执行（${meta.tool_name || 'MCP 工具'}）` : `请求调用 ${p.serverName} · ${meta.tool_name || ''}`,
-        desc: win ? `Codex 想通过 SSH 在 Windows 开发机（codexwin，${WIN_ROOT}）上执行：` : (p.message || ''),
+        desc: win ? `Codex 想通过 SSH 在 Windows 开发机（codexwin，${localRoot}）上执行：` : (p.message || ''),
         cmd: tp.command || tp.path || JSON.stringify(tp, null, 2) || p.message };
     } else if (m.method === 'item/commandExecution/requestApproval' || m.method === 'execCommandApproval') {
       const cmd = Array.isArray(p.command) ? p.command.join(' ') : (p.command || '');
@@ -419,7 +420,7 @@
     }
     const sel = $('#modelSelect'); const model = sel.dataset.live ? sel.value : undefined;
     if (!s.threadId) {
-      const r = await cx.request('thread/start', { cwd: cfg.workspace, approvalPolicy, sandbox, approvalsReviewer: 'user', model });
+      const r = await cx.request('thread/start', { projectId: s.project, approvalPolicy, sandbox, approvalsReviewer: 'user', model });
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
@@ -466,7 +467,7 @@
     const ta = $('#input'); const clear = () => { ta.value = ''; A.autosize(); };
     switch (c) {
       case '/new': clear(); A.newDirect(); return true;
-      case '/review': ta.value = `请审查 ${WIN_ROOT} 中尚未提交的改动：先用一次 ssh_exec 运行 git status --short 和 git diff，然后按严重程度列出问题、风险和建议。不要修改任何文件。`; A.autosize(); return false;
+      case '/review': ta.value = `请审查 ${localRoot} 中尚未提交的改动：先用一次 ssh_exec 运行 git status --short 和 git diff，然后按严重程度列出问题、风险和建议。不要修改任何文件。`; A.autosize(); return false;
       case '/compact': clear(); if (!s?.threadId) { toast('当前会话还没有内容'); return true; }
         ensureReady().then((ok) => ok && subscribe(s)).then(() => cx.request('thread/compact/start', { threadId: s.threadId }))
           .then((r) => toast(r?.ok ? '已开始压缩上下文' : '压缩失败：' + (r?.error || ''))); return true;
@@ -492,12 +493,14 @@
 
   /* ---------- 会话：历史、重命名、归档 ---------- */
   async function loadHistory() {
-    const r = await cx.request('thread/list', { cwd: cfg.workspace, limit: 40, sortKey: 'updated_at' });
-    if (!r.ok) return false;
+    const project = cfg.projectId;
+    if (!project) return false;
+    const r = await cx.request('thread/list', { projectId: project, limit: 40, sortKey: 'updated_at' });
+    if (!r.ok || project !== cfg.projectId) return false;
     for (const t of r.result.data || []) {
       if ([...D.sessions].some((x) => x.threadId === t.id)) continue;
       const title = t.name || (t.preview || '').split('\n')[0].slice(0, 30) || '未命名会话';
-      D.sessions.push(newSession({ id: 'T' + t.id, threadId: t.id, title, time: rel(t.updatedAt || t.recencyAt || t.createdAt), loaded: false, history: true, updatedAt: t.updatedAt }));
+      D.sessions.push(newSession({ id: 'T' + t.id, project, threadId: t.id, title, time: rel(t.updatedAt || t.recencyAt || t.createdAt), loaded: false, history: true, updatedAt: t.updatedAt }));
     }
     sortSessions(); A.renderAll();
     return true;
@@ -652,7 +655,9 @@
   let skillsAt = 0;
   async function loadSkills(force) {
     skillsAt = Date.now();
-    const r = await cx.request('skills/list', { cwds: [cfg.workspace], forceReload: !!force });
+    const projectId = cfg.projectId;
+    const r = await cx.request('skills/list', { projectId, forceReload: !!force });
+    if (projectId !== cfg.projectId) return;
     if (r.ok) skills.cloud = (r.result.data || []).flatMap((e) => e.skills || []).filter((k) => k.enabled !== false)
       .map((k) => ({ name: k.name, description: k.interface?.shortDescription || k.shortDescription || k.description || '', path: k.path, scope: k.scope, display: k.interface?.displayName }));
     skills.local = await skApi.local();
@@ -687,7 +692,7 @@
     }
     if (tok.kind === '$') return skillRows(tok.q).slice(0, 400);
     const files = W.tree.filter((n) => !n.dir && (!tok.q || n.path.toLowerCase().includes(tok.q))).slice(0, 60)
-      .map((n) => ({ type: 'file', label: n.path, desc: '', group: W.access?.ok ? `Windows 测试目录（${WIN_ROOT}）` : '没有读取权限', value: winPath(n.path) + ' ' }));
+      .map((n) => ({ type: 'file', label: n.path, desc: '', group: W.access?.ok ? `工作区（${localRoot}）` : '没有读取权限', value: winPath(n.path) + ' ' }));
     return files;
   }
   function openMenu() {
@@ -857,9 +862,9 @@
   }
   const STATUS = (f) => f.untracked ? ['U', '新文件'] : (f.index === 'D' || f.work === 'D') ? ['D', '已删除'] : (f.index === 'A') ? ['A', '新增'] : (f.index === 'R') ? ['R', '重命名'] : ['M', '已修改'];
   function noAccessHtml() {
-    if (isMac) return `<div class="empty-note">无法打开 Mac 工作区。${esc(W.access?.error || '')}</div>`;
-    return `<div class="empty-note">AgentDesk 还不能读取 <code>${esc(WIN_ROOT)}</code>（${esc(W.access?.error || '')}）。<br>
-      需要给当前账户加只读权限：在管理员 PowerShell 运行<br><code>icacls ${esc(WIN_ROOT)} /grant "${esc('%USERNAME%')}:(OI)(CI)RX"</code></div>`;
+    if (!localRoot || isMac) return `<div class="empty-note">${esc(W.access?.error || '没有可用的本机工作区。')}</div>`;
+    return `<div class="empty-note">AgentDesk 还不能读取 <code>${esc(localRoot)}</code>（${esc(W.access?.error || '')}）。<br>
+      需要给当前账户加只读权限：在管理员 PowerShell 运行<br><code>icacls ${esc(localRoot)} /grant "${esc('%USERNAME%')}:(OI)(CI)RX"</code></div>`;
   }
   function renderChanges(body) {
     const s = sess(state.active);
@@ -867,7 +872,7 @@
     if (!W.access.ok) { body.innerHTML = noAccessHtml(); return; }
     const c = W.changes;
     if (!c) { body.innerHTML = '<div class="empty-note">正在读取改动…</div>'; return; }
-    if (!c.repo) { body.innerHTML = `<div class="empty-note">${esc(WIN_ROOT)} 还不是 Git 仓库。<br>让 Codex 运行 <code>git init</code> 后，这里会列出每个改动文件。</div>`; return; }
+    if (!c.repo) { body.innerHTML = `<div class="empty-note">${esc(localRoot)} 还不是 Git 仓库。<br>让 Codex 运行 <code>git init</code> 后，这里会列出每个改动文件。</div>`; return; }
     const tot = c.files.reduce((a, f) => [a[0] + f.add, a[1] + f.del], [0, 0]);
     let html = `<div class="chg-head"><span class="chg-branch">${svg('term')}${esc(c.branch || '')}</span><span>${c.files.length} 个文件</span>
       <span class="a">+${tot[0]}</span><span class="d">−${tot[1]}</span><span class="grow"></span><button class="icon-btn" data-ch="refresh" title="刷新">↻</button></div>`;
@@ -960,7 +965,9 @@
     clearTimeout(chgTimer);
     chgTimer = setTimeout(async () => {
       if (!W.access?.ok) return;
+      const revision = workspaceRevision;
       const [c, t] = await Promise.all([wsApi.changes(), wsApi.tree()]);
+      if (revision !== workspaceRevision) return;
       W.changes = c; W.tree = t.items || []; W.treeTruncated = !!t.truncated;
       W.diffCache.clear();
       if (W.sel && state.panel === 'files' && W.tree.some((n) => n.path === W.sel)) W.preview = await wsApi.read(W.sel);
@@ -989,7 +996,28 @@
   }
 
   window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState };
-  rm.config().then((c) => { cfg = c; if (isMac) WIN_ROOT = c.localWorkspace || WIN_ROOT; });
+  async function workspaceChanged() {
+    const revision = ++workspaceRevision;
+    const [config, access] = await Promise.all([rm.config(), wsApi.access()]);
+    if (revision !== workspaceRevision) return;
+    if (cfg.projectId !== config.projectId || cfg.workspace !== config.workspace || localRoot !== (config.localWorkspace || '')) {
+      cfg = config;
+      localRoot = config.localWorkspace || '';
+      Object.assign(W, { tree: [], changes: null, sel: null, preview: null, treeTruncated: false });
+      W.open.clear();
+      W.diffCache.clear();
+      skills.cloud = [];
+      liveAtt = [];
+      renderAtt();
+      if (ready) {
+        loadSkills().catch(() => {});
+        if (!loadedHistory.has(cfg.projectId)) loadHistory().then((ok) => { if (ok) loadedHistory.add(config.projectId); }).catch(() => {});
+      }
+    }
+    W.access = access;
+    if (access.ok) refreshChanges(true);
+    else if (state.panelOpen) A.renderPanel();
+  }
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
   $('#sbConn').addEventListener('click', () => { if (conn.codex === 'sleeping') { rm.wake(); toast('正在唤醒 Codex…'); } else { rm.reconnect(); toast('正在重新连接…'); } });
@@ -1004,14 +1032,15 @@
   desktopButton.addEventListener('click', () => window.desk.desktop.toggle().then(displayDesktop));
   cx.onEvent(onEvent);
   cx.onServerRequest(onServerRequest);
-  let historyLoaded = false;
+  const loadedHistory = new Set();
   // 每次连上都补齐还没拿到的数据（首次连接可能因网络抖动失败，之后的重连要能补上）
   async function onReady() {
     ready = true;
-    if (!cfg.workspace) cfg = await rm.config();      // 先拿到工作区路径，技能与历史都按它查询
+    if (!cfg.projectId) await workspaceChanged();
     const jobs = [loadSkills()];
     if (!models.length) jobs.push(loadModels().catch(() => false));
-    if (!historyLoaded) jobs.push(loadHistory().then((ok) => { historyLoaded = !!ok; }).catch(() => {}));
+    const project = cfg.projectId;
+    if (!loadedHistory.has(project)) jobs.push(loadHistory().then((ok) => { if (ok) loadedHistory.add(project); }).catch(() => {}));
     await Promise.all(jobs);
     if (!usage) { const u = await cx.request('account/rateLimits/read', {}); if (u.ok) { usage = u.result; renderUsage(); } }
     if (!models.length) {
@@ -1034,7 +1063,8 @@
   cx.onDown(() => lost('Codex 连接断开，本轮已中止。重连后可以继续对话。'));
   cx.onSleep(() => lost('Codex 已休眠。'));
   rm.status().then((st) => { if (st.codex === 'ready') onReady(); });
-  wsApi.access().then((a) => { W.access = a; if (a.ok) refreshChanges(true); else if (sess(state.active)?.live) A.renderPanel(); });
+  workspaceChanged().catch(() => {});
+  window.desk.projects.onChanged(() => workspaceChanged().catch(() => {}));
   wsApi.onChanged(() => refreshChanges());
   ta.placeholder = '向 Codex 描述任务…';
   ta.title = '/ 命令 · $ 技能 · @ 文件';

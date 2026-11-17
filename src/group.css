@@ -196,3 +196,7 @@
 .group-project-form { display: grid; gap: 12px; }
 .group-unread { background: var(--accent); color: white; border-radius: 9px; padding: 1px 6px; font-size: 11px; }
 .side-title:has(#newGroupProject) { display: flex; justify-content: space-between; align-items: center; }
+#workspaceList { max-height: 175px; overflow: auto; margin-bottom: 10px; }
+.workspace-row { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.workspace-row small { grid-column: 1; grid-row: 2; color: var(--muted); overflow-wrap: anywhere; }
+.workspace-row button { grid-row: 1 / 3; }

@@ -33,6 +33,14 @@ contextBridge.exposeInMainWorld('desk', {
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
     onExpired: on('enrollment:expired'),
   },
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    add: (project) => ipcRenderer.invoke('projects:add', project),
+    update: (project) => ipcRenderer.invoke('projects:update', project),
+    remove: (id) => ipcRenderer.invoke('projects:remove', { id }),
+    select: (id) => ipcRenderer.invoke('projects:select', { id }),
+    onChanged: on('projects:changed'),
+  },
   orchestrator: { control: (frame) => ipcRenderer.invoke('orchestrator:control', frame) },
   desktop: {
     enabled: () => ipcRenderer.invoke('desktop:enabled'),

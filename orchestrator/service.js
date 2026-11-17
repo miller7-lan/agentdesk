@@ -274,7 +274,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after, workspace: requestedWorkspace }) => {
       try {
         const id = taskId || randomUUID();
         const status = async () => {
@@ -303,7 +303,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
           body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
           const workspaces = config.controlWorkspaces || {};
-          const workspace = Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace;
+          const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace);
           if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
           if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
             Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });
