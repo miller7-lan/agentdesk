@@ -35,7 +35,7 @@ function unixServer(filename, handler) {
 function validateTemplate(template, name) {
   if (!template || typeof template !== 'object' || Array.isArray(template)) throw new Error(name + '_template_required');
   const lists = ['args', 'readonlyArgs', 'writeArgs', 'modelArgs', 'resumeArgs'];
-  const fields = ['outputField', 'sessionField', 'usageField'];
+  const fields = ['outputField', 'sessionField', 'usageField', 'errorField'];
   const allowed = new Set([...lists, ...fields, 'prompt', 'output', 'session']);
   if (Object.keys(template).some((key) => !allowed.has(key)) ||
       lists.some((key) => template[key] !== undefined && (!Array.isArray(template[key]) || template[key].length > 32 ||

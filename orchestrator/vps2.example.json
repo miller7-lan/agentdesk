@@ -42,26 +42,30 @@
     },
     "antigravity": {
       "bin": "/usr/local/bin/agy",
-      "models": {
-        "default": {
-          "strengths": "Reading large codebases, logs and documents; short briefs for the implementer.",
-          "billing": "subscription"
-        }
-      },
+      "models": {},
       "template": {
         "prompt": "arg",
-        "output": "plain",
-        "session": "none",
+        "output": "jsonl",
+        "session": "field",
         "args": [
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          "10m",
           "-p",
           "{prompt}"
         ],
-        "readonlyArgs": [],
-        "writeArgs": [],
+        "readonlyArgs": ["--mode", "plan"],
+        "writeArgs": ["--mode", "accept-edits"],
         "modelArgs": [
           "--model",
           "{model}"
-        ]
+        ],
+        "resumeArgs": ["--conversation", "{session}"],
+        "outputField": "result.response",
+        "sessionField": "result.conversation_id",
+        "usageField": "result.usage",
+        "errorField": "result.error"
       }
     }
   },

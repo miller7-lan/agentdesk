@@ -143,6 +143,22 @@ test('the VPS2 example config is valid: subscription models, routing and the Ant
   assert.throws(() => validateTemplate(undefined, 'antigravity'), /antigravity_template_required/);
 });
 
+test('Antigravity streaming results preserve responses, sessions, usage and authentication failures', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-agy-json-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const fixture = path.join(dir, 'fixture.js');
+  await fs.writeFile(fixture, `const bad=process.argv[2]==='fail'; console.log(JSON.stringify({event:'result',result:{conversation_id:'agy-session',response:bad?'':'connected',usage:{input_tokens:5,output_tokens:2},...(bad?{error:'authentication required'}:{})}}));`);
+  const template = { ...require('../orchestrator/vps2.example.json').adapters.antigravity.template,
+    args: [fixture, '{prompt}'], readonlyArgs: [], writeArgs: [], resumeArgs: [] };
+  let session;
+  const run = prompt => runAdapter({ name:'antigravity', config:{bin:process.execPath,env:process.env,template},
+    cwd:dir, prompt, readonly:true, signal:new AbortController().signal, timeout:5000,
+    log:path.join(dir,'result.log'), onSession:id=>{session=id;} });
+  assert.deepEqual(await run('ok'), { output:'connected', usage:{input:5,output:2} });
+  assert.equal(session,'agy-session');
+  await assert.rejects(run('fail'), /cli_auth_required/);
+});
+
 test('quota decides who works: Claude and Codex step back early and keep their quota for their main jobs', () => {
   const { validateQuotaPolicy } = require('../orchestrator/routing');
   const router = new Router({ adapters: adapters('codex', 'claude', 'grok', 'antigravity') });

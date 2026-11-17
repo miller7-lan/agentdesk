@@ -47,6 +47,7 @@
 
 - [x] 规划步骤改由 Claude 执行（`orchestrator/scheduler.js` 第 250 行的 `planner` 和第 302 行的 `group-planner` 目前都是 Codex）
 - [x] 新增 Antigravity 适配器（通过配置模板；**待在 VPS2 上确认参数后填写**）（订阅登录；先在 VPS2 上确认无交互调用参数和输出格式）
+- [x] 2026-11-18：VPS2 安装官方 `agy 1.5.10`，核验计划/编辑模式与流式结果参数，模板补齐会话、用量、错误解析；首次 Google 登录及真实任务验收需单独完成。
 - [x] ~~固定流水线~~ → 改为按能力派活、按任务大小分档（[ROUTING_PLAN.md](ROUTING_PLAN.md)）
 - [x] 额度用尽 / 掉登录时暂停该 CLI 并改派
 - [x] 管理命令 `ad ls`、`ad doctor`

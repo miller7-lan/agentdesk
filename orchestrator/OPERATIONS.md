@@ -65,6 +65,10 @@ sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /us
 
 ### 用模板接入 Antigravity
 
+已在 Linux `agy 1.5.10` 核验样例中的参数：`--mode plan` 用于只读，`--mode accept-edits` 用于生成补丁，`--output-format stream-json` 的最终 `result` 提供回复、会话 ID、用量与错误。样例不指定虚构的 `default` 模型；登录后用 `agy models` 查看当前账号可用的真实模型，再填 `models` 和 `defaultModel`。
+
+官方安装入口为 `https://antigravity.google/cli/install.sh`。安装后，以主控服务账户和专用 HOME 启动一次 `agy` 完成 Google 登录。旧 Gemini OAuth 文件不等于已登录 Antigravity；应实际验证 `agy -p` 返回成功。远程 SSH 登录会提供浏览器授权 URL 和粘贴授权码的入口。参考 [官方认证说明](https://antigravity.google/docs/install?tab=cli) 和 [无交互模式](https://antigravity.google/docs/cli/headless/)。登录资料只保留在 VPS，不进入 Git 仓库。
+
 Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述它的命令行。**先在 VPS2 上确认参数**，再填配置：
 
 1. 用服务账户运行 `agy --help`，确认：无交互执行一次提示的参数、只读和可写的参数、指定模型的参数、恢复会话的参数、能否输出 JSON。
@@ -78,7 +82,7 @@ Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述�
 | `modelArgs` | 指定模型时带的参数，`{model}` 是模型 ID |
 | `resumeArgs` | 恢复会话时带的参数，`{session}` 是会话 ID |
 | `output` | `plain`（整段文本就是回复，默认）或 `jsonl`（每行一个 JSON） |
-| `outputField` / `sessionField` / `usageField` | `jsonl` 时回复、会话 ID、token 用量所在的字段，可以用点号写嵌套字段，例如 `result.text` |
+| `outputField` / `sessionField` / `usageField` / `errorField` | `jsonl` 时回复、会话 ID、token 用量与错误所在的字段，可以用点号写嵌套字段，例如 `result.response`；错误参与额度与登录失效识别 |
 | `session` | `none`（默认）、`generate`（主控生成 ID 填进 `{session}`）或 `field`（从输出读取） |
 
 3. 用 `ad submit project '只读：总结 README' ` 加 `ad status` 验证一次；步骤里应出现 `antigravity` 并有输出。Antigravity 如果有地方能读到额度，可以像 Claude 一样写成快照文件（`quotaFile`）。

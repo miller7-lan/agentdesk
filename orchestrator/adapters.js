@@ -68,6 +68,7 @@ function templateProvider(t) {
     session: (event) => field(event, t.sessionField),
     output: (event) => field(event, t.outputField),
     usage: (event) => field(event, t.usageField),
+    failure: (event) => field(event, t.errorField),
   };
 }
 
