@@ -52,9 +52,13 @@ test('team tasks drain active slots and run exclusively', (t) => {
   const normal = scheduler.submit(randomUUID(), { workspace: 'a', prompt: '任务' });
   const team = scheduler.submit(randomUUID(), { workspace: 'b', mode: 'team', prompt: '组队' });
   assert.equal(team.slotCost, 2);
+  scheduler.config.maxConcurrentTasks = 1;
+  assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'b', mode: 'team', prompt: '组队' }), /team_requires_two_slots/);
+  scheduler.config.maxConcurrentTasks = 2;
   scheduler.running.set(normal.id, {});
   assert.equal(scheduler.nextTask(), undefined);
   scheduler.running.delete(normal.id);
+  normal.state = 'completed';
   assert.equal(scheduler.nextTask(), team);
   scheduler.running.set(team.id, {});
   assert.equal(scheduler.nextTask(), undefined);
@@ -90,4 +94,21 @@ test('review snapshots include staged, unstaged and untracked changes while pres
   assert.match(result.patch, /\+final/);
   assert.match(result.patch, /\+new/);
   assert.equal(await git(root, ['diff', '--cached'], signal), index);
+});
+
+test('optional OMC command stays in the Docker adapter and receives the task on stdin', async () => {
+  const { teamAdapter } = require('../orchestrator/team');
+  const docker = { enabled: true, teamCommand: ['/opt/agentdesk/omc-wrapper', '--team'] };
+  assert.equal(teamAdapter({ enabled: false, teamCommand: '/bin/omc' }), null);
+  const run = teamAdapter(docker, '/srv/agentdesk', (config, { stateDir }) => {
+    assert.equal(stateDir, '/srv/agentdesk');
+    assert.equal(config.commands.codex, '/opt/agentdesk/omc-wrapper');
+    return (options) => {
+      assert.equal(options.prompt, 'approved task');
+      assert.equal(options.mcp, undefined);
+      assert.deepEqual(options.config.template, { args: ['--team'], prompt: 'stdin', output: 'plain', session: 'none' });
+      return 'output';
+    };
+  });
+  assert.equal(await run({ config: {}, prompt: 'approved task', mcp: { token: 'unused' } }), 'output');
 });

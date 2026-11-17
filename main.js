@@ -104,15 +104,35 @@ function onboardingStatus() {
   const saved = appConfig.value;
   const confirmed = hostConfirmed();
   const complete = saved.onboardingComplete === true && (!trustedHost.host || confirmed);
-  const step = onboardingSteps.includes(saved.onboardingStep) ? saved.onboardingStep : 'welcome';
-  return { ok: true, enabled: !skipOnboarding, complete, confirmed, trust: trustedHost,
-    step: trustedHost.host && !confirmed && !['welcome', 'fingerprint'].includes(step) ? 'fingerprint' : step,
+  const savedStep = onboardingSteps.includes(saved.onboardingStep) ? saved.onboardingStep : 'welcome';
+  let step = savedStep;
+  if (trustedHost.host && !confirmed && !['welcome', 'fingerprint'].includes(savedStep)) step = 'fingerprint';
+  else if (enrollment && !enrolledSession && !complete && onboardingSteps.indexOf(savedStep) > 2) step = 'login';
+  const { host, fingerprints } = trustedHost;
+  return { ok: true, enabled: !skipOnboarding, complete, confirmed, trust: { host, fingerprints }, step,
     enrollmentRequired: Boolean(enrollment), signedIn: Boolean(enrolledSession),
     project: appConfig.active, configurationError: Boolean(configError) };
 }
 
 function startConnectivity() {
   if (connectivityStarted || enrollment || !hostConfirmed() || process.env.AGENTDESK_SHOT || process.env.AGENTDESK_OFFLINE) return;
+  if (trustedHost.host && !skipOnboarding) {
+    try {
+      const pin = trustedHost.records.get(appConfig.value.confirmedHost.fingerprint);
+      const directory = path.join(app.getPath('userData'), 'ssh');
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const file = path.join(directory, 'known_hosts');
+      const temporary = file + '.' + randomUUID();
+      try {
+        fs.writeFileSync(temporary, pin, { mode: 0o600, flag: 'wx' });
+        fs.renameSync(temporary, file);
+      } finally { fs.rmSync(temporary, { force: true }); }
+      remote.cfg.knownHosts = file;
+    } catch {
+      logger?.log('host_pin', { status: 'failed' });
+      return;
+    }
+  }
   connectivityStarted = true;
   remote.start();
   startOrchestratorBridge();
@@ -141,7 +161,9 @@ ipcMain.handle('onboarding:advance', async (event, { step, fingerprint } = {}) =
         if (!current.confirmed) draft.onboardingComplete = false;
         draft.confirmedHost = { host: trustedHost.host, fingerprint };
       }
-      draft.onboardingStep = onboardingSteps[Math.min(onboardingSteps.length - 1, onboardingSteps.indexOf(step) + 1)];
+      if (!(step === 'login' && onboardingSteps.indexOf(draft.onboardingStep) > 2)) {
+        draft.onboardingStep = onboardingSteps[Math.min(onboardingSteps.length - 1, onboardingSteps.indexOf(step) + 1)];
+      }
     });
     if (step === 'fingerprint') startConnectivity();
     return onboardingStatus();
@@ -686,7 +708,8 @@ ipcMain.handle('enrollment:login', async (event, password) => {
   let session;
   try {
     const { createSession } = require('./orchestrator/enrollment-client');
-    session = await createSession(enrollment, password, ws.root || preferredRoot);
+    const knownHosts = skipOnboarding ? enrollment.knownHosts : trustedHost.records.get(appConfig.value.confirmedHost.fingerprint);
+    session = await createSession({ ...enrollment, knownHosts }, password, ws.root || preferredRoot);
     Object.assign(remote.cfg, session.remote);
     const { startBridge } = require('./orchestrator/service');
     stopBridge = startBridge({
@@ -721,8 +744,11 @@ function startOrchestratorBridge() {
   if (!config) return;
   try {
     const { startBridge } = require('./orchestrator/service');
+    const settings = JSON.parse(fs.readFileSync(config, 'utf8'));
+    if (!skipOnboarding && settings.ssh?.host === trustedHost.host &&
+        Number(settings.ssh.port || 22) === Number(remote.cfg.port || 22)) settings.ssh.knownHosts = remote.cfg.knownHosts;
     stopBridge = startBridge({
-      config: JSON.parse(fs.readFileSync(config, 'utf8')),
+      config: settings,
       desktop,
       recycle: (target) => shell.trashItem(target),
       spawnSsh: (ssh) => remote.openBridge(ssh),

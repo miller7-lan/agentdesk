@@ -902,6 +902,7 @@
       patch_too_large: '补丁超出 24 KiB 预览上限。',
       no_review_changes: '没有可审查的改动。',
       duo_requires_two_reviewers: '主控需要配置两名不同的审查者。',
+      team_requires_two_slots: '组队任务需要两个调度槽位。',
       review_snapshot_failed: '无法读取工作区改动。',
       ENOENT: '产物尚未生成或已清理。',
     };

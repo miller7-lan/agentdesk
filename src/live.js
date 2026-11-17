@@ -420,7 +420,7 @@
     }
     const sel = $('#modelSelect'); const model = sel.dataset.live ? sel.value : undefined;
     if (!s.threadId) {
-      const r = await cx.request('thread/start', { projectId: s.project, approvalPolicy, sandbox, approvalsReviewer: 'user', model });
+      const r = await cx.request('thread/start', { projectId: A.proj(s.project)?.configured ? s.project : undefined, approvalPolicy, sandbox, approvalsReviewer: 'user', model });
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));

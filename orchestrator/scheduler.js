@@ -8,6 +8,7 @@ const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent }
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
+const { teamAdapter } = require('./team');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
 const { hostResources } = require('./host-resources');
 const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, compactProject, clip } = require('./summary');
@@ -142,6 +143,7 @@ class Scheduler {
     this.store = store;
     this.files = files;
     this.adapter = adapter;
+    this.teamAdapter = teamAdapter(config.docker, config.stateDir);
     this.now = now;
     this.router = new Router(config, now);
     this.acceptance = validateAcceptance(config.acceptance);
@@ -423,6 +425,7 @@ event(task, state, detail) {
     if (body.provider === 'gemini' && !this.config.adapters?.gemini) throw new Error('gemini_not_configured');
     if (body.provider === 'antigravity' && !this.config.adapters?.antigravity) throw new Error('antigravity_not_configured');
     // The lead role is reserved for planning, triage and acceptance; a caller cannot pin a task to Claude.
+    if (mode === 'team' && this.slots() < 2) throw new Error('team_requires_two_slots');
     if (mode === 'duo' && body.provider) throw new Error('duo_uses_group_routing');
     if (body.provider === LEAD_ROLE) throw new Error('claude_reserved');
     if ((body.provider !== undefined && !ROLES.includes(body.provider)) ||
@@ -784,20 +787,19 @@ event(task, state, detail) {
     }
     const ready = [...this.tasks.values()].filter((candidate) => {
       if (candidate.state !== 'queued' || this.running.has(candidate.id)) return false;
+      if (candidate.slotCost === 2 && this.slots() < 2) return false;
       if (candidate.notBefore && candidate.notBefore > this.now()) return false;
       if (!this.files.endpoint) return true;
       const route = this.bridgeRoute(candidate.workspace);
       const port = this.files.endpoint[route];
       return port?.ready && (!route.startsWith('relay') || port.online);
     });
-    const team = ready.find((candidate) => candidate.slotCost === 2);
-    if (team) return this.running.size ? undefined : team;
     let best;
     for (const candidate of ready) {     // insertion order is submission order, so ties go to the oldest
       const load = runningBy.get(candidate.owner || 'local') || 0;
       if (!best || load < best.load) best = { task: candidate, load };
     }
-    return best?.task;
+    return best?.task.slotCost === 2 && this.running.size ? undefined : best?.task;
   }
 
   start(task) {
@@ -833,7 +835,13 @@ event(task, state, detail) {
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace });
     try {
-      return await this.adapter({
+      const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
+      const run = useTeam || this.adapter;
+      const result = await run({
+        ...(useTeam && {
+          taskId: task.id, stepId: step.id, owner: task.owner, project: task.project,
+          repository: this.config.workspaces[task.workspace].repository,
+        }),
         name: step.role, config, cwd: folder, prompt, readonly: !step.write,
         timeout: task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000, signal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
@@ -845,6 +853,8 @@ event(task, state, detail) {
           this.save(task, task.state, step.id + ':session');
         },
       });
+      if (useTeam && result.container) task.container = result.container;
+      return result;
     } finally {
       mcp?.capabilities.delete(capability);
       release();

@@ -77,7 +77,7 @@ test('rejects paths outside the local workspace and nested non-root Git director
 
 test('SSH fingerprint confirmation matches the exact pinned host and port', () => {
   const { generateKeyPairSync, createHmac } = require('node:crypto');
-  const { hostFingerprints, verified } = require('../onboarding');
+  const { hostFingerprints, hostRecords, verified } = require('../onboarding');
   const { publicKey } = generateKeyPairSync('ed25519');
   const raw = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
   const value = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from('ssh-ed25519'),
@@ -89,6 +89,7 @@ test('SSH fingerprint confirmation matches the exact pinned host and port', () =
   const fingerprints = hostFingerprints(known, host, 2222);
   assert.equal(fingerprints.length, 1);
   assert.deepEqual(hostFingerprints(known, host, 22), []);
+  assert.equal(hostRecords(known, host, 2222).get(fingerprints[0]), `[test.example]:2222 ssh-ed25519 ${value}\n`);
   assert.equal(verified({ host, fingerprints }, { host, fingerprint: 'wrong' }), false);
   assert.equal(verified({ host, fingerprints }, { host, fingerprint: fingerprints[0] }), true);
 });
