@@ -8,6 +8,7 @@ const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent }
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
+const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief } = require('./summary');
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 
@@ -647,7 +648,18 @@ class Scheduler {
       step.attempts += 1;
       this.save(task, 'running', step.id + ':started');
       try {
-        const prompt = dependencies.length ? step.prompt + '\nUpstream results: ' + JSON.stringify(dependencies) : step.prompt;
+        let prompt = dependencies.length ? step.prompt + '\nUpstream results: ' + JSON.stringify(dependencies) : step.prompt;
+        if (step.usesBrief) {
+          const stage = step.capability === 'accept' ? 'acceptance'
+            : step.capability === 'triage' ? 'triage' : 'lead';
+          const brief = step.brief || (stage === 'acceptance' ? buildAcceptanceBrief(task)
+            : stage === 'triage' ? buildTriageBrief(task, step.reason || task.escalation?.reason)
+              : buildLeadBrief(task, stage));
+          task.briefs ||= {};
+          task.briefs[stage] = brief;
+          // No raw upstream transcripts, logs or patches are sent to the lead.
+          prompt = step.prompt + '\n\nBrief (summaries only, not raw logs): ' + JSON.stringify(brief);
+        }
         const { output } = await this.execute(task, step, folder, signal, prompt);
         signal.throwIfAborted();
         step.output = output;
