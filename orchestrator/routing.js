@@ -5,9 +5,15 @@
 
 const ROLES = ['codex', 'claude', 'grok', 'gemini', 'antigravity'];
 
+// Claude is the lead: it plans, triages escalated work and accepts results. It never implements,
+// reviews, scouts or researches, so that its scarce quota is kept for judgement calls.
+const LEAD_ROLE = 'claude';
+const LEAD_CAPABILITIES = new Set(['plan', 'triage', 'accept']);
+
 // write: whether a step of this capability may change files.
 const CAPABILITIES = {
   plan: { write: false },
+  triage: { write: false },     // diagnose an escalation and choose retry/rework/accept/fail
   scout: { write: false },      // read the code, logs or docs and report what matters
   implement: { write: true },   // change code
   review: { write: false },     // read a diff and report problems
@@ -15,13 +21,16 @@ const CAPABILITIES = {
   accept: { write: false },     // judge the summarised results against the plan
 };
 
+// Implementation belongs to Codex alone. If Codex is unavailable the step waits; it never falls back
+// to Claude. Review and scouting deliberately exclude Claude as well.
 const DEFAULT_ROUTES = {
   plan: ['claude', 'codex'],
-  scout: ['antigravity', 'gemini', 'grok', 'claude'],
-  implement: ['codex', 'claude'],
-  review: ['grok', 'antigravity', 'gemini', 'claude'],
+  triage: ['claude'],
+  scout: ['antigravity', 'gemini', 'grok'],
+  implement: ['codex'],
+  review: ['grok', 'antigravity', 'gemini'],
   research: ['grok', 'antigravity', 'gemini'],
-  accept: ['claude', 'codex'],
+  accept: ['claude'],
 };
 
 // Gemini runs under a deny-all-but-read policy, so it can never take a writing step.
@@ -31,7 +40,7 @@ const READ_ONLY_ROLES = new Set(['gemini']);
 // Above `soft` a CLI only takes the capabilities in `keepFor`; above `hard` it takes nothing.
 // Claude and Codex are the scarce ones, so they step back early and keep their quota for their main jobs.
 const DEFAULT_QUOTA_POLICY = {
-  claude: { soft: 60, hard: 95, keepFor: ['plan', 'accept'] },
+  claude: { soft: 60, hard: 95, keepFor: ['plan', 'triage', 'accept'] },
   codex: { soft: 70, hard: 95, keepFor: ['implement'] },
   grok: { soft: 95, hard: 95, keepFor: [] },
   gemini: { soft: 95, hard: 95, keepFor: [] },
@@ -71,6 +80,14 @@ function validateRoutes(overrides = {}) {
       throw new Error('invalid_routing:' + capability);
     }
     routes[capability] = [...list];
+  }
+  // The lead rule is checked after merging overrides so no configuration can widen Claude's role.
+  for (const [capability, list] of Object.entries(routes)) {
+    if (list.includes(LEAD_ROLE) && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_routing:' + capability + ':lead_reserved');
+    if (['triage', 'accept'].includes(capability) && (list.length !== 1 || list[0] !== LEAD_ROLE)) {
+      throw new Error('invalid_routing:' + capability + ':lead_required');
+    }
+    if (capability === 'plan' && list[0] !== LEAD_ROLE) throw new Error('invalid_routing:plan:lead_required');
   }
   return routes;
 }
@@ -124,9 +141,13 @@ class Router {
     this.blocked.set(role, { until: this.now() + ms, reason });
   }
 
+  candidates(capability, exclude = []) {
+    return (this.routes[capability] || []).filter((role) =>
+      !exclude.includes(role) && this.available(role) && this.quotaAllows(role, capability));
+  }
+
   pick(capability, exclude = []) {
-    return (this.routes[capability] || []).find((role) =>
-      !exclude.includes(role) && this.available(role) && this.quotaAllows(role, capability)) || null;
+    return this.candidates(capability, exclude)[0] || null;
   }
 
   canWrite(role) {
@@ -137,6 +158,8 @@ class Router {
     const now = this.now();
     return {
       routes: this.routes,
+      lead: LEAD_ROLE,
+      leadCapabilities: [...LEAD_CAPABILITIES],
       quotaUsed: this.quota,
       quotaPolicy: this.quotaPolicy,
       blocked: Object.fromEntries([...this.blocked].filter(([, block]) => block.until > now)
@@ -145,4 +168,7 @@ class Router {
   }
 }
 
-module.exports = { ROLES, CAPABILITIES, DEFAULT_ROUTES, DEFAULT_QUOTA_POLICY, Router, validateRoutes, validateQuotaPolicy, usedPercent };
+module.exports = {
+  ROLES, CAPABILITIES, DEFAULT_ROUTES, DEFAULT_QUOTA_POLICY, LEAD_ROLE, LEAD_CAPABILITIES,
+  Router, validateRoutes, validateQuotaPolicy, usedPercent,
+};

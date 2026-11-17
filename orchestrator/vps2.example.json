@@ -70,21 +70,21 @@
       "claude",
       "codex"
     ],
+    "triage": [
+      "claude"
+    ],
     "scout": [
       "antigravity",
       "gemini",
-      "grok",
-      "claude"
+      "grok"
     ],
     "implement": [
-      "codex",
-      "claude"
+      "codex"
     ],
     "review": [
       "grok",
       "antigravity",
-      "gemini",
-      "claude"
+      "gemini"
     ],
     "research": [
       "grok",
@@ -92,8 +92,7 @@
       "gemini"
     ],
     "accept": [
-      "claude",
-      "codex"
+      "claude"
     ]
   },
   "quotaPolicy": {
@@ -102,6 +101,7 @@
       "hard": 95,
       "keepFor": [
         "plan",
+        "triage",
         "accept"
       ]
     },

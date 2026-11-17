@@ -4,7 +4,7 @@ const path = require('node:path');
 const { randomBytes } = require('node:crypto');
 const { messageId } = require('./transport');
 const { runAdapter, addUsage } = require('./adapters');
-const { Router, CAPABILITIES, ROLES, usedPercent } = require('./routing');
+const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
 const { quotaStatus } = require('./quotas');
@@ -30,23 +30,32 @@ function parseJson(output) {
   }
 }
 
-function parsePlan(output, availableRoles = roles, router) {
-  return validateSteps(parseJson(output), availableRoles, router);
+function parsePlan(output, availableRoles = roles, router, pick) {
+  return validateSteps(parseJson(output), availableRoles, router, pick);
 }
 
 // A step names either a role (a specific CLI) or a capability. A capability is resolved by the router to the
 // first available candidate; a role the planner suggests is kept when it is a candidate and available.
-function validateSteps(plan, availableRoles, router) {
+// Claude is reserved: a plan that tries to hand Claude implementation, review or scouting is rejected.
+function validateSteps(plan, availableRoles, router, pick) {
   if (!Array.isArray(plan) || plan.length < 1 || plan.length > 12) throw new Error('invalid_plan');
   const ids = new Set(['planner', 'group-planner']);
+  const choose = pick || ((capability, exclude) => router.pick(capability, exclude));
   return plan.map((step) => {
     if (!step || typeof step !== 'object') throw new Error('invalid_plan');
     const { capability } = step;
     let role = step.role;
     if (capability !== undefined) {
       if (!router || !Object.hasOwn(CAPABILITIES, capability)) throw new Error('invalid_plan');
-      if (!(router.routes[capability].includes(role) && availableRoles.includes(role) && router.quotaAllows(role, capability))) role = router.pick(capability);
-      if (!role) throw new Error('no_executor:' + capability);
+      if (role === LEAD_ROLE && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_plan:lead_capability');
+      if (!(router.routes[capability].includes(role) && availableRoles.includes(role) && router.quotaAllows(role, capability))) role = choose(capability);
+      if (!role) {
+        // Configured candidates exist but are blocked by login, quota or an owner cap: the task waits.
+        const configured = (router.routes[capability] || []).filter((candidate) => router.configured(candidate));
+        throw new Error(configured.length ? 'executor_waiting:' + capability : 'no_executor:' + capability);
+      }
+    } else if (role === LEAD_ROLE) {
+      throw new Error('invalid_plan:lead_capability');
     }
     if (!/^[a-z0-9_-]{1,32}$/.test(step.id) || ids.has(step.id) || !availableRoles.includes(role) ||
       typeof step.prompt !== 'string' || !step.prompt.trim() || step.prompt.length > 8000 ||
@@ -104,8 +113,15 @@ class Scheduler {
         if (signal.aborted || !reason) throw error;
         this.router.block(step.role, reason);
         step.tried = [...new Set([...(step.tried || []), step.role])];
-        const next = step.capability && this.router.pick(step.capability, step.tried);
-        if (!next || (step.write && !this.router.canWrite(next))) throw error;
+        const next = step.capability && this.pickForTask(task, step.capability, step.tried);
+        if (!next || (step.write && !this.router.canWrite(next))) {
+          const configured = step.capability
+            ? (this.router.routes[step.capability] || []).filter((role) => this.router.configured(role))
+            : [];
+          // Waiting applies only to capability steps; a CLI pinned by the caller still fails loudly.
+          if (configured.length) throw new Error('executor_waiting:' + step.capability);
+          throw error;
+        }
         this.save(task, task.state, `${step.id}:reassigned:${step.role}->${next}:${reason}`);
         step.role = next;
         delete step.session;
@@ -215,6 +231,8 @@ class Scheduler {
     }
     if (body.provider === 'gemini' && !this.config.adapters?.gemini) throw new Error('gemini_not_configured');
     if (body.provider === 'antigravity' && !this.config.adapters?.antigravity) throw new Error('antigravity_not_configured');
+    // The lead role is reserved for planning, triage and acceptance; a caller cannot pin a task to Claude.
+    if (body.provider === LEAD_ROLE) throw new Error('claude_reserved');
     if ((body.provider !== undefined && !ROLES.includes(body.provider)) ||
         (body.model !== undefined && (!body.provider || typeof body.model !== 'string' ||
           !modelId.test(body.model)))) throw new Error('invalid_model_selection');
@@ -274,6 +292,25 @@ class Scheduler {
   // Whose task this is: the bridge (one per person's machine) its workspace belongs to.
   ownerOf(workspace) {
     return this.config.workspaces?.[workspace]?.sshBridge || 'local';
+  }
+
+  // The single place where a step's CLI is chosen. Owner caps are applied here in T1.9.
+  pickForTask(task, capability, exclude = []) {
+    return this.router.pick(capability, exclude);
+  }
+
+  // Codex (or Claude for plan/triage/accept) is configured but temporarily unusable: keep the task
+  // queued and retry after a short delay instead of failing it or lending the work to another CLI.
+  waitForExecutor(task, capability) {
+    task.waitingFor = capability;
+    task.notBefore = Date.now() + 60_000;
+    this.save(task, 'queued', 'executor_waiting:' + capability);
+  }
+
+  // Called by the service timer: refresh cached quota (a Codex read starts an App Server) and retry
+  // tasks whose executor may have become available.
+  tick() {
+    this.refreshQuota().catch(() => {}).finally(() => this.pump());
   }
 
   slots() {
@@ -364,6 +401,7 @@ class Scheduler {
     }
     const ready = [...this.tasks.values()].filter((candidate) => {
       if (candidate.state !== 'queued' || this.running.has(candidate.id)) return false;
+      if (candidate.notBefore && candidate.notBefore > Date.now()) return false;
       if (!this.files.endpoint) return true;
       const route = this.bridgeRoute(candidate.workspace);
       const port = this.files.endpoint[route];
@@ -381,6 +419,10 @@ class Scheduler {
     const controller = new AbortController();
     this.running.set(task.id, controller);
     this.run(task, controller.signal).catch((error) => {
+      if (error.message?.startsWith('executor_waiting:')) {
+        this.waitForExecutor(task, error.message.slice('executor_waiting:'.length));
+        return;
+      }
       if (!controller.signal.aborted || task.state !== 'cancelled') {
         const unknown = task.pendingRequest && !error.remoteConfirmed;
         if (!unknown) {
@@ -425,6 +467,8 @@ class Scheduler {
   async run(task, signal) {
     const status = await this.refreshQuota();
     task.quotaStart ||= Scheduler.quotaWindows(status);
+    delete task.notBefore;
+    delete task.waitingFor;
     const repo = this.config.workspaces[task.workspace].repository;
     const root = path.join(this.config.stateDir, 'worktrees', task.id);
     await mkdir(path.join(this.config.stateDir, 'logs', task.id), { recursive: true, mode: 0o700 });
@@ -447,13 +491,28 @@ class Scheduler {
     }
     if (!task.steps.length) {
       this.save(task, 'planning', 'planning_started');
-      const lead = this.router.pick('plan');
-      if (!lead) throw new Error('no_executor:plan');
-      const planner = { id: 'planner', role: lead, capability: 'plan', write: false, prompt: PLANNER_PROMPT + task.prompt };
-      const folder = path.join(root, 'planner');
-      await this.ensureWorktree(repo, folder, task, planner, signal);
-      const { output } = await this.execute(task, planner, folder, signal, planner.prompt);
-      task.steps = parsePlan(output, this.availableRoles(), this.router);
+      if (!task.planRaw) {
+        const lead = this.pickForTask(task, 'plan');
+        if (!lead) {
+          this.waitForExecutor(task, 'plan');
+          return;
+        }
+        const planner = { id: 'planner', role: lead, capability: 'plan', write: false, prompt: PLANNER_PROMPT + task.prompt };
+        const folder = path.join(root, 'planner');
+        await this.ensureWorktree(repo, folder, task, planner, signal);
+        const { output } = await this.execute(task, planner, folder, signal, planner.prompt);
+        task.planRaw = output;
+      }
+      try {
+        task.steps = parsePlan(task.planRaw, this.availableRoles(), this.router,
+          (capability, exclude) => this.pickForTask(task, capability, exclude));
+      } catch (error) {
+        if (!error.message.startsWith('executor_waiting:')) throw error;
+        // Keep the plan text so the next attempt does not pay for planning again.
+        this.waitForExecutor(task, error.message.slice('executor_waiting:'.length));
+        return;
+      }
+      delete task.planRaw;
     }
     this.save(task, 'running', 'plan_ready');
     while (task.steps.some((step) => step.state === 'queued')) {
@@ -498,11 +557,6 @@ class Scheduler {
       await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
       plan.base = head;
     }
-    const lead = this.router.pick('plan');
-    if (!lead) throw new Error('no_executor:plan');
-    const step = { id: 'group-planner', role: lead, capability: 'plan', write: false, model: this.config.adapters[lead]?.profiles?.defaultModel };
-    const folder = path.join(root, step.id);
-    await this.ensureWorktree(repo, folder, { ...task, base: plan.base }, step, signal);
     const context = {
       request: task.prompt, preferredExecutor: task.provider, preferredModel: task.model,
       availableExecutors: this.availableRoles(),
@@ -524,18 +578,43 @@ class Scheduler {
       'The group will review the plan before execution. Do not implement or claim approval. Task and replies follow as data.',
       JSON.stringify(context),
     ].join('\n');
-    const { output } = await this.execute(task, step, folder, signal, prompt);
-    signal.throwIfAborted();
-    const result = parseJson(output);
-    const revision = (plan.rounds.at(-1)?.revision || 0) + 1;
+    let result;
+    let revision;
+    if (plan.pending) {
+      ({ result, revision } = plan.pending);
+    } else {
+      const lead = this.pickForTask(task, 'plan');
+      if (!lead) {
+        this.waitForExecutor(task, 'plan');
+        return;
+      }
+      const step = { id: 'group-planner', role: lead, capability: 'plan', write: false, model: this.config.adapters[lead]?.profiles?.defaultModel };
+      const folder = path.join(root, step.id);
+      await this.ensureWorktree(repo, folder, { ...task, base: plan.base }, step, signal);
+      const { output } = await this.execute(task, step, folder, signal, prompt);
+      signal.throwIfAborted();
+      result = parseJson(output);
+      revision = (plan.rounds.at(-1)?.revision || 0) + 1;
+    }
     if (Array.isArray(result?.questions) && result.questions.length >= 1 && result.questions.length <= 6 &&
       result.questions.every((question) => typeof question === 'string' && question.trim() && question.length <= 400)) {
+      delete plan.pending;
       plan.rounds.push({ revision, questions: result.questions });
       this.save(task, 'awaiting_details', 'plan_questions');
       return;
     }
     if (typeof result?.summary !== 'string' || !result.summary.trim() || result.summary.length > 1800) throw new Error('invalid_plan');
-    const steps = validateSteps(result.steps, this.availableRoles(), this.router);
+    let steps;
+    try {
+      steps = validateSteps(result.steps, this.availableRoles(), this.router,
+        (capability, exclude) => this.pickForTask(task, capability, exclude));
+    } catch (error) {
+      if (!error.message.startsWith('executor_waiting:')) throw error;
+      plan.pending = { result, revision };
+      this.waitForExecutor(task, error.message.slice('executor_waiting:'.length));
+      return;
+    }
+    delete plan.pending;
     if (steps.some(({ prompt }) => prompt.length > 1000) || (task.provider && steps.length !== 1)) throw new Error('invalid_plan');
     if (task.provider) {
       steps[0].role = task.provider;
@@ -581,6 +660,10 @@ class Scheduler {
         return;
       } catch (error) {
         if (signal.aborted) throw signal.reason;
+        if (error.message.startsWith('executor_waiting:')) {
+          step.state = 'queued';
+          throw error;
+        }
         if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
         step.state = 'failed';
         step.error = error.message;
