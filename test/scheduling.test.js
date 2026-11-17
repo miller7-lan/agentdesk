@@ -112,6 +112,72 @@ test('task metadata is validated and stored for reports and benchmarks', async (
   assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'x', arm: 'team' }), /invalid_task/);
 });
 
+test('a task whose whole route is over the owner daily cap waits for local midnight once', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  let nowMs = new Date(2026, 10, 17, 10, 0).getTime();
+  const calls = [];
+  const scheduler = new Scheduler({
+    config: {
+      stateDir: dir, quota: false, maxConcurrentTasks: 1, acceptance: { mode: 'off' },
+      ownerCaps: { default: { claude: 10, codex: 5 } },
+      adapters: adapters('codex', 'claude', 'grok'),
+      workspaces: { mac: { repository: mirror } },
+    },
+    store, files: { endpoint: { ssh: { ready: true } } },
+    adapter: async ({ name }) => {
+      calls.push(name);
+      return { output: name === 'claude' ? PLAN : 'done' };
+    },
+    now: () => nowMs,
+  });
+  try {
+    const prior = {
+      id: randomUUID(), workspace: 'mac', owner: 'local', state: 'completed', detail: 'completed',
+      metrics: { startedAt: new Date(nowMs).toISOString() },
+      quota: { claude: { fiveHour: 10 }, codex: { fiveHour: 5 } },
+    };
+    scheduler.tasks.set(prior.id, prior);
+
+    const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'change the fixture' });
+    task.base = head;
+    scheduler.start(task);
+    await until(() => task.state === 'queued' && task.detail === 'owner_quota_cap' && !scheduler.running.has(task.id));
+
+    assert.equal(task.waitingFor, 'plan');
+    assert.equal(task.notBefore, new Date(2026, 10, 18, 0, 0).getTime());
+    assert.deepEqual(calls, []);
+    const events = () => scheduler.store.events(task.id).filter((event) => event.detail === 'owner_quota_cap');
+    assert.equal(events().length, 1);
+
+    const report = scheduler.control({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'report' } }, 'admin');
+    assert.deepEqual(report.owners.local.usage, { claude: 10, codex: 5 });
+    assert.deepEqual(report.owners.local.caps, { claude: 10, codex: 5 });
+
+    // A retry on the same day keeps waiting and does not append another event.
+    scheduler.start(task);
+    await until(() => !scheduler.running.has(task.id));
+    assert.equal(task.state, 'queued');
+    assert.equal(task.detail, 'owner_quota_cap');
+    assert.equal(events().length, 1);
+
+    assert.equal(scheduler.nextTask(), undefined);
+    nowMs = new Date(2026, 10, 17, 23, 59, 59).getTime();
+    assert.equal(scheduler.nextTask(), undefined);
+    nowMs = new Date(2026, 10, 18, 0, 0, 1).getTime();
+    assert.equal(scheduler.nextTask(), task);
+
+    scheduler.start(task);
+    await until(() => task.state === 'completed' && !scheduler.running.has(task.id));
+    assert.deepEqual(calls, ['claude', 'codex']);
+    assert.equal(task.notBefore, undefined);
+    assert.equal(task.waitingFor, undefined);
+  } finally {
+    scheduler.stopped = true;
+  }
+});
+
 test('Claude waiting does not hand acceptance or triage to another CLI', () => {
   const router = new Router({ adapters: adapters('codex', 'claude', 'grok') });
   router.block('claude', 'quota', 60_000);

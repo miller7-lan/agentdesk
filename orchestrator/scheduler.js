@@ -14,6 +14,7 @@ const {
 } = require('./review');
 const { TRIAGE_INSTRUCTION, parseTriageDecision } = require('./triage');
 const { summarize, benchmark, toTable, toCsv } = require('./report');
+const { validateOwnerCaps, allow: ownerAllow, nextReset, ownerUsageReport } = require('./ledger');
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 const MAX_TRIAGE = 2;
@@ -54,14 +55,14 @@ function parseJson(output) {
   }
 }
 
-function parsePlan(output, availableRoles = roles, router, pick) {
-  return validateSteps(parseJson(output), availableRoles, router, pick);
+function parsePlan(output, availableRoles = roles, router, pick, allowedRole) {
+  return validateSteps(parseJson(output), availableRoles, router, pick, allowedRole);
 }
 
 // A step names either a role (a specific CLI) or a capability. A capability is resolved by the router to the
 // first available candidate; a role the planner suggests is kept when it is a candidate and available.
 // Claude is reserved: a plan that tries to hand Claude implementation, review or scouting is rejected.
-function validateSteps(plan, availableRoles, router, pick) {
+function validateSteps(plan, availableRoles, router, pick, allowedRole = () => true) {
   if (!Array.isArray(plan) || plan.length < 1 || plan.length > 12) throw new Error('invalid_plan');
   const ids = new Set(['planner', 'group-planner']);
   const choose = pick || ((capability, exclude) => router.pick(capability, exclude));
@@ -72,7 +73,8 @@ function validateSteps(plan, availableRoles, router, pick) {
     if (capability !== undefined) {
       if (!router || !Object.hasOwn(CAPABILITIES, capability)) throw new Error('invalid_plan');
       if (role === LEAD_ROLE && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_plan:lead_capability');
-      if (!(router.routes[capability].includes(role) && availableRoles.includes(role) && router.quotaAllows(role, capability))) role = choose(capability);
+      if (!(router.routes[capability].includes(role) && availableRoles.includes(role) &&
+        router.quotaAllows(role, capability) && allowedRole(role))) role = choose(capability);
       if (!role) {
         // Configured candidates exist but are blocked by login, quota or an owner cap: the task waits.
         const configured = (router.routes[capability] || []).filter((candidate) => router.configured(candidate));
@@ -94,13 +96,15 @@ function validateSteps(plan, availableRoles, router, pick) {
 }
 
 class Scheduler {
-  constructor({ config, store, files, adapter = runAdapter }) {
+  constructor({ config, store, files, adapter = runAdapter, now = () => Date.now() }) {
     this.config = config;
     this.store = store;
     this.files = files;
     this.adapter = adapter;
-    this.router = new Router(config);
+    this.now = now;
+    this.router = new Router(config, now);
     this.acceptance = validateAcceptance(config.acceptance);
+    this.ownerCaps = validateOwnerCaps(config.ownerCaps);
     this.running = new Map();
     // Several people share one VPS: tasks run in parallel up to maxConcurrentTasks, but each CLI runs one
     // process at a time across all tasks, because every task uses the same subscription login for that CLI.
@@ -159,10 +163,10 @@ class Scheduler {
   // briefly: reading Codex quota starts an App Server process.
   async refreshQuota(maxAgeMs = 120_000) {
     if (this.config.quota === false) return this.quotaSnapshot || [];
-    if (this.quotaSnapshot && Date.now() - this.quotaAt < maxAgeMs) return this.quotaSnapshot;
+    if (this.quotaSnapshot && this.now() - this.quotaAt < maxAgeMs) return this.quotaSnapshot;
     this.quotaReading ||= quotaStatus(this.config.adapters).then((status) => {
       this.quotaSnapshot = status;
-      this.quotaAt = Date.now();
+      this.quotaAt = this.now();
       this.router.setQuota(status);
       return status;
     }).catch(() => this.quotaSnapshot || []).finally(() => { this.quotaReading = null; });
@@ -237,11 +241,12 @@ class Scheduler {
     }));
   }
 
-  save(task, state, detail) {
+  save(task, state, detail, record = true) {
     task.state = state;
     task.detail = detail;
     this.updateMetrics(task, state);
-    this.store.saveTask(task, { state, detail });
+    if (record) this.store.saveTask(task, { state, detail });
+    else this.store.put('tasks', task.id, task);
   }
 
   // Metrics live with the task so reports work after a restart. They are counts, never transcripts or
@@ -249,7 +254,7 @@ class Scheduler {
   // eventual terminal state records the full duration.
   updateMetrics(task, state) {
     const metrics = task.metrics ||= {};
-    const now = new Date().toISOString();
+    const now = new Date(this.now()).toISOString();
     if (!metrics.startedAt && !['queued', 'awaiting_details', 'awaiting_approval', 'submitted'].includes(state)) {
       metrics.startedAt = now;
     }
@@ -381,16 +386,47 @@ class Scheduler {
     return this.config.workspaces?.[workspace]?.sshBridge || 'local';
   }
 
+  // Whether this person may still spend one more step of this CLI today.
+  ownerAllows(task, role, at = new Date(this.now())) {
+    return ownerAllow([...this.tasks.values()], task.owner || 'local', role, this.ownerCaps, at);
+  }
+
   // The single place where a step's CLI is chosen. Owner caps are applied here in T1.9.
   pickForTask(task, capability, exclude = []) {
-    return this.router.pick(capability, exclude);
+    const candidates = this.router.candidates(capability, exclude);
+    if (!candidates.length) {
+      delete task.ownerCapBlocked;
+      return null;
+    }
+    const role = candidates.find((candidate) => this.ownerAllows(task, candidate).allowed);
+    if (role) {
+      delete task.ownerCapBlocked;
+      return role;
+    }
+    // Every otherwise-available candidate is over the person's daily cap. The task waits for the
+    // local midnight reset rather than being handed to a different CLI outside the capability.
+    task.ownerCapBlocked = true;
+    return null;
   }
 
   // Codex (or Claude for plan/triage/accept) is configured but temporarily unusable: keep the task
   // queued and retry after a short delay instead of failing it or lending the work to another CLI.
   waitForExecutor(task, capability) {
     task.waitingFor = capability;
-    task.notBefore = Date.now() + 60_000;
+    if (task.ownerCapBlocked) {
+      delete task.ownerCapBlocked;
+      const reset = nextReset(new Date(this.now())).getTime();
+      task.notBefore = reset;
+      // One event per daily wait, no matter how often the planner retries before midnight.
+      if (task.ownerCapNotifiedUntil !== reset) {
+        task.ownerCapNotifiedUntil = reset;
+        this.save(task, 'queued', 'owner_quota_cap');
+      } else {
+        this.save(task, 'queued', 'owner_quota_cap', false);
+      }
+      return;
+    }
+    task.notBefore = this.now() + 60_000;
     this.save(task, 'queued', 'executor_waiting:' + capability);
   }
 
@@ -399,7 +435,7 @@ class Scheduler {
   tick() {
     this.refreshQuota().catch(() => {}).finally(() => {
       // A triage that was waiting for Claude is retried in place; the task is not lent to another CLI.
-      const now = Date.now();
+      const now = this.now();
       for (const task of this.tasks.values()) {
         if (task.state === 'triaging' && !this.running.has(task.id) && (!task.notBefore || task.notBefore <= now)) {
           delete task.notBefore;
@@ -499,7 +535,7 @@ class Scheduler {
     }
     const ready = [...this.tasks.values()].filter((candidate) => {
       if (candidate.state !== 'queued' || this.running.has(candidate.id)) return false;
-      if (candidate.notBefore && candidate.notBefore > Date.now()) return false;
+      if (candidate.notBefore && candidate.notBefore > this.now()) return false;
       if (!this.files.endpoint) return true;
       const route = this.bridgeRoute(candidate.workspace);
       const port = this.files.endpoint[route];
@@ -610,7 +646,8 @@ class Scheduler {
       }
       try {
         task.steps = parsePlan(task.planRaw, this.availableRoles(), this.router,
-          (capability, exclude) => this.pickForTask(task, capability, exclude));
+          (capability, exclude) => this.pickForTask(task, capability, exclude),
+          (role) => this.ownerAllows(task, role).allowed);
       } catch (error) {
         if (!error.message.startsWith('executor_waiting:')) throw error;
         // Keep the plan text so the next attempt does not pay for planning again.
@@ -730,7 +767,8 @@ class Scheduler {
     let steps;
     try {
       steps = validateSteps(result.steps, this.availableRoles(), this.router,
-        (capability, exclude) => this.pickForTask(task, capability, exclude));
+        (capability, exclude) => this.pickForTask(task, capability, exclude),
+        (role) => this.ownerAllows(task, role).allowed);
     } catch (error) {
       if (!error.message.startsWith('executor_waiting:')) throw error;
       plan.pending = { result, revision };
@@ -829,7 +867,7 @@ class Scheduler {
     const round = task.steps.filter((item) => this.isAcceptStep(item)).indexOf(step) + 1;
     task.acceptance = {
       verdict: verdict.verdict, round, stepId: step.id, summary: clip(verdict.summary, 600), findings,
-      at: new Date().toISOString(), reworkDone: false,
+      at: new Date(this.now()).toISOString(), reworkDone: false,
     };
     this.save(task, task.state, 'acceptance_verdict:' + verdict.verdict);
     if (['accept', 'pass'].includes(verdict.verdict)) {
@@ -1031,7 +1069,7 @@ class Scheduler {
       this.save(task, 'needs_review', 'triage_limit');
       return false;
     }
-    task.escalation = { reason, applied: Boolean(applied), active: true, requestedAt: new Date().toISOString() };
+    task.escalation = { reason, applied: Boolean(applied), active: true, requestedAt: new Date(this.now()).toISOString() };
     task.stage = 'triaging';
     this.save(task, 'triaging', 'triage_started');
     return true;
@@ -1056,6 +1094,10 @@ class Scheduler {
     if (!escalation?.active) return;
     const lead = this.pickForTask(task, 'triage');
     if (!lead) {
+      if (task.ownerCapBlocked) {
+        this.waitForExecutor(task, 'triage');
+        return;
+      }
       const configured = (this.router.routes.triage || []).filter((role) => this.router.configured(role));
       if (!configured.length) {
         escalation.active = false;
@@ -1064,7 +1106,7 @@ class Scheduler {
       }
       // Claude is the only triage role. Wait for it; never hand the decision to Codex.
       task.waitingFor = 'triage';
-      task.notBefore = Date.now() + 60_000;
+      task.notBefore = this.now() + 60_000;
       this.save(task, 'triaging', 'triage_unavailable');
       return;
     }
@@ -1085,8 +1127,12 @@ class Scheduler {
         await this.runStep(task, step, repo, root, signal);
       } catch (error) {
         if (error.message.startsWith('executor_waiting:')) {
+          if (task.ownerCapBlocked) {
+            this.waitForExecutor(task, 'triage');
+            return;
+          }
           task.waitingFor = 'triage';
-          task.notBefore = Date.now() + 60_000;
+          task.notBefore = this.now() + 60_000;
           this.save(task, 'triaging', 'triage_unavailable');
           return;
         }
@@ -1154,8 +1200,12 @@ class Scheduler {
         steps = this.buildTriageSteps(task, decision);
       } catch (error) {
         if (error.message.startsWith('executor_waiting:')) {
+          if (task.ownerCapBlocked) {
+            this.waitForExecutor(task, error.message.slice('executor_waiting:'.length));
+            return 'rework';
+          }
           task.waitingFor = error.message.slice('executor_waiting:'.length);
-          task.notBefore = Date.now() + 60_000;
+          task.notBefore = this.now() + 60_000;
           this.save(task, 'triaging', 'triage_unavailable');
           return 'rework';
         }
@@ -1173,7 +1223,7 @@ class Scheduler {
       escalation.active = false;
       task.acceptance = {
         verdict: 'accept_with_risk', round: (task.acceptance?.round || 0) + 1, stepId: escalation.stepId,
-        summary: clip(decision.reason || decision.instructions, 600), findings: [], at: new Date().toISOString(),
+        summary: clip(decision.reason || decision.instructions, 600), findings: [], at: new Date(this.now()).toISOString(),
       };
       task.stage = 'accepted';
       this.save(task, 'needs_review', 'accepted_with_risk');
@@ -1302,9 +1352,13 @@ class Scheduler {
     const bridge = route === 'admin' ? frame.bridge : named;
     if (frame.kind === 'task.status' && route === 'admin' && ['report', 'benchmark'].includes(body.operation)) {
       if (body.format !== undefined && !['json', 'table', 'csv'].includes(body.format)) throw new Error('invalid_report_format');
-      const value = body.operation === 'report'
-        ? summarize([...this.tasks.values()], body)
-        : benchmark([...this.tasks.values()], { benchmarkId: body.benchmarkId });
+      let value;
+      if (body.operation === 'report') {
+        value = summarize([...this.tasks.values()], body);
+        value.owners = ownerUsageReport([...this.tasks.values()], this.ownerCaps, new Date(this.now()));
+      } else {
+        value = benchmark([...this.tasks.values()], { benchmarkId: body.benchmarkId });
+      }
       if (body.format === 'table') return { format: 'table', output: toTable(value), summary: value };
       if (body.format === 'csv') return { format: 'csv', output: toCsv(value), summary: value };
       return value;
