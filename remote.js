@@ -26,7 +26,7 @@ const SSH = process.platform === 'win32'
   ? bundledSSH && fs.existsSync(bundledSSH) ? bundledSSH
     : path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe')
   : '/usr/bin/ssh';
-const sshPath = (value) => JSON.stringify(process.platform === 'win32' ? value.replace(/\\/g, '/') : value);
+const sshPath = (value) => JSON.stringify(process.platform === 'win32' && typeof value === 'string' ? value.replace(/\\/g, '/') : value);
 
 const VERSION = require('./package.json').version;
 
