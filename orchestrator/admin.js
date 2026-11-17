@@ -8,6 +8,9 @@ async function main([socketPath, command, id, argument, ...rest]) {
   const files = new RemoteFiles({
     request: (_route, task_id, kind, body) => send({ operation: 'bridge', task_id, kind, body }),
   });
+  if (command === 'quotas') {
+    return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'quota_status' } });
+  }
   if (command === 'submit' && id && argument) {
     return send({ kind: 'task.request', task_id: randomUUID(), body: { workspace: id, prompt: argument, command: rest[0] } });
   }

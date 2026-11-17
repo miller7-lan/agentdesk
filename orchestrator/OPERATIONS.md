@@ -11,6 +11,8 @@ sudoedit /etc/agentdesk-orchestrator/config.json
 
 将凭证文件放在 `/etc/agentdesk-orchestrator`，权限为 `root:agentdesk` 和 `0640`。Windows 和 VPS 1 只持有各自的 Relay 设备凭据。Relay 的 CA 文件可以省略以使用系统公信 CA。生产 Relay 地址、端口和设备 ID 使用 VPS 1 的配置。各 CLI 的 home 在 `/var/lib/agentdesk-orchestrator/homes/<provider>`，配置好后用服务账户确认各 CLI 可以非交互启动。服务账户运行受信任的项目，三个 CLI 的 home 和环境变量分别配置，文件权限由同一服务账户管理。
 
+Codex 在 Ubuntu 上需要可用的 `bubblewrap` 才能用 `workspace-write` 写入 worktree。Ubuntu 24.04 若启用了 AppArmor 的用户命名空间限制，安装发行版的 `apparmor-profiles`，按 [Codex 沙盒文档](https://learn.chatgpt.com/docs/sandboxing) 载入 `bwrap-userns-restrict`，再用实际服务账户验证 `bwrap --unshare-user --ro-bind / / /bin/true`。
+
 为每个项目准备可从 Windows 权威仓库同步的 bare Git 镜像，设置到 `workspaces.<id>.repository`。更新 Windows 项目后，先让镜像取得该提交。主控会在每个任务开始时读取 Windows 的 HEAD 并检查工作区干净，再使用同一提交生成各 CLI 的独立 worktree。Linux 可计算的补丁暂存在 VPS 2，审核通过后由 Windows Bridge 检查基线和冲突并写回。Windows Runner 用当地项目执行测试。
 
 ```sh
@@ -41,9 +43,38 @@ macOS Bridge 与 Windows 可同时保持 SSH 连接。给 Mac 分配独立的 SS
 
 Apple Silicon 上先运行 `npm ci`，再运行 `npm run dist:mac -- --arm64`。构建产物位于 `dist/mac-arm64/AgentDesk.app`。安装后用 `~/.agentdesk/mac-remote.json` 配置单独的 Codex App Server SSH 公钥和 VPS 工作区。后台 Bridge 的 `controlSocket` 指向其私有状态目录中的 `control.sock`，`controlWorkspace` 指定对应的 Mac 项目。配置 `desktopSocket` 指向同目录的 `desktop.sock` 时，运行中的 Mac 应用提供桌面操作，后台 Bridge 继续处理连接、文件和命令。
 
-在应用底部打开「线路与模型」，为 Mac 主控任务选择 SSH 主用或 VPS 1 Relay 备用。主路断开时，可以通过在线的备用链路切换。任务可以使用自动协作，也可以指定 Codex、Claude Code 或 Grok Build，并填入该 CLI 接受的模型 ID。模型 ID 留空时使用其默认模型。普通 Codex 聊天使用自己的 SSH 会话和模型选择器。
+在应用底部打开「线路与模型」，为 Mac 主控任务选择 SSH 主用或 VPS 1 Relay 备用。主路断开时，可以通过在线的备用链路切换。群聊中组长先只读规划并提问，用户确认当前方案后才执行。可以由组长分派，或预选 Codex、Claude Code、Grok Build 或 Gemini，并填入该 CLI 接受的模型 ID。模型 ID 留空时使用其默认模型。普通 Codex 聊天使用自己的 SSH 会话和模型选择器。
+
+Gemini 负责只读分析和审查。要在 VPS 2 启用它，请参照 `vps2.example.json` 的可选 `adapters.gemini`，设置 Gemini CLI 路径和付费 Gemini API 密钥文件。未启用时可省略该配置项。
 
 ## 任务与切换
+
+组长从各 `adapters.<provider>.models` 读取能力和计费信息。示例配置的标准 API 文本单价只用于演示，部署时请保留账户实际可用的模型，并按账户计费方式配置。API 模型填写 `inputUsdPerMillion` 和 `outputUsdPerMillion`，订阅模型使用 `billing: "subscription"`，价格未知时使用 `billing: "unknown"`。可用 `defaultModel` 指定模型 ID；未配置时可由组长在已登记模型中挑选，或保留 CLI 默认模型。
+
+- 单价来源见 [OpenAI GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、[Claude 计费](https://platform.claude.com/docs/en/about-claude/pricing)、[Grok API 计费](https://docs.x.ai/developers/pricing) 和 [Gemini Developer API 计费](https://ai.google.dev/gemini-api/docs/pricing)。
+
+管理端可获取各执行者的额度数据。
+
+```sh
+node orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock quotas
+```
+
+Codex 默认从主控执行账户的 App Server 实时读取，按供应商返回的额度 ID 保存独立或共享额度。其他执行者可用 `adapters.<provider>.quotaFile` 接入经核实的快照，文件格式如下。时间戳以 UTC ISO 8601 字符串或 Unix 秒表示，分别对应 `observedAt` 和 `resetsAt`。
+
+```json
+{
+  "observedAt": "2026-11-17T09:00:00Z",
+  "buckets": [
+    { "id": "shared", "fiveHour": { "usedPercent": 25, "resetsAt": 1794919532 }, "weekly": null }
+  ]
+}
+```
+
+只有供应商确认额度适用范围时才填 `modelIds`。缺失的窗口使用 `null`，读取失败或账户未提供数据时返回 `unavailable`。
+
+Claude Code 订阅账户可在状态行命令中运行 `node /opt/agentdesk-orchestrator/quotas.js claude-statusline <quotaFile>`，将其标准输入的 5 小时和 7 天用量存入快照。同一路径应配置到 `adapters.claude.quotaFile`。账户没有相应字段时会保留上次快照，已重置的窗口会从读取结果中剔除。[Claude Code 状态行参考](https://code.claude.com/docs/en/statusline)
+
+要让特定本地 AgentDesk 实时查看 VPS 2 CLI 的额度，把对应桥接名称加入 `quotaBridges`。成员面板打开时从 VPS 2 查询，最多每 30 秒一次。实时查询跳过额度快照，额度正文不会写入调度数据库。其他桥接默认无权读取这些账户用量。
 
 ```sh
 ad() { sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock "$@"; }

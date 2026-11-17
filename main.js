@@ -1,6 +1,9 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const bootstrapPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'agentdesk-enrollment.json');
+const enrollment = fs.existsSync(bootstrapPath) && JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
+if (enrollment) process.env.AGENTDESK_ENROLLED = '1';
 const clawd = require('./clawd');
 const remote = require('./remote');
 const ws = require('./workspace');
@@ -23,8 +26,8 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 
 const OVERLAY = {
-  dark: { color: '#1b1d21', symbolColor: '#c9ccd3', height: 36 },
-  light: { color: '#eef0f3', symbolColor: '#3a3f47', height: 36 },
+  dark: { color: '#191c20', symbolColor: '#e5e8ed', height: 49 },
+  light: { color: '#f5f7f8', symbolColor: '#222b32', height: 49 },
 };
 
 let win;
@@ -37,7 +40,7 @@ function createWindow() {
     minHeight: 600,
     title: 'AgentDesk',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    backgroundColor: '#1b1d21',
+    backgroundColor: OVERLAY.dark.color,
     titleBarStyle: mac ? 'hiddenInset' : 'hidden',
     titleBarOverlay: mac ? false : OVERLAY.dark,
     show: false,
@@ -102,7 +105,7 @@ remote.on('server-request', (m) => {
   if (m.method === 'item/tool/call') {
     const connection = remote.codexProc;
     const params = m.params || {};
-    const isFile = !mac && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
+    const isFile = !mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
     const task = isFile
       ? !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId
         ? windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
@@ -155,8 +158,8 @@ ipcMain.handle('desktop:toggle', (event) => {
   return toggleDesktop(!desktop.enabled);
 });
 ipcMain.handle('remote:status', () => ({ ...remote.state }));
-ipcMain.handle('remote:reconnect', () => { remote.reconnect(); return true; });
-ipcMain.handle('remote:wake', () => remote.wake());
+ipcMain.handle('remote:reconnect', () => { if (enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
+ipcMain.handle('remote:wake', () => enrollment && !enrolledSession ? false : remote.wake());
 ipcMain.handle('remote:touch', () => { remote.touch(); return true; });
 
 // 窗口不在前台时，用系统通知提醒审批 / 完成（与官方桌面端一致）
@@ -233,9 +236,10 @@ ipcMain.handle('files:uploadData', async (_e, name, b64) => {
 ipcMain.handle('remote:config', () => ({ workspace: remote.cfg.workspace, host: remote.cfg.host, localWorkspace: ws.root }));
 ipcMain.handle('codex:request', async (_e, method, params) => {
   try {
+    if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     if (method === 'thread/start') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
-      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac ? [] : windowsFiles.specs)] };
+      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac || enrollment ? [] : windowsFiles.specs)] };
     }
     if (method === 'turn/start') {
       if (desktop.enabled) {
@@ -302,17 +306,57 @@ function startMacDesktop() {
 }
 
 ipcMain.handle('orchestrator:control', async (event, frame) => {
-  if (!mac || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
-      !frame || !['routes', 'select_route', 'submit', 'status', 'cancel', 'apply', 'reconcile'].includes(frame.operation)) {
+  if ((!mac && !enrollment) || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
+      !frame || !['routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'apply', 'reconcile', 'quota_status'].includes(frame.operation)) {
     return { ok: false, error: '无权操作主控线路' };
   }
   const { request } = require('./orchestrator/mcp');
-  const socket = path.join(macBridgeState, 'control.sock');
+  if (enrollment && !enrolledSession) return { ok: false, error: 'sign_in_required' };
+  const socket = enrolledSession?.controlSocket || path.join(macBridgeState, 'control.sock');
   try {
     const value = await request(socket, frame, frame.operation === 'apply' ? 310000 : 16000);
     return { ok: true, value };
   } catch (error) {
     return { ok: false, error: error.message };
+  }
+});
+
+let enrolledSession;
+let enrolling = false;
+let enrollmentExpiry;
+ipcMain.handle('enrollment:required', () => Boolean(enrollment));
+ipcMain.handle('enrollment:login', async (event, password) => {
+  if (!enrollment || event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame ||
+      enrolling || enrolledSession || typeof password !== 'string' || !password || password.length > 256) {
+    return { ok: false, error: 'invalid_request' };
+  }
+  enrolling = true;
+  let session;
+  try {
+    const { createSession } = require('./orchestrator/enrollment-client');
+    session = await createSession(enrollment, password, ws.root);
+    Object.assign(remote.cfg, session.remote);
+    const { startBridge } = require('./orchestrator/service');
+    stopBridge = startBridge({
+      config: session.bridge, desktop, recycle: shell.trashItem,
+      spawnSsh: (ssh) => remote.openBridge(ssh),
+    });
+    enrolledSession = session;
+    await remote.start();
+    enrollmentExpiry = setTimeout(async () => {
+      stopBridge?.();
+      stopBridge = undefined;
+      await remote.stop();
+      enrolledSession = undefined;
+      await session.close();
+      toUi('enrollment:expired');
+    }, Math.max(0, session.expires * 1000 - Date.now()));
+    return { ok: true };
+  } catch (error) {
+    if (session) await session.close();
+    return { ok: false, error: error.message };
+  } finally {
+    enrolling = false;
   }
 });
 
@@ -337,19 +381,22 @@ let ending = false;
 app.on('before-quit', (e) => {
   if (ending) return;
   ending = true; e.preventDefault();
+  clearTimeout(enrollmentExpiry);
   stopBridge?.();
   stopMacDesktop?.();
   clearLocalTools();
-  Promise.race([Promise.all([clawd.endAll(), remote.stop()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
+  Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
 
 app.whenReady().then(() => {
   createWindow();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
-    remote.start();
-    startOrchestratorBridge();
-    startMacDesktop();
-    powerMonitor.on('resume', () => { if (!ending) remote.reconnect(); });
+    if (!enrollment) {
+      remote.start();
+      startOrchestratorBridge();
+      startMacDesktop();
+    }
+    powerMonitor.on('resume', () => { if (!ending && (!enrollment || enrolledSession)) remote.reconnect(); });
   }
 });
 app.on('window-all-closed', () => app.quit());

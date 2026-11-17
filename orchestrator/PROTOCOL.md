@@ -11,9 +11,14 @@
 | `task.request` | `{workspace, prompt, command?}` | Bridge → Orchestrator |
 | `task.status` | `{operation:"status", after?}` | Bridge → Orchestrator |
 | `task.status` | `{operation:"cancel"}` | Bridge → Orchestrator |
+| `task.status` | `{operation:"start_plan", workspace, prompt, provider?, model?}` | 群聊 Bridge → Orchestrator |
+| `task.status` | `{operation:"plan_reply", revision, reply}` | 群聊 Bridge → Orchestrator |
+| `task.status` | `{operation:"plan_approve", revision}` | 群聊 Bridge → Orchestrator |
 | `task.status` | `{operation:"operation_status", request_id}` | 双向 |
 
 `task_id` 由提交方生成。相同任务 ID、工作区、提示和命令重提会返回同一任务状态。不同参数返回 `task_id_conflict`。提交响应返回已入队任务。状态响应附带递增序号的事件，调用方以最后收到的 `sequence` 作为下次 `after`。本机管理员决定应用补丁及切换路由。
+
+群聊提交先启动只读规划。状态返回 `plan.rounds`，包含带 `revision` 的提问或方案。状态为 `awaiting_details` 时答复当前轮次，状态为 `awaiting_approval` 时可要求调整或确认当前方案。重发相同答案或确认使用原任务 ID 和轮次。主控持久化批准后才分派执行。旧主控会拒绝新操作。更新主控后，旧的命名 Bridge 提交也会进入规划，新版客户端可回答问题和确认方案。独立的管理端任务仍可用原有入口。
 
 ## Windows 操作
 

@@ -17,6 +17,7 @@ const tools = Object.entries(operations).map(([name, [action, extra]]) => ({
     search: 'Search names in the authorized Windows project.',
     read: 'Read one Windows file chunk as Base64. Pass version and offset to continue reading.',
   }[action],
+  annotations: { readOnlyHint: true },
   inputSchema: {
     type: 'object',
     properties: {

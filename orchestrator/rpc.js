@@ -3,6 +3,7 @@ const { encode, MAX_FRAME, messageId } = require('./transport');
 
 const messageLifetime = 24 * 60 * 60 * 1000;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const isLiveQuota = (kind, body) => kind === 'task.status' && body.operation === 'quota_status';
 
 class Endpoint extends EventEmitter {
   constructor(store, handler) {
@@ -33,7 +34,8 @@ class Endpoint extends EventEmitter {
     const port = this[route];
     if (!port?.ready || (route.startsWith('relay') && !port.online)) return Promise.reject(new Error(route + '_unavailable'));
     const frame = { type: 'data', task_id: taskId, message_id: id, kind, body };
-    this.store.put('sent', id, { id, route, taskId, kind, state: 'pending' });
+    const liveQuota = isLiveQuota(kind, body);
+    this.store.put('sent', id, { id, route, taskId, kind, state: 'pending', ...(liveQuota && { liveQuota }) });
     return new Promise((resolve, reject) => {
       const abort = () => {
         if (kind === 'command.execute' && body.operation === 'run') {
@@ -79,7 +81,7 @@ class Endpoint extends EventEmitter {
     if (kind === 'result' || kind === 'error') {
       const request = this.store.get('sent', body.in_reply_to);
       if (request?.taskId === taskId && request.route === route) {
-        this.store.put('sent', request.id, { ...request, state: 'finished', result: body });
+        this.store.put('sent', request.id, { ...request, state: 'finished', ...(!request.liveQuota && { result: body }) });
         const pending = this.pending.get(request.id);
         if (kind === 'error') {
           pending?.reject(Object.assign(new Error(body.error || 'remote_error'), { remoteConfirmed: true }));
@@ -113,7 +115,7 @@ class Endpoint extends EventEmitter {
       reply.kind = 'error';
       reply.body = { in_reply_to: id, error: 'response_too_large' };
     }
-    this.store.put('received', id, { ...record, state: 'finished', reply });
+    this.store.put('received', id, { ...record, state: 'finished', ...(!isLiveQuota(kind, body) && { reply }) });
     if (port.ready) port.send(reply);
   }
 

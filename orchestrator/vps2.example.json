@@ -1,23 +1,62 @@
 {
   "stateDir": "/var/lib/agentdesk-orchestrator",
   "cliTimeoutMs": 900000,
+  "quotaBridges": [],
   "adapters": {
     "codex": {
       "bin": "/usr/local/bin/codex",
+      "models": {
+        "gpt-5.4": {
+          "strengths": "Complex coding, multi-file changes, and debugging.",
+          "billing": "api",
+          "inputUsdPerMillion": 2.5,
+          "outputUsdPerMillion": 15
+        }
+      },
       "credentials": {
         "OPENAI_API_KEY": "/etc/agentdesk-orchestrator/openai.key"
       }
     },
     "claude": {
       "bin": "/usr/local/bin/claude",
+      "models": {
+        "claude-sonnet-5-5": {
+          "strengths": "Balanced code review, reasoning, and synthesis.",
+          "billing": "api",
+          "inputUsdPerMillion": 2,
+          "outputUsdPerMillion": 10
+        }
+      },
       "credentials": {
         "ANTHROPIC_API_KEY": "/etc/agentdesk-orchestrator/anthropic.key"
       }
     },
     "grok": {
       "bin": "/usr/local/bin/grok",
+      "models": {
+        "grok-build-0.1": {
+          "strengths": "Quick code investigation and web development research.",
+          "billing": "api",
+          "inputUsdPerMillion": 1,
+          "outputUsdPerMillion": 2
+        }
+      },
       "credentials": {
         "XAI_API_KEY": "/etc/agentdesk-orchestrator/xai.key"
+      }
+    },
+    "gemini": {
+      "bin": "/usr/local/bin/gemini",
+      "models": {
+        "gemini-2.5-flash-lite": {
+          "strengths": "Low-cost classification, extraction, and summarization.",
+          "billing": "api",
+          "inputUsdPerMillion": 0.1,
+          "outputUsdPerMillion": 0.4
+        }
+      },
+      "credentials": {
+        "GEMINI_API_KEY": "/etc/agentdesk-orchestrator/gemini.key"
       }
     }
   },

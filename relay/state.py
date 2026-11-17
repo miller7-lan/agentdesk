@@ -18,6 +18,7 @@ class Device:
     role: str
     peer: str
     token_sha256: str
+    expires_at: int | None = None
 
 
 def load_devices(path):
@@ -31,7 +32,8 @@ def load_devices(path):
     registry = {}
     for name, entry in devices.items():
         if (not DEVICE_PATTERN.fullmatch(name) or not isinstance(entry, dict)
-                or entry.keys() != {"role", "peer", "token_sha256"}
+                or set(entry) not in ({"role", "peer", "token_sha256"}, {"role", "peer", "token_sha256", "expires_at"})
+                or ("expires_at" in entry and type(entry["expires_at"]) is not int)
                 or entry["role"] not in ("bridge", "orchestrator")
                 or not isinstance(entry["peer"], str)
                 or not isinstance(entry["token_sha256"], str)
@@ -42,9 +44,11 @@ def load_devices(path):
         raise ValueError("device tokens must be unique")
     for name, device in registry.items():
         peer = registry.get(device.peer)
-        if not peer or peer.peer != name or peer.role == device.role:
+        if not peer or peer.peer != name or peer.role == device.role or peer.expires_at != device.expires_at:
             raise ValueError("device pairs must be reciprocal with opposite roles")
-    return registry
+    now = time.time()
+    return {name: device for name, device in registry.items()
+            if device.expires_at is None or device.expires_at > now}
 
 
 def authenticate(registry, name, token):
@@ -53,7 +57,7 @@ def authenticate(registry, name, token):
         return None
     device = registry.get(name)
     digest = hashlib.sha256(token.encode("ascii")).hexdigest()
-    if device and hmac.compare_digest(device.token_sha256, digest):
+    if device and (device.expires_at is None or device.expires_at > time.time()) and hmac.compare_digest(device.token_sha256, digest):
         return device
     return None
 

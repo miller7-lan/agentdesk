@@ -52,6 +52,12 @@
       {
         "from": "desktop-backend",
         "to": "desktop-backend"
+      },
+      {
+        "from": ".",
+        "filter": [
+          "agentdesk-enrollment.json"
+        ]
       }
     ],
     "mac": {

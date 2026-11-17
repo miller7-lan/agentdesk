@@ -80,35 +80,70 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   const stateDir = path.join(dir, 'vps');
   const bridgeState = path.join(dir, 'win');
   const bins = {};
-  for (const name of ['codex', 'claude', 'grok']) {
+  for (const name of ['codex', 'claude', 'grok', 'gemini']) {
     const binary = path.join(dir, name);
     bins[name] = { bin: binary };
     await fs.writeFile(binary, [
       '#!/usr/bin/env node',
       "const fs = require('node:fs');",
       "const name = require('node:path').basename(process.argv[1]);",
+      "if (name === 'codex' && process.argv.includes('app-server')) {",
+      "require('node:readline').createInterface({input:process.stdin}).on('line', line => {",
+      "const {id, method} = JSON.parse(line);",
+      "if (method === 'initialize') console.log(JSON.stringify({id,result:{}}));",
+      "if (method === 'account/rateLimits/read') console.log(JSON.stringify({id,result:{rateLimitsByLimitId:{shared:{primary:{windowDurationMins:300,usedPercent:13},secondary:{windowDurationMins:10080,usedPercent:26}}}}}));",
+      "});",
+      "return;",
+      "}",
       "let input = ''; process.stdin.on('data', (chunk) => { input += chunk });",
       "process.stdin.on('end', () => {",
       "setTimeout(() => {",
       "if (name === 'grok') { console.log('research complete'); return; }",
       "if (name === 'claude') { console.log(JSON.stringify({ type: 'result', result: 'review complete', session_id: 'review-id' })); return; }",
+      "if (name === 'gemini') {",
+      "if (!process.argv.includes('fixture-model') || !process.argv.includes('default') || !process.argv.some(arg => arg.endsWith('agentdesk-review.toml')) || !input.includes('confirmed scope')) process.exit(42);",
+      "console.log(JSON.stringify({ type: 'init', session_id: 'gemini-fixture' }));",
+      "for (const content of ['Gemini ', 'finished']) console.log(JSON.stringify({ type: 'message', role: 'assistant', content, delta: true }));",
+      "return;",
+      "}",
       "let text = 'implementation complete';",
-      "if (input.startsWith('Plan this')) text = JSON.stringify(['codex', 'claude', 'grok'].map((role) => ({ id: role, role, prompt: 'fixture', dependsOn: [] })));",
+      "if (input.startsWith('You are 组长')) {",
+      "const context = JSON.parse(input.trim().split('\\n').at(-1));",
+      "if (context.models.gemini.models['fixture-model'].inputUsdPerMillion !== 0.2) process.exit(42);",
+      "text = JSON.stringify(context.rounds.length < 2 ? { questions: ['Clarify round ' + context.rounds.length] } : { summary: 'Update and verify', steps: [{id:'edit', role:context.preferredExecutor,prompt:'Implement with the confirmed scope', dependsOn:[]}] });",
+      "}",
+      "else if (input.startsWith('Plan this')) text = JSON.stringify(['codex', 'claude', 'grok'].map((role) => ({ id: role, role, prompt: 'fixture', dependsOn: [] })));",
       "else fs.writeFileSync('README.md', 'updated\\n');",
       "console.log(JSON.stringify({ thread_id: 'fixture', item: { type: 'agent_message', text } }));",
       '}, 300);',
       '});',
     ].join('\n'), { mode: 0o700 });
   }
+  bins.gemini.defaultModel = 'fixture-model';
+  bins.gemini.models = {
+    'fixture-model': { strengths: 'Analysis', billing: 'api', inputUsdPerMillion: 0.2, outputUsdPerMillion: 0.7 },
+  };
+  const observedAt = new Date().toISOString();
+  bins.claude.quotaFile = path.join(dir, 'claude-quotas.json');
+  await fs.writeFile(bins.claude.quotaFile, JSON.stringify({
+    observedAt,
+    buckets: [{ id: 'shared', fiveHour: { usedPercent: 4 }, weekly: { usedPercent: 33, resetsAt: 1 } }],
+  }));
   const service = start({
-    stateDir, adapters: bins, sshBridges: ['mac'], workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
+    stateDir, adapters: bins, sshBridges: ['mac'], quotaBridges: ['mac'], workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
   });
   t.after(service.close);
   const socket = path.join(stateDir, 'admin.sock');
   await fs.stat(socket).catch(async () => wait(50));
+  const quotas = await admin(socket, { kind: 'task.status', task_id: randomUUID(), body: { operation: 'quota_status' } });
+  assert.deepEqual(quotas[0].buckets, [{ id: 'shared', fiveHour: { usedPercent: 13, resetsAt: null }, weekly: { usedPercent: 26, resetsAt: null } }]);
+  assert.deepEqual(quotas[1], { provider: 'claude', state: 'available', source: 'snapshot', observedAt,
+    buckets: [{ id: 'shared', fiveHour: { usedPercent: 4, resetsAt: null }, weekly: null }] });
+  assert.equal(quotas[2].reason, 'no_quota_source');
   const stopBridge = startBridge({
     config: {
       stateDir: bridgeState, ssh: {},
+      controlWorkspace: 'project', controlSocket: path.join(dir, 'control.sock'),
       workspaces: { project: { root: workspace, write: true, commands: { smoke: [process.execPath, '-e', "console.log('test ok')"] } } },
     },
     desktop: { enabled: false },
@@ -116,6 +151,19 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   });
   t.after(stopBridge);
   await until(() => service.endpoint['ssh:mac']?.ready);
+  const liveQuotas = await mcpRequest(path.join(dir, 'control.sock'), { operation: 'quota_status' });
+  assert.equal(liveQuotas[0].state, 'available');
+  assert.equal(liveQuotas[1].state, 'unavailable');
+  assert.ok(service.scheduler.store.all('received').every((record) =>
+    !Array.isArray(record.reply?.body.value)));
+  const bridgeStore = new Store(path.join(bridgeState, 'bridge.sqlite'));
+  try {
+    const quotaRequest = bridgeStore.all('sent').find((record) => record.liveQuota);
+    assert.equal(quotaRequest?.state, 'finished');
+    assert.equal(quotaRequest.result, undefined);
+  } finally {
+    bridgeStore.close();
+  }
   const task_id = randomUUID();
   await admin(socket, { kind: 'task.request', task_id, body: { workspace: 'project', prompt: 'update fixture', command: 'smoke' } });
   await until(() => {
@@ -135,6 +183,46 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   assert.equal(result.state, 'completed');
   assert.match(result.testResult.stdout, /test ok/);
   assert.equal(await fs.readFile(path.join(workspace, 'README.md'), 'utf8'), 'updated\n');
+
+  git(workspace, 'restore', '--source=HEAD', '--staged', '--worktree', 'README.md');
+  const groupId = randomUUID();
+  const control = (operation, extra) => mcpRequest(path.join(dir, 'control.sock'), { operation, taskId: groupId, ...extra });
+  await control('start_plan', { prompt: 'update fixture from the group', provider: 'gemini' });
+  for (const revision of [1, 2]) {
+    await until(() => service.scheduler.tasks.get(groupId).state === 'awaiting_details');
+    const planning = await control('status');
+    assert.equal(planning.plan.rounds.at(-1).revision, revision);
+    assert.equal(planning.steps.length, 0);
+    assert.equal(support.capabilities.size, 0);
+    await assert.rejects(control('plan_approve', { revision }), /plan_changed/);
+    await control('plan_reply', { revision, reply: 'Answer ' + revision });
+    await control('plan_reply', { revision, reply: 'Answer ' + revision });
+  }
+  await until(() => service.scheduler.tasks.get(groupId).state === 'awaiting_approval');
+  const proposal = await control('status');
+  assert.equal(proposal.plan.rounds.at(-1).steps[0].prompt, 'Implement with the confirmed scope');
+  assert.equal(proposal.plan.rounds.at(-1).steps[0].model, 'fixture-model');
+  assert.doesNotMatch(JSON.stringify(proposal), /inputUsdPerMillion/);
+  assert.deepEqual(proposal.steps, []);
+  const recovered = new Scheduler({ config: service.scheduler.config, store: service.scheduler.store, files: service.scheduler.files });
+  assert.deepEqual(recovered.status(groupId).plan, proposal.plan);
+  assert.equal(recovered.status(groupId).state, 'awaiting_approval');
+  await assert.rejects(control('plan_approve', { revision: 2 }), /plan_changed/);
+  await control('plan_reply', { revision: 3, reply: 'Please adjust the proposal' });
+  await until(() => service.scheduler.tasks.get(groupId).state === 'awaiting_approval');
+  await assert.rejects(control('plan_approve', { revision: 3 }), /plan_changed/);
+  await control('plan_approve', { revision: 4 });
+  await control('plan_approve', { revision: 4 });
+  await until(() => ['completed', 'failed'].includes(service.scheduler.tasks.get(groupId).state));
+  const groupResult = await control('status');
+  assert.equal(groupResult.state, 'completed', groupResult.detail);
+  assert.equal(groupResult.steps[0].write, false);
+  assert.equal(groupResult.plan.approved, 4);
+  assert.equal(groupResult.steps[0].role, 'gemini');
+  assert.equal(groupResult.steps[0].model, 'fixture-model');
+  assert.equal(groupResult.steps[0].output, 'Gemini finished');
+  assert.equal(groupResult.steps[0].attempts, 1);
+  assert.equal(await fs.readFile(path.join(workspace, 'README.md'), 'utf8'), 'base\n');
 });
 
 test('Node endpoints interoperate with the Python TLS Relay and use chunked file transfer', { skip: process.platform === 'win32', timeout: 15000 }, async (t) => {

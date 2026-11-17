@@ -30,6 +30,15 @@ const providers = {
     ],
     plain: true,
   },
+  gemini: {
+    args: (_prompt, _readonly, session) => [
+      '--output-format', 'stream-json', '--approval-mode', 'default',
+      ...(session ? ['--resume', session] : []),
+    ],
+    session: (event) => event.type === 'init' && event.session_id,
+    output: (event) => event.type === 'message' && event.role === 'assistant' && event.content,
+    append: (event) => event.delta === true,
+  },
 };
 
 async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, mcp }) {
@@ -40,6 +49,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     onSession(session);
   }
   const args = provider.args(prompt, readonly, session);
+  if (name === 'gemini') args.push('--admin-policy', config.reviewPolicy);
   if (model) {
     if (name === 'codex') {
       args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model=' + JSON.stringify(model));
@@ -48,12 +58,13 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
-  if (mcp) {
+  if (mcp && name !== 'gemini') {
     const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
     if (name === 'codex') {
       args.splice(args[1] === 'resume' ? 2 : 1, 0,
         '-c', 'mcp_servers.agentdesk_windows.command=' + JSON.stringify(server.command),
-        '-c', 'mcp_servers.agentdesk_windows.args=' + JSON.stringify(server.args));
+        '-c', 'mcp_servers.agentdesk_windows.args=' + JSON.stringify(server.args),
+        '-c', 'mcp_servers.agentdesk_windows.default_tools_approval_mode="writes"');
     } else if (name === 'claude') {
       args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { agentdesk_windows: server } }),
         '--allowedTools', 'mcp__agentdesk_windows__*');
@@ -107,7 +118,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
         const id = provider.session(event);
         if (typeof id === 'string') onSession(id);
         const message = provider.output(event);
-        if (typeof message === 'string') output = redact(message).slice(0, 12000);
+        if (typeof message === 'string') output = (provider.append?.(event) ? output + redact(message) : redact(message)).slice(0, 12000);
       } catch {}
     });
   }

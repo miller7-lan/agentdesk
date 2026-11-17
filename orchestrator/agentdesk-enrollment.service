@@ -1,0 +1,28 @@
+[Unit]
+Description=AgentDesk password enrollment
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentdesk-enroll
+Group=agentdesk-enroll
+SupplementaryGroups=agentdesk
+StateDirectory=agentdesk-enrollment
+StateDirectoryMode=0750
+NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agentdesk-shared-enrollment
+ProtectHome=true
+PrivateTmp=true
+UMask=0027
+MemoryMax=300M
+TasksMax=24
+ExecStart=/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/enrollment.js /etc/agentdesk-enrollment/config.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -8,7 +8,7 @@ const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
 
 const mac = process.platform === 'darwin';
-const ROOT = mac ? path.join(os.homedir(), 'AgentDeskWorkspace') : 'C:\\CodexSSH\\windows-dev';
+const ROOT = process.env.AGENTDESK_ENROLLED || mac ? path.join(os.homedir(), 'AgentDeskWorkspace') : 'C:\\CodexSSH\\windows-dev';
 const ROOT_FWD = ROOT.replace(/\\/g, '/');
 const IGNORE = new Set(['.git', '.tools', '__pycache__', 'node_modules', '.venv', '.pytest_cache', '.mypy_cache']);
 const MAX_TREE = 3000;
