@@ -47,7 +47,21 @@ sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /us
 | `research` | 查资料 | grok → antigravity → gemini |
 | `accept` | 按摘要验收 | claude → codex |
 
-在 `config.json` 的 `routing` 里改顺序即可调整，未配置的 CLI 会被跳过。Gemini 只能读，不能放进 `implement`。每个任务的 token 用量按 CLI 汇总在任务状态的 `usage` 里，可以据此调整顺序。
+在 `config.json` 的 `routing` 里改顺序即可调整，未配置的 CLI 会被跳过。Gemini 只能读，不能放进 `implement`。
+
+### 按额度让位
+
+订阅制下有限的是额度，不是 token。主控每 2 分钟读一次各 CLI 的额度（取 5 小时窗口和每周窗口里用得更多的那个百分比），按 `quotaPolicy` 决定谁还能接活：
+
+| CLI | 用量超过 `soft` 后 | 用量超过 `hard` 后 | 默认 |
+|---|---|---|---|
+| Claude | 只做规划和验收 | 不再派活 | 60% / 95% |
+| Codex | 只做改代码 | 不再派活 | 70% / 95% |
+| 其他 | — | 不再派活 | 95% |
+
+`keepFor` 列出超过 `soft` 后仍然保留的能力。读不到额度的 CLI 视为可用，额度真正用尽时会从它的报错里识别出来并改派。规划时，各 CLI 的已用百分比也会交给 Claude，让它把读代码、查资料、审查交给额度多的 AI。
+
+每个任务结束时记录它消耗的额度：开始和结束时各读一次，差值写在任务的 `quota` 里，例如 `{"claude":{"fiveHour":3,"weekly":1}}`。这个差值包含同一账号在这段时间里的其他使用（比如你自己在电脑上用 Claude），窗口中途重置时该项不记录。token 用量仍记在 `usage` 里，只作参考。
 
 ### 用模板接入 Antigravity
 
@@ -67,13 +81,13 @@ Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述�
 | `outputField` / `sessionField` / `usageField` | `jsonl` 时回复、会话 ID、token 用量所在的字段，可以用点号写嵌套字段，例如 `result.text` |
 | `session` | `none`（默认）、`generate`（主控生成 ID 填进 `{session}`）或 `field`（从输出读取） |
 
-3. 用 `ad submit project '只读：总结 README' ` 加 `ad status` 验证一次；输出的 `usage` 里应出现 `antigravity`。
+3. 用 `ad submit project '只读：总结 README' ` 加 `ad status` 验证一次；步骤里应出现 `antigravity` 并有输出。Antigravity 如果有地方能读到额度，可以像 Claude 一样写成快照文件（`quotaFile`）。
 
 ### 管理命令补充
 
 ```sh
-ad ls          # 最近 50 个任务：状态、用到的 CLI、token 用量
-ad doctor      # 各 CLI 是否安装、版本、被停用的 CLI 和原因、当前分配顺序
+ad ls          # 最近 50 个任务：状态、用到的 CLI、消耗的额度
+ad doctor      # 各 CLI 是否安装、版本、当前额度、被停用的 CLI 和原因、分配顺序和额度阈值
 ```
 
 ## Windows 连接

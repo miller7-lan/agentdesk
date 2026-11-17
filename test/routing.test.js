@@ -112,3 +112,32 @@ test('the VPS2 example config is valid: subscription models, routing and the Ant
   assert.throws(() => validateTemplate({ prompt: 'arg', args: ['-p'] }, 'antigravity'), /invalid_antigravity_template/);
   assert.throws(() => validateTemplate(undefined, 'antigravity'), /antigravity_template_required/);
 });
+
+test('quota decides who works: Claude and Codex step back early and keep their quota for their main jobs', () => {
+  const { validateQuotaPolicy } = require('../orchestrator/routing');
+  const router = new Router({ adapters: adapters('codex', 'claude', 'grok', 'antigravity') });
+  const quota = (used) => router.setQuota(Object.entries(used).map(([provider, percent]) => ({
+    provider, buckets: [{ fiveHour: { usedPercent: 10 }, weekly: { usedPercent: percent } }] })));
+  quota({ claude: 70, codex: 80 });
+  assert.equal(router.pick('plan'), 'claude');                 // above 60%: still plans
+  assert.equal(router.pick('implement'), 'codex');             // above 70%: still implements
+  assert.equal(router.pick('implement', ['codex']), null);     // Claude no longer takes implementation work
+  assert.equal(router.pick('accept', ['claude']), null);       // nor Codex acceptance work
+  assert.equal(router.pick('review'), 'grok');
+  quota({ claude: 96, codex: 10, grok: 97 });
+  assert.equal(router.pick('plan'), 'codex');                  // Claude above 95%: out entirely
+  assert.equal(router.pick('review'), 'antigravity');          // Grok above 95%: skipped
+  quota({});                                                   // unknown quota counts as available
+  assert.equal(router.pick('review'), 'grok');
+  assert.equal(validateQuotaPolicy({ claude: { soft: 40 } }).claude.hard, 95);
+  assert.throws(() => validateQuotaPolicy({ claude: { soft: 99, hard: 90 } }), /invalid_quota_policy:claude/);
+  assert.throws(() => validateQuotaPolicy({ codex: { keepFor: ['deploy'] } }), /invalid_quota_policy:codex/);
+});
+
+test('a task is charged the quota each CLI used between its start and end', () => {
+  const windows = Scheduler.quotaWindows([
+    { provider: 'codex', buckets: [{ fiveHour: { usedPercent: 12 }, weekly: { usedPercent: 30 } }, { fiveHour: { usedPercent: 20 }, weekly: null }] },
+    { provider: 'grok', buckets: [] },
+  ]);
+  assert.deepEqual(windows, { codex: { fiveHour: 20, weekly: 30 } });
+});

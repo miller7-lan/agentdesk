@@ -27,6 +27,40 @@ const DEFAULT_ROUTES = {
 // Gemini runs under a deny-all-but-read policy, so it can never take a writing step.
 const READ_ONLY_ROLES = new Set(['gemini']);
 
+// Subscriptions are limited by quota (the share of the 5-hour and weekly windows already used), not by tokens.
+// Above `soft` a CLI only takes the capabilities in `keepFor`; above `hard` it takes nothing.
+// Claude and Codex are the scarce ones, so they step back early and keep their quota for their main jobs.
+const DEFAULT_QUOTA_POLICY = {
+  claude: { soft: 60, hard: 95, keepFor: ['plan', 'accept'] },
+  codex: { soft: 70, hard: 95, keepFor: ['implement'] },
+  grok: { soft: 95, hard: 95, keepFor: [] },
+  gemini: { soft: 95, hard: 95, keepFor: [] },
+  antigravity: { soft: 95, hard: 95, keepFor: [] },
+};
+
+function validateQuotaPolicy(overrides = {}) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('invalid_quota_policy');
+  const policy = structuredClone(DEFAULT_QUOTA_POLICY);
+  for (const [role, value] of Object.entries(overrides)) {
+    const merged = { ...policy[role], ...value };
+    if (!ROLES.includes(role) || !value || typeof value !== 'object' ||
+        Object.keys(value).some((key) => !['soft', 'hard', 'keepFor'].includes(key)) ||
+        ![merged.soft, merged.hard].every((n) => Number.isFinite(n) && n >= 0 && n <= 100) || merged.soft > merged.hard ||
+        !Array.isArray(merged.keepFor) || merged.keepFor.some((name) => !Object.hasOwn(CAPABILITIES, name))) {
+      throw new Error('invalid_quota_policy:' + role);
+    }
+    policy[role] = merged;
+  }
+  return policy;
+}
+
+// The fullest window decides: a CLI at 20% of its 5-hour window but 90% of its week is nearly out.
+function usedPercent(entry) {
+  const values = (entry?.buckets || []).flatMap(({ fiveHour, weekly }) => [fiveHour?.usedPercent, weekly?.usedPercent])
+    .filter((value) => Number.isFinite(value));
+  return values.length ? Math.max(...values) : null;
+}
+
 function validateRoutes(overrides = {}) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('invalid_routing');
   const routes = { ...DEFAULT_ROUTES };
@@ -46,7 +80,23 @@ class Router {
     this.config = config;
     this.now = now;
     this.routes = validateRoutes(config.routing);
+    this.quotaPolicy = validateQuotaPolicy(config.quotaPolicy);
     this.blocked = new Map();   // role -> { until, reason }
+    this.quota = {};            // role -> percent used (fullest window); absent when the CLI reports no quota
+  }
+
+  // Takes the result of quotaStatus(): [{ provider, buckets: [{ fiveHour, weekly }] }].
+  setQuota(status) {
+    this.quota = Object.fromEntries((status || []).map((entry) => [entry.provider, usedPercent(entry)])
+      .filter(([, used]) => used !== null));
+  }
+
+  // Unknown quota counts as available; an exhausted quota is still caught from the CLI's own error.
+  quotaAllows(role, capability) {
+    const used = this.quota[role];
+    const { soft, hard, keepFor } = this.quotaPolicy[role];
+    if (used === undefined || used < soft) return true;
+    return used < hard && capability !== undefined && keepFor.includes(capability);
   }
 
   configured(role) {
@@ -75,7 +125,8 @@ class Router {
   }
 
   pick(capability, exclude = []) {
-    return (this.routes[capability] || []).find((role) => !exclude.includes(role) && this.available(role)) || null;
+    return (this.routes[capability] || []).find((role) =>
+      !exclude.includes(role) && this.available(role) && this.quotaAllows(role, capability)) || null;
   }
 
   canWrite(role) {
@@ -86,10 +137,12 @@ class Router {
     const now = this.now();
     return {
       routes: this.routes,
+      quotaUsed: this.quota,
+      quotaPolicy: this.quotaPolicy,
       blocked: Object.fromEntries([...this.blocked].filter(([, block]) => block.until > now)
         .map(([role, block]) => [role, { reason: block.reason, until: new Date(block.until).toISOString() }])),
     };
   }
 }
 
-module.exports = { ROLES, CAPABILITIES, DEFAULT_ROUTES, Router, validateRoutes };
+module.exports = { ROLES, CAPABILITIES, DEFAULT_ROUTES, DEFAULT_QUOTA_POLICY, Router, validateRoutes, validateQuotaPolicy, usedPercent };

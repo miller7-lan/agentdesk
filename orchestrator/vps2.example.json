@@ -95,6 +95,23 @@
       "codex"
     ]
   },
+  "quotaPolicy": {
+    "claude": {
+      "soft": 60,
+      "hard": 95,
+      "keepFor": [
+        "plan",
+        "accept"
+      ]
+    },
+    "codex": {
+      "soft": 70,
+      "hard": 95,
+      "keepFor": [
+        "implement"
+      ]
+    }
+  },
   "workspaces": {
     "project": {
       "repository": "/var/lib/agentdesk-orchestrator/repos/project.git"

@@ -186,6 +186,9 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   assert.equal(status.steps.find((step) => step.role === 'codex').write, true);
   const listed = await admin(socket, { kind: 'task.status', task_id: randomUUID(), body: { operation: 'list' } });
   assert.equal(listed[0].id, task_id);
+  // Quota is read at the start and end of the task; the fixtures report fixed numbers, so the charge is zero.
+  await until(() => service.scheduler.tasks.get(task_id).quota);
+  assert.deepEqual(service.scheduler.tasks.get(task_id).quota.codex, { fiveHour: 0, weekly: 0 });
   assert.equal(await fs.readFile(path.join(workspace, 'README.md'), 'utf8'), 'base\n');
   const result = await admin(socket, { kind: 'task.status', task_id, body: { operation: 'apply' } });
   assert.equal(result.state, 'completed');
