@@ -122,7 +122,7 @@
     D.sessions.unshift(s); persist(); A.openSession(s.id); $('#input').focus();
   }
   async function choose(project) {
-    const dialog = document.createElement('dialog'); dialog.className = 'settings-dialog';
+    const dialog = document.createElement('dialog'); dialog.className = 'provider-picker';
     dialog.innerHTML = `<h2>选择单聊 AI</h2><p>每个会话独立；文件改动经补丁确认后写入本机项目。</p>
       <div>${Object.entries(names).map(([id, name]) => `<button type="button" class="btn" data-provider-choice="${id}">${name}</button>`).join(' ')}</div>
       <p class="panel-note">未配置或额度用尽的 AI 会显示对应状态。</p><button class="btn" data-provider-close>关闭</button>`;

@@ -191,7 +191,7 @@
   }
   $('#sessionList').addEventListener('click', (e) => {
     const direct = e.target.closest('[data-new-direct]');
-    if (direct) return newDirect(direct.dataset.newDirect);
+    if (direct) return window.__providerDirect ? window.__providerDirect.choose(direct.dataset.newDirect) : newDirect(direct.dataset.newDirect);
     const create = e.target.closest('[data-new-group]');
     if (create) {
       const project = create.dataset.newGroup;
@@ -222,7 +222,6 @@
   });
 
   function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), provider) {
-    if (LIVE && !provider && window.__providerDirect) return window.__providerDirect.choose(project);
     if (provider && provider !== 'codex' && window.__providerDirect) return window.__providerDirect.create(project, provider);
     const p = proj(project);
     if (!p) return;
