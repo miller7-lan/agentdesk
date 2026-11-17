@@ -23,8 +23,8 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 
 const OVERLAY = {
-  dark: { color: '#1b1d21', symbolColor: '#c9ccd3', height: 36 },
-  light: { color: '#eef0f3', symbolColor: '#3a3f47', height: 36 },
+  dark: { color: '#191c20', symbolColor: '#e5e8ed', height: 49 },
+  light: { color: '#f5f7f8', symbolColor: '#222b32', height: 49 },
 };
 
 let win;
@@ -37,7 +37,7 @@ function createWindow() {
     minHeight: 600,
     title: 'AgentDesk',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    backgroundColor: '#1b1d21',
+    backgroundColor: OVERLAY.dark.color,
     titleBarStyle: mac ? 'hiddenInset' : 'hidden',
     titleBarOverlay: mac ? false : OVERLAY.dark,
     show: false,

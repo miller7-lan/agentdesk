@@ -84,6 +84,7 @@
       : retrying ? (s.detail || '连接已断开，正在自动重连')
       : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
     el.innerHTML = `<span class="dot ${ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait'}"></span>${label}`;
+    A.renderSidebar();
     el.title = `sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
   }
 
@@ -226,7 +227,7 @@
   /* ---------- 事件 ---------- */
   function onEvent(m) {
     const p = m.params || {};
-    if (m.method === 'account/rateLimits/updated') { usage = p.rateLimits || p; renderUsage(); return; }
+    if (m.method === 'account/rateLimits/updated') { usage = p.rateLimits || p; renderUsage(); A.renderSidebar(); return; }
     if (m.method === 'skills/changed') { loadSkills(); return; }
     const s = p.threadId && byThread.get(p.threadId);
     if (m.method === 'thread/tokenUsage/updated' && s) {
@@ -437,7 +438,7 @@
     const s = sess(state.active);
     const ta = $('#input'); const clear = () => { ta.value = ''; A.autosize(); };
     switch (c) {
-      case '/new': clear(); $('#newSession').click(); return true;
+      case '/new': clear(); A.newDirect(); return true;
       case '/review': ta.value = `请审查 ${WIN_ROOT} 中尚未提交的改动：先用一次 ssh_exec 运行 git status --short 和 git diff，然后按严重程度列出问题、风险和建议。不要修改任何文件。`; A.autosize(); return false;
       case '/compact': clear(); if (!s?.threadId) { toast('当前会话还没有内容'); return true; }
         ensureReady().then((ok) => ok && subscribe(s)).then(() => cx.request('thread/compact/start', { threadId: s.threadId }))
@@ -528,7 +529,6 @@
       byThread.delete(s.threadId);
     }
     D.sessions.splice(D.sessions.indexOf(s), 1);
-    state.tabs = state.tabs.filter((x) => x !== s.id);
     if (state.active === s.id) {
       const next = D.sessions.find((x) => x.live) || (D.sessions.unshift(newSession()), D.sessions[0]);
       A.openSession(next.id);
@@ -832,14 +832,15 @@
   }
   function renderChanges(body) {
     const s = sess(state.active);
-    if (!W.access?.ok) { body.innerHTML = noAccessHtml(); return; }
+    if (!W.access) { body.innerHTML = '<div class="empty-note">正在读取工作区…</div>'; return; }
+    if (!W.access.ok) { body.innerHTML = noAccessHtml(); return; }
     const c = W.changes;
     if (!c) { body.innerHTML = '<div class="empty-note">正在读取改动…</div>'; return; }
     if (!c.repo) { body.innerHTML = `<div class="empty-note">${esc(WIN_ROOT)} 还不是 Git 仓库。<br>让 Codex 运行 <code>git init</code> 后，这里会列出每个改动文件。</div>`; return; }
     const tot = c.files.reduce((a, f) => [a[0] + f.add, a[1] + f.del], [0, 0]);
     let html = `<div class="chg-head"><span class="chg-branch">${svg('term')}${esc(c.branch || '')}</span><span>${c.files.length} 个文件</span>
       <span class="a">+${tot[0]}</span><span class="d">−${tot[1]}</span><span class="grow"></span><button class="icon-btn" data-ch="refresh" title="刷新">↻</button></div>`;
-    if (!c.files.length) html += '<div class="empty-note">工作区没有未提交的改动。</div>';
+    if (!c.files.length) html += `<div class="inspector-empty"><div>${svg('file')}</div><strong>工作区没有未提交的改动</strong><span>修改文件后，可以在这里查看差异。</span></div>`;
     for (const f of c.files) {
       const [code, label] = STATUS(f); const open = W.open.has(f.path);
       html += `<div class="chg-file ${open ? 'open' : ''}" data-path="${esc(f.path)}">
@@ -865,7 +866,8 @@
     o.parentElement.parentElement.scrollTop = 1e9;
   }
   function renderFiles(body) {
-    if (!W.access?.ok) { body.innerHTML = noAccessHtml(); return; }
+    if (!W.access) { body.innerHTML = '<div class="empty-note">正在读取工作区…</div>'; return; }
+    if (!W.access.ok) { body.innerHTML = noAccessHtml(); return; }
     const mods = new Map((W.changes?.files || []).map((f) => [f.path, STATUS(f)[0]]));
     const hidden = (n) => { const parts = n.path.split('/'); for (let i = 1; i < parts.length; i++) if (W.collapsedDirs.has(parts.slice(0, i).join('/'))) return true; return false; };
     const tree = W.tree.filter((n) => !hidden(n)).map((n) => {
@@ -883,7 +885,7 @@
     body.innerHTML = `<div class="files"><div class="tree">${tree || '<div class="empty-note">目录是空的</div>'}${W.treeTruncated ? '<div class="empty-note">文件太多，只显示前 3000 个</div>' : ''}</div><div class="preview" id="preview">${pv}</div></div>`;
   }
   function renderPanel(panel, body) {
-    $('#diffBadge').textContent = W.changes?.files?.length || '';
+    if (!state.group) $('#diffBadge').textContent = W.changes?.files?.length || '';
     if (panel === 'diff') renderChanges(body);
     else if (panel === 'terminal') renderTermPanel(body);
     else renderFiles(body);
@@ -931,13 +933,31 @@
       W.changes = c; W.tree = t.items || []; W.treeTruncated = !!t.truncated;
       W.diffCache.clear();
       if (W.sel && state.panel === 'files' && W.tree.some((n) => n.path === W.sel)) W.preview = await wsApi.read(W.sel);
+      if (state.group) {
+        if (A.proj(state.group)?.live && state.panelOpen && state.panel === 'files') A.renderPanel();
+        return;
+      }
       if (sess(state.active)?.live && state.panelOpen) A.renderPanel();
-      else $('#diffBadge').textContent = c.files?.length || '';
+      else if (sess(state.active)?.live) $('#diffBadge').textContent = c.files?.length || '';
     }, now ? 0 : 400);
   }
 
   /* ---------- 初始化 ---------- */
-  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult };
+  function avatarState(s) {
+    if (!s.live) return null;
+    if (s.status === 'waiting') return 'asking';
+    if (s.busy) {
+      const item = s.items.at(-1);
+      if (item?.kind === '压缩上下文') return 'compacting';
+      return item?.t === 'reason' || item?.t === 'thinking' ? 'thinking' : 'tool';
+    }
+    if (conn.codex === 'sleeping') return 'asleep';
+    const limits = usage?.rateLimits || usage;
+    if ([limits?.primary, limits?.secondary].some((limit) => limit?.usedPercent >= 100)) return 'limited';
+    return 'idle';
+  }
+
+  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState };
   rm.config().then((c) => { cfg = c; if (isMac) WIN_ROOT = c.localWorkspace || WIN_ROOT; });
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
@@ -985,6 +1005,7 @@
   rm.status().then((st) => { if (st.codex === 'ready') onReady(); });
   wsApi.access().then((a) => { W.access = a; if (a.ok) refreshChanges(true); else if (sess(state.active)?.live) A.renderPanel(); });
   wsApi.onChanged(() => refreshChanges());
-  ta.placeholder = isMac ? '向 VPS 上的 Codex 提问…  / 命令 · $ 技能 · @ 文件 · Enter 发送' : '让 Codex 在 Windows 开发机上做点什么…  / 命令 · $ 技能 · @ 文件 · Enter 发送';
+  ta.placeholder = '向 Codex 描述任务…';
+  ta.title = '/ 命令 · $ 技能 · @ 文件';
   sortSessions(); A.renderAll();
 })();

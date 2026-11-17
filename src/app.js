@@ -1,10 +1,12 @@
 (() => {
   const D = window.MOCK;
+  const avatars = window.AgentDeskAvatars;
   // 真实连接：VPS 上的 Codex（通过 SSH 操作 Windows 开发机）
   const LIVE = !!(window.desk && window.desk.codex);
+  document.documentElement.classList.toggle('native-mac', window.desk?.platform === 'darwin');
   if (LIVE) {
     D.projects.forEach((p) => { p.name += '（示例）'; });
-    D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区 · Codex' : 'Windows 开发机 · Codex', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
+    D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区' : 'Windows 开发机', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
     D.sessions.unshift({ id: 'L1', project: 'live', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
   }
   const $ = (s, r = document) => r.querySelector(s);
@@ -27,7 +29,7 @@
     x: '<path d="M6 6l12 12M18 6L6 18"/>',
     spark: '<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/>',
     shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M12 8v5M12 16v.5"/>',
-    send: '<path d="M5 12h13M13 6l6 6-6 6"/>',
+    send: '<path d="M12 19V5m-6 6 6-6 6 6"/>',
     stop: '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
   };
   const svg = (n) => `<svg viewBox="0 0 24 24">${ICON[n] || ''}</svg>`;
@@ -35,8 +37,11 @@
   const state = {
     theme: store.get('theme', 'dark'),
     active: LIVE ? 'L1' : 's1',
-    tabs: LIVE ? ['L1'] : ['s1', 's3'],
+    previousConversation: null,
     panel: 'diff',
+    group: null,
+    groupPanel: 'members',
+    directPanel: 'diff',
     panelOpen: store.get('panelOpen', true),
     sideOpen: true,
     collapsed: new Set(store.get('collapsed', LIVE ? ['p1', 'p2', 'p3'] : [])),
@@ -48,6 +53,7 @@
     diffCollapsed: new Set(),
   };
 
+  const statusLabels = { idle: '空闲', running: '运行中', waiting: '待批准', done: '已完成' };
   const sess = (id) => D.sessions.find((s) => s.id === id);
   const proj = (id) => D.projects.find((p) => p.id === id);
 
@@ -76,7 +82,8 @@
   /* ---------- 主题 ---------- */
   function applyTheme() {
     document.documentElement.dataset.theme = state.theme;
-    $('#sbTheme').textContent = state.theme === 'dark' ? '深色' : '浅色';
+    const themeButton = $('#themeToggle');
+    themeButton.querySelector('span').textContent = state.theme === 'dark' ? '浅色模式' : '深色模式';
     window.desk && window.desk.setTheme(state.theme);
     store.set('theme', state.theme);
   }
@@ -89,27 +96,55 @@
     clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1800);
   }
 
+  const G = () => window.__group;
+  function directAvatarState(session) {
+    return L()?.avatarState(session) || (session.status === 'running' ? 'tool' : session.status === 'waiting' ? 'asking' : 'idle');
+  }
+
   /* ---------- 侧栏 ---------- */
   function renderSidebar() {
     const q = $('#sessionSearch').value.trim().toLowerCase();
     const list = $('#sessionList');
     let html = '';
     for (const p of D.projects) {
-      const items = D.sessions.filter((s) => s.project === p.id && (!q || s.title.toLowerCase().includes(q) || p.name.includes(q)));
-      if (q && !items.length) continue;
+      const items = D.sessions.filter((s) => s.project === p.id && (!q || s.title.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)));
+      const hasGroup = G()?.hasGroup(p.id);
+      const showGroup = hasGroup && (!q || p.name.toLowerCase().includes(q) || '群聊'.includes(q));
+      if (q && !items.length && !showGroup && !p.name.toLowerCase().includes(q)) continue;
       const col = state.collapsed.has(p.id) && !q;
       html += `<div class="group ${col ? 'collapsed' : ''}" data-proj="${p.id}">
-        <div class="group-head">${svg('chevDown').replace('<svg', '<svg class="chev"')}${esc(p.name)}<span class="count">${items.length}</span></div>
-        <div class="group-items">${items.map((s) => `
-          <div class="sess ${s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.title)}">
-            <span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.title)}</span><span class="s-time">${s.time}</span>
-          </div>`).join('')}</div></div>`;
+        <button class="group-head" type="button" aria-expanded="${!col}">${svg('chevDown').replace('<svg', '<svg class="chev"')}${svg('folder')}<span class="group-name">${esc(p.name)}</span><span class="count">${hasGroup ? G().taskCount(p.id) || '' : items.length}</span></button>
+        <div class="group-items">
+          <div class="project-conversation-actions">
+            <button type="button" data-new-direct="${esc(p.id)}" aria-label="${esc(p.name)}：新建单聊">＋ 新建单聊</button>
+            ${G() && !hasGroup ? `<button type="button" data-new-group="${esc(p.id)}" aria-label="${esc(p.name)}：新建群聊">＋ 新建群聊</button>` : ''}
+          </div>
+          ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
+          <span class="channel-mark">#</span><span class="s-title">群聊</span>
+        </button>` : ''}${items.map((s) => `
+          <div class="sess ${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.title)}" role="button" tabindex="0">
+            ${avatars.html('codex', { size: 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.title)}</span><span class="s-time">${esc(s.time)}</span>
+          </div>`).join('')}
+        </div></div>`;
     }
     list.innerHTML = html || '<div class="empty-note">没有匹配的会话</div>';
   }
   $('#sessionList').addEventListener('click', (e) => {
+    const direct = e.target.closest('[data-new-direct]');
+    if (direct) return newDirect(direct.dataset.newDirect);
+    const create = e.target.closest('[data-new-group]');
+    if (create) {
+      const project = create.dataset.newGroup;
+      if (G()?.createGroup(project)) {
+        openGroup(project);
+        $('#groupInput').focus();
+      }
+      return;
+    }
+    const group = e.target.closest('[data-open-group]');
+    if (group) return openGroup(group.dataset.openGroup);
     const s = e.target.closest('.sess');
-    if (s) return openSession(s.dataset.id);
+    if (s && !e.target.closest('input')) return openSession(s.dataset.id);
     const g = e.target.closest('.group-head');
     if (g) {
       const id = g.parentElement.dataset.proj;
@@ -119,44 +154,51 @@
     }
   });
   $('#sessionSearch').addEventListener('input', renderSidebar);
+  $('#sessionList').addEventListener('keydown', (event) => {
+    if (!event.target.matches('.sess[data-id]') || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    openSession(event.target.dataset.id);
+    $('#sessionList').querySelector('.sess.active')?.focus();
+  });
 
-  $('#newSession').addEventListener('click', () => {
-    const p = sess(state.active)?.project || (LIVE ? 'live' : 'p1');
-    const id = (p === 'live' ? 'L' : 's') + Date.now();
-    D.sessions.unshift(p === 'live'
-      ? { id, project: p, title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] }
-      : { id, project: p, title: '新会话', status: 'idle', time: '刚刚', items: [] });
-    state.collapsed.delete(p);
+  function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1')) {
+    const p = proj(project);
+    if (!p) return;
+    const id = (p.live ? 'L' : 's') + crypto.randomUUID();
+    D.sessions.unshift(p.live
+      ? { id, project, title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] }
+      : { id, project, title: '新会话', status: 'idle', time: '刚刚', items: [] });
+    state.collapsed.delete(project);
     openSession(id);
     $('#input').focus();
-  });
-
-  /* ---------- 标签 ---------- */
-  function renderTabs() {
-    $('#tabs').innerHTML = state.tabs.map((id) => {
-      const s = sess(id);
-      return `<div class="tab ${id === state.active ? 'active' : ''}" data-id="${id}"><span class="status-dot ${s.status}"></span><span>${esc(s.title)}</span><button class="x" title="关闭">${svg('x')}</button></div>`;
-    }).join('');
   }
-  $('#tabs').addEventListener('click', (e) => {
-    const tab = e.target.closest('.tab'); if (!tab) return;
-    const id = tab.dataset.id;
-    if (e.target.closest('.x')) {
-      const i = state.tabs.indexOf(id);
-      state.tabs.splice(i, 1);
-      if (state.active === id) {
-        const next = state.tabs[Math.max(0, i - 1)];
-        if (next) return openSession(next);
-        state.active = null; renderAll(); return;
-      }
-      return renderTabs();
+
+  function rememberConversation() {
+    state.previousConversation = state.group ? { group: state.group } : { direct: state.active };
+  }
+
+  function openGroup(project) {
+    if (!G()?.hasGroup(project)) return;
+    if (state.group !== project) {
+      rememberConversation();
+      if (!state.group) state.directPanel = state.panel;
+      G().switchGroup(project);
+      state.group = project;
+      state.panel = state.groupPanel;
     }
-    openSession(id);
-  });
-  $('#tabs').addEventListener('auxclick', (e) => { if (e.button === 1) { const x = e.target.closest('.tab')?.querySelector('.x'); x && x.click(); } });
+    state.collapsed.delete(project);
+    renderAll();
+    G().refresh();
+  }
 
   function openSession(id) {
-    if (!state.tabs.includes(id)) state.tabs.push(id);
+    if (state.group || id !== state.active) rememberConversation();
+    if (state.group) {
+      state.groupPanel = state.panel;
+      G().switchGroup(null);
+      state.group = null;
+      state.panel = state.directPanel;
+    }
     const prev = state.active;
     state.active = id;
     L()?.onOpen?.(prev, id);
@@ -167,8 +209,12 @@
   function itemHtml(it, idx) {
     if (L()?.itemHtml) { const h = L().itemHtml(it, idx); if (h != null) return h; }
     if (it.t === 'user') return `<div class="msg-user">${esc(it.text)}</div>`;
-    if (it.t === 'assist') return `<div class="msg-assist"><div class="avatar">${svg('spark')}</div><div class="msg-body">${it.html}</div></div>`;
-    if (it.t === 'thinking') return `<div class="msg-assist"><div class="avatar">${svg('spark')}</div><div class="msg-body thinking"><i></i><i></i><i></i>${esc(it.text || '思考中')}</div></div>`;
+    if (it.t === 'assist' || it.t === 'thinking') {
+      const thinking = it.t === 'thinking';
+      const content = thinking ? `<i></i><i></i><i></i>${esc(it.text || '思考中')}` : it.html;
+      return `<div class="msg-assist"><span class="direct-avatar">${avatars.html('codex', { size: 32, still: true })}</span>
+        <div class="msg-body${thinking ? ' thinking' : ''}">${content}</div></div>`;
+    }
     if (it.t === 'tool') return `<div class="tool ${it.open ? 'open' : ''} ${it.err ? 'err' : ''}" data-idx="${idx}">
         <div class="tool-head">${svg('chev').replace('<svg', '<svg class="chev"')}<span class="tool-ic">${svg(it.icon)}</span>
           <span class="tool-kind">${esc(it.kind)}</span><span class="tool-arg mono">${esc(it.arg)}</span><span class="tool-meta">${esc(it.meta || '')}</span></div>
@@ -188,15 +234,37 @@
   function renderTimeline() {
     const tl = $('#timeline');
     const s = sess(state.active);
-    if (!s) { tl.innerHTML = '<div class="tl-inner"><div class="empty-note">没有打开的会话。从左侧选择或新建一个。</div></div>'; return; }
+    if (!s || (!s.items.length && !s.loading)) {
+      tl.innerHTML = `<div class="welcome">
+        <div class="welcome-icon">${svg('term')}</div>
+        <h2>${s ? '今天要做什么？' : '打开一个会话'}</h2>
+        <p>${s ? '选择一个起点，或在下方输入你的任务。' : '从侧栏选择会话，或新建一个。'}</p>
+        ${s ? `<div class="starter-list">
+          <button type="button" data-draft="先阅读项目文档和目录，说明项目结构与本地运行方式。">${svg('folder')}了解项目</button>
+          <button type="button" data-draft="检查当前 Git 改动，指出可能的回归和缺少的测试。">${svg('search')}检查改动</button>
+          <button type="button" data-draft="根据项目已有说明运行测试，并汇总结果。">${svg('term')}验证项目</button>
+        </div>` : '<button type="button" class="btn primary" data-new-session>新建会话</button>'}
+      </div>`;
+      tl.scrollTop = 0;
+      return;
+    }
     const atBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80 || tl.dataset.sid !== s.id;
     tl.dataset.sid = s.id;
-    tl.innerHTML = `<div class="tl-inner">${s.loading ? '<div class="empty-note">正在载入历史记录…</div>' : ''}${s.items.length ? s.items.map(itemHtml).join('') : '<div class="empty-note">新的会话。在下方描述你的任务吧。</div>'}</div>`;
+    tl.innerHTML = `<div class="tl-inner">${s.loading ? '<div class="empty-note">正在载入历史记录…</div>' : ''}${s.items.map(itemHtml).join('')}</div>`;
     if (atBottom) tl.scrollTop = tl.scrollHeight;
   }
 
   $('#timeline').addEventListener('click', (e) => {
     const s = sess(state.active);
+    if (e.target.closest('[data-new-session]')) { newDirect(); return; }
+    const starter = e.target.closest('[data-draft]');
+    if (starter) {
+      const input = $('#input');
+      if (!input.value.trim()) input.value = starter.dataset.draft;
+      autosize();
+      input.focus();
+      return;
+    }
     const go = e.target.closest('[data-goto]');
     if (go) { showPanel(go.dataset.goto); return; }
     const head = e.target.closest('.tool-head');
@@ -240,7 +308,16 @@
     btn.classList.toggle('stop', b);
     btn.innerHTML = svg(b ? 'stop' : 'send');
     btn.title = b ? '停止' : '发送';
-    $('#sbState').innerHTML = b ? '<span class="dot run"></span>运行中' : '<span class="dot ok"></span>空闲';
+    btn.setAttribute('aria-label', btn.title);
+    renderSessionStatus();
+  }
+
+  function renderSessionStatus() {
+    const status = state.busy ? 'running' : sess(state.active)?.status;
+    const label = statusLabels[status];
+    const markup = label ? `<span class="status-dot ${status}"></span>${label}` : '';
+    $('#sbState').innerHTML = markup;
+    $('#conversationState').innerHTML = markup;
   }
 
   function send(ev) {
@@ -255,7 +332,7 @@
     const text = ta.value.trim();
     if (!text) return;
     let s = sess(state.active);
-    if (!s) { $('#newSession').click(); s = sess(state.active); }
+    if (!s) { newDirect(); s = sess(state.active); }
     if (s.title === '新会话') s.title = text.slice(0, 18);
     const att = state.attachments.length ? `\n📎 ${state.attachments.join(', ')}` : '';
     s.items.push({ t: 'user', text: text + att });
@@ -284,7 +361,7 @@
       setBusy(false); renderAll();
       if (s.status === 'waiting') pet(s, 'notification', 'Notification');
       else pet(s, 'attention', 'Stop');
-      const pct = Math.min(95, parseInt($('#ctxHint').textContent.replace(/\D/g, '')) + 4);
+      const pct = Math.min(95, (parseInt($('#ctxHint').textContent.replace(/\D/g, '')) || 18) + 4);
       $('#ctxHint').textContent = `上下文 ${pct}%`;
     }, 1300);
   }
@@ -318,23 +395,49 @@
   $$('.ptab').forEach((b) => b.addEventListener('click', () => showPanel(b.dataset.panel)));
   $('#closePanel').addEventListener('click', togglePanel);
   $('#sbPanel').addEventListener('click', togglePanel);
-  function togglePanel() { state.panelOpen = !state.panelOpen; store.set('panelOpen', state.panelOpen); applyLayout(); }
+  function togglePanel() {
+    state.panelOpen = !state.panelOpen;
+    store.set('panelOpen', state.panelOpen);
+    applyLayout();
+    if (state.panelOpen) renderPanel();
+  }
 
+  let panelSession;
   function renderPanel() {
-    $$('.ptab').forEach((b) => b.classList.toggle('active', b.dataset.panel === state.panel));
+    panelSession = state.group || state.active;
+    $('#panelTitle').textContent = state.group ? '群聊详情' : '检查工作区';
+    $$('[data-group-panel]').forEach((tab) => { tab.hidden = !state.group; });
+    $$('.ptab').forEach((b) => {
+      const active = b.dataset.panel === state.panel;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', String(active));
+    });
     const body = $('#panelBody');
+    if (state.group) {
+      $('#diffBadge').textContent = '';
+      if (G().renderPanel(state.panel, body)) return;
+      if (proj(state.group)?.live && L()) { L().renderPanel('files', body); return; }
+      body.innerHTML = '<div class="empty-note">示例群聊不访问本机工作区。</div>';
+      return;
+    }
+    delete body.renderedHtml;
     const cur = sess(state.active);
     if (cur?.live && L()) { L().renderPanel(state.panel, body); return; }
+    if (!cur || cur.live) {
+      $('#diffBadge').textContent = '';
+      body.innerHTML = '<div class="empty-note">选择会话以查看工作区。</div>';
+      return;
+    }
     $('#diffBadge').textContent = D.diffs.length;
     if (state.panel === 'diff') {
-      body.innerHTML = D.diffs.map((f, fi) => {
+      body.innerHTML = `<div class="chg-head"><span class="chg-branch">${svg('folder')}${esc(proj(cur.project).branch)}</span><span>${D.diffs.length} 个文件</span></div>` + D.diffs.map((f, fi) => {
         let o = 0, n = 0;
         const rows = f.lines.map(([k, l]) => {
           if (k === 'hunk') { const m = /-(\d+).*\+(\d+)/.exec(l); o = +m[1] - 1; n = +m[2] - 1; return `<tr class="hunk"><td colspan="4">${esc(l)}</td></tr>`; }
           if (k === 'add') n++; else if (k === 'del') o++; else { o++; n++; }
           return `<tr class="${k}"><td class="ln">${k === 'add' ? '' : o}</td><td class="ln">${k === 'del' ? '' : n}</td><td class="sign">${k === 'add' ? '+' : k === 'del' ? '−' : ' '}</td><td>${esc(l)}</td></tr>`;
         }).join('');
-        return `<div class="diff-file ${state.diffCollapsed.has(fi) ? 'collapsed' : ''}" data-fi="${fi}"><div class="diff-head">${svg('file')}<span class="path">${esc(f.path)}</span><span class="stat"><span class="a">+${f.add}</span><span class="d">−${f.del}</span></span></div><table>${rows}</table></div>`;
+        return `<div class="diff-file ${state.diffCollapsed.has(fi) ? 'collapsed' : ''}" data-fi="${fi}"><button type="button" class="diff-head" aria-expanded="${!state.diffCollapsed.has(fi)}">${svg('file')}<span class="path">${esc(f.path)}</span><span class="stat"><span class="a">+${f.add}</span><span class="d">−${f.del}</span></span></button><table>${rows}</table></div>`;
       }).join('') + '<div class="diff-actions"><button class="btn primary" data-diff="accept">接受全部</button><button class="btn" data-diff="revert">撤销全部</button></div>';
     } else if (state.panel === 'terminal') {
       body.innerHTML = `<div class="term"><div class="term-out" id="termOut"></div><div class="term-in"><span>$</span><input id="termIn" spellcheck="false" placeholder="输入命令（mock）" /></div></div>`;
@@ -358,7 +461,13 @@
 
   $('#panelBody').addEventListener('click', (e) => {
     const dh = e.target.closest('.diff-head');
-    if (dh) { const fi = +dh.parentElement.dataset.fi; state.diffCollapsed.has(fi) ? state.diffCollapsed.delete(fi) : state.diffCollapsed.add(fi); dh.parentElement.classList.toggle('collapsed'); return; }
+    if (dh) {
+      const fi = +dh.parentElement.dataset.fi;
+      const collapsed = dh.parentElement.classList.toggle('collapsed');
+      if (collapsed) state.diffCollapsed.add(fi); else state.diffCollapsed.delete(fi);
+      dh.setAttribute('aria-expanded', String(!collapsed));
+      return;
+    }
     const da = e.target.closest('[data-diff]');
     if (da) { toast(da.dataset.diff === 'accept' ? '已接受全部改动（mock）' : '已撤销全部改动（mock）'); return; }
     const nd = e.target.closest('.node');
@@ -390,7 +499,8 @@
   });
 
   /* ---------- 布局与拖拽 ---------- */
-  const sideW = store.get('sideW', 268), panelW = store.get('panelW', 440);
+  const defaultWidths = { sideW: 254, panelW: 360 };
+  const sideW = store.get('sideW', defaultWidths.sideW), panelW = store.get('panelW', defaultWidths.panelW);
   $('#sidebar').style.width = sideW + 'px';
   $('#panel').style.width = panelW + 'px';
 
@@ -399,7 +509,8 @@
     $('#leftSplit').classList.toggle('hidden', !state.sideOpen);
     $('#panel').classList.toggle('hidden', !state.panelOpen);
     $('#rightSplit').classList.toggle('hidden', !state.panelOpen);
-    $('#sbPanel').textContent = state.panelOpen ? '收起面板' : '展开面板';
+    $('#sbPanel').setAttribute('aria-expanded', String(state.panelOpen));
+    $('#toggleSidebar').setAttribute('aria-expanded', String(state.sideOpen));
   }
 
   function drag(handle, el, key, dir, min, max) {
@@ -415,54 +526,93 @@
       };
       window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
     });
-    handle.addEventListener('dblclick', () => { el.style.width = (key === 'sideW' ? 268 : 440) + 'px'; store.set(key, el.offsetWidth); });
+    handle.addEventListener('dblclick', () => { el.style.width = defaultWidths[key] + 'px'; store.set(key, el.offsetWidth); });
   }
   drag($('#leftSplit'), $('#sidebar'), 'sideW', 1, 180, 460);
   drag($('#rightSplit'), $('#panel'), 'panelW', -1, 280, 900);
 
-  /* ---------- 活动栏 / 快捷键 ---------- */
-  $$('.act[data-view]').forEach((b) => b.addEventListener('click', () => {
-    const v = b.dataset.view;
-    if (v === 'sessions' || v === 'search') {
-      const wasActive = b.classList.contains('active');
-      $$('.act[data-view]').forEach((x) => x.classList.toggle('active', x === b));
-      state.sideOpen = !(wasActive && state.sideOpen && v === 'sessions') || v === 'search';
-      applyLayout();
-      if (v === 'search') $('#sessionSearch').focus();
-    } else toast(v === 'tasks' ? '任务视图：原型中暂未实现' : '设置：原型中暂未实现');
-  }));
+  function toggleSidebar() { state.sideOpen = !state.sideOpen; applyLayout(); }
+  $('#toggleSidebar').addEventListener('click', toggleSidebar);
+  $('#railProjects').addEventListener('click', toggleSidebar);
+  function focusSearch() {
+    state.sideOpen = true;
+    applyLayout();
+    $('#sessionSearch').focus();
+  }
+  $('#railSearch').addEventListener('click', focusSearch);
   $('#themeToggle').addEventListener('click', toggleTheme);
-  $('#sbTheme').addEventListener('click', toggleTheme);
 
   window.addEventListener('keydown', (e) => {
     if (!e.ctrlKey) return;
     const k = e.key.toLowerCase();
-    if (k === 'b') { e.preventDefault(); state.sideOpen = !state.sideOpen; applyLayout(); }
+    if (k === 'tab') {
+      const previous = state.previousConversation;
+      if (!previous) return;
+      e.preventDefault();
+      if (previous.group) openGroup(previous.group);
+      else if (sess(previous.direct)) openSession(previous.direct);
+    } else if (k === 'b') { e.preventDefault(); toggleSidebar(); }
     else if (k === 'j') { e.preventDefault(); togglePanel(); }
-    else if (k === 'n') { e.preventDefault(); $('#newSession').click(); }
-    else if (k === 'k') { e.preventDefault(); state.sideOpen = true; applyLayout(); $('#sessionSearch').focus(); }
+    else if (k === 'n') { e.preventDefault(); newDirect(); }
+    else if (k === 'k') { e.preventDefault(); focusSearch(); }
     else if (e.shiftKey && k === 'l') { e.preventDefault(); toggleTheme(); }
   });
 
   /* ---------- 对外接口（live.js 使用） ---------- */
   window.__desk = { D, state, LIVE, $, $$, esc, svg, store, sess, proj, toast, pet, setBusy, renderAll: () => renderAll(), renderPanel: () => renderPanel(),
-    renderTerm: () => renderTerm(), showPanel, openSession, autosize, renderAttach, applyLayout: () => applyLayout() };
+    renderTerm: () => renderTerm(), showPanel, openSession, openGroup, newDirect, renderSidebar, autosize, renderAttach, applyLayout: () => applyLayout() };
   const L = () => window.__live;
 
   /* ---------- 汇总渲染 ---------- */
   function renderAll() {
     const s = sess(state.active);
-    $('#titleProject').textContent = s ? proj(s.project).name : 'AgentDesk';
-    $('#titleSession').textContent = s ? s.title : '无会话';
-    $('#sbBranch').textContent = s ? proj(s.project).branch : '—';
-    renderSidebar(); renderTabs(); renderTimeline();
-    $('.ptab[data-panel="diff"]').firstChild.textContent = s?.live ? '改动' : 'Diff';
+    const project = proj(state.group || s?.project);
+    $('#titleProject').textContent = project?.name || 'AgentDesk';
+    $('#sbBranch').textContent = project?.branch || '—';
+    renderSidebar();
+    for (const selector of ['#directBreadcrumb', '#timeline', '[data-direct].composer', '#sbMode', '#sbState']) {
+      $(selector).hidden = !!state.group;
+    }
+    $('#projectGroup').hidden = $('#groupBreadcrumb').hidden = !state.group;
+    $$('[data-group-panel]').forEach((tab) => { tab.hidden = !state.group; });
+    $('#conversationHead').hidden = !!state.group || !s;
+
+    if (state.group) {
+      $('#groupBreadcrumb').textContent = project.name + ' / 群聊';
+      G().render();
+      if (state.panelOpen && panelSession !== state.group) renderPanel();
+      return;
+    }
+    $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = true;
+    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ Codex';
+    renderTimeline();
+    $('#conversationTitle').textContent = s?.title || '';
+    if (s) {
+      const avatar = $('#directAvatar');
+      const status = directAvatarState(s);
+      const key = s.id + ':' + status;
+      if (avatar.dataset.rendered !== key) {
+        avatar.dataset.rendered = key;
+        avatar.innerHTML = avatars.html('codex', { size: 36, key: 'direct-header:' + s.id, state: status });
+      }
+    }
     if (s?.live) setBusy(!!s.busy);
-    if (state.panelOpen && state.panel === 'diff') renderPanel();
+    else renderSessionStatus();
+    if (state.panelOpen && (state.panel === 'diff' || panelSession !== state.active)) renderPanel();
     else if (state.panelOpen && state.panel === 'terminal') renderTerm();
   }
 
+  if (!LIVE) {
+    for (const id of ['sbDesktop', 'sbReconnect', 'sbPet']) $('#' + id).hidden = true;
+    const connection = $('#sbConn');
+    connection.disabled = true;
+    connection.classList.remove('clickable');
+    connection.removeAttribute('title');
+    connection.textContent = '本地演示';
+    $('#ctxHint').textContent = '上下文 18%';
+    $('#sbTokens').textContent = '12.4k tokens';
+  }
   $('#sbPet').addEventListener('click', () => refreshPet(true));
-  applyTheme(); applyLayout(); renderAll(); renderPanel(); setBusy(false); autosize();
+  applyTheme(); applyLayout(); renderAll(); setBusy(false); autosize();
   refreshPet(false); setInterval(() => refreshPet(false), 5000);
 })();
