@@ -226,6 +226,7 @@ function start(config) {
   });
   const maintenance = setInterval(() => {
     try { expireMessages(store); } catch (error) { console.error('maintenance:', error.message); }
+    try { scheduler.tick(); } catch (error) { console.error('scheduler tick:', error.message); }
   }, 60000).unref();
   function close() {
     clearInterval(maintenance);

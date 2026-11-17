@@ -111,7 +111,11 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
       "if (context.models.gemini.models['fixture-model'].inputUsdPerMillion !== 0.2) process.exit(42);",
       "text = JSON.stringify(context.rounds.length < 2 ? { questions: ['Clarify round ' + context.rounds.length] } : { summary: 'Update and verify', steps: [{id:'edit', role:context.preferredExecutor,prompt:'Implement with the confirmed scope', dependsOn:[]}] });",
       "}",
-      "else if (input.startsWith('Plan this')) text = JSON.stringify(['codex', 'claude', 'grok'].map((role) => ({ id: role, role, prompt: 'fixture', dependsOn: [] })));",
+      "else if (input.startsWith('Plan this')) text = JSON.stringify([",
+      "  { id: 'edit', capability: 'implement', prompt: 'Implement fixture', dependsOn: [] },",
+      "  { id: 'review', capability: 'review', role: 'grok', prompt: 'Review fixture', dependsOn: [] },",
+      "  { id: 'research', capability: 'research', prompt: 'Research fixture', dependsOn: [] },",
+      "]);",
       "else if (name === 'claude') text = 'review complete';",
       "else fs.writeFileSync('README.md', 'updated\\n');",
       "if (name === 'claude') { console.log(JSON.stringify({ type: 'result', result: text, session_id: 'review-id', usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 400 }, total_cost_usd: 0.01 })); return; }",
@@ -132,7 +136,8 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
     buckets: [{ id: 'shared', fiveHour: { usedPercent: 4 }, weekly: { usedPercent: 33, resetsAt: 1 } }],
   }));
   const service = start({
-    stateDir, adapters: bins, sshBridges: ['mac'], quotaBridges: ['mac'], workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
+    stateDir, adapters: bins, sshBridges: ['mac'], quotaBridges: ['mac'], acceptance: { mode: 'off' },
+    workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
   });
   t.after(service.close);
   const socket = path.join(stateDir, 'admin.sock');
@@ -144,7 +149,7 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   const { used, level, policy, ...claudeQuota } = quotas[1];
   assert.deepEqual(claudeQuota, { provider: 'claude', state: 'available', source: 'snapshot', observedAt,
     buckets: [{ id: 'shared', fiveHour: { usedPercent: 4, resetsAt: null }, weekly: null }] });
-  assert.deepEqual([used, level, policy.soft, policy.keepFor], [4, 'ok', 60, ['plan', 'accept']]);
+  assert.deepEqual([used, level, policy.soft, policy.keepFor], [4, 'ok', 60, ['plan', 'triage', 'accept']]);
   assert.equal(quotas[2].reason, 'no_quota_source');
   const stopBridge = startBridge({
     config: {
@@ -174,11 +179,12 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   }
   const task_id = randomUUID();
   await admin(socket, { kind: 'task.request', task_id, body: { workspace: 'project', prompt: 'update fixture', command: 'smoke' } });
+  const support = service.scheduler.config.mcp;
+  // Grok serves both read-only steps, so it runs them one at a time; Codex implements alongside.
   await until(() => {
     const steps = service.scheduler.tasks.get(task_id).steps;
-    return steps.length === 3 && steps.every((step) => step.state === 'running');
+    return steps.length === 3 && steps.filter((step) => step.state === 'running').length >= 2 && support.capabilities.size > 0;
   });
-  const support = service.scheduler.config.mcp;
   const capability = [...support.capabilities.keys()][0];
   assert.equal((await mcpRequest(support.socket, { capability, operation: 'stat', path: 'README.md' })).type, 'file');
   await assert.rejects(mcpRequest(support.socket, { capability, operation: 'write', path: 'README.md' }), /mcp_permission_denied/);
@@ -186,9 +192,10 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   const status = await admin(socket, { kind: 'task.status', task_id, body: { operation: 'status' } });
   assert.equal(status.detail, 'patches_ready');
   assert.equal(status.steps.find((step) => step.role === 'grok').output.trim(), 'research complete');
-  // Claude planned (one call) and reviewed (one call); Codex implemented. Token use is kept per CLI.
-  assert.deepEqual(status.usage.claude, { input: 240, cachedInput: 800, output: 60, costUsd: 0.02 });
+  // Claude only planned (one call); Codex implemented and Grok reviewed and researched. Token use is kept per CLI.
+  assert.deepEqual(status.usage.claude, { input: 120, cachedInput: 400, output: 30, costUsd: 0.01 });
   assert.deepEqual(status.usage.codex, { input: 50, cachedInput: 10, output: 5 });
+  assert.equal(status.usage.grok, undefined);   // the Grok fixture prints plain text and reports no usage
   assert.equal(status.steps.find((step) => step.role === 'codex').write, true);
   const listed = await admin(socket, { kind: 'task.status', task_id: randomUUID(), body: { operation: 'list' } });
   assert.equal(listed[0].id, task_id);
@@ -377,11 +384,13 @@ test('a submitted task retains its selected provider and model', () => {
       files: { endpoint: {} },
     });
     const id = randomUUID();
-    const input = { workspace: 'mac', prompt: 'Review files', provider: 'claude', model: 'claude-sonnet-4-6' };
+    const input = { workspace: 'mac', prompt: 'Review files', provider: 'grok', model: 'grok-build-0.1' };
     scheduler.submit(id, input);
-    assert.equal(scheduler.status(id).provider, 'claude');
-    assert.equal(scheduler.status(id).model, 'claude-sonnet-4-6');
-    assert.throws(() => scheduler.submit(id, { ...input, provider: 'grok' }), /task_id_conflict/);
+    assert.equal(scheduler.status(id).provider, 'grok');
+    assert.equal(scheduler.status(id).model, 'grok-build-0.1');
+    // Claude is the lead and cannot be pinned as a task's executor.
+    assert.throws(() => scheduler.submit(randomUUID(), { ...input, provider: 'claude', model: 'claude-sonnet-5-5' }), /claude_reserved/);
+    assert.throws(() => scheduler.submit(id, { ...input, provider: 'codex' }), /task_id_conflict/);
     assert.throws(() => scheduler.submit(randomUUID(), { ...input, provider: undefined }), /invalid_model_selection/);
     assert.throws(() => scheduler.submit(randomUUID(), { ...input, model: '--help' }), /invalid_model_selection/);
   } finally {

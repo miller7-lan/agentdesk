@@ -70,21 +70,21 @@
       "claude",
       "codex"
     ],
+    "triage": [
+      "claude"
+    ],
     "scout": [
       "antigravity",
       "gemini",
-      "grok",
-      "claude"
+      "grok"
     ],
     "implement": [
-      "codex",
-      "claude"
+      "codex"
     ],
     "review": [
       "grok",
       "antigravity",
-      "gemini",
-      "claude"
+      "gemini"
     ],
     "research": [
       "grok",
@@ -92,8 +92,7 @@
       "gemini"
     ],
     "accept": [
-      "claude",
-      "codex"
+      "claude"
     ]
   },
   "quotaPolicy": {
@@ -102,6 +101,7 @@
       "hard": 95,
       "keepFor": [
         "plan",
+        "triage",
         "accept"
       ]
     },
@@ -111,6 +111,28 @@
       "keepFor": [
         "implement"
       ]
+    }
+  },
+  "ownerCaps": {
+    "default": {
+      "claude": 20,
+      "codex": 30,
+      "grok": 40,
+      "gemini": 40,
+      "antigravity": 40
+    },
+    "mac": {
+      "claude": 15
+    }
+  },
+  "projects": {
+    "agentdesk": {
+      "members": [
+        "mac"
+      ],
+      "workspaces": {
+        "mac": "mac"
+      }
     }
   },
   "workspaces": {

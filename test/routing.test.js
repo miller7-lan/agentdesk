@@ -21,11 +21,13 @@ test('the router picks the first available candidate and skips blocked CLIs unti
   assert.deepEqual(Object.keys(router.status().blocked), ['grok']);
   now = 1001;
   assert.equal(router.pick('review'), 'grok');
-  assert.equal(router.pick('implement', ['codex']), 'claude');
+  assert.equal(router.pick('implement', ['codex']), null);   // implementation never falls back to Claude
 });
 
 test('routing overrides are validated; a read-only CLI can never be routed to implementation', () => {
-  assert.deepEqual(validateRoutes({ review: ['claude'] }).review, ['claude']);
+  assert.deepEqual(validateRoutes({ review: ['grok'] }).review, ['grok']);
+  assert.throws(() => validateRoutes({ review: ['claude'] }), /invalid_routing:review:lead_reserved/);
+  assert.throws(() => validateRoutes({ accept: ['codex'] }), /invalid_routing:accept:lead_required/);
   assert.throws(() => validateRoutes({ implement: ['gemini'] }), /invalid_routing:implement/);
   assert.throws(() => validateRoutes({ review: ['someone'] }), /invalid_routing/);
   assert.throws(() => validateRoutes({ deploy: ['codex'] }), /invalid_routing/);
@@ -36,11 +38,13 @@ test('plans that name a capability are assigned by the router; only implement st
   const steps = parsePlan(JSON.stringify([
     { id: 'scout', capability: 'scout', prompt: 'read', dependsOn: [] },
     { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: ['scout'] },
-    { id: 'check', capability: 'review', role: 'claude', prompt: 'review', dependsOn: ['edit'] },
+    { id: 'check', capability: 'review', role: 'grok', prompt: 'review', dependsOn: ['edit'] },
     { id: 'look', capability: 'research', role: 'codex', prompt: 'look up', dependsOn: [] },
   ]), router.availableRoles(), router);
-  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['codex', true], ['claude', false], ['grok', false]]);
+  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['codex', true], ['grok', false], ['grok', false]]);
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'deploy', prompt: 'x', dependsOn: [] }]), router.availableRoles(), router), /invalid_plan/);
+  assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'implement', role: 'claude', prompt: 'x', dependsOn: [] }]),
+    router.availableRoles(), router), /invalid_plan:lead_capability/);
 });
 
 test('a step moves to the next candidate when its CLI is out of quota, and token use is kept per CLI', async () => {

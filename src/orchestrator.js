@@ -23,10 +23,16 @@
   };
   const statuses = {
     queued: '排队中', planning: '规划中', running: '执行中', applying: '应用补丁',
-    awaiting_details: '待补充细节', awaiting_approval: '待确认方案',
+    awaiting_details: '待补充细节', awaiting_approval: '待确认方案', awaiting_acceptance: '待验收', triaging: '升级诊断',
     testing: '验证中', needs_review: '待处理', completed: '已完成', failed: '失败', cancelled: '已取消',
   };
   const terminal = new Set(['needs_review', 'completed', 'failed', 'cancelled']);
+  const stages = { executing: '执行', awaiting_acceptance: '待验收', triaging: '升级诊断', reworking: '返工', accepted: '已验收' };
+  const acceptanceNames = {
+    accept: '通过', pass: '通过', accept_with_risk: '有风险接受', rework: '返工',
+    reject: '拒绝', blocked: '受阻', unknown: '无法判断', limit: '达到上限',
+  };
+  const triageNames = { retry: '重试', rework: '返工', accept_with_risk: '有风险接受', fail: '终止', unknown: '无法判断' };
   const details = {
     patches_ready: '补丁已准备好，等待应用到本机工作区。',
     planning_started: '开始制定计划',
@@ -39,6 +45,26 @@
     submitted: '任务已进入队列',
     cancelled: '任务已取消',
     cancel_requested: '已请求取消',
+    owner_quota_cap: '今日额度上限已到，任务将在本地零点后继续。',
+    triage_started: '任务遇到问题，已交给组长诊断。',
+    triage_unavailable: '组长暂时不可用，稍后自动继续诊断。',
+    triage_retry: '组长要求重试，任务重新排队。',
+    triage_rework: '组长要求返工，任务重新排队。',
+    triage_limit: '诊断次数已达上限，请人工处理。',
+    triage_retry_required: '重试没有可执行的步骤，请人工处理。',
+    triage_retry_failed: '重试后的测试仍然失败，等待组长诊断。',
+    triage_unparseable: '诊断结果无法解析，请人工处理。',
+    triage_pending: '补丁已应用但测试失败，等待组长诊断。',
+    rework_after_apply: '补丁已应用，返工不会自动改写已应用的文件。',
+    review_conflict: '审查意见冲突，已交给组长判断。',
+    acceptance_started: '组长开始验收。',
+    acceptance_skipped: '本任务无需额外验收。',
+    acceptance_rework: '组长要求返工，任务重新排队。',
+    acceptance_unparseable: '验收结论无法解析，等待组长重新判断。',
+    acceptance_limit: '验收返工次数已达上限，请人工处理。',
+    accepted_with_risk: '组长按风险接受本次结果，补丁仍可人工应用。',
+    windows_test_started: '正在本机运行测试。',
+    windows_test_failed: '本机测试失败。',
   };
   const routeNames = { ssh: 'SSH 主用', relay: 'VPS 1 Relay 备用' };
   const timeline = $('#groupTimeline');
@@ -158,8 +184,18 @@
     if (details[detail]) return details[detail];
     const waiting = /:waiting:(\w+)$/.exec(detail || '');
     if (waiting) return `等待 ${memberName(waiting[1])} 空闲：同一时间每个 AI 只跑一个任务，可能有其他成员正在使用。`;
+    const executor = /^executor_waiting:(\w+)$/.exec(detail || '');
+    if (executor) return `等待 ${memberName(executor[1])} 可用：额度或登录状态恢复后自动继续，不会改派给其他成员。`;
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
+    const escalated = /^escalated:(\w+)$/.exec(detail || '');
+    if (escalated) return '任务遇到问题，已升级给组长处理。';
+    const decision = /^triage_decision:(\w+)$/.exec(detail || '');
+    if (decision) return `组长诊断结论：${triageNames[decision[1]] || decision[1]}。`;
+    const verdict = /^acceptance_verdict:(\w+)$/.exec(detail || '');
+    if (verdict) return `验收结论：${acceptanceNames[verdict[1]] || verdict[1]}。`;
+    const fix = /^(fix-\d+):(started|completed|failed)$/.exec(detail || '');
+    if (fix) return fix[2] === 'started' ? '返工步骤开始执行。' : fix[2] === 'completed' ? '返工步骤完成，等待重新验收。' : '返工步骤失败。';
     return detail;
   }
   const pathsOf = (task) => [...new Set((task?.steps || []).flatMap((step) => step.paths || []))];
@@ -174,6 +210,7 @@
   }
 
   const statusAnimation = { planning: 'thinking', awaiting_details: 'asking', awaiting_approval: 'asking',
+    awaiting_acceptance: 'asking', triaging: 'thinking',
     applying: 'tool', testing: 'long', needs_review: 'asking', completed: 'done', failed: 'failed' };
 
   function memberActivity(id) {
@@ -275,9 +312,16 @@
     const html = [...records.values()].filter((task) => filter !== 'attention' || task.state === 'needs_review' || waitingForPlan(task)).map((task) => {
       const sender = task.plan && !task.plan.approved ? 'lead' : owner(task);
       const steps = task.steps || [];
+      const acceptance = acceptanceLabel(task);
+      const cardDetail = task.detail === 'patches_ready' ? textOf(task.detail)
+        : [steps.length ? steps.length + ' 个步骤' : '', pathsOf(task).length ? pathsOf(task).length + ' 个文件' : '', elapsed(task)].filter(Boolean).join(' · ') || '查看调度图';
       const card = `<button class="dispatch-card" type="button" data-task-id="${esc(task.id)}" data-task-view="graph">
         <span class="dispatch-top"><span class="dispatch-icon">${svg('term')}</span><strong>任务 <span class="mono">${taskLabel(task)}</span></strong>${pill(task.state)}</span>
-        <span class="dispatch-detail">${esc(task.detail === 'patches_ready' ? textOf(task.detail) : [steps.length ? steps.length + ' 个步骤' : '', pathsOf(task).length ? pathsOf(task).length + ' 个文件' : '', elapsed(task)].filter(Boolean).join(' · ') || '查看调度图')}</span>
+        <span class="dispatch-detail">${esc([
+          task.stage ? '阶段 ' + stageLabel(task.stage) : '',
+          acceptance ? '验收 ' + acceptance : '',
+          cardDetail,
+        ].filter(Boolean).join(' · '))}</span>
         ${quotaCharge(task, { compact: true })}
       </button>`;
       const messages = [];
@@ -292,6 +336,7 @@
       messages.push(...planMessages(task));
       if (filter !== 'mine' && !filterSelect.value) {
         for (const note of reassignments(task)) messages.push(`<p class="group-system">${esc(note)}</p>`);
+        for (const note of systemNotes(task)) messages.push(`<p class="group-system" data-system-kind="state">${esc(note)}</p>`);
       }
       if (requiresReview && (!filterSelect.value || filterSelect.value === 'local')) {
         const title = task.detail === 'patches_ready' ? '待审核的本机补丁' : '待核对的本机操作';
@@ -336,9 +381,10 @@
     setHtml($('#groupRoster'), Object.keys(members).filter((id) => id !== 'you' && canUse(id)).map((id) =>
       `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 34, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
     setHtml($('#sbGroupMembers'), recipients.slice(1).flatMap((id) => {
-      const { state: activity } = memberActivity(id);
+      const { state: activity, task } = memberActivity(id);
       if (!activity) return [];
-      return `<button type="button" class="sb-item clickable" data-status-member="${id}" title="${memberName(id)}"><span class="status-dot ${{ asking: 'waiting', done: 'done', failed: 'failed' }[activity] || 'running'}"></span>${avatars.members[id].short} ${avatars.states[activity].label}</button>`;
+      const stats = [taskStats(task, id), usageText(task, id)].flat().filter(Boolean).join(' · ');
+      return `<button type="button" class="sb-item clickable" data-status-member="${id}" title="${esc(memberName(id) + (stats ? ' · ' + stats : ''))}"><span class="status-dot ${{ asking: 'waiting', done: 'done', failed: 'failed' }[activity] || 'running'}"></span>${avatars.members[id].short} ${avatars.states[activity].label}${stats ? `<small class="sb-stats">${esc(stats)}</small>` : ''}</button>`;
     }).join(''));
     refreshQuotas();
     setHtml($('#sbQuota'), quotaStatusBar());
@@ -422,6 +468,64 @@
         `${memberName(from)} ${reason === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(to)} 接手`);
   }
 
+  // Only the events a person needs to understand a stuck task; ordinary step start/finish stays in
+  // the task panel. Repeats of the same notice collapse into one line.
+  function systemNotes(task) {
+    const notes = [];
+    const seen = new Set();
+    const add = (note) => {
+      if (note && !seen.has(note)) {
+        seen.add(note);
+        notes.push(note);
+      }
+    };
+    for (const event of task.events || []) {
+      const detail = event.detail || '';
+      const waiting = /^executor_waiting:(\w+)$/.exec(detail);
+      if (waiting) add(`等待 ${memberName(waiting[1])} 可用，任务保持排队。`);
+      else if (detail === 'owner_quota_cap') add('今日额度上限已到，任务将在本地零点后继续。');
+      else if (detail === 'triage_started') add('任务遇到问题，已交给组长诊断。');
+      else if (detail === 'triage_unavailable') add('组长暂时不可用，稍后自动继续诊断。');
+      else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
+      else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
+      else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
+      else if (detail === 'acceptance_started') add('组长开始验收。');
+      else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
+      else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
+      else if (/^acceptance_verdict:(\w+)$/.test(detail)) add(textOf(detail));
+      else if (/^fix-\d+:started$/.test(detail)) add('返工步骤开始执行。');
+      else if (/^fix-\d+:completed$/.test(detail)) add('返工步骤完成，等待重新验收。');
+      else if (/^fix-\d+:failed$/.test(detail)) add('返工步骤失败。');
+      else if (/^escalated:(\w+)$/.test(detail)) add('任务遇到问题，已升级给组长处理。');
+    }
+    return notes;
+  }
+
+  const stageLabel = (stage) => stages[stage] || stage;
+  function acceptanceLabel(task) {
+    const verdict = task?.acceptance?.verdict;
+    return verdict ? acceptanceNames[verdict] || verdict : '';
+  }
+
+  // Counts from the task record: calls, reassignments and escalations for one member.
+  function taskStats(task, id) {
+    const metrics = task?.metrics;
+    if (!metrics) return [];
+    const role = id === 'lead' ? 'claude' : id;
+    return [
+      metrics.roleCalls?.[role] ? `调用 ${metrics.roleCalls[role]}` : '',
+      metrics.reassignments ? `改派 ${metrics.reassignments}` : '',
+      metrics.triageRounds ? `升级 ${metrics.triageRounds}` : '',
+    ].filter(Boolean);
+  }
+
+  function usageText(task, id) {
+    const role = id === 'lead' ? 'claude' : id;
+    const total = Object.values(task?.usage?.[role] || {})
+      .reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+    return total ? `用量 ${Math.round(total / 1000)}k token` : '';
+  }
+
   function panelMembers() {
     refreshQuotas();
     return `<div class="project-panel-body"><div class="member-panel-heading"><h3>项目成员</h3>
@@ -431,6 +535,8 @@
         return `<div class="member-row ${focusMember === id ? 'member-focused' : ''}">${memberAvatar(id, 48, 'members')}<div>
           <span class="member-caption"><strong>${member.name}</strong>${activity ? `<small>${avatars.states[activity].label}</small>` : ''}</span><small>${member.role}${!canUse(id) ? ' · ' + availability(id) : ''}</small>
           ${recipients.includes(id) && id !== 'lead' && (isLiveGroup() || isExample(state.group)) ? quotaMarkup(id) : ''}
+          ${task && [...taskStats(task, id), usageText(task, id)].filter(Boolean).length
+            ? `<small class="member-task-stats">${esc([...taskStats(task, id), usageText(task, id)].filter(Boolean).join(' · '))}</small>` : ''}
           ${task ? `<button type="button" data-task-id="${esc(task.id)}" class="task-text-link">${taskLabel(task)} · ${statusName(task.state)}</button>` : ''}
         </div>${id === 'codex' ? '<button type="button" class="btn member-direct" data-direct-codex>单聊</button>' : ''}</div>`;
       }).join('')}</div>`;
@@ -479,6 +585,10 @@
       ${task ? `<section class="selected-task"><h3>任务 ${taskLabel(task)}</h3>
         ${elapsed(task) ? `<p>耗时 ${elapsed(task)}</p>` : ''}
         ${task.detail ? `<p>${esc(textOf(task.detail))}</p>` : ''}
+        ${task.stage || acceptanceLabel(task) ? `<p class="task-stage">${esc([
+          task.stage ? '阶段：' + stageLabel(task.stage) : '',
+          acceptanceLabel(task) ? '验收：' + acceptanceLabel(task) : '',
+        ].filter(Boolean).join(' · '))}</p>` : ''}
         ${statusError ? `<p class="task-status-error" role="status">${esc(statusError)}</p>` : ''}
         <div class="task-actions">
           <button class="btn" type="button" data-task-id="${esc(task.id)}" data-task-view="graph">查看调度图</button>
