@@ -8,9 +8,24 @@
   <link rel="stylesheet" href="group.css" />
   <link rel="stylesheet" href="task-graph.css" />
   <link rel="stylesheet" href="aqua.css" />
+  <link rel="stylesheet" href="boot.css" />
   <script src="platform.js"></script>
+  <script src="boot-init.js"></script>
 </head>
 <body>
+  <div class="boot" id="boot" role="dialog" aria-label="AgentDesk 正在启动">
+    <canvas id="bootCanvas" aria-hidden="true"></canvas>
+    <div id="bootNodes"></div>
+    <div class="boot-hud tl"><b>AGENTDESK // BOOT SEQUENCE</b><br /><span id="bootBuild"></span> · <span id="bootOs"></span></div>
+    <div class="boot-hud tr"><span id="bootClock"></span></div>
+    <div class="boot-hud bl boot-log" id="bootLog" aria-live="polite"></div>
+    <button class="boot-skip" id="bootSkip" type="button">双击任意处或按 Esc 进入</button>
+    <div class="boot-actions" id="bootActions" hidden>
+      <span>云端连接离线</span>
+      <button id="bootRetry" type="button">重试</button>
+      <button id="bootOffline" type="button">离线进入</button>
+    </div>
+  </div>
   <canvas id="fluid" aria-hidden="true"></canvas>
   <div id="wall" aria-hidden="true"></div>
   <header class="titlebar">
@@ -251,6 +266,8 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data.js"></script>
   <script src="avatars.js"></script>
+  <script src="boot-feed.js"></script>
+  <script src="boot.js"></script>
   <script src="appearance.js"></script>
   <script src="fluid.js"></script>
   <script src="app.js"></script>

@@ -408,6 +408,7 @@ function drawAll(force) {
   const now = performance.now();
   for (const [cv, a] of avatars) {
     if (!cv.isConnected) { avatars.delete(cv); continue; }
+    if (!force && document.documentElement.dataset.boot === 'playing' && !cv.closest('#boot')) continue;
     if (force || (!a.still && !reduceMotion.matches && cv.getClientRects().length)) drawBot(a, now);
   }
 }
