@@ -73,7 +73,8 @@ async function main() {
   const definition = mcpDefinition();
   const socketPath = definition.args[1];
   const capability = definition.args[2];
-  const report = { provider, scenario, socket: socketPath, capabilityLength: capability.length, args };
+  const report = { provider, scenario, socket: socketPath, capabilityLength: capability.length, args,
+    claudeEffort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null };
 
   if (scenario === 'HANG') {
     writeLine({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } } });

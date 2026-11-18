@@ -173,7 +173,9 @@ function parseActivity(provider, log) {
 }
 
 async function stepActivity(stateDir, task, stepId) {
-  const step = (task.steps || []).find((candidate) => candidate.id === stepId);
+  // The lead's planning runs as a step of its own (planner / group-planner) that is not in task.steps.
+  const step = (task.steps || []).find((candidate) => candidate.id === stepId) ||
+    (['planner', 'group-planner'].includes(stepId) && (task.groupPlan || task.planRaw || task.state === 'planning') ? { id: stepId, role: 'claude', state: task.state === 'planning' ? 'running' : 'completed' } : null);
   if (!step || !/^[a-z0-9_-]{1,32}$/.test(stepId)) throw new Error('invalid_artifact');
   let text = '';
   let truncated = false;

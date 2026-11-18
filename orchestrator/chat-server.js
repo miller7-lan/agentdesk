@@ -42,7 +42,6 @@ const EFFORTS = {
 // AGENTDESK_CHAT_SANDBOX (path of bwrap): the CLI runs inside bubblewrap and may use its own shell and file tools
 // in this conversation's VPS workspace, as Codex does in its sandbox. Without it those stay off.
 const SANDBOX = process.env.AGENTDESK_CHAT_SANDBOX || '';
-
 const BIN = {
   claude: process.env.AGENTDESK_CHAT_CLAUDE_BIN || 'claude',
   grok: process.env.AGENTDESK_CHAT_GROK_BIN || 'grok',
@@ -584,7 +583,7 @@ function providerArgs(turn, workspace) {
       '--rules', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
-    if (turn.effort) args.push('--reasoning-effort', turn.effort);
+if (turn.effort) args.push('--effort', turn.effort);
     if (session && first) args.push('--session-id', session);
     else if (session) { args.push('--resume', session); turn.resumeAttempt = true; }
     args.push('-p', turn.text);
@@ -668,7 +667,7 @@ function startTurn(turn) {
       : { command: BIN, args };
     child = spawn(launch.command, launch.args, {
       cwd: workspace,
-      env: childEnvironment(),
+      env: { ...childEnvironment(), ...(PROVIDER === 'claude' && turn.effort && { CLAUDE_CODE_EFFORT_LEVEL: turn.effort }) },
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1016,7 +1015,7 @@ async function dispatch(method, params) {
         capability: randomBytes(24).toString('hex'),
         serverName: 'agentdesk_' + randomBytes(4).toString('hex'),
         model: typeof params.model === 'string' ? params.model.slice(0, 128) : '',
-        effort,
+effort,
         agentText: '',
         agentItemId: null,
         assistantText: '',

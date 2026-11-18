@@ -271,7 +271,7 @@ test('initialize, thread/start and a streaming turn', async (t) => {
 test('the selected model and reasoning effort are passed to every provider CLI', async (t) => {
   for (const [provider, model, effort, flag] of [
     ['claude', 'claude-opus-5-5', 'high', '--effort'],
-    ['grok', 'grok-4.7', 'xhigh', '--reasoning-effort'],
+    ['grok', 'grok-4.7', 'xhigh', '--effort'],
     ['antigravity', 'gemini-4-hydrogen', 'max', '--effort'],
   ]) {
     const dir = temporary(t);
@@ -282,6 +282,8 @@ test('the selected model and reasoning effort are passed to every provider CLI',
     const report = reportOf(agentText(client, id));
     assert.equal(report.args[report.args.indexOf('--model') + 1], model, provider);
     assert.equal(report.args[report.args.indexOf(flag) + 1], effort, provider);
+    // Claude also gets the environment variable, which every Claude Code version honours.
+    if (provider === 'claude') assert.equal(report.claudeEffort, effort);
   }
 });
 

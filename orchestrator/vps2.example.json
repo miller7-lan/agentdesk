@@ -21,7 +21,7 @@
     },
     "claude": {
       "bin": "/usr/local/bin/claude",
-      "defaultModel": "claude-sonnet-5-5",
+      "defaultModel": "claude-opus-5-5",
       "models": {
         "claude-opus-5-5": {
           "label": "Opus 5.5",

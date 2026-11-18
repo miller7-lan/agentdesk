@@ -53,7 +53,8 @@ function plannerProfiles(roles, adapters, preferredRole, preferredModel) {
     if (role === preferredRole && preferredModel && !Object.hasOwn(configuredModels, preferredModel)) {
       configuredModels[preferredModel] = { billing: 'unknown' };
     }
-    return [role, { strengths: abilities[role], defaultModel, models: configuredModels }];
+    const { effortsFor } = require('./adapters');
+    return [role, { strengths: abilities[role], defaultModel, models: configuredModels, efforts: effortsFor(role, adapters[role]) }];
   }));
 }
 

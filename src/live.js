@@ -718,7 +718,7 @@
 
   /* ---------- 模型 / 推理强度 / 速度 ---------- */
   let models = [];
-  const EFFORT_ZH = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra' };
+    const EFFORT_ZH = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra' };
   async function loadModels() {
     const all = []; let cursor;
     for (let i = 0; i < 10; i++) {

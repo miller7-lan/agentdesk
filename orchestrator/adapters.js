@@ -49,6 +49,16 @@ const providers = {
   },
 };
 
+// Reasoning effort per CLI, as each accepts it. Codex: -c model_reasoning_effort; Claude Code: the
+// CLAUDE_CODE_EFFORT_LEVEL environment variable (its --effort flag is ignored by some versions); Grok Build:
+// --effort. Antigravity has no flag for it (only the interactive /effort); a template may give effortArgs.
+const EFFORTS = {
+  codex: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  grok: ['low', 'medium', 'high', 'xhigh'],
+};
+const effortsFor = (name, config) => config?.template?.efforts || EFFORTS[name] || [];
+
 const field = (value, dotted) => dotted && String(dotted).split('.').reduce((node, key) => node?.[key], value);
 const fill = (list, values) => (list || []).map((arg) => arg.replace(/\{(prompt|model|session)\}/g, (_, key) => values[key] ?? ''));
 
@@ -114,7 +124,8 @@ function classifyFailure(text) {
   return null;
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, mcp }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, effort, mcp }) {
+  if (effort !== undefined && !effortsFor(name, config).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
   if (!provider) throw new Error(name + '_not_supported');
@@ -142,6 +153,12 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
+  if (effort) {
+    if (provider.template) args.unshift(...fill(config.template.effortArgs, {}).map((arg) => arg.replace('{effort}', effort)));
+    else if (name === 'codex') args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model_reasoning_effort=' + JSON.stringify(effort));
+    else if (name === 'claude') env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+    else if (name === 'grok') args.unshift('--effort', effort);
+  }
   if (name === 'antigravity' && provider.template && (mcp || sandboxed)) {
     if (mcp) {
       env.AGENTDESK_MCP_SOCKET = mcp.socket;
@@ -253,4 +270,4 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   }
 }
 
-module.exports = { providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay };
+module.exports = { EFFORTS, effortsFor, providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay };
