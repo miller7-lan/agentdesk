@@ -59,6 +59,13 @@ const EFFORTS = {
 };
 const effortsFor = (name, config) => config?.template?.efforts || EFFORTS[name] || [];
 
+// Claude Code's own allow rules for an MCP server. The documented wildcard mcp__<server>__* silently stops
+// matching in some versions (e.g. 2.1.198), which under dontAsk denies every call; the bare server name and the
+// exact tool names still match, so all three forms are given.
+function claudeMcpAllow(server, names = []) {
+  return ['mcp__' + server, 'mcp__' + server + '__*', ...names.map((name) => 'mcp__' + server + '__' + name)];
+}
+
 const field = (value, dotted) => dotted && String(dotted).split('.').reduce((node, key) => node?.[key], value);
 const fill = (list, values) => (list || []).map((arg) => arg.replace(/\{(prompt|model|session)\}/g, (_, key) => values[key] ?? ''));
 
@@ -176,7 +183,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
         '-c', 'mcp_servers.agentdesk_windows.default_tools_approval_mode="writes"');
     } else if (name === 'claude') {
       args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { agentdesk_windows: server } }),
-        '--allowedTools', 'mcp__agentdesk_windows__*');
+        '--allowedTools', claudeMcpAllow('agentdesk_windows', require('./mcp').toolNames).join(','));
     } else {
       env.AGENTDESK_MCP_SOCKET = mcp.socket;
       env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
@@ -270,4 +277,4 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   }
 }
 
-module.exports = { EFFORTS, effortsFor, providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay };
+module.exports = { claudeMcpAllow, EFFORTS, effortsFor, providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay };

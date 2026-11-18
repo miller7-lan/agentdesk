@@ -556,7 +556,10 @@ function providerArgs(turn, workspace) {
       '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--disable-slash-commands',
       '--strict-mcp-config', '--mcp-config',
       JSON.stringify({ mcpServers: { [turn.serverName]: mcpDefinition(turn) } }),
-      '--allowedTools', [`mcp__${turn.serverName}__*`, ...CLAUDE_WEB,
+      // The bare server name and every tool name as well as the wildcard: the wildcard alone is ignored by some
+      // Claude Code versions, which then deny every file tool and the chat cannot change the person's files.
+      '--allowedTools', [`mcp__${turn.serverName}`, `mcp__${turn.serverName}__*`,
+        ...turn.tools.map((tool) => `mcp__${turn.serverName}__${tool.name}`), ...CLAUDE_WEB,
         ...(SANDBOX ? [...CLAUDE_SHELL_READ, ...(turn.readOnly ? [] : CLAUDE_SHELL_WRITE)] : [])].join(','),
       '--disallowedTools', [...CLAUDE_DISALLOWED, ...(SANDBOX ? [] : CLAUDE_SHELL_READ),
         ...(SANDBOX && !turn.readOnly ? [] : CLAUDE_SHELL_WRITE)].join(','),

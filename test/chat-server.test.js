@@ -277,6 +277,14 @@ test('the selected model is passed to every provider CLI', async (t) => {
     assert.equal(completed.turn.status, 'completed');
     const report = reportOf(agentText(client, id));
     assert.equal(report.args[report.args.indexOf('--model') + 1], model, provider);
+    if (provider === 'claude') {
+      // The wildcard alone is ignored by some Claude Code versions; the bare server name and tool names are given too.
+      const allowed = report.args[report.args.indexOf('--allowedTools') + 1].split(',');
+      const server = allowed.find((rule) => /^mcp__agentdesk_[0-9a-f]+$/.test(rule));
+      assert.ok(server, allowed.join(','));
+      assert.ok(allowed.includes(server + '__*'));
+      assert.ok(allowed.includes(server + '__agentdesk_file_write'), allowed.join(','));
+    }
   }
 });
 

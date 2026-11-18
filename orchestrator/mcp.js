@@ -97,4 +97,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { request };
+module.exports = { request, toolNames: Object.keys(operations) };
