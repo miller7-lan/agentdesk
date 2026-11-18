@@ -403,6 +403,10 @@ test('Grok and Antigravity use their own event formats and session flags', async
   assert.ok(grokReport1.args.includes('streaming-messages-json'));
   assert.ok(grokReport1.args.includes('--trust'), 'project MCP config only loads in a trusted folder');
   assert.match(grokReport1.args[grokReport1.args.indexOf('--allow') + 1], /^MCPTool\(agentdesk_[0-9a-f]+__\*\)$/);
+  // Web search is on, as for Codex; without the sandbox the shell stays off.
+  assert.ok(!grokReport1.args.includes('--disable-web-search'));
+  assert.match(grokReport1.args[grokReport1.args.indexOf('--tools') + 1], /web_search/);
+  assert.match(grokReport1.args[grokReport1.args.indexOf('--disallowed-tools') + 1], /run_terminal_command/);
   const grokStored = JSON.parse(fs.readFileSync(path.join(grokDir, 'chat-grok.json'), 'utf8'));
   const grokSession = grokStored.threads[grokThread].sessionId;
   const grokSecond = await runTurn(grok, grokThread, 'TEXT');
@@ -419,6 +423,8 @@ test('Grok and Antigravity use their own event formats and session flags', async
   const antigravityReport1 = reportOf(agentText(antigravity, antigravityFirst.id));
   assert.equal(antigravityReport1.provider, 'antigravity');
   assert.ok(antigravityReport1.args.includes('--settings'));
+  const agyPermissions = JSON.parse(antigravityReport1.args[antigravityReport1.args.indexOf('--settings') + 1]).permissions;
+  assert.ok(agyPermissions.allow.includes('read_url(*)') && agyPermissions.deny.includes('command(*)'));
   const antigravityStored = JSON.parse(fs.readFileSync(path.join(antigravityDir, 'chat-antigravity.json'), 'utf8'));
   const conversation = antigravityStored.threads[antigravityThread].sessionId;
   assert.ok(conversation);

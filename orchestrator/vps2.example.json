@@ -22,23 +22,46 @@
     "claude": {
       "bin": "/usr/local/bin/claude",
       "models": {
-        "opus": { "strengths": "Complex implementation and deep analysis.", "billing": "subscription" },
-        "sonnet": { "strengths": "General coding and code review.", "billing": "subscription" },
-        "haiku": { "strengths": "Fast questions and concise summaries.", "billing": "subscription" }
-      }
+        "opus": {
+          "strengths": "Complex implementation and deep analysis.",
+          "billing": "subscription"
+        },
+        "sonnet": {
+          "strengths": "General coding and code review.",
+          "billing": "subscription"
+        },
+        "haiku": {
+          "strengths": "Fast questions and concise summaries.",
+          "billing": "subscription"
+        }
+      },
+      "sandbox": true
     },
     "grok": {
       "bin": "/usr/local/bin/grok",
       "models": {
-        "grok-4.7": { "strengths": "Coding and tool use.", "billing": "subscription" },
-        "grok-4.7-build-fast": { "strengths": "Faster coding on eligible plans.", "billing": "subscription" },
-        "grok-4.6": { "strengths": "Coding and investigation.", "billing": "subscription" },
-        "grok-4.5": { "strengths": "General analysis.", "billing": "subscription" }
+        "grok-4.7": {
+          "strengths": "Coding and tool use.",
+          "billing": "subscription"
+        },
+        "grok-4.7-build-fast": {
+          "strengths": "Faster coding on eligible plans.",
+          "billing": "subscription"
+        },
+        "grok-4.6": {
+          "strengths": "Coding and investigation.",
+          "billing": "subscription"
+        },
+        "grok-4.5": {
+          "strengths": "General analysis.",
+          "billing": "subscription"
+        }
       },
       "callLimits": {
         "fiveHour": 60,
         "weekly": 600
-      }
+      },
+      "sandbox": true
     },
     "antigravity": {
       "bin": "/usr/local/bin/agy",
@@ -93,7 +116,8 @@
       "callLimits": {
         "fiveHour": 300,
         "weekly": 3000
-      }
+      },
+      "sandbox": true
     }
   },
   "routing": {

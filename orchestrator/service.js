@@ -74,7 +74,12 @@ function providerSettings(settings, name, home) {
     env[key] = fs.readFileSync(filename, 'utf8').trim();
   }
   const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile,
-    authRequired: settings.authRequired === true, ...(settings.callLimits !== undefined && { callLimits: callLimits(settings.callLimits, name) }) };
+    authRequired: settings.authRequired === true, ...(settings.callLimits !== undefined && { callLimits: callLimits(settings.callLimits, name) }),
+    // sandbox: run this CLI inside bubblewrap so it may run shell commands like Codex (see orchestrator/sandbox.js).
+    ...(settings.sandbox && name !== 'codex' && { sandbox: {
+      bin: typeof settings.sandbox === 'object' && settings.sandbox.bin || '/usr/bin/bwrap',
+      stateDir: path.dirname(path.dirname(home)),
+    } }) };
   if (settings.template !== undefined || name === 'antigravity') adapter.template = validateTemplate(settings.template, name);
   if (name === 'antigravity') {
     const directory = path.join(home, '.gemini', 'config');
