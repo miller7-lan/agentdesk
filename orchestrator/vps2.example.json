@@ -21,19 +21,70 @@
     },
     "claude": {
       "bin": "/usr/local/bin/claude",
+      "defaultModel": "claude-sonnet-5-5",
       "models": {
-        "opus": { "strengths": "Complex implementation and deep analysis.", "billing": "subscription" },
-        "sonnet": { "strengths": "General coding and code review.", "billing": "subscription" },
-        "haiku": { "strengths": "Fast questions and concise summaries.", "billing": "subscription" }
+        "claude-opus-5-5": {
+          "label": "Opus 5.5",
+          "strengths": "Complex implementation and deep analysis.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "high"
+        },
+        "claude-sonnet-5-5": {
+          "label": "Sonnet 5.5",
+          "strengths": "General coding and code review.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "medium"
+        },
+        "claude-haiku-5-5": {
+          "label": "Haiku 5.5",
+          "strengths": "Fast questions and concise summaries.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high"],
+          "defaultEffort": "low"
+        },
+        "claude-fable-5-1": {
+          "label": "Fable 5.1",
+          "strengths": "Frontier coding and long multi-step exploration.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "high"
+        }
       }
     },
     "grok": {
       "bin": "/usr/local/bin/grok",
+      "defaultModel": "grok-4.7",
       "models": {
-        "grok-4.7": { "strengths": "Coding and tool use.", "billing": "subscription" },
-        "grok-4.7-build-fast": { "strengths": "Faster coding on eligible plans.", "billing": "subscription" },
-        "grok-4.6": { "strengths": "Coding and investigation.", "billing": "subscription" },
-        "grok-4.5": { "strengths": "General analysis.", "billing": "subscription" }
+        "grok-4.7": {
+          "label": "Grok 4.7",
+          "strengths": "Coding and tool use.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh"],
+          "defaultEffort": "high"
+        },
+        "grok-4.7-build-fast": {
+          "label": "Grok 4.7 Build Fast",
+          "strengths": "Faster coding on eligible plans.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh"],
+          "defaultEffort": "medium"
+        },
+        "grok-4.6": {
+          "label": "Grok 4.6",
+          "strengths": "Coding and investigation.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh"],
+          "defaultEffort": "high"
+        },
+        "grok-4.5": {
+          "label": "Grok 4.5",
+          "strengths": "General analysis.",
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh"],
+          "defaultEffort": "medium"
+        }
       },
       "callLimits": {
         "fiveHour": 60,
@@ -44,16 +95,25 @@
       "bin": "/usr/local/bin/agy",
       "models": {
         "gemini-4-hydrogen": {
+          "label": "Gemini 4 Hydrogen",
           "strengths": "Fast with plenty of quota. Default for scouting, research with Google search, routine single-file edits and first-pass review.",
-          "billing": "subscription"
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "medium"
         },
         "gemini-4-argon": {
+          "label": "Gemini 4 Argon",
           "strengths": "Frontier coding agent for multi-file implementation and long multi-step tasks. Use for implement steps beyond a small edit.",
-          "billing": "subscription"
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "high"
         },
         "gemini-4-carbon": {
+          "label": "Gemini 4 Carbon",
           "strengths": "Deepest reasoning (Ultra only), slower. Hard debugging, architecture questions and security-sensitive review; use sparingly.",
-          "billing": "subscription"
+          "billing": "subscription",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "defaultEffort": "high"
         }
       },
       "template": {

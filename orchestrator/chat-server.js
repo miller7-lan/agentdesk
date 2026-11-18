@@ -30,6 +30,12 @@ const WRITE_TOOLS = new Set([
   'agentdesk_file_write', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash',
 ]);
 const FILE_TOOL = /^agentdesk_file_[a-z]+$/;
+// 实测各 CLI 接受的推理强度：Claude/Antigravity 还接受 max，Grok 最高为 xhigh。
+const EFFORTS = {
+  claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+  grok: new Set(['low', 'medium', 'high', 'xhigh']),
+  antigravity: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+}[PROVIDER];
 
 const BIN = {
   claude: process.env.AGENTDESK_CHAT_CLAUDE_BIN || 'claude',
@@ -542,6 +548,7 @@ function providerArgs(turn, workspace) {
       '--append-system-prompt', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
+    if (turn.effort) args.push('--effort', turn.effort);
     if (session && first) args.push('--session-id', session);
     else if (session) { args.push('--resume', session); turn.resumeAttempt = true; }
     turn.promptViaStdin = true;
@@ -556,6 +563,7 @@ function providerArgs(turn, workspace) {
       '--rules', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
+    if (turn.effort) args.push('--reasoning-effort', turn.effort);
     if (session && first) args.push('--session-id', session);
     else if (session) { args.push('--resume', session); turn.resumeAttempt = true; }
     args.push('-p', turn.text);
@@ -575,6 +583,7 @@ function providerArgs(turn, workspace) {
     '--settings', JSON.stringify({ permissions }), '--disable-slash-commands',
   ];
   if (turn.model) args.push('--model', turn.model);
+  if (turn.effort) args.push('--effort', turn.effort);
   if (session) { args.push('--conversation', session); turn.resumeAttempt = true; }
   args.push('-p', `${instructions(turn)}\n\n${turn.text}`);
   turn.promptViaStdin = false;
@@ -956,6 +965,8 @@ async function dispatch(method, params) {
         .map((item) => item.text).join('\n').trim();
       if (!text) throw fail('empty_input');
       if (text.length > 200_000) throw fail('input_too_large');
+      const effort = typeof params.effort === 'string' ? params.effort : '';
+      if (effort && !EFFORTS.has(effort)) throw fail('invalid_effort', -32602);
       const approvalPolicy = normalizeApproval(params.approvalPolicy ?? thread.approvalPolicy);
       const sandboxPolicy = normalizeSandbox(params.sandboxPolicy ?? thread.sandboxPolicy);
       const readOnly = readOnlyOf(sandboxPolicy);
@@ -975,6 +986,7 @@ async function dispatch(method, params) {
         capability: randomBytes(24).toString('hex'),
         serverName: 'agentdesk_' + randomBytes(4).toString('hex'),
         model: typeof params.model === 'string' ? params.model.slice(0, 128) : '',
+        effort,
         agentText: '',
         agentItemId: null,
         assistantText: '',

@@ -3,9 +3,10 @@
 ## 在 AgentDesk 选模型
 
 - Codex 单聊通过 VPS 上的 Codex app-server 读取 GPT 模型列表，模型、推理强度和速度仍由 Codex 提供。
-- Claude Code、Grok Build、Antigravity 单聊从 VPS2 的 `adapters.<供应商>.models` 读取候选模型。每个单聊记住各自的选择，发送和生成项目补丁时都传入所选模型。选择「默认」会使用 CLI 的默认模型。
+- Claude Code、Grok Build、Antigravity 单聊从 VPS2 的 `adapters.<供应商>.models` 读取候选模型。每个单聊记住各自的选择，发送和生成项目补丁时都传入所选模型。新会话优先选配置里的 `defaultModel`，其次第一个模型；选择「默认模型（CLI）」才使用 CLI 自带的默认模型。
+- 每个模型可配置 `label`（下拉框显示名）、`efforts`（该模型支持的推理强度）和 `defaultEffort`。单聊会按所选模型显示推理强度下拉框，并在 `turn/start` 时传给 CLI：Claude 用 `--effort`（`low`/`medium`/`high`/`xhigh`/`max`），Grok 用 `--reasoning-effort`（最高 `xhigh`），Antigravity 用 `--effort`（`low`…`max`）。未配置 `efforts` 的模型不显示该下拉框。
 - 群聊点名成员后，模型 ID 输入框会提示该成员的已配置模型。组长自动分派时使用主控已有的分工与模型规则。
-- 当前 VPS2 的 Grok 订阅经 `grok models` 确认提供 `grok-4.7`、`grok-4.7-build-fast`、`grok-4.6`、`grok-4.5`。Claude Code 配置 `opus`、`sonnet`、`haiku` 别名，具体版本由 Claude CLI 和账号决定。Antigravity 待登录，登录后用 `agy models` 核对配置中的模型 ID。旧 Gemini CLI 已退出当前部署。
+- 当前 VPS2 的 Grok 订阅经 `grok models` 确认提供 `grok-4.7`、`grok-4.7-build-fast`、`grok-4.6`、`grok-4.5`。Claude Code 使用具体版本 ID `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-1`。Antigravity 待登录，登录后用 `agy models` 核对 `gemini-4-hydrogen`、`gemini-4-argon`、`gemini-4-carbon`。旧 Gemini CLI 已退出当前部署。
 
 ## 给 VPS2 增加模型
 
@@ -13,15 +14,27 @@
 
 ```json
 {
+  "defaultModel": "claude-sonnet-5-5",
   "models": {
-    "opus": { "strengths": "复杂实现与深度分析", "billing": "subscription" },
-    "sonnet": { "strengths": "日常编码与审查", "billing": "subscription" },
-    "haiku": { "strengths": "快速查询和简要分析", "billing": "subscription" }
+    "claude-sonnet-5-5": {
+      "label": "Sonnet 5.5",
+      "strengths": "日常编码与审查",
+      "billing": "subscription",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "defaultEffort": "medium"
+    },
+    "claude-opus-5-5": {
+      "label": "Opus 5.5",
+      "strengths": "复杂实现与深度分析",
+      "billing": "subscription",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "defaultEffort": "high"
+    }
   }
 }
 ```
 
-有实际 API 计费时按 [主控运维说明](../orchestrator/OPERATIONS.md) 填真实价格。修改后按 [部署说明](DEPLOY.md) 校验配置并重启主控，桌面端重新打开单聊即可读取列表。
+`efforts` 只填写该 CLI 和模型实际接受的档位，`defaultEffort` 必须出现在 `efforts` 中；校验失败时主控会拒绝启动。Grok 只接受 `low`、`medium`、`high`、`xhigh`。有实际 API 计费时按 [主控运维说明](../orchestrator/OPERATIONS.md) 填真实价格。修改后按 [部署说明](DEPLOY.md) 校验配置并重启主控，桌面端重新打开单聊即可读取列表。
 
 ## 读取与修改本机文件
 

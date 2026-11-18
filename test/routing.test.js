@@ -151,6 +151,39 @@ test('the VPS2 example config is valid: subscription models, routing and the Ant
   assert.throws(() => validateTemplate(undefined, 'antigravity'), /antigravity_template_required/);
 });
 
+test('model profiles expose display labels and reasoning efforts', () => {
+  const { modelProfiles } = require('../orchestrator/model-profiles');
+  const profile = modelProfiles({
+    models: {
+      'claude-opus-5-5': {
+        label: 'Opus 5.5', strengths: 'Deep analysis.', billing: 'subscription',
+        efforts: ['low', 'high', 'max'], defaultEffort: 'high',
+      },
+    },
+  });
+  assert.deepEqual(profile.models['claude-opus-5-5'], {
+    label: 'Opus 5.5', strengths: 'Deep analysis.', billing: 'subscription',
+    efforts: ['low', 'high', 'max'], defaultEffort: 'high',
+  });
+  const example = require('../orchestrator/vps2.example.json');
+  assert.equal(example.adapters.claude.models['claude-opus-5-5'].label, 'Opus 5.5');
+  assert.deepEqual(example.adapters.grok.models['grok-4.7'].efforts, ['low', 'medium', 'high', 'xhigh']);
+
+  const invalid = [
+    { efforts: [] },
+    { efforts: ['low', 'low'] },
+    { efforts: ['ultra'] },
+    { efforts: ['low'], defaultEffort: 'high' },
+    { defaultEffort: 'high' },
+    { label: '' },
+  ];
+  for (const extra of invalid) {
+    assert.throws(() => modelProfiles({
+      models: { 'claude-opus-5-5': { strengths: 'Deep analysis.', billing: 'subscription', ...extra } },
+    }), /invalid_model/, JSON.stringify(extra));
+  }
+});
+
 test('Antigravity streaming results preserve responses, sessions, usage and authentication failures', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-agy-json-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

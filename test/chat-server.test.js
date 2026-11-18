@@ -268,16 +268,36 @@ test('initialize, thread/start and a streaming turn', async (t) => {
   assert.equal(stored.threads[threadId].provider, 'claude');
 });
 
-test('the selected model is passed to every provider CLI', async (t) => {
-  for (const [provider, model] of [['claude', 'opus'], ['grok', 'grok-4.7'], ['antigravity', 'gemini-3-pro']]) {
+test('the selected model and reasoning effort are passed to every provider CLI', async (t) => {
+  for (const [provider, model, effort, flag] of [
+    ['claude', 'claude-opus-5-5', 'high', '--effort'],
+    ['grok', 'grok-4.7', 'xhigh', '--reasoning-effort'],
+    ['antigravity', 'gemini-4-hydrogen', 'max', '--effort'],
+  ]) {
     const dir = temporary(t);
     const client = await new ChatClient(t, provider, dir).start();
     const threadId = await thread(client);
-    const { id, completed } = await runTurn(client, threadId, 'TEXT', { model });
+    const { id, completed } = await runTurn(client, threadId, 'TEXT', { model, effort });
     assert.equal(completed.turn.status, 'completed');
     const report = reportOf(agentText(client, id));
     assert.equal(report.args[report.args.indexOf('--model') + 1], model, provider);
+    assert.equal(report.args[report.args.indexOf(flag) + 1], effort, provider);
   }
+});
+
+test('an effort level the provider does not accept is refused', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'grok', dir).start();
+  const threadId = await thread(client);
+  // Grok tops out at xhigh; `max` is only valid for Claude and Antigravity.
+  await assert.rejects(
+    client.request('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: 'SCENARIO:TEXT' }],
+      effort: 'max',
+    }),
+    (error) => error.code === -32602 && /invalid_effort/.test(error.message),
+  );
 });
 
 test('Claude tool roundtrip through the capability socket', async (t) => {
