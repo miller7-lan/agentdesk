@@ -8,6 +8,19 @@ const Store = require('../orchestrator/store');
 const { git } = require('../orchestrator/git');
 const { Scheduler } = require('../orchestrator/scheduler');
 const { WindowsOperations } = require('../orchestrator/windows');
+const { runAdapter } = require('../orchestrator/adapters');
+
+test('a headless tool denial cannot be reported as a successful reply', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-tool-denial-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const fixture = path.join(dir, 'denied.js');
+  await fs.writeFile(fixture, `console.error('permission required: agentdesk_windows__windows_list_locations was not run, as a headless run cannot ask for approval'); console.log('我先查看本机目录。');`);
+  await assert.rejects(runAdapter({ name: 'fixture',
+    config: { bin: process.execPath, env: process.env, template: { args: [fixture], prompt: 'arg', output: 'plain' } },
+    cwd: dir, prompt: '看看桌面', readonly: true, timeout: 5000, signal: new AbortController().signal,
+    log: path.join(dir, 'result.log'), onSession() {},
+  }), /cli_tool_permission_required/);
+});
 
 test('named local read locations stay inside their roots and never grant writes', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-read-roots-'));
