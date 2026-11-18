@@ -2,9 +2,12 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const test = require('node:test');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
 const files = require('../local-files');
+
+// local-files.js is the macOS POSIX file tool; Windows uses windows-files.js.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 
 function temporary(t) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-files-'));

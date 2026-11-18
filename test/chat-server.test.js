@@ -3,8 +3,12 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const test = require('node:test');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
+
+// chat-server runs on VPS2 (Linux) and uses a Unix domain socket; Windows has no
+// filesystem sockets, so its local run of these tests is not meaningful.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 
 const ROOT = path.resolve(__dirname, '..');
 const SERVER = path.join(ROOT, 'orchestrator', 'chat-server.js');
