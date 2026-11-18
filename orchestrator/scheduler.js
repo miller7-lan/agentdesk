@@ -1784,7 +1784,10 @@ event(task, state, detail) {
           .then((list) => this.decorateQuota(list));
       }
       if (named && Array.isArray(this.config.quotaBridges) && this.config.quotaBridges.includes(named)) {
-        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: true })).then((list) => this.decorateQuota(list));
+        // Snapshots are included by default: Claude's is rewritten by every turn's rate_limit_event, so it is
+        // as current as a live reading, and the desktop needs its windows to draw the quota rings.
+        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true }))
+          .then((list) => this.decorateQuota(list));
       }
       throw new Error('quota_access_denied');
     }

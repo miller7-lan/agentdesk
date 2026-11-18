@@ -249,9 +249,9 @@ Codex 默认从主控执行账户的 App Server 实时读取，按供应商返�
 
 只有供应商确认额度适用范围时才填 `modelIds`。缺失的窗口使用 `null`，读取失败或账户未提供数据时返回 `unavailable`。
 
-Claude Code 订阅账户可在状态行命令中运行 `node /opt/agentdesk-orchestrator/quotas.js claude-statusline <quotaFile>`，将其标准输入的 5 小时和 7 天用量存入快照。同一路径应配置到 `adapters.claude.quotaFile`。账户没有相应字段时会保留上次快照，已重置的窗口会从读取结果中剔除。[Claude Code 状态行参考](https://code.claude.com/docs/en/statusline)
+Claude Code 订阅账户的额度快照默认由无头轮次里的 `rate_limit_event` 自动刷新：单聊和调度任务每跑一轮都会把 `unifiedWindows` 的 5 小时、7 天用量写入 `adapters.claude.quotaFile`，不需要状态的命令行。也可以在状态行命令中运行 `node /opt/agentdesk-orchestrator/quotas.js claude-statusline <quotaFile>`，把标准输入的同一组数据存入快照。账户没有相应字段时保留上次快照，已重置的窗口会从读取结果中剔除。[Claude Code 状态行参考](https://code.claude.com/docs/en/statusline)
 
-要让特定本地 AgentDesk 实时查看 VPS 2 CLI 的额度，把对应桥接名称加入 `quotaBridges`。成员面板打开时从 VPS 2 查询，最多每 30 秒一次。实时查询跳过额度快照，额度正文不会写入调度数据库。其他桥接默认无权读取这些账户用量。
+要让特定本地 AgentDesk 实时查看 VPS 2 CLI 的额度，把对应桥接名称加入 `quotaBridges`。成员面板打开时从 VPS 2 查询，最多每 30 秒一次。查询默认包含额度快照（Claude 的快照每轮都会刷新）；管理调用在请求体带 `liveOnly: true` 时跳过快照、只读实时来源。额度正文不会写入调度数据库。其他桥接默认无权读取这些账户用量。
 
 ```sh
 ad() { sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock "$@"; }
