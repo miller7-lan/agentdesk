@@ -639,12 +639,12 @@
   }
   function renderUsage() {
     let el = $('#sbUsage');
-    if (!el) { el = document.createElement('span'); el.className = 'sb-item'; el.id = 'sbUsage'; $('#sbTokens').before(el); }
+    if (!el) { el = document.createElement('button'); el.type = 'button'; el.className = 'sb-item clickable'; el.id = 'sbUsage'; $('#sbTokens').before(el); }
     if (!usage) { el.textContent = ''; return; }
     const snap = usage.rateLimits || usage;
     el.textContent = '用量 ' + usageText(usage);
     const reset = (w) => w?.resetsAt ? new Date((w.resetsAt < 1e12 ? w.resetsAt * 1000 : w.resetsAt)).toLocaleString() : '';
-    el.title = `Codex 账户用量（ChatGPT 套餐）\n短周期重置：${reset(snap.primary)}\n长周期重置：${reset(snap.secondary)}`;
+    el.title = `Codex 账户用量（ChatGPT 套餐）\n短周期重置：${reset(snap.primary)}\n长周期重置：${reset(snap.secondary)}\n点击查看所有成员的额度与分工`;
   }
   function renderTokens(s) {
     const t = s.tokens; if (!t) return;
@@ -998,7 +998,7 @@
     return 'idle';
   }
 
-  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState };
+  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage };
   async function workspaceChanged() {
     const revision = ++workspaceRevision;
     const [config, access] = await Promise.all([rm.config(), wsApi.access()]);

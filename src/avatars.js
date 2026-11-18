@@ -184,10 +184,12 @@ function drawBot(a, now) {
 
   // eyes
   const E = EYES[id];
-  if (E && k > 0.02) {
+  // Clawd's mark has eye holes; at rest they are filled black like the original logo, so it never looks eyeless.
+  const restingEyes = E?.holes && k <= 0.02;
+  if (E && (k > 0.02 || E.holes)) {
     const u = L / 24;
     ctx.translate(-L / 2, -L / 2);
-    ctx.globalAlpha = k;
+    ctx.globalAlpha = E.holes ? 1 : k;
     let gx = 0, gy = 0;
     if (!still) {
       if (st === 'thinking') { gx = Math.sin(t * 1.1) * 0.35; gy = -0.3; }
@@ -201,8 +203,9 @@ function drawBot(a, now) {
       }
     }
     if (E.holes) { gx = Math.max(-0.15, Math.min(0.15, gx)); gy = Math.max(-0.4, Math.min(0.4, gy)); }
+    if (restingEyes) gx = gy = 0;
     let open = 1;
-    if (!still && now > a.blinkAt) { const p = (now - a.blinkAt) / 140; if (p >= 1) a.blinkAt = now + 2200 + Math.random() * 3800; else open = Math.max(0.1, Math.abs(1 - p * 2)); }
+    if (!still && !restingEyes && now > a.blinkAt) { const p = (now - a.blinkAt) / 140; if (p >= 1) a.blinkAt = now + 2200 + Math.random() * 3800; else open = Math.max(0.1, Math.abs(1 - p * 2)); }
     if (yawning) open = Math.max(0.08, 1 - since / 1500);
     let face = 'pill';
     if (st === 'done') face = since < 1300 ? 'heart' : 'happy';

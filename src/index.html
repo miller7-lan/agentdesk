@@ -217,6 +217,7 @@
     <span class="sb-item" id="sbState"><span class="dot ok"></span>空闲</span>
     <button class="sb-item clickable" id="sbGroupRoute" type="button" hidden></button>
     <div id="sbGroupMembers" class="group-status-members" hidden></div>
+    <button class="sb-item clickable sb-quota-open" id="sbQuotaOpen" type="button" title="所有成员的额度、让位规则和分工顺序"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8h-8z"/></svg>额度与分工</button>
     <div id="sbQuota" class="group-status-members sb-quotas" aria-label="订阅额度" hidden></div>
     <div id="sbResources" class="group-status-members" aria-label="主控资源"></div>
     <span class="sb-item" id="sbMode">每步询问</span>
@@ -354,6 +355,7 @@
   <script src="approvals.js"></script>
   <script src="orchestrator.js"></script>
   <script src="agent-threads.js"></script>
+  <script src="quota-view.js"></script>
   <script src="enrollment.js"></script>
   <script src="projects.js"></script>
   <script src="wizard.js"></script>

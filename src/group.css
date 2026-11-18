@@ -298,3 +298,74 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .act-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: act-pulse 1.2s ease-in-out infinite; }
 @keyframes act-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .act-dot { animation: none; } }
+
+/* 额度与分工 (src/quota-view.js): white liquid glass sheet over the app */
+.quota-dialog { --qv-ok: #2fb59c; --qv-reserved: #d08a1c; --qv-stopped: #d4485e; --qv-auth: #9aa6b6; --qv-track: rgba(19, 34, 58, .08);
+  width: min(1080px, calc(100vw - 48px)); max-height: calc(100vh - 48px); padding: 0; border: 0; border-radius: 22px; color: var(--text);
+  background: rgba(255, 255, 255, .62); -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
+  box-shadow: inset 1.5px 1.5px 0 rgba(255, 255, 255, .9), inset 0 0 24px rgba(255, 255, 255, .4), 0 24px 60px rgba(20, 40, 70, .22); overflow: hidden; }
+.quota-dialog::backdrop { background: rgba(230, 236, 245, .45); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.quota-dialog[open] { display: flex; flex-direction: column; }
+.qv-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px 22px; }
+.qv-head h2 { margin: 0; font-size: 17px; }
+.qv-time { margin-right: auto; color: var(--faint); font-size: 12px; }
+.qv-close { width: 30px; height: 30px; border: 0; border-radius: 10px; background: rgba(255, 255, 255, .7); color: var(--muted); font-size: 18px; cursor: pointer; }
+.qv-content { overflow: auto; padding: 0 18px 18px; display: grid; gap: 14px; }
+.qv-banner { margin: 0; padding: 8px 12px; border-radius: 10px; background: rgba(208, 138, 28, .12); color: #8a5a0c; font-size: 12.5px; }
+.qv-empty { color: var(--muted); }
+.qv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 12px; }
+.qv-card { display: grid; gap: 8px; align-content: start; padding: 10px; border-radius: 18px; background: rgba(255, 255, 255, .55);
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .95), 0 1px 2px rgba(20, 40, 70, .05), 0 8px 22px rgba(20, 40, 70, .07); }
+.qv-card.focused { box-shadow: 0 0 0 2px rgba(91, 123, 232, .5), 0 8px 22px rgba(20, 40, 70, .1); }
+.qv-card header { display: flex; align-items: center; gap: 8px; padding: 2px 4px 0; }
+.qv-card header b { font-size: 13.5px; }
+.qv-level { margin-left: auto; padding: 1px 8px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+.qv-card[data-tone="ok"] .qv-level { background: rgba(47, 181, 156, .14); color: #1d8a75; }
+.qv-card[data-tone="reserved"] .qv-level { background: rgba(208, 138, 28, .14); color: #a86c10; }
+.qv-card[data-tone="stopped"] .qv-level { background: rgba(212, 72, 94, .13); color: #b4344a; }
+.qv-card[data-tone="auth"] .qv-level { background: rgba(154, 166, 182, .2); color: #5d6b7d; }
+.qv-body { display: grid; grid-template-columns: 82px 1fr; gap: 10px; align-items: center; padding: 8px; border-radius: 12px; background: rgba(255, 255, 255, .7); }
+.qv-ring { position: relative; width: 82px; height: 82px; }
+.qv-ring svg { width: 82px; height: 82px; transform: rotate(-90deg); }
+.qv-big { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; line-height: 1.15; }
+.qv-big b { font-size: 18px; font-variant-numeric: tabular-nums; } .qv-big small { color: var(--faint); font-size: 10px; }
+.qv-stats { display: grid; gap: 2px; min-width: 0; font-size: 12px; }
+.qv-row { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.qv-row i { width: 7px; height: 7px; border-radius: 2px; align-self: center; }
+.qv-row b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.qv-reset { margin: -2px 0 3px 13px; color: var(--faint); font-size: 11px; white-space: nowrap; }
+.qv-line { position: relative; height: 5px; margin: 2px 4px; border-radius: 3px; background: var(--qv-track); }
+.qv-line .fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+.qv-line .mark { position: absolute; top: -3px; width: 2px; height: 11px; border-radius: 1px; background: var(--text); opacity: .35; }
+.qv-rule, .qv-note { margin: 0 4px; color: var(--muted); font-size: 11.5px; }
+.qv-note { color: var(--faint); }
+.qv-res { gap: 9px; padding: 12px 14px; }
+.qv-resrow { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.qv-resrow b { color: var(--text); font-variant-numeric: tabular-nums; }
+.qv-bar { height: 6px; border-radius: 3px; background: var(--qv-track); overflow: hidden; } .qv-bar i { display: block; height: 100%; background: linear-gradient(90deg, #2fb59c, #5b7be8); }
+.qv-section { padding: 12px 14px; border-radius: 18px; background: rgba(255, 255, 255, .55); box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .95); }
+.qv-section h3 { margin: 0 0 8px; font-size: 13.5px; } .qv-section h3 small { margin-left: 6px; color: var(--faint); font-weight: 400; font-size: 11.5px; }
+.qv-route { display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid rgba(19, 34, 58, .06); }
+.qv-route:first-of-type { border-top: 0; }
+.qv-cap { font-weight: 600; font-size: 12.5px; }
+.qv-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.qv-arrow { color: var(--faint); }
+.qv-member { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px 0 5px; border-radius: 14px; background: rgba(255, 255, 255, .8); font-size: 12px; }
+.qv-member small { color: var(--faint); font-size: 10.5px; }
+.qv-member.pick { background: rgba(47, 181, 156, .14); color: #16705f; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(47, 181, 156, .35); }
+.qv-member.pick small { color: #1d8a75; }
+.qv-member.skip { opacity: .55; text-decoration: line-through; text-decoration-color: rgba(19, 34, 58, .3); }
+.qv-member.skip small { text-decoration: none; }
+.qv-wait { color: #b4344a; font-size: 12px; }
+.qv-rules ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+.sb-quota-open svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.member-duties { color: var(--muted); }
+:root[data-theme="dark"] .quota-dialog { background: rgba(28, 32, 38, .72); }
+:root[data-theme="dark"] .qv-card, :root[data-theme="dark"] .qv-section { background: rgba(255, 255, 255, .06); box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .08); }
+:root[data-theme="dark"] .qv-body, :root[data-theme="dark"] .qv-member { background: rgba(255, 255, 255, .08); }
+@media (prefers-reduced-transparency: reduce) { .quota-dialog { background: var(--raised); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+/* Quota and host resources live in the 额度与分工 sheet; the status bar keeps one entry for them. */
+#sbQuota, #sbResources { display: none !important; }
+.sb-quota-open[data-level="reserved"] { color: var(--warn); }
+.sb-quota-open[data-level="stopped"] { color: var(--danger); }
+.sb-quota-open[data-level="reserved"]::after, .sb-quota-open[data-level="stopped"]::after { content: ""; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: currentColor; }

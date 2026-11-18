@@ -1713,6 +1713,9 @@ event(task, state, detail) {
       const relay = port[bridge ? 'relay:' + bridge : 'relay'];
       return { route: channel, ssh: Boolean(port[bridge ? 'ssh:' + bridge : 'ssh']?.ready), relay: Boolean(relay?.ready && relay.online),
         providers: this.availableRoles(), writeProviders: (this.config.writeProviders || []).filter((role) => this.router.configured(role)),
+        // How work is handed out right now, so the desktop can show who takes what and why others are skipped.
+        team: { ...this.router.status(), configured: this.router.roles(),
+          authRequired: this.router.roles().filter((role) => this.config.adapters[role]?.authRequired) },
         projects: named ? this.projectsFor(named) : Object.keys(this.config.projects || {}) };
     }
     if (body.operation === 'select_route' && (route === 'admin' || named)) return this.setRoute(body.route, bridge);

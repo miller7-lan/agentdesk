@@ -15,7 +15,7 @@
   const projectOf = (group) => A.proj(group.id)?.serverProject;
   const members = {
     you: { name: '你', initials: '你', role: '项目成员' },
-    lead: { name: '组长', initials: '组', role: '自动规划与协作' },
+    lead: { name: '组长 · Claude', initials: '组', role: '规划、诊断、验收' },
     codex: { name: 'Codex', initials: 'CX', role: '实现与验证' },
     claude: { name: 'Claude Code', initials: 'CL', role: '规划、诊断与验收' },
     grok: { name: 'Grok Build', initials: 'GK', role: '分析与执行' },
@@ -577,7 +577,7 @@
     drawRoutes();
     if (!state.group) return;
     const count = taskCount();
-    $('#groupSubtitle').textContent = Object.keys(members).length + ' 位成员' + (count ? ' · ' + count + ' 项未结任务' : '');
+    $('#groupSubtitle').textContent = shownMembers().filter((id) => id !== 'you' && id !== 'local').length + ' 位 AI 成员' + (count ? ' · ' + count + ' 项未结任务' : '');
     $('#taskBadge').textContent = count || '';
     for (const id of optional) {
       const option = provider.querySelector(`[value="${id}"]`);
@@ -585,7 +585,7 @@
       option.textContent = canUse(id) ? members[id].name : members[id].name + '（' + availability(id) + '）';
     }
     const recipientReady = canUse(provider.value);
-    setHtml($('#groupRoster'), Object.keys(members).filter((id) => id !== 'you' && canUse(id)).map((id) =>
+    setHtml($('#groupRoster'), shownMembers().filter((id) => id !== 'you').map((id) =>
       `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 34, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
     setHtml($('#sbGroupMembers'), recipients.slice(1).flatMap((id) => {
       const { state: activity, task } = memberActivity(id);
@@ -594,6 +594,9 @@
       return `<button type="button" class="sb-item clickable" data-status-member="${id}" title="${esc(memberName(id) + (stats ? ' · ' + stats : ''))}"><span class="status-dot ${{ asking: 'waiting', done: 'done', failed: 'failed' }[activity] || 'running'}"></span>${avatars.members[id].short} ${avatars.states[activity].label}${stats ? `<small class="sb-stats">${esc(stats)}</small>` : ''}</button>`;
     }).join(''));
     refreshQuotas();
+    // The status bar keeps one entry for quota; its colour warns when a member is stepping back or stopped.
+    const worst = quotaList().reduce((level, quota) => quota.level === 'stopped' ? 'stopped' : quota.level === 'reserved' && level !== 'stopped' ? 'reserved' : level, '');
+    $('#sbQuotaOpen').dataset.level = worst;
     setHtml($('#sbQuota'), quotaStatusBar());
     setHtml($('#sbResources'), resourceLabels().map(({ label, warning }) =>
       `<button type="button" class="sb-item clickable sb-resource${warning ? ' resource-warning' : ''}">${esc(label)}</button>`).join(''));
@@ -618,7 +621,7 @@
     { provider: 'gemini', used: 18, level: 'ok', policy: { soft: 95, hard: 95, keepFor: [] },
       buckets: [{ id: 'gemini', fiveHour: { usedPercent: 18 }, weekly: { usedPercent: 9 } }] },
   ];
-  const capabilityNames = { plan: '规划', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
+  const capabilityNames = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const quotaList = () => isExample(state.group) ? exampleQuotas : connected ? quotas : [];
   const quotaOf = (id) => quotaList().find((quota) => quota.provider === id);
   const pct = (value) => Math.round(value) + '%';
@@ -645,7 +648,7 @@
   function quotaMarkup(provider) {
     const quota = quotaOf(provider);
     const bucket = quota?.buckets?.[0];
-    if (!quota || (!bucket && !Number.isFinite(quota.used))) return '<small class="quota-none">额度未取得</small>';
+    if (!quota || (!bucket && !Number.isFinite(quota.used))) return '';
     const meter = (label, window) => {
       const left = window ? Math.max(0, 100 - window.usedPercent) : null;
       return `<span class="quota-label">${label}</span><span class="quota-bar" aria-hidden="true">${left === null ? '' : `<i style="width:${left}%"></i>`}</span>
@@ -771,24 +774,44 @@
     });
   }
 
+  // Claude appears once, as the lead. Members the orchestrator has not set up are listed apart, not as rows.
+  const usable = (id) => id === 'you' || id === 'lead' || id === 'local' || canUse(id) && (!routeState.team || routeState.team.configured.includes(id));
+  const shownMembers = () => Object.keys(members).filter((id) => id !== 'claude' && usable(id));
+  const hiddenMembers = () => Object.keys(members).filter((id) => !['claude', 'you', 'lead', 'local'].includes(id) && !usable(id));
+  // What each member actually does, read from the live hand-out order: "改代码（首选）· 审查（第 2）".
+  function duties(id) {
+    const routes = routeState.team?.routes || (isExample(state.group) ? { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'],
+      implement: ['codex', 'grok', 'antigravity'], review: ['grok', 'antigravity'], research: ['antigravity', 'grok'], accept: ['claude'] } : null);
+    const role = id === 'lead' ? 'claude' : id;
+    if (!routes) return '';
+    const order = ['plan', 'triage', 'implement', 'scout', 'review', 'research', 'accept'];
+    return order.filter((capability) => routes[capability]?.includes(role)).map((capability) => {
+      const index = routes[capability].indexOf(role);
+      return capabilityNames[capability] + (routes[capability].length === 1 ? '' : index === 0 ? '（首选）' : `（第 ${index + 1}）`);
+    }).join(' · ');
+  }
+
   function panelMembers() {
     refreshQuotas();
     const rules = approvals.load(localStorage, state.group);
     return `<div class="project-panel-body"><div class="member-panel-heading"><h3>项目成员</h3>
       <button type="button" class="task-text-link" data-avatar-sheet>状态图鉴 ${svg('chev')}</button></div>
       ${rules.length ? `<button type="button" class="task-text-link" data-clear-group-approvals>清除本群记住的授权（${rules.length}）</button>` : ''}
-      ${resourceLabels().length ? `<div id="panelResources" class="panel-resources">${resourceLabels().map(({ label, warning }) =>
-        `<span class="${warning ? 'resource-warning' : ''}">${esc(label)}</span>`).join('')}</div>` : ''}
-      ${Object.entries(members).map(([id, member]) => {
+
+      ${shownMembers().map((id) => {
+        const member = members[id];
         const { task, state: activity } = memberActivity(id);
+        const role = duties(id) || member.role;
         return `<div class="member-row ${focusMember === id ? 'member-focused' : ''}">${memberAvatar(id, 48, 'members')}<div>
-          <span class="member-caption"><strong>${member.name}</strong>${activity ? `<small>${avatars.states[activity].label}</small>` : ''}</span><small>${member.role}${!canUse(id) ? ' · ' + availability(id) : ''}</small>
-          ${recipients.includes(id) && id !== 'lead' && (isLiveGroup() || isExample(state.group)) ? quotaMarkup(id) : ''}
+          <span class="member-caption"><strong>${member.name}</strong>${activity ? `<small>${avatars.states[activity].label}</small>` : ''}</span><small class="member-duties">${role}</small>
+          ${['lead', 'codex', 'grok', 'antigravity', 'gemini'].includes(id) && (isLiveGroup() || isExample(state.group)) ? quotaMarkup(id === 'lead' ? 'claude' : id) : ''}
           ${task && [...taskStats(task, id), usageText(task, id)].filter(Boolean).length
             ? `<small class="member-task-stats">${esc([...taskStats(task, id), usageText(task, id)].filter(Boolean).join(' · '))}</small>` : ''}
           ${task ? `<button type="button" data-task-id="${esc(task.id)}" class="task-text-link">${taskLabel(task)} · ${statusName(task.state)}</button>` : ''}
-        </div>${['codex','claude','grok','gemini','antigravity'].includes(id) ? `<button type="button" class="btn member-direct" data-direct-provider="${id}">单聊</button>` : ''}</div>`;
-      }).join('')}</div>`;
+        </div>${['codex','lead','grok','gemini','antigravity'].includes(id) ? `<button type="button" class="btn member-direct" data-direct-provider="${id === 'lead' ? 'claude' : id}">单聊</button>` : ''}</div>`;
+      }).join('')}
+      ${hiddenMembers().length ? `<p class="panel-note">未接入：${hiddenMembers().map((id) => members[id].name).join('、')}</p>` : ''}
+      <button type="button" class="task-text-link" data-open-quota>查看额度与分工顺序 ${svg('chev')}</button></div>`;
   }
 
   function refreshQuotas() {
@@ -1407,7 +1430,7 @@
     A.showPanel('members');
     $('#panelResources')?.scrollIntoView({ block: 'nearest' });
   });
-  $('#sbQuota').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
+  $('#panelBody').addEventListener('click', (event) => { if (event.target.closest('[data-open-quota]')) window.__quotaView?.open(); });
   $('#panelBody').addEventListener('change', (event) => {
     if (state.group && event.target.matches('[data-log-select]')) openTaskOutput('task_log', { stepId: event.target.value });
     if (state.group && event.target.id === 'flowTask') selectTask(event.target.value, 'graph');
