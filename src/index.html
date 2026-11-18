@@ -133,7 +133,7 @@
             <div class="select-wrap" id="directModelWrap" hidden>
               <select id="directModel" aria-label="单聊模型"></select>
             </div>
-            <button class="chip" id="attachBtn" title="附加文件"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
+            <button class="chip" id="attachBtn" title="附加任意类型的文件（按住 Shift 选择文件夹，打包成 .zip）；也可以拖入或粘贴"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
             <div class="select-wrap" id="permissionModeWrap">
               <select id="modeSelect" title="权限模式">
                 <option value="ask">每步询问</option>
@@ -184,8 +184,10 @@
             <div id="groupSuggestions" class="group-suggestions" aria-label="成员和命令建议" hidden></div>
             <div id="groupPlanReply" class="group-plan-reply" hidden><span id="groupPlanReplyText"></span><button class="btn" type="button" id="groupPlanReplyCancel">取消回复</button></div>
             <div id="groupReference" class="group-plan-reply" hidden><span id="groupReferenceLabel"></span><button class="btn" type="button" id="groupReferenceClear">取消引用</button></div>
+            <div id="groupAttachList" class="attach-list group-attach-list" aria-label="群聊附件" hidden></div>
             <textarea id="groupInput" rows="2" maxlength="12000" placeholder="向组长描述任务…" aria-label="群聊消息" title="输入 @ 选择成员，输入 / 查看群聊命令" required></textarea>
             <div class="group-compose-controls">
+              <button type="button" class="group-mention-button" id="groupAttach" aria-label="添加附件" title="附加任意类型的文件，组长和成员都能读取（按住 Shift 选择文件夹）；也可以拖入或粘贴"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg></button>
               <button type="button" class="group-mention-button" id="groupMention" aria-label="选择成员" title="选择成员">@</button>
               <label class="group-recipient">执行者
                 <select id="groupRecipient" aria-label="方案确认后的执行者">

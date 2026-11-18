@@ -201,6 +201,58 @@ window.__groupReady = (async () => {
   }
 
   const currentGroup = () => groups.get(state.group);
+
+  // Attachments for the next group task: any file type, a folder as one .zip. The lead sees them while planning
+  // and every member sees them in its step. They stay on this computer until the task is sent.
+  const MAX_ATTACH = 10;
+  const attachList = $('#groupAttachList');
+  const fileApi = window.desk?.files;
+  const appProjectOf = (group) => { const project = A.proj(group?.id); return project?.configured ? project.id : null; };
+  function renderGroupAttachments() {
+    const files = currentGroup()?.attachments || [];
+    attachList.innerHTML = files.map((file) => `<button type="button" class="attach-pill" data-group-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)}${file.folder ? `（文件夹 · ${file.folder.files} 个文件）` : ''} ×</button>`).join('');
+    attachList.hidden = !files.length;
+  }
+  function addGroupFiles(group, { files = [], errors = [] }) {
+    group.attachments ||= [];
+    const added = files.slice(0, Math.max(0, MAX_ATTACH - group.attachments.length));
+    group.attachments.push(...added);
+    for (const extra of files.slice(added.length)) fileApi.forgetChat(extra.id);
+    if (errors.length || added.length < files.length) A.toast(errors.join('；') || `每个群聊任务最多附加 ${MAX_ATTACH} 个文件。`);
+    if (group === currentGroup()) renderGroupAttachments();
+  }
+  async function withGroupProject(work) {
+    const group = currentGroup();
+    const project = appProjectOf(group);
+    if (!group || isExample(group.id) || !project || !fileApi?.pickChat) { A.toast('请先为这个项目连接主控，再添加附件。'); return; }
+    try { addGroupFiles(group, await work(project)); } catch (error) { A.toast(error.message); }
+  }
+  const addFiles = (list) => withGroupProject((project) => fileApi.dropChat(project, list));
+  $('#groupAttach').addEventListener('click', (event) => withGroupProject((project) => fileApi.pickChat(project, event.shiftKey)));
+  attachList.addEventListener('click', (event) => {
+    const id = event.target.closest('[data-group-attachment]')?.dataset.groupAttachment;
+    const group = currentGroup();
+    if (!id || !group) return;
+    group.attachments = (group.attachments || []).filter((file) => file.id !== id);
+    fileApi?.forgetChat(id);
+    renderGroupAttachments();
+  });
+  input.addEventListener('paste', (event) => {
+    const pasted = [...(event.clipboardData?.files || [])];
+    if (!pasted.length) return;
+    event.preventDefault();
+    withGroupProject(async (project) => {
+      const result = { files: [], errors: [] };
+      for (const file of pasted) {
+        const b64 = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(file); });
+        const name = file.name && file.name !== 'image.png' ? file.name : `粘贴文件-${Date.now()}.${(file.type.split('/')[1] || 'bin').replace(/[^\w]/g, '') || 'bin'}`;
+        const one = await fileApi.pasteChat(project, name, b64);
+        result.files.push(...one.files);
+        result.errors.push(...one.errors);
+      }
+      return result;
+    });
+  });
   const hasGroup = (id) => groups.has(id);
   const lastSeen = new Map(Object.entries(store.get('groupLastSeen', {})));
   const taskTime = (task) => Date.parse(task.updatedAt || task.createdAt || '') || task.time || 0;
@@ -713,6 +765,7 @@ window.__groupReady = (async () => {
       `<button type="button" class="sb-item clickable sb-resource${warning ? ' resource-warning' : ''}">${esc(label)}</button>`).join(''));
     const canSend = isExample(state.group) || (supported && (currentGroup().planReply ? connected : hasRoute()));
     $('#groupSend').disabled = busy || !canSend || !recipientReady;
+    renderGroupAttachments();
     $('#groupPlanReplyCancel').disabled = busy;
     const connectionHint = !recipientReady ? `当前主控尚未启用 ${members[provider.value].name}。` : isExample(state.group) ? '本地示例'
       : !supported ? '此客户端尚未配置群聊主控。' : hasRoute() ? '' : knownRoutes ? '主控离线，请检查线路。' : '正在检查主控线路…';
@@ -1105,6 +1158,7 @@ window.__groupReady = (async () => {
       bridge_offline: '没有可用线路，请检查 SSH 或 Relay。',
       operations_in_progress: '有任务在执行，结束后可以切换线路。',
       unknown_task: '主控上找不到这项任务。',
+      invalid_attachment: '附件校验失败，请移除后重新添加；如果主控版本较旧，请先更新 VPS2。',
       invalid_model_selection: '请输入该 CLI 支持的模型 ID。',
       gemini_not_configured: 'VPS 2 尚未配置 Gemini 执行服务。',
       antigravity_not_configured: 'VPS 2 尚未配置 Antigravity。',
@@ -1423,6 +1477,10 @@ window.__groupReady = (async () => {
     if (recipient && !canUse(recipient)) throw new Error(`当前主控尚未启用 ${members[recipient].name}。`);
     if (!prompt && kind !== 'compact') throw new Error('请输入任务内容。');
     const mode = modes[kind] || 'normal';
+    const files = (group.attachments || []).map(({ id, name, size, sha256 }) => ({ id, name, size, sha256 }));
+    if (files.length && (['broadcast', 'compact'].includes(kind) || mode === 'review_only')) {
+      throw new Error('广播、项目简报和审查任务不能带附件，请先移除附件。');
+    }
     const operation = kind === 'compact' ? 'compact_project' : kind === 'broadcast' ? 'broadcast'
       : ['review_only', 'chat', 'edit'].includes(mode) ? 'submit' : 'start_plan';
     return {
@@ -1431,6 +1489,7 @@ window.__groupReady = (async () => {
         prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         provider: recipient || undefined,
+        ...(files.length && { attachments: files }),
       },
     };
   }
@@ -1520,6 +1579,12 @@ window.__groupReady = (async () => {
     if (!sent || current !== generation) return;
     group.pending = null;
     group.reference = null;
+    if (request.attachments) {
+      // Sent: the desktop has handed the files over and forgotten them.
+      const sentIds = new Set(request.attachments.map((file) => file.id));
+      group.attachments = (group.attachments || []).filter((file) => !sentIds.has(file.id));
+      if (group === currentGroup()) renderGroupAttachments();
+    }
     if (group === currentGroup()) {
       if (input.value.trim() === draft) input.value = '';
       setRecipient(group);
@@ -1743,7 +1808,7 @@ window.__groupReady = (async () => {
     leadEffort.addEventListener('change', () => store.set('leadEffort', leadEffort.value));
   }
 
-  window.__group = { createGroup, deleteGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+  window.__group = { addFiles, createGroup, deleteGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {

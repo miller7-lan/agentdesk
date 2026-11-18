@@ -216,19 +216,36 @@
     document.body.appendChild(dialog); dialog.showModal();
   }
   const controls = new Map();
-  async function attach(s) {
-    if (s.agentThread || s.busy || !window.desk.files?.pickChat) return;
-    try {
-      const { files, errors } = await window.desk.files.pickChat(s.project);
-      const existing = attachments.get(s) || [];
-      const added = files.slice(0, Math.max(0, 3 - existing.length));
-      attachments.set(s, [...existing, ...added]);
-      for (const extra of files.slice(added.length)) window.desk.files.forgetChat(extra.id);
-      if (errors.length || added.length < files.length) {
-        sendErrors.set(s, errors.join('；') || '每条消息最多附加 3 个文件。');
-      } else if (added.length) sendErrors.delete(s);
-      if (A.state.active === s.id && !A.state.group) render(s);
-    } catch (error) { A.toast(error.message); }
+  // Any file type, up to 10 per message; a folder is sent as one .zip.
+  const MAX_ATTACH = 10;
+  function addFiles(s, { files = [], errors = [] }) {
+    const existing = attachments.get(s) || [];
+    const added = files.slice(0, Math.max(0, MAX_ATTACH - existing.length));
+    attachments.set(s, [...existing, ...added]);
+    for (const extra of files.slice(added.length)) window.desk.files.forgetChat(extra.id);
+    if (errors.length || added.length < files.length) {
+      sendErrors.set(s, errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
+    } else if (added.length) sendErrors.delete(s);
+    if (A.state.active === s.id && !A.state.group) render(s);
+  }
+  const usable = (s) => !s.agentThread && !s.busy && window.desk.files?.pickChat;
+  async function attach(s, folders = false) {
+    if (!usable(s)) return;
+    try { addFiles(s, await window.desk.files.pickChat(s.project, folders)); } catch (error) { A.toast(error.message); }
+  }
+  async function dropFiles(s, list) {
+    if (!usable(s)) return;
+    try { addFiles(s, await window.desk.files.dropChat(s.project, list)); } catch (error) { A.toast(error.message); }
+  }
+  async function pasteFiles(s, list) {
+    if (!usable(s)) return;
+    for (const file of list) {
+      try {
+        const b64 = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(file); });
+        const name = file.name && file.name !== 'image.png' ? file.name : `粘贴文件-${Date.now()}.${(file.type.split('/')[1] || 'bin').replace(/[^\w]/g, '') || 'bin'}`;
+        addFiles(s, await window.desk.files.pasteChat(s.project, name, b64));
+      } catch (error) { A.toast(error.message); }
+    }
   }
   $('#attachList').addEventListener('click', (event) => {
     const id = event.target.closest('[data-provider-attachment]')?.dataset.providerAttachment;
@@ -326,7 +343,7 @@
         : `与 ${names[s.provider]} 单聊，可查看已授权的本机目录；修改文件请切换任务类型…`;
     } else if (!s?.agent) $('#input').placeholder = '向 Codex 描述任务…';
   }
-  window.__providerDirect = { names, choose, create, send, render, attach, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
+  window.__providerDirect = { names, choose, create, send, render, attach, dropFiles, pasteFiles, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
       if (!s.agentThread) control(s, 'routes').then(routes => {
         catalogs.set(s.project, routes.modelProfiles || {});
         if (A.state.active === s.id && !A.state.group) renderModels(s);

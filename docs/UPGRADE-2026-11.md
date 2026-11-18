@@ -18,6 +18,7 @@
 - 单聊：把 `sandbox.js` 一起复制到 `/opt/agentdesk-orchestrator/`；`agent-chat.sh` 发现 `bwrap` 会自动开启沙盒。三家都能联网搜索。
 - 将 `orchestrator/vps2.example.json` 中的最新 Opus 配置加入 `adapters.claude.models`，再将 `adapters.claude.defaultModel` 设为同一个模型 ID。当前示例为 `claude-opus-5-5`。默认模型必须在本机配置的 `models` 中存在，否则主控无法启动。
 - 群聊任务某一环节失败时不再直接结束：失败交给组长诊断，组长可以把这个环节改派给其他成员、换同一成员的其他模型，或者用新步骤替换它。每个环节最多重新安排 3 次，替换它的新步骤继承这个次数。分工进度表和调度图会同步显示当前成员、模型、重排次数和之前尝试过的成员。只需更新 VPS2 主控代码和桌面端，配置不用改。
+- 附件：所有对话（Codex、Claude/Grok/Antigravity 单聊、群聊任务）都能附加任意类型的文件，可选择、拖入或粘贴；文件夹打包成一个 .zip（跳过 `.git`、`node_modules` 等）。每条消息最多 10 个，每个不超过 25 MB。Word、Excel、PowerPoint、OpenDocument 文件和压缩包在 VPS2 上自动生成一份文本副本，供 CLI 读取。群聊附件组长规划时能看到，每个成员执行步骤时也能看到。需要同时更新 VPS2（`attachments.js`、`extract.js`、`zipfile.js`）和桌面端；只更新桌面端时，群聊附件会被旧主控拒绝。
 - 在 VPS2 上运行 `grok --help`、`agy --help`，确认 `--effort` 的写法；Antigravity 若支持，按 OPERATIONS.md 写 `efforts` 和 `effortArgs`。
 
 ## 1. VPS2

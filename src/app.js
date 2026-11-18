@@ -515,10 +515,11 @@
   function renderAttach() {
     $('#attachList').innerHTML = state.attachments.map((a, i) => `<span class="attach-pill" data-i="${i}" title="点击移除">${esc(a)} ×</span>`).join('');
   }
-  $('#attachBtn').addEventListener('click', () => {
+  $('#attachBtn').addEventListener('click', (e) => {
     const session = sess(state.active);
-    if (window.__providerDirect?.handles(session)) return window.__providerDirect.attach(session);
-    if (session?.live && L()) return L().attach();
+    // Shift-click picks folders, which are sent as one .zip.
+    if (window.__providerDirect?.handles(session)) return window.__providerDirect.attach(session, e.shiftKey);
+    if (session?.live && L()) return L().attach(e.shiftKey);
     const pool = ['handler.ts', 'retry.ts', 'README.md', 'screenshot.png'];
     const next = pool.find((p) => !state.attachments.includes(p));
     if (next) { state.attachments.push(next); renderAttach(); } else toast('mock 附件已全部添加');

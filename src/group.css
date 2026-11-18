@@ -439,3 +439,4 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .group-delete:hover { background: var(--danger-soft); color: var(--danger); }
 .step-row[data-state="replaced"] { opacity: .6; }
 .step-row[data-state="replaced"] .step-row-name { text-decoration: line-through; }
+.group-attach-list { padding: 6px 10px 0; }

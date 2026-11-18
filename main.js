@@ -533,47 +533,60 @@ async function uploadOne(name, b64) {
   if (!workspace) throw new Error('请配置远程工作区目录。');
   const dir = path.posix.join(workspace, '.agentdesk-uploads');
   const [full] = await remote.upload(dir, [{ rel: safe, b64 }]);
-  return { name, path: full, image: /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) };
+  return { name, path: full, image: /\.(png|jpe?g|gif|webp)$/i.test(name) };
 }
 ipcMain.handle('files:pick', async () => {
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: '选择要发给 Codex 的文件（每个不超过 10 MB）' });
+  const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: '选择要发给 Codex 的文件（任意类型，每个不超过 25 MB）' });
   if (r.canceled) return { ok: true, files: [] };
   const out = [];
-  try { for (const f of r.filePaths) { const d = await ws.readUpload(f); out.push(await uploadOne(d.name, d.b64)); } }
+  try { for (const f of r.filePaths) { const d = await readAttachment(f, attachmentLimit); out.push(await uploadOne(d.name, d.bytes.toString('base64'))); } }
   catch (e) { return { ok: false, error: String(e.message || e), files: out }; }
   return { ok: true, files: out };
 });
 const { attachmentLimit, maxAttachments, attachmentRoot, validAttachments } = require('./orchestrator/attachments');
+const { readAttachment, cleanName } = require('./attachment-files');
 const chatAttachments = new Map();
 const chatAttachmentUploads = new Set();
-ipcMain.handle('files:pickChat', async (event, projectId) => {
-  if (!fromMainWindow(event) || typeof projectId !== 'string' || !appConfig?.value.projects.some(item => item.id === projectId)) {
-    return { files: [], errors: ['无法为此项目添加附件。'] };
-  }
-  const picked = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'],
-    title: '选择附件（每条消息最多 3 个，每个不超过 10 MB）' });
+// Attachments for Claude / Grok / Antigravity chats and for group tasks: any file type, a folder as one .zip.
+// They wait here until the message is sent; the VPS gets them only with that message.
+const chatProject = (event, projectId) => fromMainWindow(event) && typeof projectId === 'string' &&
+  appConfig?.value.projects.some(item => item.id === projectId);
+function stageChat(projectId, name, bytes) {
+  if (bytes.length > attachmentLimit) throw Error('单个附件必须不超过 25 MB。');
+  if (chatAttachments.size >= maxAttachments * 3) throw Error('待发送的附件过多，请先移除或发送已有附件。');
+  const item = { id: randomUUID(), name: cleanName(name), size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+  chatAttachments.set(item.id, { item, bytes, projectId });
+  return item;
+}
+async function stagePaths(projectId, paths) {
   const files = [], errors = [];
-  if (picked.canceled) return { files, errors };
-  if (picked.filePaths.length > maxAttachments) return { files, errors: ['一次最多选择 3 个附件。'] };
-  for (const filename of picked.filePaths) {
-    const name = path.basename(filename).replace(/[\x00-\x1f]/g, '_').slice(0, 180);
+  if (paths.length > maxAttachments) return { files, errors: [`一条消息最多 ${maxAttachments} 个附件。`] };
+  for (const filename of paths) {
     try {
-      const file = await fs.promises.open(filename, 'r');
-      try {
-        const info = await file.stat();
-        if (!info.isFile() || info.size > attachmentLimit) throw Error('单个附件必须不超过 10 MB。');
-        const content = Buffer.alloc(info.size + 1);
-        const { bytesRead } = await file.read(content, 0, content.length, 0);
-        if (bytesRead !== info.size) throw Error('文件在读取时发生变化，请重新选择。');
-        const bytes = content.subarray(0, bytesRead);
-        const item = { id: randomUUID(), name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
-        if (chatAttachments.size >= 12) throw Error('待发送的附件过多，请先移除或发送已有附件。');
-        chatAttachments.set(item.id, { item, bytes, projectId });
-        files.push(item);
-      } finally { await file.close(); }
-    } catch (error) { errors.push(name + '：' + error.message); }
+      const { name, bytes, folder } = await readAttachment(filename, attachmentLimit);
+      files.push({ ...stageChat(projectId, name, bytes), ...(folder && { folder }) });
+    } catch (error) { errors.push(path.basename(filename) + '：' + error.message); }
   }
   return { files, errors };
+}
+ipcMain.handle('files:pickChat', async (event, projectId, folders = false) => {
+  if (!chatProject(event, projectId)) return { files: [], errors: ['无法为此项目添加附件。'] };
+  const picked = await dialog.showOpenDialog(win, { properties: [folders ? 'openDirectory' : 'openFile', 'multiSelections'],
+    title: folders ? '选择文件夹（打包成 .zip 发送）' : `选择附件（任意类型，每条消息最多 ${maxAttachments} 个，每个不超过 25 MB）` });
+  if (picked.canceled) return { files: [], errors: [] };
+  return stagePaths(projectId, picked.filePaths);
+});
+ipcMain.handle('files:dropChat', async (event, projectId, paths) => {
+  if (!chatProject(event, projectId) || !Array.isArray(paths) || !paths.every(item => typeof item === 'string' && path.isAbsolute(item))) {
+    return { files: [], errors: ['无法为此项目添加附件。'] };
+  }
+  return stagePaths(projectId, paths);
+});
+ipcMain.handle('files:pasteChat', async (event, projectId, name, b64) => {
+  if (!chatProject(event, projectId) || typeof name !== 'string' || typeof b64 !== 'string' ||
+      b64.length > Math.ceil(attachmentLimit / 3) * 4) return { files: [], errors: ['粘贴的文件超过 25 MB。'] };
+  try { return { files: [stageChat(projectId, name, Buffer.from(b64, 'base64'))], errors: [] }; }
+  catch (error) { return { files: [], errors: [error.message] }; }
 });
 ipcMain.handle('files:forgetChat', (event, id) => fromMainWindow(event) && chatAttachments.delete(id));
 // 拖入的文件：测试目录内的文件/文件夹直接引用路径（Codex 能通过 ssh_exec 访问）；
@@ -584,16 +597,15 @@ ipcMain.handle('files:drop', async (_e, paths) => {
     try {
       const rel = ws.relIfInside(p);
       if (rel !== null) { mentions.push(rel); continue; }
-      const st = await fs.promises.stat(p);
-      if (st.isDirectory()) { errors.push(`${path.basename(p)}：文件夹不能直接上传，请拖入其中的文件，或先放到测试目录`); continue; }
-      const d = await ws.readUpload(p);
-      files.push(await uploadOne(d.name, d.b64));
+      // Any file; a folder outside the test folder is packed into one .zip.
+      const d = await readAttachment(p, attachmentLimit);
+      files.push(await uploadOne(d.name, d.bytes.toString('base64')));
     } catch (e) { errors.push(`${path.basename(p)}：${e.message || e}`); }
   }
   return { files, mentions, errors };
 });
 ipcMain.handle('files:uploadData', async (_e, name, b64) => {
-  try { if (b64.length > 14 * 1024 * 1024) throw new Error('图片超过 10 MB'); return { ok: true, file: await uploadOne(name, b64) }; }
+  try { if (typeof b64 !== 'string' || b64.length > Math.ceil(attachmentLimit / 3) * 4) throw new Error('文件超过 25 MB'); return { ok: true, file: await uploadOne(name, b64) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), host: remote.cfg.host, localWorkspace: ws.root, projectId: appConfig?.active?.id }));
@@ -957,7 +969,7 @@ async function orchestratorControl(frame) {
     }
     const attachments = frame.attachments;
     if (attachments !== undefined) {
-      if (frame.operation !== 'submit' || !project || !validAttachments(attachments) ||
+      if (!['submit', 'start_plan'].includes(frame.operation) || !project || !validAttachments(attachments) ||
           attachments.some(item => {
             const record = chatAttachments.get(item.id);
             return !record || record.projectId !== project.id || record.item.sha256 !== item.sha256 ||

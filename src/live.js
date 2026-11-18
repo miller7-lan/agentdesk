@@ -1056,17 +1056,26 @@
     const p = e.target.closest('[data-li]'); if (!p) return;
     e.stopImmediatePropagation(); liveAtt.splice(+p.dataset.li, 1); renderAtt();
   }, true);
-  async function attach() {
+  // Claude / Grok / Antigravity chats: any file type, up to MAX_ATTACH per message; a folder arrives as one .zip.
+  const MAX_ATTACH = 10;
+  function addChatFiles(s, { files = [], errors = [] }) {
+    const current = s.chatAttachments || [];
+    const accepted = files.slice(0, Math.max(0, MAX_ATTACH - current.length));
+    s.chatAttachments = [...current, ...accepted];
+    for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
+    if (state.active === s.id && !state.group) renderAtt();
+    const folders = accepted.filter((file) => file.folder);
+    if (errors.length || accepted.length < files.length) toast(errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
+    else if (folders.length) toast(folders.map((file) => `${file.name}：已打包 ${file.folder.files} 个文件${file.folder.skipped.length ? `（跳过 ${file.folder.skipped.slice(0, 3).join('、')}${file.folder.skipped.length > 3 ? ' 等' : ''}）` : ''}`).join('；'));
+  }
+  const fileToBase64 = (f) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(f); });
+  const pastedName = (f) => f.name && f.name !== 'image.png' ? f.name
+    : `粘贴${f.type.startsWith('image/') ? '图片' : '文件'}-${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.${(f.type.split('/')[1] || 'bin').replace(/[^\w]/g, '').slice(0, 8) || 'bin'}`;
+  async function attach(folders = false) {
     const s = sess(state.active);
     if (isChat(s)) {
       if (s.busy) return;
-      const { files, errors } = await fileApi.pickChat(s.project);
-      const current = s.chatAttachments || [];
-      const accepted = files.slice(0, Math.max(0, 3 - current.length));
-      s.chatAttachments = [...current, ...accepted];
-      for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
-      if (state.active === s.id && !state.group) renderAtt();
-      if (errors.length || accepted.length < files.length) toast(errors.join('；') || '每条消息最多附加 3 个文件。');
+      addChatFiles(s, await fileApi.pickChat(s.project, folders));
       return;
     }
     if (!(await ensureReady(s))) return;
@@ -1077,17 +1086,20 @@
   ta.addEventListener('paste', async (e) => {
     const session = sess(state.active);
     if (!session?.live) return;
-    const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
-    if (!imgs.length) return;
+    // Any pasted file (screenshots, copied documents…), not only images.
+    const pasted = [...(e.clipboardData?.files || [])];
+    if (!pasted.length) return;
     e.preventDefault();
-    if (isChat(session)) { toast('请用「附件」选择图片文件。'); return; }
-    if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择图片文件。'); return; }
+    if (window.__providerDirect?.handles(session)) { window.__providerDirect.pasteFiles(session, pasted); return; }
+    if (isChat(session)) {
+      if (session.busy) return;
+      for (const f of pasted) addChatFiles(session, await fileApi.pasteChat(session.project, pastedName(f), await fileToBase64(f)));
+      return;
+    }
     if (!(await ensureReady(session))) return;
-    for (const f of imgs) {
-      const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(f); });
-      const name = f.name && f.name !== 'image.png' ? f.name : `粘贴图片-${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.png`;
-      const r = await fileApi.uploadData(name, b64);
-      if (r.ok) { liveAtt.push(r.file); renderAtt(); } else toast('图片上传失败：' + r.error);
+    for (const f of pasted) {
+      const r = await fileApi.uploadData(pastedName(f), await fileToBase64(f));
+      if (r.ok) { liveAtt.push(r.file); renderAtt(); } else toast('上传失败：' + r.error);
     }
   });
 
@@ -1108,11 +1120,12 @@
   const showOverlay = (k) => {
     clearTimeout(dragTimer); dragTimer = setTimeout(hideOverlay, 300);
     const session = sess(state.active);
-    const live = !!session?.live;
-    const chat = isChat(session);
-    if (!overlay.hidden && overlayKind === k + live + chat) return;
-    overlayKind = k + live + chat;
-    overlay.innerHTML = `<div class="drop-card">${k === 'tree' ? svg('file') : '<svg viewBox="0 0 24 24"><path d="M20 11.5l-7.8 7.8a5 5 0 01-7.1-7.1l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8"/></svg>'}<div><b>${!live ? '示例会话不支持添加文件' : k === 'tree' ? '松开以引用这个路径' : chat ? '单聊不支持附件' : '松开以添加为附件'}</b><span>${!live ? '请切换到已连接工作区的会话' : k === 'tree' ? `插入到输入框，${agentName(agentOf(session))} 会通过本机文件工具访问` : chat ? '请用 @ 引用本机文件路径，或直接输入绝对路径' : '测试目录内的文件直接引用路径；其他文件上传到 VPS（每个 ≤10 MB）'}</span></div></div>`;
+    const groupOpen = !!state.group && k === 'files';
+    const live = groupOpen || !!session?.live;
+    const chat = false;   // every chat takes attachments now
+    if (!overlay.hidden && overlayKind === k + live + groupOpen) return;
+    overlayKind = k + live + groupOpen;
+    overlay.innerHTML = `<div class="drop-card">${k === 'tree' ? svg('file') : '<svg viewBox="0 0 24 24"><path d="M20 11.5l-7.8 7.8a5 5 0 01-7.1-7.1l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8"/></svg>'}<div><b>${!live ? '示例会话不支持添加文件' : k === 'tree' ? '松开以引用这个路径' : chat ? '单聊不支持附件' : '松开以添加为附件'}</b><span>${!live ? '请切换到已连接工作区的会话' : k === 'tree' ? `插入到输入框，${agentName(agentOf(session))} 会通过本机文件工具访问` : groupOpen ? '任意类型，随这条群聊任务发给组长和成员；文件夹打包成 .zip（每个 ≤25 MB，最多 10 个）' : isChat(session) || window.__providerDirect?.handles(session) ? '任意类型的文件或文件夹（文件夹打包成 .zip），每个 ≤25 MB，最多 10 个' : '测试目录内的文件直接引用路径；其他文件和文件夹上传到 VPS（每个 ≤25 MB）'}</span></div></div>`;
     overlay.classList.toggle('bad', !live || (chat && k === 'files'));
     overlay.hidden = false;
   };
@@ -1120,7 +1133,7 @@
   window.addEventListener('dragover', (e) => {
     const k = dragKind(e); if (!k) return;
     e.preventDefault();
-    if (center.contains(e.target)) { showOverlay(k); e.dataTransfer.dropEffect = sess(state.active)?.live ? (k === 'tree' ? 'link' : 'copy') : 'none'; }
+    if (center.contains(e.target)) { showOverlay(k); e.dataTransfer.dropEffect = state.group && k === 'files' ? 'copy' : sess(state.active)?.live ? (k === 'tree' ? 'link' : 'copy') : 'none'; }
     else { hideOverlay(); e.dataTransfer.dropEffect = 'none'; }
   });
   window.addEventListener('drop', (e) => { if (dragKind(e)) e.preventDefault(); hideOverlay(); });
@@ -1131,11 +1144,16 @@
   center.addEventListener('drop', async (e) => {
     const k = dragKind(e); if (!k) return;
     e.preventDefault(); e.stopPropagation(); hideOverlay();
+    if (state.group && k === 'files') { window.__group?.addFiles?.(e.dataTransfer.files); return; }
     const session = sess(state.active);
     if (!session?.live) { toast('示例会话不支持添加文件'); return; }
     if (k === 'tree') { mention(e.dataTransfer.getData(DRAG_TYPE)); return; }
-    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持附件，请用 @ 引用本机文件路径`); return; }
-    if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择要发送的文件。'); return; }
+    if (window.__providerDirect?.handles(session)) { window.__providerDirect.dropFiles(session, e.dataTransfer.files); return; }
+    if (isChat(session)) {
+      if (session.busy) return;
+      addChatFiles(session, await fileApi.dropChat(session.project, e.dataTransfer.files));
+      return;
+    }
     const list = [...e.dataTransfer.files];
     if (!list.length) return;
     await addDropped(list);
