@@ -146,8 +146,13 @@ test('the VPS2 example config is valid: subscription models, routing and the Ant
   const example = require('../orchestrator/vps2.example.json');
   for (const settings of Object.values(example.adapters)) modelProfiles(settings);
   assert.deepEqual(validateRoutes(example.routing), example.routing);
-  assert.equal(validateTemplate(example.adapters.antigravity.template, 'antigravity').prompt, 'arg');
+  const antigravity = validateTemplate(example.adapters.antigravity.template, 'antigravity');
+  assert.equal(antigravity.prompt, 'arg');
+  assert.deepEqual(antigravity.efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(antigravity.effortArgs, ['--effort', '{effort}']);
   assert.throws(() => validateTemplate({ prompt: 'arg', args: ['-p'] }, 'antigravity'), /invalid_antigravity_template/);
+  assert.throws(() => validateTemplate({ ...antigravity, efforts: ['ultra'] }, 'antigravity'), /invalid_antigravity_template/);
+  assert.throws(() => validateTemplate({ ...antigravity, efforts: undefined }, 'antigravity'), /invalid_antigravity_template/);
   assert.throws(() => validateTemplate(undefined, 'antigravity'), /antigravity_template_required/);
 });
 

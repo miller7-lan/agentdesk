@@ -146,6 +146,8 @@
           "--conversation",
           "{session}"
         ],
+        "efforts": ["low", "medium", "high", "xhigh", "max"],
+        "effortArgs": ["--effort", "{effort}"],
         "outputField": "result.response",
         "sessionField": "result.conversation_id",
         "usageField": "result.usage",

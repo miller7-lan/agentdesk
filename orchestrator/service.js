@@ -8,7 +8,7 @@ const { Endpoint, direct, expireMessages } = require('./rpc');
 const { WindowsOperations, RemoteFiles } = require('./windows');
 const { Scheduler } = require('./scheduler');
 const { sweepAttachments } = require('./attachments');
-const { modelProfiles } = require('./model-profiles');
+const { EFFORT_LEVELS, modelProfiles } = require('./model-profiles');
 
 function relayConfig(config, role) {
   return {
@@ -35,12 +35,15 @@ function unixServer(filename, handler) {
 // which JSON fields hold the reply, the session ID and token use. Every value is checked here.
 function validateTemplate(template, name) {
   if (!template || typeof template !== 'object' || Array.isArray(template)) throw new Error(name + '_template_required');
-  const lists = ['args', 'readonlyArgs', 'writeArgs', 'modelArgs', 'resumeArgs'];
+  const lists = ['args', 'readonlyArgs', 'writeArgs', 'modelArgs', 'resumeArgs', 'effortArgs'];
   const fields = ['outputField', 'sessionField', 'usageField', 'errorField'];
-  const allowed = new Set([...lists, ...fields, 'prompt', 'output', 'session']);
+  const allowed = new Set([...lists, ...fields, 'prompt', 'output', 'session', 'efforts']);
   if (Object.keys(template).some((key) => !allowed.has(key)) ||
       lists.some((key) => template[key] !== undefined && (!Array.isArray(template[key]) || template[key].length > 32 ||
         template[key].some((arg) => typeof arg !== 'string' || arg.length > 200))) ||
+      (template.efforts !== undefined && (!Array.isArray(template.efforts) || !template.efforts.length ||
+        new Set(template.efforts).size !== template.efforts.length || template.efforts.some((effort) => !EFFORT_LEVELS.includes(effort)))) ||
+      (template.effortArgs !== undefined && template.efforts === undefined) ||
       fields.some((key) => template[key] !== undefined && (typeof template[key] !== 'string' || !/^[A-Za-z0-9_.]{1,80}$/.test(template[key]))) ||
       !['stdin', 'arg'].includes(template.prompt ?? 'stdin') || !['plain', 'jsonl'].includes(template.output ?? 'plain') ||
       !['none', 'generate', 'field'].includes(template.session ?? 'none') ||
