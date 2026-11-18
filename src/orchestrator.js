@@ -199,10 +199,53 @@ window.__groupReady = (async () => {
     return true;
   }
 
+  // Clearing keeps every group chat but drops its messages, task list and read-only dispatch records
+  // from this computer. The orchestrator keeps its tasks, so a cutoff is written for each group to stop
+  // the next project refresh from restoring the history. Work that updates later comes back on its own.
+  function clearAllGroups() {
+    if (!groups.size) return false;
+    const taskTotal = [...groups.values()].reduce((sum, group) => sum + group.records.size, 0);
+    const threadTotal = [...groups.keys()].reduce((sum, id) => sum + (window.__agentThreads?.threadsOf?.(id) || []).length, 0);
+    const message = `清空全部 ${groups.size} 个群聊的消息记录？\n\n将从本机删除：\n· ${taskTotal} 条任务消息和任务列表\n· ${threadTotal} 个组长派遣的只读记录\n\n群聊本身保留；主控上的任务不会被删除，正在执行的任务下次更新时会重新出现。此操作不能撤销。`;
+    if (!window.confirm(message)) return false;
+    const now = Date.now();
+    for (const [id, group] of groups) {
+      group.records.clear();
+      group.expanded?.clear();
+      group.approvals.clear();
+      group.selected = undefined;
+      group.output = null;
+      group.reference = null;
+      group.planReply = null;
+      group.draft = '';
+      clearedAt.set(id, now);
+      lastSeen.delete(id);
+      window.__agentThreads?.removeGroup?.(id);
+      if (id === liveProject) store.set('groupTasks', []);
+      else delete savedByGroup[id];
+    }
+    store.set('groupTasksByProject', savedByGroup);
+    store.set('groupLastSeen', Object.fromEntries(lastSeen));
+    store.set('groupClearedAt', Object.fromEntries(clearedAt));
+    localStorage.removeItem('agentdesk.macTask');
+    displayedCounts.clear();
+    filter = 'all';
+    filterSelect.value = '';
+    updateFilters();
+    A.renderSidebar();
+    if (state.group) render();
+    A.toast(`已清空 ${groups.size} 个群聊的记录`);
+    return true;
+  }
+
   const currentGroup = () => groups.get(state.group);
   const hasGroup = (id) => groups.has(id);
   const lastSeen = new Map(Object.entries(store.get('groupLastSeen', {})));
   const taskTime = (task) => Date.parse(task.updatedAt || task.createdAt || '') || task.time || 0;
+  // Clearing a group hides the tasks that already existed. The cutoff is saved so the periodic project
+  // refresh cannot bring the same history back; a task that updates after the cutoff shows up again.
+  const clearedAt = new Map(Object.entries(store.get('groupClearedAt', {})));
+  const isCleared = (id, task) => taskTime(task) <= (Number(clearedAt.get(id)) || 0);
   function markSeen(group) {
     if (document.hidden) return;
     const time = Math.max(lastSeen.get(group.id) || 0, ...[...group.records.values()].map(taskTime));
@@ -1145,10 +1188,11 @@ window.__groupReady = (async () => {
           for (const summary of summaries) {
             if (window.__providerDirect?.ownsTask(summary)) { group.records.delete(summary.id); continue; }
             if (!belongs(group, summary)) { group.records.delete(summary.id); continue; }
+            if (isCleared(group.id, summary)) { group.records.delete(summary.id); continue; }
             const previous = group.records.get(summary.id);
             updateTask(group, summary.id, { ...summary, ...(previous?.prompt && { prompt: previous.prompt }) });
           }
-          if (!group.selected || !group.records.has(group.selected)) group.selected = summaries.find((summary) => belongs(group, summary))?.id;
+          if (!group.selected || !group.records.has(group.selected)) group.selected = summaries.find((summary) => belongs(group, summary) && !isCleared(group.id, summary))?.id;
           persist(group);
         } catch { /* 旧主控继续从本地保存的任务 ID 同步。 */ }
       }));
@@ -1531,6 +1575,7 @@ window.__groupReady = (async () => {
     $('#panelBody').querySelector('.member-focused')?.scrollIntoView({ block: 'nearest' });
   }
   $('#groupRoster').addEventListener('click', (event) => showMember(event.target.closest('[data-roster]')?.dataset.roster));
+  $('#groupClearAll').addEventListener('click', clearAllGroups);
   $('#sbGroupMembers').addEventListener('click', (event) => showMember(event.target.closest('[data-status-member]')?.dataset.statusMember));
   $('#sbResources').addEventListener('click', (event) => {
     if (!event.target.closest('button')) return;
@@ -1728,7 +1773,7 @@ window.__groupReady = (async () => {
     leadEffort.addEventListener('change', () => store.set('leadEffort', leadEffort.value));
   }
 
-  window.__group = { createGroup, deleteGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+  window.__group = { createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {
