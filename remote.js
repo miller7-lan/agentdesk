@@ -535,3 +535,4 @@ module.exports = new Remote();
 module.exports.Remote = Remote;
 module.exports.loadConfig = loadConfig;
 module.exports.bundledServer = bundledServer;
+module.exports.sshBase = sshBase;

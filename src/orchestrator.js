@@ -808,7 +808,7 @@
           ${task && [...taskStats(task, id), usageText(task, id)].filter(Boolean).length
             ? `<small class="member-task-stats">${esc([...taskStats(task, id), usageText(task, id)].filter(Boolean).join(' · '))}</small>` : ''}
           ${task ? `<button type="button" data-task-id="${esc(task.id)}" class="task-text-link">${taskLabel(task)} · ${statusName(task.state)}</button>` : ''}
-        </div>${['codex','lead','grok','gemini','antigravity'].includes(id) ? `<button type="button" class="btn member-direct" data-direct-provider="${id === 'lead' ? 'claude' : id}">单聊</button>` : ''}</div>`;
+        </div>${['codex','lead','grok','antigravity'].includes(id) ? `<button type="button" class="btn member-direct" data-direct-provider="${id === 'lead' ? 'claude' : id}">单聊</button>` : ''}</div>`;
       }).join('')}
       ${hiddenMembers().length ? `<p class="panel-note">未接入：${hiddenMembers().map((id) => members[id].name).join('、')}</p>` : ''}
       <button type="button" class="task-text-link" data-open-quota>查看额度与分工顺序 ${svg('chev')}</button></div>`;
@@ -1535,7 +1535,8 @@
       const directButton = event.target.closest('[data-direct-provider]');
       if (directButton) {
         const provider = directButton.dataset.directProvider;
-        const direct = A.D.sessions.find((session) => session.project === state.group && (session.provider || 'codex') === provider);
+        const direct = A.D.sessions.find((session) => session.project === state.group
+          && !session.provider && !session.agentThread && (session.agent || 'codex') === provider);
         if (direct) A.openSession(direct.id);
         else A.newDirect(state.group, provider);
       }

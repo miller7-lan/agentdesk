@@ -19,6 +19,8 @@ const { Desktop, desktopExecutable } = require('./desktop');
 const desktop = new Desktop(desktopExecutable(app));
 const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
+const localFiles = require('./local-files');
+const { ChatLink, AGENTS: CHAT_AGENTS } = require('./chat-link');
 const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
 const platformName = detectOs({ platform: process.platform });
@@ -36,6 +38,10 @@ if (process.env.AGENTDESK_APPEARANCE) {
 }
 const fileTurns = new Map();
 const fullAccessThreads = new Set();
+// Claude / Grok / Antigravity 单聊：线程在 VPS 上，工具调用回到本机执行
+const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent })]));
+const chatThreads = new Map();
+const chatTurns = new Map();
 
 function toggleDesktop(value) {
   desktop.enabled = value;
@@ -404,11 +410,15 @@ remote.on('server-request', (m) => {
   if (m.method === 'item/tool/call') {
     const connection = remote.codexProc;
     const params = m.params || {};
-    const isFile = !mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
-    const task = isFile
-      ? !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId
-        ? windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
-        : Promise.resolve(windowsFiles.result(false, { error: 'Windows file tools require an active AgentDesk Full Access turn' }))
+    const winFile = !mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
+    const macFile = mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('agentdesk_file_');
+    const allowed = !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId;
+    const task = winFile || macFile
+      ? allowed
+        ? winFile
+          ? windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
+          : localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
+        : Promise.resolve((winFile ? windowsFiles : localFiles).result(false, { error: '本机文件工具需要处于完全访问模式的活动轮次' }))
       : desktop.call(params);
     task.then((result) => {
       if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result);
@@ -550,7 +560,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
-      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac || enrollment ? [] : windowsFiles.specs)] };
+      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac && !enrollment ? localFiles.specs : []), ...(mac || enrollment ? [] : windowsFiles.specs)] };
       if (method === 'thread/resume' && desktop.enabled && params?.threadId) desktopThreads.add(params.threadId);
     }
     if (method === 'turn/start') {
@@ -564,6 +574,8 @@ ipcMain.handle('codex:request', async (event, method, params) => {
       }
       if (params.approvalPolicy === 'never' && params.sandboxPolicy?.type === 'dangerFullAccess') {
         fullAccessThreads.add(params.threadId);
+      } else {
+        fullAccessThreads.delete(params.threadId);
       }
     }
     return { ok: true, result: await remote.request(method, params) };
@@ -582,6 +594,207 @@ ipcMain.handle('codex:respond', (event, id, result, error) => {
     const outcome = ['accept', 'acceptForSession', 'approve', 'approved', 'approved_for_session'].includes(result?.decision) || result?.action === 'accept'
       ? 'approved' : result?.answers ? 'answered' : 'declined';
     logger?.audit('codex_approval', { status: outcome, projectId: appConfig.active?.id });
+    return true;
+  } catch { return false; }
+});
+
+/* ---------- Claude / Grok / Antigravity 单聊 ---------- */
+const CHAT_LABEL = { claude: 'Claude', grok: 'Grok', antigravity: 'Antigravity' };
+
+function chatLink(agent) {
+  if (typeof agent !== 'string' || !CHAT_AGENTS.has(agent)) throw new Error('unknown_chat_agent');
+  const link = chatLinks.get(agent);
+  for (const key of ['host', 'port', 'knownHosts', 'chatUser', 'chatScript',
+    'claudeKey', 'grokKey', 'antigravityKey', 'claudeUser', 'grokUser', 'antigravityUser']) {
+    if (remote.cfg[key] !== undefined) link.cfg[key] = remote.cfg[key];
+  }
+  if (remote.cfg.configError === undefined) delete link.cfg.configError;
+  else link.cfg.configError = remote.cfg.configError;
+  link.key = link.cfg[agent + 'Key'];
+  link.user = link.cfg[agent + 'User'] || link.cfg.chatUser;
+  return link;
+}
+
+function localRootFor(projectId) {
+  const project = projectId === undefined || projectId === null
+    ? appConfig?.active
+    : appConfig?.value.projects.find(({ id }) => id === projectId);
+  if (projectId !== undefined && projectId !== null && !project) throw new Error('project_not_found');
+  return project?.localRoot || null;
+}
+
+function rememberChatThread(agent, threadId, { projectId, localRoot, tools, approvalPolicy, sandboxPolicy }) {
+  chatThreads.set(threadId, {
+    agent,
+    threadId,
+    projectId: projectId ?? null,
+    localRoot: localRoot || '',
+    tools: tools instanceof Set
+      ? new Set(tools)
+      : new Set((tools || localFiles.specs).map((tool) => tool.name)),
+    approvalPolicy,
+    sandboxPolicy,
+  });
+}
+
+function forgetChatThread(threadId) {
+  chatThreads.delete(threadId);
+  for (const [turnId, turn] of chatTurns) if (turn.threadId === threadId) chatTurns.delete(turnId);
+}
+
+async function chatToolTask(agent, params) {
+  const mapping = chatThreads.get(params.threadId);
+  const invalid = (message) => localFiles.result(false, { error: message });
+  if (!mapping || mapping.agent !== agent) return invalid('单聊线程不存在或已归档，请重新打开会话');
+  if (typeof params.tool !== 'string' || !mapping.tools.has(params.tool)) return invalid('该工具在当前单聊中不可用');
+  const turn = chatTurns.get(params.turnId);
+  if (!turn || turn.agent !== agent || turn.threadId !== params.threadId) return invalid('单聊轮次已结束，请重试');
+  if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
+  return localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target));
+}
+
+for (const [agent, link] of chatLinks) {
+  link.on('status', (status) => toUi('chat:status-event', status));
+  link.on('ready', () => logger?.log('chat_connection', { status: 'ready', projectId: appConfig?.active?.id, agent }));
+  link.on('down', (info) => {
+    for (const [turnId, turn] of chatTurns) if (turn.agent === agent) chatTurns.delete(turnId);
+    logger?.log('chat_connection', { status: 'down', agent });
+    toUi('chat:down', info);
+  });
+  link.on('sleep', () => toUi('chat:sleep', { agent }));
+  link.on('event', (message) => {
+    if (message.method === 'turn/completed') {
+      chatTurns.delete(message.params?.turn?.id);
+      const status = message.params?.turn?.status;
+      notifyIfAway(`${CHAT_LABEL[agent]} ${status === 'failed' ? '本轮失败' : '已完成'}`,
+        status === 'interrupted' ? '本轮已停止' : '点击查看结果');
+    }
+    toUi('chat:event', message);
+  });
+  link.on('server-request', (message) => {
+    if (message.method === 'item/tool/call') {
+      if (!hostConfirmed()) {
+        try { link.respond(message.id, localFiles.result(false, { error: 'AgentDesk 尚未完成主机确认' })); } catch {}
+        return;
+      }
+      chatToolTask(agent, message.params || {}).then((result) => {
+        try { link.respond(message.id, result); } catch {}
+      }).catch(() => {});
+      return;
+    }
+    toUi('chat:server-request', message);
+    if (message.method === 'item/tool/requestApproval') {
+      const tool = message.params?.tool || '文件修改';
+      notifyIfAway(`${CHAT_LABEL[agent]} 等待你的审批`, tool + ' · ' + String(message.params?.arguments?.path || '').slice(0, 120));
+    }
+  });
+}
+
+ipcMain.handle('chat:status', (_event, agent) => {
+  if (agent === undefined || agent === null) {
+    return { ok: true, agents: Object.fromEntries([...chatLinks].map(([id, link]) => [id, link.status()])) };
+  }
+  if (typeof agent !== 'string' || !chatLinks.has(agent)) return { ok: false, error: 'unknown_chat_agent' };
+  return { ok: true, ...chatLinks.get(agent).status() };
+});
+
+ipcMain.handle('chat:wake', async (event, agent) => {
+  if (!fromMainWindow(event) || !hostConfirmed()) return false;
+  try { return await chatLink(agent).wake(); } catch { return false; }
+});
+
+ipcMain.handle('chat:reconnect', (event, agent) => {
+  if (!fromMainWindow(event) || !hostConfirmed()) return false;
+  try { return chatLink(agent).reconnect(); } catch { return false; }
+});
+
+ipcMain.handle('chat:request', async (event, agent, method, params) => {
+  try {
+    if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
+    if (typeof method !== 'string') throw new Error('invalid_method');
+    const link = chatLink(agent);
+    if (enrollment && !enrolledSession) throw new Error('sign_in_required');
+    let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
+
+    if (method === 'thread/start') {
+      const { projectId, ...rest } = request;
+      const localRoot = localRootFor(projectId);
+      if (!localRoot) throw new Error('请先为当前项目选择本机目录，再开始单聊');
+      request = {
+        ...rest,
+        projectId: projectId ?? appConfig?.active?.id ?? null,
+        localRoot,
+        dynamicTools: localFiles.specs,
+      };
+      const result = await link.request(method, request);
+      const threadId = result?.thread?.id;
+      if (!threadId) throw new Error('单聊服务没有返回会话 ID');
+      rememberChatThread(agent, threadId, {
+        projectId: request.projectId,
+        localRoot,
+        tools: localFiles.specs,
+        approvalPolicy: request.approvalPolicy,
+        sandboxPolicy: request.sandboxPolicy,
+      });
+      logger?.audit('chat_thread', { status: 'started', projectId: request.projectId, agent });
+      return { ok: true, result };
+    }
+
+    if (method === 'thread/resume') {
+      const result = await link.request(method, request);
+      const threadId = result?.thread?.id || request.threadId;
+      if (threadId) {
+        const previous = chatThreads.get(threadId);
+        rememberChatThread(agent, threadId, {
+          projectId: result?.projectId ?? previous?.projectId,
+          localRoot: result?.localRoot || previous?.localRoot || localRootFor(result?.projectId ?? previous?.projectId),
+          tools: Array.isArray(result?.dynamicTools) ? result.dynamicTools : previous?.tools || localFiles.specs,
+          approvalPolicy: result?.approvalPolicy ?? previous?.approvalPolicy,
+          sandboxPolicy: result?.sandboxPolicy ?? previous?.sandboxPolicy,
+        });
+      }
+      return { ok: true, result };
+    }
+
+    if (method === 'turn/start') {
+      const mapping = chatThreads.get(request.threadId);
+      const result = await link.request(method, request);
+      const turnId = result?.turn?.id;
+      if (turnId) {
+        const policy = request.sandboxPolicy || mapping?.sandboxPolicy;
+        chatTurns.set(turnId, {
+          agent,
+          threadId: request.threadId,
+          readOnly: policy?.type === 'readOnly',
+        });
+        if (mapping) {
+          if (request.sandboxPolicy) mapping.sandboxPolicy = request.sandboxPolicy;
+          if (request.approvalPolicy) mapping.approvalPolicy = request.approvalPolicy;
+        }
+      }
+      return { ok: true, result };
+    }
+
+    if (method === 'thread/archive') {
+      const result = await link.request(method, request);
+      if (request.threadId) forgetChatThread(request.threadId);
+      return { ok: true, result };
+    }
+
+    return { ok: true, result: await link.request(method, request) };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('chat:respond', (event, agent, id, result, error) => {
+  if (!fromMainWindow(event)) return false;
+  try {
+    const link = chatLink(agent);
+    if (!link.respond(id, result, error)) return false;
+    const outcome = ['accept', 'acceptForSession', 'approve', 'approved', 'approved_for_session'].includes(result?.decision)
+      ? 'approved' : result?.decision ? 'declined' : 'answered';
+    logger?.audit('chat_approval', { status: outcome, projectId: appConfig?.active?.id, agent });
     return true;
   } catch { return false; }
 });
@@ -770,6 +983,7 @@ app.on('before-quit', (e) => {
   stopBridge?.();
   stopMacDesktop?.();
   clearLocalTools();
+  for (const link of chatLinks.values()) link.stop();
   Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close(), logger?.log('application_stop')]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
 

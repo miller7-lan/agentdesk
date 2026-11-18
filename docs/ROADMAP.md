@@ -8,17 +8,29 @@
 
 以下内容保留作为 0.2.7 审阅时的路线图。
 
+## 2026-11-18 进展：四家单聊与本机文件工具
+
+- 新增单聊流式通道：`chat-link.js` → `orchestrator/chat-server.js` → Claude Code / Grok / Antigravity CLI，使用 Codex app-server 的兼容子集，复用现有流式消息、工具卡和审批卡。Codex 继续直连 App Server；每个 provider 一条独立 SSH 连接，空闲休眠、输入唤醒。
+- 新增 `local-files.js`：macOS 的 `agentdesk_file_list/read/write/mkdir/copy/move/trash`，供 Codex(mac) 和三家单聊共用。写入在本机立即生效；允许家目录、`/Volumes` 和临时目录，拒绝系统目录、凭据目录和 `.git` 写入，限制 1 MiB 读写和 250 项列表。
+- 单聊会话带 `agent` 字段，群成员面板对 Codex / Claude / Grok / Antigravity 都提供「单聊」；非 Codex 会话隐藏附件、技能、模型/推理强度、用量和 Codex 专用斜杠命令。线程在 `thread/start` 绑定项目根目录，避免切换项目后写错位置。
+- 自动化覆盖：`test/chat-link.test.js` 5 项通过，`npm test` 全套通过。
+- VPS 2 已部署：`chat-server.js`、`chat-mcp.js`、`agent-chat.sh`、三把单聊密钥和 forced command、独立 home 目录、Grok 凭据同步均已上线；Codex 和 Grok 已完成真实端到端验收（流式回复 + 本机文件写入/读回），Claude 通道已连通、待额度重置后跑真实写入。
+- 尚未完成：Antigravity 登录（按用户要求暂缓，需浏览器授权）、登录后填写真实模型名并清除 `authRequired`、Antigravity 单聊真实写入验收。
+- 仍待补齐的产品化项：本机工具审计日志、可配置的逐次审批（当前 Full Access 为即时执行）、单聊历史在 App 侧重启后恢复、渲染层拆分与端到端测试。
+
 ## 1. 现状定位
 
-AgentDesk 本身不是 agent，它是 **VPS 上 Codex App Server 的 Windows 桌面前端**，外加两组「本机能力」回注给远端 Codex：
+AgentDesk 本身不是 agent，它是 **VPS 上 Codex App Server 的 macOS / Windows 桌面前端**，另有四家 AI 的单聊通道，并把「本机能力」回注给远端：
 
 | 模块 | 文件 | 作用 |
 |---|---|---|
-| 连接层 | `remote.js` | 通过 Windows OpenSSH 拉起 VPS 上的 `codex app-server`（JSON-RPC over stdio），外加可选反向隧道；重试退避、心跳、空闲休眠 |
+| 连接层 | `remote.js` | 通过 OpenSSH 拉起 VPS 上的 `codex app-server`（JSON-RPC over stdio），外加可选反向隧道；重试退避、心跳、空闲休眠 |
+| 单聊连接层 | `chat-link.js` | 每个 provider 一条 SSH 连接，跑 `chat-server`；空闲休眠、输入唤醒、不重放超时变更 |
+| 单聊服务 | `orchestrator/chat-server.js`、`chat-mcp.js` | Codex app-server 兼容子集；每轮 spawn Claude/Grok/Antigravity CLI，经 MCP capability 把文件工具请求转给 App |
 | 本机桌面 | `desktop.js` | 包装 `agent-desktop` MCP 二进制，作为 dynamicTools 注入线程 |
-| 本机文件 | `windows-files.js` | 完全访问模式下的 `windows_file_*` 工具（C:/D:，排除系统目录） |
+| 本机文件 | `windows-files.js` / `local-files.js` | 完全访问模式下的 `windows_file_*`（Windows）和 `agentdesk_file_*`（macOS）工具 |
 | 工作区面板 | `workspace.js` | 只读的文件树、Git 改动、diff、本地技能打包上传 |
-| 界面 | `src/*.js` | 无框架原生 JS，会话/审批/模型选择/斜杠命令 |
+| 界面 | `src/*.js` | 无框架原生 JS，会话/审批/模型选择/斜杠命令，单聊按 `agent` 路由 |
 
 **已经做得好的地方**（保留，别重写）：
 

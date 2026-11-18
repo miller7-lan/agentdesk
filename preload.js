@@ -106,4 +106,16 @@ contextBridge.exposeInMainWorld('desk', {
     onDown: on('codex:down'),
     onSleep: on('codex:sleep'),
   },
+  chat: {
+    request: (agent, method, params) => ipcRenderer.invoke('chat:request', agent, method, params),
+    respond: (agent, id, result, error) => ipcRenderer.invoke('chat:respond', agent, id, result, error),
+    status: (agent) => ipcRenderer.invoke('chat:status', agent),
+    wake: (agent) => ipcRenderer.invoke('chat:wake', agent),
+    reconnect: (agent) => ipcRenderer.invoke('chat:reconnect', agent),
+    onEvent: on('chat:event'),
+    onServerRequest: on('chat:server-request'),
+    onStatus: on('chat:status-event'),
+    onDown: on('chat:down'),
+    onSleep: on('chat:sleep'),
+  },
 });

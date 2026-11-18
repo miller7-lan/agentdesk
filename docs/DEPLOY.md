@@ -111,7 +111,7 @@ launchctl kickstart -k gui/$(id -u)/<Bridge 的 launchd 标签>
 
 ### 更新应用
 
-Apple Silicon 上 `npm ci && npm run dist:mac -- --arm64`，产物在 `dist/mac-arm64/AgentDesk.app`；或用 Actions 产物 `agentdesk-mac` 里的 DMG。替换 `/Applications/AgentDesk.app` 后打开。
+Apple Silicon 上 `npm ci && npm run dist:mac -- --arm64`，产物在 `dist/mac-arm64/AgentDesk.app`；或用 Actions 产物 `agentdesk-mac` 里的 DMG。替换 `/Applications/AgentDesk.app` 后打开。如果这台机器无法访问 GitHub 的 release 资源，可先设置 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 和 `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/` 再构建。
 
 ### 只改配置
 

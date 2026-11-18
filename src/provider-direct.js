@@ -151,8 +151,10 @@
   }
   async function choose(project) {
     const dialog = document.createElement('dialog'); dialog.className = 'provider-picker';
-    dialog.innerHTML = `<h2>选择单聊 AI</h2><p>每个会话独立；文件改动经补丁确认后写入本机项目。</p>
-      <div>${Object.entries(names).map(([id, name]) => `<button type="button" class="btn" data-provider-choice="${id}">${name}</button>`).join(' ')}</div>
+    // Gemini CLI 已停用；其余四家都走本机文件工具的单聊。
+    const pickable = ['codex', 'claude', 'grok', 'antigravity'];
+    dialog.innerHTML = `<h2>选择单聊 AI</h2><p>每个会话独立；AI 直接读写本机文件，修改即时生效。</p>
+      <div>${pickable.map((id) => `<button type="button" class="btn" data-provider-choice="${id}">${names[id]}</button>`).join(' ')}</div>
       <p class="panel-note">未配置或额度用尽的 AI 会显示对应状态。</p><button class="btn" data-provider-close>关闭</button>`;
     dialog.addEventListener('click', event => {
       const chosen = event.target.closest('[data-provider-choice]')?.dataset.providerChoice;
@@ -175,7 +177,9 @@
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
     $('#attachBtn').disabled = other;
-    $('#input').placeholder = other ? `向 ${names[s.provider]} 描述任务…（计划模式只读，其他模式可生成本机补丁）` : '向 Codex 描述任务…';
+    // 本机单聊（agent 字段）由 live.js 自己设置输入提示，别被这里的 Codex 文案覆盖。
+    if (other) $('#input').placeholder = `向 ${names[s.provider]} 描述任务…（计划模式只读，其他模式可生成本机补丁）`;
+    else if (!s?.agent) $('#input').placeholder = '向 Codex 描述任务…';
   }
   window.__providerDirect = { names, choose, create, send, render, handles, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
       if (!s.agentThread) loadActivity(s, s.items.filter(it => it.t === 'provider-task' && it.task && !it.activity).slice(-3)); },

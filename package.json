@@ -31,6 +31,8 @@
       "preload.js",
       "clawd.js",
       "remote.js",
+      "chat-link.js",
+      "local-files.js",
       "workspace.js",
       "build/icon.png",
       "src/**/*",
