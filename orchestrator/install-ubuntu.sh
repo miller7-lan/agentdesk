@@ -16,6 +16,7 @@ ln -sfn "$(realpath -- "$node_bin")" /opt/agentdesk-orchestrator/node
 install -d -m 0750 -o root -g agentdesk /etc/agentdesk-orchestrator
 install -d -m 0700 -o agentdesk -g agentdesk /var/lib/agentdesk-orchestrator
 install -m 0644 "$source_dir"/*.js /opt/agentdesk-orchestrator/
+install -m 0755 "$source_dir/agent-chat.sh" /opt/agentdesk-orchestrator/
 install -m 0644 "$source_dir/agentdesk-orchestrator.service" /etc/systemd/system/
 if [[ ! -e /etc/agentdesk-orchestrator/config.json ]]; then
   install -m 0640 -o root -g agentdesk "$source_dir/vps2.example.json" /etc/agentdesk-orchestrator/config.json

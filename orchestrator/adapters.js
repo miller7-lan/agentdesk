@@ -125,7 +125,7 @@ function classifyFailure(text) {
   return null;
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, effort, mcp }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, effort, mcp, attachmentDirectory }) {
   if (effort !== undefined && !effortsFor(name, config).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
@@ -186,7 +186,8 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   }
   const launch = sandboxed
     ? sandboxCommand(config.bin, args, { bin: config.sandbox.bin, cwd, home: env.HOME, writable: !readonly,
-      hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [] })
+      hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [],
+      extraReadOnly: attachmentDirectory ? [attachmentDirectory] : [] })
     : { command: config.bin, args };
   const child = spawn(launch.command, launch.args, {
     cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],

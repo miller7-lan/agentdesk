@@ -313,6 +313,7 @@
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
     $('#attachBtn').disabled = other && (s.agentThread || s.busy || !window.desk.files?.pickChat);
+    if (other) $('#attachBtn').hidden = false;
     if (other) {
       $('#attachList').innerHTML = (attachments.get(s) || []).map(file =>
         `<button type="button" class="attach-pill" data-provider-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');

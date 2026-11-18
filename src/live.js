@@ -488,15 +488,17 @@
     const text = ta.value.trim();
     const agent = agentOf(s);
     const chat = isChat(s);
+    const attachments = chat ? (s.chatAttachments || []) : [];
     const api = apiFor(agent);
     if (s.busy) { if (text) return steer(s, text); if (fromButton) return interrupt(s); return; }
-    if (!text && !liveAtt.length) return;
+    if (!text && !(chat ? attachments.length : liveAtt.length)) return;
     if (text.startsWith('/') && runCommand(text)) return;
     const { approvalPolicy, sandbox, sandboxPolicy } = modeToPolicy($('#modeSelect').value);
     if (!(await ensureReady(s))) return;
-    ta.value = ''; A.autosize();
+    if (!chat) { ta.value = ''; A.autosize(); }
     const { input, chips } = chat
-      ? { input: [{ type: 'text', text, text_elements: [] }], chips: [] }
+      ? { input: [{ type: 'text', text: text || '请查看随附的文件。', text_elements: [] }],
+        chips: attachments.map(file => ({ label: '附件 ' + file.name, kind: 'file', title: file.name })) }
       : await buildInput(text);
     if (!chat) { liveAtt = []; renderAtt(); }
     if (s.title === '新会话') s.title = (text || '附件').slice(0, 24);
@@ -525,7 +527,8 @@
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const turnParams = chat
-      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort: s.effort }
+      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort: s.effort,
+        ...(attachments.length && { attachments }) }
       : {
         threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
         effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
@@ -533,6 +536,13 @@
       };
     const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
+    if (chat) {
+      s.chatAttachments = [];
+      if (state.active === s.id && !state.group) {
+        if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
+        renderAtt();
+      }
+    }
     s.turnId = r.result.turn.id;
   }
   async function steer(s, text) {
@@ -821,7 +831,7 @@
     ta.title = chat ? '@ 引用本机文件 · Enter 发送 · Shift+Enter 换行' : '/ 命令 · $ 技能 · @ 文件';
     const modeSel = $('#modeSelect');
     if (s && modeSel) {
-      const mode = s.mode || (chat ? 'auto' : 'ask');
+      const mode = s.mode || 'ask';
       if (modeSel.value !== mode) {
         modeSel.value = mode;
         $('#sbMode').textContent = modeSel.selectedOptions[0]?.text || '';
@@ -841,7 +851,8 @@
     const key = (s?.id || '') + '|' + agent + '|' + chat;
     if (key === composerSession) return;
     composerSession = key;
-    $('#attachBtn').hidden = chat;
+    $('#attachBtn').hidden = false;
+    renderAtt();
     $('#ctxHint').hidden = chat;
     $('#sbTokens').hidden = chat;
     const usageEl = $('#sbUsage'); if (usageEl) usageEl.hidden = chat;
@@ -1025,15 +1036,39 @@
   function renderAtt() {
     const s = sess(state.active);
     if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
+    if (isChat(s)) {
+      $('#attachList').innerHTML = (s.chatAttachments || []).map(file =>
+        `<button type="button" class="attach-pill" data-live-chat-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
+      return;
+    }
     $('#attachList').innerHTML = liveAtt.map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
   }
   $('#attachList').addEventListener('click', (e) => {
+    const id = e.target.closest('[data-live-chat-attachment]')?.dataset.liveChatAttachment;
+    if (id) {
+      const s = sess(state.active);
+      if (!isChat(s) || s.busy) return;
+      s.chatAttachments = (s.chatAttachments || []).filter(file => file.id !== id);
+      fileApi.forgetChat(id);
+      renderAtt();
+      return;
+    }
     const p = e.target.closest('[data-li]'); if (!p) return;
     e.stopImmediatePropagation(); liveAtt.splice(+p.dataset.li, 1); renderAtt();
   }, true);
   async function attach() {
     const s = sess(state.active);
-    if (isChat(s)) { toast(`${agentName(agentOf(s))} 单聊请用 @ 引用本机文件路径`); return; }
+    if (isChat(s)) {
+      if (s.busy) return;
+      const { files, errors } = await fileApi.pickChat(s.project);
+      const current = s.chatAttachments || [];
+      const accepted = files.slice(0, Math.max(0, 3 - current.length));
+      s.chatAttachments = [...current, ...accepted];
+      for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
+      if (state.active === s.id && !state.group) renderAtt();
+      if (errors.length || accepted.length < files.length) toast(errors.join('；') || '每条消息最多附加 3 个文件。');
+      return;
+    }
     if (!(await ensureReady(s))) return;
     const r = await fileApi.pick();
     liveAtt.push(...(r.files || [])); renderAtt();
@@ -1045,7 +1080,7 @@
     const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.preventDefault();
-    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
+    if (isChat(session)) { toast('请用「附件」选择图片文件。'); return; }
     if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择图片文件。'); return; }
     if (!(await ensureReady(session))) return;
     for (const f of imgs) {

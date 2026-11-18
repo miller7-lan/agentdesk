@@ -248,7 +248,7 @@
       return;
     }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
-    const base = { id, project, agent, mode: agent === 'codex' ? 'ask' : 'auto', title: '新会话', status: 'idle', time: '刚刚', items: [] };
+    const base = { id, project, agent, mode: 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [] };
     D.sessions.unshift(p.live ? { ...base, live: true, diffs: [], term: [] } : base);
     state.collapsed.delete(project);
     openSession(id);

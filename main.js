@@ -545,6 +545,7 @@ ipcMain.handle('files:pick', async () => {
 });
 const { attachmentLimit, maxAttachments, attachmentRoot, validAttachments } = require('./orchestrator/attachments');
 const chatAttachments = new Map();
+const chatAttachmentUploads = new Set();
 ipcMain.handle('files:pickChat', async (event, projectId) => {
   if (!fromMainWindow(event) || typeof projectId !== 'string' || !appConfig?.value.projects.some(item => item.id === projectId)) {
     return { files: [], errors: ['无法为此项目添加附件。'] };
@@ -764,6 +765,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
   try {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     if (typeof method !== 'string') throw new Error('invalid_method');
+    if (method.startsWith('attachment/')) throw new Error('invalid_method');
     const link = chatLink(agent);
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
@@ -810,7 +812,34 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
 
     if (method === 'turn/start') {
       const mapping = chatThreads.get(request.threadId);
-      const result = await link.request(method, request);
+      const attachments = request.attachments;
+      let result;
+      if (attachments !== undefined) {
+        if (!mapping || mapping.agent !== agent || !validAttachments(attachments)) throw Error('invalid_attachment');
+        const files = attachments.map(item => {
+          const file = chatAttachments.get(item.id);
+          if (!file || file.projectId !== mapping.projectId || file.item.sha256 !== item.sha256 ||
+              file.item.name !== item.name || file.item.size !== item.size) throw Error('invalid_attachment');
+          return file;
+        });
+        const threadId = request.threadId;
+        if (chatAttachmentUploads.has(agent)) throw Error('该模型正在上传另一条消息的附件，请稍后再试。');
+        chatAttachmentUploads.add(agent);
+        try {
+          await link.request('attachment/reset', { threadId });
+          for (const { item, bytes } of files) {
+            for (let offset = 0; offset < Math.max(1, bytes.length); offset += 192 * 1024) {
+              const chunk = bytes.subarray(offset, offset + 192 * 1024);
+              await link.request('attachment/chunk', { threadId, id: item.id, offset, data: chunk.toString('base64') });
+            }
+          }
+          result = await link.request(method, request);
+          for (const { item } of files) chatAttachments.delete(item.id);
+        } catch (error) {
+          await link.request('attachment/reset', { threadId }).catch(() => {});
+          throw error;
+        } finally { chatAttachmentUploads.delete(agent); }
+      } else result = await link.request(method, request);
       const turnId = result?.turn?.id;
       if (turnId) {
         const policy = request.sandboxPolicy || mapping?.sandboxPolicy;

@@ -66,7 +66,7 @@ test('Claude rate_limit_event turns unified windows into a live quota snapshot',
   const snapshot = JSON.parse(await fs.readFile(file, 'utf8'));
   assert.deepEqual(snapshot.buckets, claudeRateLimitBuckets(info));
   assert.ok(Date.parse(snapshot.observedAt) <= Date.now());
-  assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
   // Older events name one window with rateLimitType; that window alone is refreshed.
   assert.deepEqual(claudeRateLimitBuckets({ rateLimitType: 'five_hour', utilization: 0.2, resetsAt: reset5h }),
     [{ id: 'claude-account', fiveHour: { usedPercent: 20, resetsAt: reset5h }, weekly: null }]);
