@@ -510,3 +510,28 @@ test('a failed resume resets the session so the next turn starts fresh', async (
   assert.ok(report.args.includes('--session-id'));
   assert.equal(report.args[report.args.indexOf('--session-id') + 1], reset.sessionId);
 });
+test('every chat reads attachments of any type through its own tool, without the sandbox', async (t) => {
+  const { createHash, randomUUID } = require('node:crypto');
+  for (const provider of ['claude', 'grok', 'antigravity']) {
+    const dir = temporary(t);
+    const client = await new ChatClient(t, provider, dir).start();
+    const threadId = await thread(client);
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+    const files = [['note.txt', Buffer.from('附件里的文字')], ['pic.png', png], ['data.bin', Buffer.from([0, 1, 2, 3])]].map(([name, bytes]) =>
+      ({ item: { id: randomUUID(), name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }, bytes }));
+    await client.request('attachment/reset', { threadId });
+    for (const { item, bytes } of files) {
+      await client.request('attachment/chunk', { threadId, id: item.id, offset: 0, data: bytes.toString('base64') });
+    }
+    const { id, completed } = await runTurn(client, threadId, 'ATTACH', { attachments: files.map(({ item }) => item) });
+    assert.equal(completed.turn.status, 'completed', provider);
+    const report = reportOf(agentText(client, id));
+    assert.ok(report.tools.includes('agentdesk_attachment_read'), provider);
+    assert.match(report.reads['note.txt'].value.content[0].text, /附件里的文字/);
+    const image = report.reads['pic.png'].value.content.find((item) => item.type === 'image');
+    assert.equal(image.mimeType, 'image/png');
+    assert.equal(Buffer.from(image.data, 'base64').toString('hex'), png.toString('hex'));
+    assert.match(report.reads['data.bin'].value.content[0].text, /二进制文件，4 字节/);
+    assert.equal(report.reads['missing.txt'].value.isError, true);
+  }
+});

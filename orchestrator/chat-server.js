@@ -13,6 +13,56 @@ const { captureClaudeRateLimitEvent } = require('./quotas');
 const { validAttachments, attachmentLimit, maxAttachments, idPattern, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
 
+// Attachments are read through this tool, served here on the VPS, so every chat can read them whether or not
+// the CLI runs in the sandbox with its own file tools. Images come back as images the model can look at.
+const ATTACHMENT_TOOL = {
+  name: 'agentdesk_attachment_read',
+  description: 'Read a file the user attached to this message (any type). Images are returned as images; text, ' +
+    'code, Office documents, PDFs and archive listings as text, in pages of up to 60000 characters (use offset for the next page); ' +
+    'other binary files as a short description.',
+  inputSchema: { type: 'object', properties: {
+    file: { type: 'string', description: 'The attachment name, as listed in the message' },
+    offset: { type: 'integer', minimum: 0, description: 'Character offset of the text page to read (default 0)' },
+  }, required: ['file'], additionalProperties: false },
+  annotations: { readOnlyHint: true },
+};
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const PAGE = 60000;
+
+function pdfText(file) {
+  try {
+    return require('node:child_process').execFileSync('pdftotext', ['-layout', '-q', file, '-'],
+      { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 30000 });
+  } catch { return undefined; }
+}
+
+// Returns MCP content for one attachment of this turn.
+function readAttachmentContent(turn, args) {
+  const files = turn.attachments || [];
+  const wanted = String(args.file ?? '');
+  const file = files.find((item) => item.name === wanted) || files.find((item) => path.basename(item.path) === wanted) ||
+    (files.length === 1 ? files[0] : undefined);
+  if (!file) throw new Error('没有这个附件。本条消息的附件：' + (files.map((item) => item.name).join('、') || '无'));
+  const extension = path.extname(file.name).toLowerCase();
+  const bytes = fs.readFileSync(file.path);
+  const image = IMAGE_TYPES[extension];
+  if (image && bytes.length <= 8 * 1024 * 1024) {
+    return [{ type: 'text', text: `${file.name}（图片，${bytes.length} 字节）` }, { type: 'image', data: bytes.toString('base64'), mimeType: image }];
+  }
+  let text;
+  if (file.text) text = fs.readFileSync(file.text, 'utf8');
+  else if (extension === '.pdf') text = pdfText(file.path) ?? `${file.name} 是 PDF，这台 VPS 上没有 pdftotext，无法提取文字。`;
+  else if (!bytes.subarray(0, 8192).includes(0)) text = bytes.toString('utf8');
+  else {
+    return [{ type: 'text', text: `${file.name}：二进制文件，${bytes.length} 字节，sha256 ${createHash('sha256').update(bytes).digest('hex')}，` +
+      `开头 32 字节 ${bytes.subarray(0, 32).toString('hex')}。${SANDBOX ? '可以在 VPS 工作目录用 shell 处理它：' + file.path : '无法以文本显示。'}` }];
+  }
+  const offset = Number.isSafeInteger(args.offset) && args.offset > 0 ? args.offset : 0;
+  const page = text.slice(offset, offset + PAGE);
+  const more = offset + PAGE < text.length ? `\n\n[还有 ${text.length - offset - PAGE} 个字符，用 offset=${offset + PAGE} 继续读]` : '';
+  return [{ type: 'text', text: `${file.name}${offset ? `（从第 ${offset} 个字符起）` : ''}：\n${page}${more}` }];
+}
+
 const PROVIDER = String(process.argv[2] || '');
 const PROVIDERS = new Set(['claude', 'grok', 'antigravity']);
 if (!PROVIDERS.has(PROVIDER)) {
@@ -379,7 +429,12 @@ async function invokeTool(turn, name, args) {
 
   let output = '';
   let failed = false;
+  let content;
   try {
+    if (name === ATTACHMENT_TOOL.name) {
+      content = readAttachmentContent(turn, args);
+      output = content.filter((item) => item.type === 'text').map((item) => item.text).join('\n').slice(0, 4000);
+    } else {
     if (turn.readOnly && isWriteTool(name)) throw new Error('只读模式下不能使用写工具');
     if (isWriteTool(name) && turn.approvalPolicy !== 'never') {
       const decision = await clientRequest(turn, 'item/tool/requestApproval', {
@@ -393,6 +448,7 @@ async function invokeTool(turn, name, args) {
     }, TOOL_TIMEOUT);
     output = resultText(result);
     failed = result?.success === false;
+    }
   } catch (error) {
     output = turn.redact(error.message || String(error));
     failed = true;
@@ -415,7 +471,7 @@ async function invokeTool(turn, name, args) {
       },
     });
   }
-  return { content: [{ type: 'text', text: output }], ...(failed ? { isError: true } : {}) };
+  return { content: !failed && content ? content : [{ type: 'text', text: output }], ...(failed ? { isError: true } : {}) };
 }
 
 /* ---------- MCP socket ---------- */
@@ -1051,8 +1107,9 @@ async function dispatch(method, params) {
       const readOnly = readOnlyOf(sandboxPolicy);
       const turnId = randomUUID();
       let attachmentDirectory;
+      let attachments;
       if (params.attachments !== undefined) {
-        if (!SANDBOX || !validAttachments(params.attachments)) throw fail('invalid_attachment');
+        if (!validAttachments(params.attachments)) throw fail('invalid_attachment');
         const files = params.attachments.map(item => {
           const upload = incoming.get(item.id);
           if (!upload || upload.threadId !== thread.id || upload.size !== item.size) throw fail('invalid_attachment');
@@ -1069,7 +1126,9 @@ async function dispatch(method, params) {
           const copy = writeTextCopy(fs, filename, item.name, item.bytes);
           return { name: item.name, path: filename, ...(copy && { text: copy }) };
         });
-        text += attachmentNote(inputs);
+        attachments = inputs;
+        text += attachmentNote(inputs) + `\nRead each attachment with the MCP tool ${ATTACHMENT_TOOL.name} (file: its name)` +
+          (SANDBOX ? ' or open its path directly.' : '; your own file tools cannot reach these paths.');
       }
       thread.approvalPolicy = approvalPolicy;
       thread.sandboxPolicy = sandboxPolicy;
@@ -1084,7 +1143,9 @@ async function dispatch(method, params) {
         text,
         approvalPolicy,
         readOnly,
-        tools: thread.dynamicTools.filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)),
+        tools: [...thread.dynamicTools.filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)),
+          ...(attachments ? [ATTACHMENT_TOOL] : [])],
+        attachments,
         capability: randomBytes(24).toString('hex'),
         serverName: 'agentdesk_' + randomBytes(4).toString('hex'),
         model: typeof params.model === 'string' ? params.model.slice(0, 128) : '',

@@ -116,6 +116,15 @@ async function main() {
     }
   }
 
+  if (scenario === 'ATTACH') {
+    const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
+    report.tools = (listed.value?.tools || []).map((tool) => tool.name);
+    report.reads = {};
+    for (const file of ['note.txt', 'pic.png', 'data.bin', 'missing.txt']) {
+      report.reads[file] = await socketRequest(socketPath, { capability, operation: 'call', name: 'agentdesk_attachment_read', arguments: { file } });
+    }
+  }
+
   const session = sessionId();
   const text = 'REPORT:' + JSON.stringify(report);
   if (provider === 'antigravity') {
