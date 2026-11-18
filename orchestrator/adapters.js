@@ -96,6 +96,17 @@ function addUsage(total, usage) {
 
 // Exit text that means "this CLI cannot work right now" rather than "the task failed".
 // Login problems are checked first: an expired session often also mentions limits.
+// "Resets in 4h54m26s" (Antigravity) or "try again in 2h 3m" (Codex): how long until the quota returns, in ms.
+// A minute is added so the CLI is not asked again just before its quota actually comes back.
+function resetDelay(text) {
+  const match = /(?:resets? in|try again in)\s*((?:\d+\s*[dhms]\s*)+)/i.exec(String(text || ''));
+  if (!match) return null;
+  const unit = { d: 86400_000, h: 3600_000, m: 60_000, s: 1000 };
+  let ms = 0;
+  for (const [, n, u] of match[1].matchAll(/(\d+)\s*([dhms])/gi)) ms += Number(n) * unit[u.toLowerCase()];
+  return ms > 0 && ms <= 8 * 86400_000 ? ms + 60_000 : null;
+}
+
 function classifyFailure(text) {
   if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired|IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported/i.test(text)) return 'cli_auth_required';
   if (/usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|hit your \d+[ -]hour limit|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
@@ -203,7 +214,9 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     if (stopped) throw stopped;
     if (code !== 0 || failure) {
       const kind = classifyFailure((failure || '') + '\n' + tail);
-      throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')), { provider: name, usage });
+      const retryAfterMs = kind === 'cli_quota_exhausted' ? resetDelay((failure || '') + '\n' + tail) : null;
+      throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')),
+        { provider: name, usage, ...(retryAfterMs && { retryAfterMs }) });
     }
     return { output, usage };
   } finally {
@@ -217,4 +230,4 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   }
 }
 
-module.exports = { providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure };
+module.exports = { providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay };

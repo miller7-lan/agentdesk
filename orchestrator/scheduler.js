@@ -196,7 +196,8 @@ class Scheduler {
         this.recordUsage(task, step, error.usage);
         const reason = { cli_quota_exhausted: 'quota', cli_auth_required: 'auth' }[error.message];
         if (signal.aborted || !reason) throw error;
-        this.router.block(step.role, reason);
+        // A quota block lasts until the reset the CLI stated, when it stated one; otherwise the default.
+        this.router.block(step.role, reason, reason === 'quota' && error.retryAfterMs ? error.retryAfterMs : undefined);
         step.tried = [...new Set([...(step.tried || []), step.role])];
         const next = step.capability && !step.fixedReview && !step.pinnedReadOnly && this.pickForTask(task, step.capability, step.tried);
         if (!next || (step.write && !this.router.canWrite(next))) {

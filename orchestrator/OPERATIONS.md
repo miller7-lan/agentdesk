@@ -194,7 +194,9 @@ Gemini 负责只读分析和审查。要在 VPS 2 启用它，请参照 `vps2.ex
 node orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock quotas
 ```
 
-Grok Build、Antigravity 等不报告额度的 CLI，可在 `adapters.<cli>.callLimits` 填写每个窗口大约能调用多少次（例如 `{"fiveHour": 300, "weekly": 3000}`）。主控记录每次调用（保留 7 天），用“已调用次数 ÷ 上限”估算 5 小时和每周窗口的用量，路由的软线、硬线照常生效，「额度与分工」页的卡片标注“估算”。上限按你的套餐和实际体验填写，样例数字只是起点：某个 CLI 在估算没到上限时就报额度用尽，说明上限填高了，调低即可。
+主控实时读取 Grok Build 和 Antigravity 的真实额度：Grok 用 CLI 自己保存的登录（`<CLI 的 HOME>/.grok/auth.json`）查询 `cli-chat-proxy.grok.com` 的 billing 接口，只读不写、不刷新令牌，令牌过期时等 CLI 下次运行自动续上；Antigravity 运行 `agy -p /usage --output-format json`，不会触发模型调用，路由只看 Gemini 那一组的 5 小时和每周窗口。CLI 报额度用尽时，若报错里写了重置时间（如 “Resets in 4h54m26s”），主控按这个时间暂停该 CLI，不再固定 30 分钟。
+
+读不到真实额度时，Grok Build、Antigravity 等不报告额度的 CLI，可在 `adapters.<cli>.callLimits` 填写每个窗口大约能调用多少次（例如 `{"fiveHour": 300, "weekly": 3000}`）。主控记录每次调用（保留 7 天），用“已调用次数 ÷ 上限”估算 5 小时和每周窗口的用量，路由的软线、硬线照常生效，「额度与分工」页的卡片标注“估算”。上限按你的套餐和实际体验填写，样例数字只是起点：某个 CLI 在估算没到上限时就报额度用尽，说明上限填高了，调低即可。
 
 Codex 默认从主控执行账户的 App Server 实时读取，按供应商返回的额度 ID 保存独立或共享额度。其他执行者可用 `adapters.<provider>.quotaFile` 接入经核实的快照，文件格式如下。时间戳以 UTC ISO 8601 字符串或 Unix 秒表示，分别对应 `observedAt` 和 `resetsAt`。
 

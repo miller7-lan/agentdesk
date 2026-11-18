@@ -163,7 +163,7 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   assert.deepEqual(claudeQuota, { provider: 'claude', state: 'available', source: 'snapshot', observedAt,
     buckets: [{ id: 'shared', fiveHour: { usedPercent: 4, resetsAt: null }, weekly: null }] });
   assert.deepEqual([used, level, policy.soft, policy.keepFor], [4, 'ok', 60, ['plan', 'triage', 'accept']]);
-  assert.equal(quotas[2].reason, 'no_quota_source');
+  assert.equal(quotas[2].reason, 'signed_out');   // Grok reads its billing with the CLI's sign-in; none here
   const stopBridge = startBridge({
     config: {
       stateDir: bridgeState, ssh: {},

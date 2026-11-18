@@ -64,6 +64,89 @@ function readCodexQuotas({ bin, env }) {
   });
 }
 
+// Grok Build: the share of the period's credits used, from the billing endpoint the CLI itself calls, with
+// the sign-in the CLI keeps in <HOME>/.grok/auth.json (or GROK_HOME). The token is only read: never refreshed,
+// written or logged. An expired token is the CLI's ordinary state between runs; the CLI renews it when it runs.
+// Mechanism as documented by Agent HUD (jazzenchen/agent-hud-open, Apache-2.0); written here from scratch.
+const GROK_BILLING = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
+
+function grokSignIn(env) {
+  const home = env.GROK_HOME || (env.HOME && env.HOME + '/.grok');
+  if (!home) return null;
+  let auth;
+  try { auth = JSON.parse(readFileSync(home + '/auth.json', 'utf8')); } catch { return null; }
+  const now = Date.now();
+  const expiry = (key, entry) => {
+    try {
+      const exp = JSON.parse(Buffer.from(key.split('.')[1], 'base64url').toString()).exp;
+      if (Number.isFinite(exp)) return exp * 1000;
+    } catch {}
+    const at = entry.expires_at;
+    return typeof at === 'string' ? Date.parse(at) : Number.isFinite(at) ? (at > 1e10 ? at : at * 1000) : null;
+  };
+  return Object.values(auth || {}).filter((entry) => typeof entry?.key === 'string' && entry.key && !/[\0\r\n]/.test(entry.key))
+    .map((entry) => ({ key: entry.key, expires: expiry(entry.key, entry) }))
+    .find((entry) => !Number.isFinite(entry.expires) || entry.expires > now + 60_000) || null;
+}
+
+async function readGrokQuotas({ env }, fetchImpl = fetch) {
+  const signIn = grokSignIn(env || {});
+  if (!signIn) throw new Error('grok_signed_out');
+  const response = await fetchImpl(GROK_BILLING, {
+    headers: { Authorization: 'Bearer ' + signIn.key, 'X-XAI-Token-Auth': 'xai-grok-cli' },
+    redirect: 'error', signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error('grok_billing_' + response.status);
+  const config = (await response.json())?.config;
+  const start = Date.parse(config?.currentPeriod?.start);
+  const end = Date.parse(config?.currentPeriod?.end);
+  const used = config?.creditUsagePercent == null ? 0 : Number(config.creditUsagePercent);
+  if (!Number.isFinite(start) || !(end > start) || !Number.isFinite(used)) throw new Error('grok_billing_format');
+  const window = quotaWindow({ usedPercent: Math.min(100, Math.max(0, used)), resetsAt: Math.ceil(end / 1000) });
+  // The period is usually a week; a period of a few hours counts as the short window.
+  return window ? [{ id: 'grok-credits', ...(end - start <= 6 * 3600_000 ? { fiveHour: window } : { weekly: window }) }] : [];
+}
+
+// Antigravity: `agy -p /usage --output-format json` prints the quota groups without starting a model turn.
+// Each group (Gemini models; Claude and GPT models) has a 5-hour and a weekly bucket with the fraction left.
+// Only the Gemini group decides routing when there is one, because the team runs Gemini models on Antigravity.
+function antigravityBuckets(body) {
+  if (body?.status !== 'SUCCESS' || body.command?.name !== 'usage' || !Array.isArray(body.command.data?.groups)) {
+    throw new Error(body?.status === 'ERROR' ? 'antigravity_usage_refused' : 'antigravity_usage_format');
+  }
+  const groups = body.command.data.groups.map((group) => {
+    const windows = {};
+    for (const bucket of group.buckets || []) {
+      const left = bucket.remaining_fraction;
+      if (!Number.isFinite(left) || left < 0 || left > 1) continue;
+      const key = { '5h': 'fiveHour', weekly: 'weekly' }[bucket.window];
+      const resetsAt = Date.parse(bucket.reset_time);
+      if (key) windows[key] = quotaWindow({ usedPercent: Math.round((1 - left) * 1000) / 10, resetsAt: Number.isFinite(resetsAt) ? Math.ceil(resetsAt / 1000) : undefined });
+    }
+    const name = String(group.name || '');
+    return { id: 'antigravity-' + (/gemini/i.test(name) ? 'gemini' : /claude|gpt/i.test(name) ? 'third-party' : name.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'models'),
+      label: name, ...windows };
+  }).filter((group) => group.fiveHour || group.weekly);
+  const gemini = groups.filter((group) => group.id === 'antigravity-gemini');
+  return gemini.length ? gemini : groups;
+}
+
+function readAntigravityQuotas({ bin, env }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, ['-p', '/usage', '--output-format', 'json'],
+      { env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('quota_timeout')); }, 30_000);
+    child.stdout.on('data', (chunk) => { out = (out + chunk).slice(-200_000); });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', () => {
+      clearTimeout(timer);
+      const line = out.trim().split('\n').reverse().find((text) => text.trim().startsWith('{'));
+      try { resolve(antigravityBuckets(JSON.parse(out.trim().startsWith('{') ? out : line))); } catch (error) { reject(error); }
+    });
+  });
+}
+
 async function readSnapshot(filename) {
   const snapshot = JSON.parse(await readFile(filename, 'utf8'));
   const observedAt = Date.parse(snapshot.observedAt);
@@ -85,14 +168,18 @@ async function quotaStatus(adapters, { liveOnly = false } = {}) {
     if (!adapter) return { provider, state: 'not_configured', buckets: [] };
     try {
       const useSnapshot = !liveOnly && adapter.quotaFile;
-      const source = useSnapshot ? 'snapshot' : provider === 'codex' ? 'codex_app_server' : null;
+      const live = { codex: 'codex_app_server', grok: 'grok_billing', antigravity: 'antigravity_usage' }[provider];
+      const source = useSnapshot ? 'snapshot' : live || null;
       if (!source) return { provider, state: 'unavailable', reason: 'no_quota_source', buckets: [] };
+      if (adapter.authRequired) return { provider, state: 'unavailable', reason: 'auth_required', buckets: [] };
+      const reader = { codex_app_server: readCodexQuotas, grok_billing: readGrokQuotas, antigravity_usage: readAntigravityQuotas }[source];
       const { observedAt, buckets } = useSnapshot
         ? await readSnapshot(adapter.quotaFile)
-        : { buckets: await readCodexQuotas(adapter), observedAt: new Date().toISOString() };
+        : { buckets: await reader(adapter), observedAt: new Date().toISOString() };
       return { provider, state: buckets.length ? 'available' : 'unavailable', source, observedAt, buckets };
-    } catch {
-      return { provider, state: 'unavailable', reason: 'quota_read_failed', buckets: [] };
+    } catch (error) {
+      const reason = error?.message === 'grok_signed_out' ? 'signed_out' : 'quota_read_failed';
+      return { provider, state: 'unavailable', reason, buckets: [] };
     }
   }));
 }
@@ -129,4 +216,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { codexBuckets, quotaStatus };
+module.exports = { codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets };
