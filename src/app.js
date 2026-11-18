@@ -9,7 +9,7 @@
   }
   document.documentElement.classList.toggle('native-mac', window.desk?.platform === 'darwin');
   if (LIVE) {
-    D.projects.forEach((p) => { p.name += '（示例）'; });
+    D.projects.forEach((p) => { p.name += '（示例）'; p.example = true; });
     D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区' : 'Windows 开发机', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
     D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', mode: 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
   }
@@ -190,8 +190,8 @@
           </div>
           ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
           <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
-        </button>` : ''}${dispatched.length ? `<div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
-          own.length && dispatched.length ? '<div class="sess-label">我的单聊</div>' : ''}${own.map(row).join('')}
+        </button>` : ''}${dispatched.length ? `<div class="sess-label">群聊派遣 · 只读记录</div><div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
+          own.length ? '<div class="sess-label">我的单聊 · 直接对话</div>' : ''}${own.map(row).join('')}
         </div></div>`;
     }
     list.innerHTML = html || '<div class="empty-note">没有匹配的会话</div>';
@@ -502,7 +502,9 @@
     $('#attachList').innerHTML = state.attachments.map((a, i) => `<span class="attach-pill" data-i="${i}" title="点击移除">${esc(a)} ×</span>`).join('');
   }
   $('#attachBtn').addEventListener('click', () => {
-    if (sess(state.active)?.live && L()) return L().attach();
+    const session = sess(state.active);
+    if (window.__providerDirect?.handles(session)) return window.__providerDirect.attach(session);
+    if (session?.live && L()) return L().attach();
     const pool = ['handler.ts', 'retry.ts', 'README.md', 'screenshot.png'];
     const next = pool.find((p) => !state.attachments.includes(p));
     if (next) { state.attachments.push(next); renderAttach(); } else toast('mock 附件已全部添加');
@@ -708,9 +710,10 @@
       return;
     }
     $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = true;
-    const provider = s?.provider || s?.agent || 'codex';
+const provider = s?.provider || s?.agent || 'codex';
     const providerName = window.__providerDirect?.names[provider] || agentName(provider);
-    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ ' + providerName;
+    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') +
+      (s?.agentThread ? '群聊派遣记录 · ' : '单聊 · ') + providerName;
     renderTimeline();
     $('#conversationTitle').textContent = s?.title || '';
     if (s) {

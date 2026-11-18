@@ -38,6 +38,7 @@
       "src/**/*",
       "desktop.js",
       "windows-files.js",
+      "local-change.js",
       "orchestrator/*.js",
       "updates.js"
     ],

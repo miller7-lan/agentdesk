@@ -509,7 +509,8 @@
       else if (!chat) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
     const sel = $('#modelSelect');
-    const model = !chat && sel.dataset.live ? sel.value : undefined;
+    const model = chat ? (sel.value || undefined) : (sel.dataset.live ? sel.value : undefined);
+    if (chat) s.model = model;
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
       s.localRoot = A.proj(s.project)?.localRoot || localRoot;
@@ -744,6 +745,42 @@
   }
   modelPlaceholder('正在获取模型…');
 
+  // 单聊模型：Claude/Grok/Antigravity 的候选来自 VPS2 的 adapters.<provider>.models，每个会话各自记住选择。
+  const chatProfiles = new Map();      // projectId -> routes.modelProfiles
+  const chatProfileLoads = new Map();  // projectId -> Promise
+  function loadChatProfiles(s) {
+    const project = s?.project;
+    const control = window.desk.orchestrator?.control;
+    if (!project || !control || chatProfiles.has(project) || chatProfileLoads.has(project)) return;
+    const loading = control({ projectId: project, operation: 'routes' }).then((r) => {
+      if (r?.ok) chatProfiles.set(project, r.value?.modelProfiles || {});
+    }).catch(() => {}).finally(() => {
+      chatProfileLoads.delete(project);
+      const active = sess(state.active);
+      if (active && isChat(active) && active.project === project) syncSession(active);
+    });
+    chatProfileLoads.set(project, loading);
+  }
+  function applyChatModels(s) {
+    const sel = $('#modelSelect');
+    const agent = agentOf(s);
+    const profile = chatProfiles.get(s.project)?.[agent];
+    const options = Object.entries(profile?.models || {});
+    const signature = [s.project, agent, ...options.map(([id]) => id)].join('|');
+    if (sel.dataset.live || sel.dataset.chatSig !== signature) {
+      delete sel.dataset.live;
+      sel.dataset.chatSig = signature;
+      sel.innerHTML = '<option value="">默认模型</option>' + options.map(([id, p]) =>
+        `<option value="${esc(id)}" title="${esc(p?.strengths || '')}">${esc(id)}</option>`).join('');
+      sel.disabled = !options.length;
+    }
+    if (!options.some(([id]) => id === s.model)) s.model = undefined;
+    sel.value = s.model || '';
+    sel.title = options.length
+      ? (options.find(([id]) => id === s.model)?.[1]?.strengths || '选择该单聊使用的模型')
+      : `${agentName(agent)} 使用默认模型`;
+  }
+
   // 单聊（Claude/Grok/Antigravity）只保留通用输入；Codex 专有的模型、技能、附件和用量提示按会话切换
   let composerSession = '';
   function syncSession(s) {
@@ -764,12 +801,12 @@
     }
     renderConn();
     const sel = $('#modelSelect');
-    if (chat && !sel.dataset.chat) {
+    if (chat) {
       sel.dataset.chat = '1'; delete sel.dataset.live;
-      sel.innerHTML = '<option value="">默认模型</option>';
-      sel.disabled = true; sel.title = `${agentName(agent)} 使用默认模型`;
-    } else if (!chat && sel.dataset.chat) {
-      delete sel.dataset.chat;
+      loadChatProfiles(s);
+      applyChatModels(s);
+    } else if (sel.dataset.chat) {
+      delete sel.dataset.chat; delete sel.dataset.chatSig;
       if (!renderModels()) modelPlaceholder('正在获取模型…');
     }
     const key = (s?.id || '') + '|' + agent + '|' + chat;
@@ -800,7 +837,15 @@
     const keepT = store.get('tier', ''); ts.value = tiers.some((t) => t.id === keepT) ? keepT : '';
     $('#tierWrap').hidden = !tiers.length;
   }
-  $('#modelSelect').addEventListener('change', () => { if ($('#modelSelect').dataset.live) { store.set('model', $('#modelSelect').value); applyModelOptions(); } });
+  $('#modelSelect').addEventListener('change', () => {
+    const s = sess(state.active);
+    if (s && isChat(s)) {
+      s.model = $('#modelSelect').value || undefined;
+      $('#modelSelect').title = $('#modelSelect').selectedOptions[0]?.title || '选择该单聊使用的模型';
+      return;
+    }
+    if ($('#modelSelect').dataset.live) { store.set('model', $('#modelSelect').value); applyModelOptions(); }
+  });
   $('#effortSelect').addEventListener('change', (e) => store.set('effort', e.target.value));
   $('#tierSelect').addEventListener('change', (e) => store.set('tier', e.target.value));
 
@@ -945,6 +990,8 @@
 
   /* ---------- 附件 ---------- */
   function renderAtt() {
+    const s = sess(state.active);
+    if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
     $('#attachList').innerHTML = liveAtt.map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
   }
   $('#attachList').addEventListener('click', (e) => {
@@ -965,7 +1012,8 @@
     const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.preventDefault();
-    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
+if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
+    if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择图片文件。'); return; }
     if (!(await ensureReady(session))) return;
     for (const f of imgs) {
       const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(f); });
@@ -1018,7 +1066,8 @@
     const session = sess(state.active);
     if (!session?.live) { toast('示例会话不支持添加文件'); return; }
     if (k === 'tree') { mention(e.dataTransfer.getData(DRAG_TYPE)); return; }
-    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持附件，请用 @ 引用本机文件路径`); return; }
+if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持附件，请用 @ 引用本机文件路径`); return; }
+    if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择要发送的文件。'); return; }
     const list = [...e.dataTransfer.files];
     if (!list.length) return;
     await addDropped(list);

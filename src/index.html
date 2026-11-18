@@ -113,11 +113,28 @@
       <div class="timeline" id="timeline" data-direct></div>
       <div class="composer" data-direct>
         <div class="composer-box">
+          <div class="provider-send-error" id="providerSendError" hidden>
+            <span id="providerSendErrorText" role="status"></span>
+            <button type="button" class="btn" data-recover-provider-mode="chat">切换到对话与查看</button>
+            <button type="button" class="btn" data-recover-provider-mode="local">切换到修改本机文件</button>
+          </div>
           <div class="attach-list" id="attachList"></div>
           <textarea id="input" rows="2" aria-label="任务描述" placeholder="描述你想让助手做的事…"></textarea>
           <div class="composer-bar">
+            <div class="select-wrap" id="directTaskWrap" hidden>
+              <select id="directTaskMode" aria-label="单聊任务类型" title="单聊任务类型">
+                <option value="chat">对话与查看</option>
+                <option value="edit">修改项目文件</option>
+                <option value="local" hidden>修改本机文件</option>
+              </select>
+            </div>
+            <button type="button" class="chip" id="pickLocalDirectory" hidden>选目录</button>
+            <button type="button" class="chip" id="pickLocalFile" hidden>选文件</button>
+            <div class="select-wrap" id="directModelWrap" hidden>
+              <select id="directModel" aria-label="单聊模型"></select>
+            </div>
             <button class="chip" id="attachBtn" title="附加文件"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
-            <div class="select-wrap">
+            <div class="select-wrap" id="permissionModeWrap">
               <select id="modeSelect" title="权限模式">
                 <option value="ask">每步询问</option>
                 <option value="edit">自动编辑</option>
@@ -179,7 +196,8 @@
                   <option value="antigravity">Antigravity</option>
                 </select>
               </label>
-              <input id="groupModel" type="text" placeholder="模型 ID（可选）" aria-label="模型 ID" maxlength="128" hidden disabled />
+              <input id="groupModel" type="text" list="groupModelOptions" placeholder="模型 ID（可选）" aria-label="模型 ID" maxlength="128" hidden disabled />
+              <datalist id="groupModelOptions"></datalist>
               <span class="grow"></span>
               <button class="send" id="groupSend" type="submit" title="发送任务" aria-label="发送任务"><svg viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
             </div>

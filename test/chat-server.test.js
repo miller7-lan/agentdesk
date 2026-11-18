@@ -264,6 +264,18 @@ test('initialize, thread/start and a streaming turn', async (t) => {
   assert.equal(stored.threads[threadId].provider, 'claude');
 });
 
+test('the selected model is passed to every provider CLI', async (t) => {
+  for (const [provider, model] of [['claude', 'opus'], ['grok', 'grok-4.7'], ['antigravity', 'gemini-3-pro']]) {
+    const dir = temporary(t);
+    const client = await new ChatClient(t, provider, dir).start();
+    const threadId = await thread(client);
+    const { id, completed } = await runTurn(client, threadId, 'TEXT', { model });
+    assert.equal(completed.turn.status, 'completed');
+    const report = reportOf(agentText(client, id));
+    assert.equal(report.args[report.args.indexOf('--model') + 1], model, provider);
+  }
+});
+
 test('Claude tool roundtrip through the capability socket', async (t) => {
   const dir = temporary(t);
   const client = await new ChatClient(t, 'claude', dir).start();

@@ -1,4 +1,4 @@
-(async () => {
+window.__groupReady = (async () => {
   const A = window.__desk;
   const { $, $$, esc, svg, state, store, LIVE } = A;
   const avatars = window.AgentDeskAvatars;
@@ -74,6 +74,10 @@
   const input = $('#groupInput');
   const provider = $('#groupRecipient');
   const model = $('#groupModel');
+  function renderModelOptions() {
+    const profiles = routeState.modelProfiles?.[provider.value];
+    $('#groupModelOptions').replaceChildren(...Object.keys(profiles?.models || {}).map(id => new Option(id, id)));
+  }
   const entry = $('#sbOrchestrator');
   const routeStatus = $('#sbGroupRoute');
   const dialog = $('#orchestratorDialog');
@@ -1032,6 +1036,7 @@
       }
       if (current !== generation) return;
       routeState = routes || {};
+      renderModelOptions();
       knownRoutes = true;
       connected = Boolean(routeState.ssh || routeState.relay);
       syncProjectChoices();
@@ -1042,9 +1047,10 @@
           if (current !== generation || !Array.isArray(summaries)) return;
           const visible = new Set(summaries.map((summary) => summary.id));
           for (const [id, task] of group.records) {
-            if (task.redacted && !visible.has(id)) group.records.delete(id);
+            if ((task.redacted && !visible.has(id)) || window.__providerDirect?.ownsTask(task)) group.records.delete(id);
           }
           for (const summary of summaries) {
+            if (window.__providerDirect?.ownsTask(summary)) { group.records.delete(summary.id); continue; }
             const previous = group.records.get(summary.id);
             updateTask(group, summary.id, { ...summary, ...(previous?.prompt && { prompt: previous.prompt }) });
           }
@@ -1189,6 +1195,7 @@
     provider.disabled = Boolean(reply);
     $('#groupMention').disabled = Boolean(reply);
     model.hidden = model.disabled = Boolean(reply) || !provider.value;
+    renderModelOptions();
     input.maxLength = reply ? 2000 : 12000;
     input.placeholder = reply ? '回复组长…' : '向组长描述任务…';
     $('#groupPlanReply').hidden = !reply;
@@ -1448,7 +1455,7 @@
       if (sub) { A.showPanel(sub.dataset.taskSub); return; }
       const thread = event.target.closest('[data-agent-thread]');
       if (thread) {
-        window.__agentThreads?.open(group.id, thread.dataset.agentThread, thread.dataset.agentTask);
+        window.__agentThreadsReady.then(() => window.__agentThreads?.open(group.id, thread.dataset.agentThread, thread.dataset.agentTask));
         return;
       }
       const expand = event.target.closest('[data-expand-task]');
@@ -1535,8 +1542,10 @@
       const directButton = event.target.closest('[data-direct-provider]');
       if (directButton) {
         const provider = directButton.dataset.directProvider;
-        const direct = A.D.sessions.find((session) => session.project === state.group
-          && !session.provider && !session.agentThread && (session.agent || 'codex') === provider);
+const direct = A.D.sessions.find((session) => session.project === state.group
+          && !session.provider && !session.agentThread && (session.agent || 'codex') === provider)
+          || A.D.sessions.find((session) => session.project === state.group
+            && !session.agentThread && session.provider === provider);
         if (direct) A.openSession(direct.id);
         else A.newDirect(state.group, provider);
       }
@@ -1626,9 +1635,21 @@
       if (group === currentGroup()) render();
     },
     tasks: (id) => [...(groups.get(id)?.records.values() || [])],
-    showTask(project, id) {
+    async showTask(project, id) {
       A.openGroup(project);
-      if (groups.get(project)?.records.has(id)) selectTask(id);
+      const group = groups.get(project);
+      if (!group?.records.has(id) && group && !isExample(project)) {
+        try { await syncTask(group, id); } catch {}
+      }
+      if (state.group !== project) return;
+      if (!group?.records.has(id)) return A.toast('原群聊任务暂时无法读取。');
+      filter = 'all';
+      filterSelect.value = '';
+      updateFilters();
+      (group.expanded ||= new Set()).add(id);
+      selectTask(id);
+      renderTimeline();
+      timeline.querySelector(`[data-task-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' });
     } };
   A.renderSidebar();
   if (supported) setInterval(refresh, 5000);

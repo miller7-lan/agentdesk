@@ -574,6 +574,7 @@ function providerArgs(turn, workspace) {
     '--output-format', 'stream-json', '--mode', 'accept-edits',
     '--settings', JSON.stringify({ permissions }), '--disable-slash-commands',
   ];
+  if (turn.model) args.push('--model', turn.model);
   if (session) { args.push('--conversation', session); turn.resumeAttempt = true; }
   args.push('-p', `${instructions(turn)}\n\n${turn.text}`);
   turn.promptViaStdin = false;

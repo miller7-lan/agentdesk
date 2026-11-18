@@ -22,19 +22,18 @@
     "claude": {
       "bin": "/usr/local/bin/claude",
       "models": {
-        "claude-sonnet-5-5": {
-          "strengths": "Balanced code review, reasoning, and synthesis.",
-          "billing": "subscription"
-        }
+        "opus": { "strengths": "Complex implementation and deep analysis.", "billing": "subscription" },
+        "sonnet": { "strengths": "General coding and code review.", "billing": "subscription" },
+        "haiku": { "strengths": "Fast questions and concise summaries.", "billing": "subscription" }
       }
     },
     "grok": {
       "bin": "/usr/local/bin/grok",
       "models": {
-        "grok-build-0.1": {
-          "strengths": "Quick code investigation and web development research.",
-          "billing": "subscription"
-        }
+        "grok-4.7": { "strengths": "Coding and tool use.", "billing": "subscription" },
+        "grok-4.7-build-fast": { "strengths": "Faster coding on eligible plans.", "billing": "subscription" },
+        "grok-4.6": { "strengths": "Coding and investigation.", "billing": "subscription" },
+        "grok-4.5": { "strengths": "General analysis.", "billing": "subscription" }
       },
       "callLimits": {
         "fiveHour": 60,
