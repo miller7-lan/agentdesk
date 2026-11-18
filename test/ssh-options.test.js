@@ -50,7 +50,9 @@ test('jump invocation adds one ProxyCommand and a private environment', () => {
     runtime: RUNTIME, helperPath: HELPER,
   });
   assert.equal(invocation.args.filter((arg) => arg.startsWith('ProxyCommand=')).length, 1);
-  assert(invocation.args.includes(`ProxyCommand='/usr/bin/node' '${HELPER}'`));
+  assert(invocation.args.includes('ProxyCommand=' + proxyCommandFor({
+    nodePath: RUNTIME.nodePath, helperPath: HELPER,
+  })));
   assert.equal(invocation.args[invocation.args.indexOf('-p') + 1], '2222');
   assert.deepEqual(invocation.args.slice(-3), [
     '--', 'codexdev@vps.example.invalid', '/opt/agentdesk-orchestrator/agent-chat.sh claude',
@@ -113,8 +115,8 @@ test('normalizeJump validates mode, ports and files', () => {
   assert.equal(normalizeJump(undefined), null);
   assert.equal(normalizeJump({ mode: 'direct' }).mode, 'direct');
   const ok = normalizeJump({ ...JUMP, key: '~/jump', knownHosts: '~/.agentdesk/jump_known_hosts' }, { home: '/home/me' });
-  assert.equal(ok.key, '/home/me/jump');
-  assert.equal(ok.knownHosts, '/home/me/.agentdesk/jump_known_hosts');
+  assert.equal(ok.key, path.join('/home/me', 'jump'));
+  assert.equal(ok.knownHosts, path.join('/home/me', '.agentdesk/jump_known_hosts'));
   assert.equal(isJumpConfigured(ok), true);
 
   for (const raw of [
