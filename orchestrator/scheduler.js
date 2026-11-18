@@ -126,7 +126,7 @@ function publicTask(task) {
   return {
     id: task.id, owner: task.owner || 'local', project: task.project,
     state: task.state, stage: task.stage, createdAt: task.createdAt, updatedAt: task.updatedAt,
-    mode: task.mode || 'normal', replyTo: task.replyTo, via: task.via, broadcastId: task.broadcastId,
+    mode: task.mode || 'normal', replyTo: task.replyTo, via: task.via, broadcastId: task.broadcastId, group: task.group,
     detail: String(task.detail || '').split(':')[0],
     ...(metrics && { metrics: {
       startedAt: metrics.startedAt, endedAt: metrics.endedAt, durationMs: metrics.durationMs,
@@ -461,6 +461,8 @@ event(task, state, detail) {
         !['chat', 'edit'].includes(mode))) throw Error('invalid_attachment');
     if (!taskModes.has(mode) || (readOnlyMode(mode) && body.command != null) ||
         (body.replyTo !== undefined && (typeof body.replyTo !== 'string' || !taskIdPattern.test(body.replyTo))) ||
+        // group: which of the project's group chats the task belongs to (a project may have several).
+        (body.group !== undefined && (typeof body.group !== 'string' || !/^[A-Za-z0-9._~-]{1,96}$/.test(body.group))) ||
         (body.broadcastId !== undefined && (typeof body.broadcastId !== 'string' || !taskIdPattern.test(body.broadcastId))) ||
         (body.reviewOf !== undefined && (mode !== 'review_only' || typeof body.reviewOf !== 'string' || !taskIdPattern.test(body.reviewOf))) ||
         (body.via !== undefined && !['desktop', 'wechat'].includes(body.via))) throw new Error('invalid_task');
@@ -529,6 +531,7 @@ event(task, state, detail) {
       owner, tags: normalizedTags, mode, createdAt: new Date(this.now()).toISOString(),
       ...(body.replyTo && { replyTo: body.replyTo }),
       ...(body.via && { via: body.via }),
+      ...(body.group && { group: body.group }),
       ...(body.broadcastId && { broadcastId: body.broadcastId }),
       ...(body.reviewOf && { reviewOf: body.reviewOf }),
       ...(mode === 'team' && { slotCost: 2 }),

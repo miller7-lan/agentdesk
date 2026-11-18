@@ -19,7 +19,9 @@ window.__agentThreadsReady = (async () => {
   const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped']);
   const MAX_THREADS = 40;
 
-  const threadId = (project, role) => 'A:' + project + ':' + role;
+  // A record belongs to one group chat (s.group) and is listed under that group's project (s.project).
+  const threadId = (group, role) => 'A:' + group + ':' + role;
+  const projectOf = (group) => G.projectOf ? G.projectOf(group) : group;
   const threads = () => D.sessions.filter((s) => s.agentThread);
 
   for (const saved of (Array.isArray(store.get('agentThreads', [])) ? store.get('agentThreads', []) : []).slice(0, MAX_THREADS)) {
@@ -27,20 +29,20 @@ window.__agentThreadsReady = (async () => {
         D.sessions.some((s) => s.id === saved.id) || !Array.isArray(saved.items)) continue;
     const items = saved.items.filter((it) => it && ['user', 'provider-task', 'dispatch-step'].includes(it.t) &&
       !P.ownsTask({ id: it.taskId || it.task?.id }));
-    if (items.length) D.sessions.push({ ...saved, agentThread: true, live: true, diffs: [], term: [], busy: false, items });
+    if (items.length) D.sessions.push({ ...saved, group: saved.group || saved.project, agentThread: true, live: true, diffs: [], term: [], busy: false, items });
   }
 
   function persist() {
-    store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, provider, title, items, taskId, status, time }) =>
-      ({ id, project, provider, title, taskId, status, time,
+    store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, group, provider, title, items, taskId, status, time }) =>
+      ({ id, project, group, provider, title, taskId, status, time,
         items: items.slice(-80).map(({ preview, log, activity, ...item }) => item) })));
   }
 
-  function ensureThread(project, role) {
-    const id = threadId(project, role);
+  function ensureThread(group, role) {
+    const id = threadId(group, role);
     let s = D.sessions.find((session) => session.id === id);
     if (!s) {
-      s = { id, project, provider: role, agentThread: true, title: P.names[role] + ' · 组长派遣', status: 'idle', time: '刚刚',
+      s = { id, project: projectOf(group), group, provider: role, agentThread: true, title: P.names[role] + ' · 组长派遣', status: 'idle', time: '刚刚',
         items: [], live: true, diffs: [], term: [] };
       D.sessions.unshift(s);
     }
@@ -49,7 +51,7 @@ window.__agentThreadsReady = (async () => {
 
   async function control(project, operation, params = {}) {
     const configured = A.proj(project)?.configured;
-    const result = await api.control({ operation, ...(configured && { projectId: project }), ...params });
+    const result = await api.control({ operation, ...(configured && { projectId: projectOf(project) }), ...params });
     if (!result?.ok) throw Error(result?.error || '主控请求失败');
     return result.value;
   }
@@ -214,7 +216,7 @@ window.__agentThreadsReady = (async () => {
     const item = s?.items[Number(button.dataset.dispatchIndex)];
     if (!s?.agentThread || item?.t !== 'dispatch-step') return;
     const action = button.dataset.dispatchAction;
-    if (action === 'group') { G.showTask(s.project, item.taskId); return; }
+    if (action === 'group') { G.showTask(s.group || s.project, item.taskId); return; }
     button.disabled = true;
     try {
       if (action === 'log') {
@@ -266,13 +268,23 @@ window.__agentThreadsReady = (async () => {
   P.send = (s, fromButton) => s?.agentThread ? A.toast('组长派遣的记录是只读的；请回群聊或新建单聊。') : previousSend(s, fromButton);
   $('#threadBannerGroup').addEventListener('click', () => {
     const s = D.sessions.find((session) => session.id === A.state.active);
-    if (s?.agentThread) A.openGroup(s.project);
+    if (s?.agentThread) A.openGroup(s.group || s.project);
   });
   $('#threadBannerNew').addEventListener('click', () => {
     const s = D.sessions.find((session) => session.id === A.state.active);
     if (s?.agentThread) A.newDirect(s.project, s.provider);
   });
 
-  window.__agentThreads = { open, persist, onOpen: () => { sync(); refreshActivity(); } };
+  // Deleting a group chat deletes the records of work its lead handed out.
+  const threadsOf = (group) => threads().filter((s) => (s.group || s.project) === group);
+  function removeGroup(group) {
+    for (const s of threadsOf(group)) {
+      const index = D.sessions.indexOf(s);
+      if (index >= 0) D.sessions.splice(index, 1);
+    }
+    persist();
+  }
+
+  window.__agentThreads = { threadsOf, removeGroup, open, persist, onOpen: () => { sync(); refreshActivity(); } };
   A.renderSidebar();
 })();

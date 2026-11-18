@@ -70,7 +70,9 @@
   const AGENT_NAMES = { codex: 'Codex', claude: 'Claude', grok: 'Grok', antigravity: 'Antigravity' };
   const agentName = (agent) => AGENT_NAMES[agent] || AGENT_NAMES.codex;
   const sess = (id) => D.sessions.find((s) => s.id === id);
-  const proj = (id) => D.projects.find((p) => p.id === id);
+  // A project may have several group chats: the first has the project's own id, the others "<project>~<suffix>".
+  const projectIdOf = (id) => String(id ?? '').split('~')[0];
+  const proj = (id) => D.projects.find((p) => p.id === id) || D.projects.find((p) => p.id === projectIdOf(id));
 
   /* ---------- 桌宠（Clawd on Desk）---------- */
   const petApi = window.desk && window.desk.clawd;
@@ -170,8 +172,9 @@
     let html = '';
     for (const p of D.projects) {
       const items = D.sessions.filter((s) => s.project === p.id && (!q || s.title.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)));
-      const hasGroup = G()?.hasGroup(p.id);
-      const showGroup = hasGroup && (!q || p.name.toLowerCase().includes(q) || '群聊'.includes(q));
+      const projectGroups = G()?.groupsOf?.(p.id) || [];
+      const hasGroup = projectGroups.length > 0;
+      const showGroup = hasGroup && (!q || p.name.toLowerCase().includes(q) || '群聊'.includes(q) || projectGroups.some((g) => g.name.toLowerCase().includes(q)));
       if (q && !items.length && !showGroup && !p.name.toLowerCase().includes(q)) continue;
       // Work the lead handed out in the group sits under the group; the person's own conversations come after.
       const dispatched = items.filter((s) => s.agentThread);
@@ -182,15 +185,20 @@
           </div>`;
       const col = state.collapsed.has(p.id) && !q;
       html += `<div class="group ${col ? 'collapsed' : ''}" data-proj="${p.id}">
-        <button class="group-head" type="button" aria-expanded="${!col}">${svg('chevDown').replace('<svg', '<svg class="chev"')}${svg('folder')}<span class="group-name">${esc(p.name)}</span><span class="count">${hasGroup ? G().taskCount(p.id) || '' : items.length}</span></button>
+        <button class="group-head" type="button" aria-expanded="${!col}">${svg('chevDown').replace('<svg', '<svg class="chev"')}${svg('folder')}<span class="group-name">${esc(p.name)}</span><span class="count">${hasGroup ? projectGroups.reduce((sum, g) => sum + G().taskCount(g.id), 0) || '' : items.length}</span></button>
         <div class="group-items">
           <div class="project-conversation-actions">
             <button type="button" data-new-direct="${esc(p.id)}" aria-label="${esc(p.name)}：新建单聊">＋ 新建单聊</button>
-            ${G() && !hasGroup ? `<button type="button" data-new-group="${esc(p.id)}" aria-label="${esc(p.name)}：新建群聊">＋ 新建群聊</button>` : ''}
+            ${G() ? `<button type="button" data-new-group="${esc(p.id)}" aria-label="${esc(p.name)}：新建群聊">＋ 新建群聊</button>` : ''}
           </div>
-          ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
-          <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
-        </button>` : ''}${dispatched.length ? `<div class="sess-label">群聊派遣 · 只读记录</div><div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
+          ${showGroup ? projectGroups.map((g) => {
+            // Each group chat, with the records of work its lead handed out right under it.
+            const records = dispatched.filter((s) => (s.group || s.project) === g.id);
+            return `<div class="group-link-row"><button class="sess group-link ${state.group === g.id ? 'active' : ''}" type="button" data-open-group="${esc(g.id)}" aria-pressed="${state.group === g.id}">
+            <span class="channel-mark">#</span><span class="s-title">${esc(g.name)}</span>${G().unreadCount(g.id) ? `<span class="group-unread">${G().unreadCount(g.id)}</span>` : ''}
+          </button><button type="button" class="group-delete" data-delete-group="${esc(g.id)}" title="删除「${esc(g.name)}」" aria-label="删除群聊 ${esc(g.name)}">×</button></div>
+          ${records.length ? `<div class="sess-section dispatched" aria-label="${esc(g.name)} 的派遣记录">${records.map(row).join('')}</div>` : ''}`;
+          }).join('') : ''}${
           own.length ? '<div class="sess-label">我的单聊 · 直接对话</div>' : ''}${own.map(row).join('')}
         </div></div>`;
     }
@@ -201,13 +209,15 @@
     if (direct) return window.__providerDirect ? window.__providerDirect.choose(direct.dataset.newDirect) : newDirect(direct.dataset.newDirect);
     const create = e.target.closest('[data-new-group]');
     if (create) {
-      const project = create.dataset.newGroup;
-      if (G()?.createGroup(project)) {
-        openGroup(project);
+      const id = G()?.createGroup(create.dataset.newGroup, { another: true });
+      if (id) {
+        openGroup(id);
         $('#groupInput').focus();
       }
       return;
     }
+    const remove = e.target.closest('[data-delete-group]');
+    if (remove) { G()?.deleteGroup(remove.dataset.deleteGroup); return; }
     const group = e.target.closest('[data-open-group]');
     if (group) return openGroup(group.dataset.openGroup);
     const s = e.target.closest('.sess');
@@ -228,7 +238,8 @@
     $('#sessionList').querySelector('.sess.active')?.focus();
   });
 
-  function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex') {
+  function newDirect(project = (state.group && projectIdOf(state.group)) || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex') {
+    project = projectIdOf(project);
     const p = proj(project);
     if (!p) return;
     agent = AGENT_NAMES[agent] ? agent : 'codex';
@@ -257,9 +268,9 @@
       state.group = project;
       state.panel = state.groupPanel;
     }
-    state.collapsed.delete(project);
+    state.collapsed.delete(projectIdOf(project));
     renderAll();
-    Promise.resolve(window.AgentDeskProjects?.select(project)).finally(() => G().refresh());
+    Promise.resolve(window.AgentDeskProjects?.select(projectIdOf(project))).finally(() => G().refresh());
   }
 
   function openSession(id) {
@@ -704,7 +715,8 @@
     $('#conversationHead').hidden = !!state.group || !s;
 
     if (state.group) {
-      $('#groupBreadcrumb').textContent = project.name + ' / 群聊';
+      $('#groupBreadcrumb').textContent = project.name + ' / ' + (G()?.nameOf?.(state.group) || '群聊');
+      $('#groupTitle').textContent = '# ' + (G()?.nameOf?.(state.group) || '群聊');
       G().render();
       if (state.panelOpen && panelSession !== state.group) renderPanel();
       return;

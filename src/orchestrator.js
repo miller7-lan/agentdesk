@@ -116,10 +116,15 @@ window.__groupReady = (async () => {
   let previewMember = 'codex';
 
   const groups = new Map();
+  // Several group chats per project: the first keeps the project's id, the others are "<project>~<suffix>".
+  // A task belongs to the group it was sent from (task.group); tasks without one belong to the first group.
+  const projectIdOf = (id) => String(id ?? '').split('~')[0];
+  const groupNames = new Map(Object.entries(temporary ? {} : store.get('groupNames', {})));
+  const belongs = (group, task) => task.group ? task.group === group.id : group.id === projectIdOf(group.id);
   function addGroup(id, tasks = []) {
     if (!A.proj(id) || groups.has(id)) return;
     groups.set(id, {
-      id, records: new Map(tasks.map((task) => [task.id, task])), selected: tasks.at(-1)?.id,
+      id, project: projectIdOf(id), records: new Map(tasks.map((task) => [task.id, task])), selected: tasks.at(-1)?.id,
       approvals: new Map(), output: null, reference: null,
       draft: '', provider: '', model: '', taskError: '', statusError: '', pending: null, planReply: null,
     });
@@ -148,10 +153,49 @@ window.__groupReady = (async () => {
   for (const id of store.get('projectGroups', [])) addGroup(id, id === liveProject ? saved : savedByGroup[id] || []);
   if (saved.length) addGroup(liveProject, saved);
 
-  function createGroup(id) {
+  // Returns the new group's id. The first group of a project uses the project id; "another" adds one more.
+  function createGroup(project, { another = false } = {}) {
+    project = projectIdOf(project);
+    let id = project;
+    if (groups.has(project)) {
+      if (!another) return project;
+      id = project + '~' + crypto.randomUUID().slice(0, 8);
+    }
     addGroup(id);
     if (!groups.has(id)) return false;
+    const count = [...groups.keys()].filter((key) => projectIdOf(key) === project).length;
+    groupNames.set(id, count === 1 ? '群聊' : '群聊 ' + count);
+    store.set('groupNames', Object.fromEntries(groupNames));
     store.set('projectGroups', [...groups.keys()]);
+    return id;
+  }
+  const nameOf = (id) => groupNames.get(id) || '群聊';
+  const groupsOf = (project) => [...groups.keys()].filter((id) => projectIdOf(id) === project).map((id) => ({ id, name: nameOf(id) }));
+
+  // Deleting a group removes it, its saved task list and the lead-dispatched records of its work from this
+  // computer, after a warning. The tasks themselves stay on the orchestrator.
+  function deleteGroup(id) {
+    if (!groups.has(id)) return false;
+    const records = window.__agentThreads?.threadsOf?.(id) || [];
+    const message = `删除「${nameOf(id)}」？\n\n将从本机一并删除：\n· 这个群聊的消息和任务列表\n· 组长派遣给成员的 ${records.length} 个只读记录（${records.map((s) => s.title).join('、') || '无'}）\n\n主控上的任务不会被删除；正在执行的任务会继续执行。此操作不能撤销。`;
+    if (!window.confirm(message)) return false;
+    groups.delete(id);
+    groupNames.delete(id);
+    delete savedByGroup[id];
+    lastSeen.delete(id);
+    store.set('groupNames', Object.fromEntries(groupNames));
+    store.set('projectGroups', [...groups.keys()]);
+    store.set('groupTasksByProject', savedByGroup);
+    store.set('groupLastSeen', Object.fromEntries(lastSeen));
+    if (id === liveProject) store.set('groupTasks', []);
+    window.__agentThreads?.removeGroup?.(id);
+    if (state.group === id) {
+      const next = groupsOf(projectIdOf(id))[0]?.id || [...groups.keys()][0];
+      if (next) A.openGroup(next);
+      else A.openSession(A.D.sessions[0]?.id);
+    }
+    A.renderSidebar();
+    A.toast(`已删除「${nameOf(id)}」及 ${records.length} 个派遣记录`);
     return true;
   }
 
@@ -1100,10 +1144,11 @@ window.__groupReady = (async () => {
           }
           for (const summary of summaries) {
             if (window.__providerDirect?.ownsTask(summary)) { group.records.delete(summary.id); continue; }
+            if (!belongs(group, summary)) { group.records.delete(summary.id); continue; }
             const previous = group.records.get(summary.id);
             updateTask(group, summary.id, { ...summary, ...(previous?.prompt && { prompt: previous.prompt }) });
           }
-          if (!group.selected || !group.records.has(group.selected)) group.selected = summaries[0]?.id;
+          if (!group.selected || !group.records.has(group.selected)) group.selected = summaries.find((summary) => belongs(group, summary))?.id;
           persist(group);
         } catch { /* 旧主控继续从本地保存的任务 ID 同步。 */ }
       }));
@@ -1367,7 +1412,7 @@ window.__groupReady = (async () => {
     return {
       operation,
       request: {
-        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined,
+        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined, group: group.id,
         provider: recipient || undefined, model: recipient && recipient === provider.value && model.value.trim() || undefined,
       },
     };
@@ -1674,8 +1719,8 @@ window.__groupReady = (async () => {
     if (currentGroup()) markSeen(currentGroup());
     repaint();
   });
-  window.__group = { createGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
-    projects: () => [...groups.keys()], isExample,
+  window.__group = { createGroup, deleteGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+    projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {
       const group = groups.get(project);
