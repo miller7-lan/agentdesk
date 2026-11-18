@@ -236,6 +236,7 @@
     let text;
     let warn = false;
     if (data.offline) { text = greeting() + '，云端暂未连接'; warn = true; }
+    else if (data.pending) text = greeting() + '，正在连接云端…';
     else if (!checked) text = greeting() + '，正在召集团队…';
     else {
       const ready = agents.filter((node) => node.kind === 'ok').length;
@@ -301,9 +302,15 @@
       active.data = data;
       status(data);
       if (active.moody) moods(data, quick);
+      if (active.ended && !data.pending) {
+        if (data.online) finish(true);
+        else actions.hidden = false;
+      }
     });
     const end = () => {
+      active.ended = true;
       cancelAnimationFrame(active.frame);
+      if (active.data.pending) return;
       if (active.data.offline) {
         actions.hidden = false;
         $('bootRetry').focus({ preventScroll: true });

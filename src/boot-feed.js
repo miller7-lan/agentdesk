@@ -19,7 +19,9 @@
     const quotas = Array.isArray(checks.quota?.value) ? checks.quota.value : [];
     const docker = checks.resources?.value?.docker;
     const online = remote?.codex === 'ready' || Boolean(routes?.ssh || routes?.relay);
-    const offline = Boolean(checks.remote && checks.routes && !online);
+    const pending = !online && !checks.expired &&
+      (!checks.remote || !checks.routes || ['idle', 'connecting'].includes(remote?.codex));
+    const offline = !online && !pending;
     const nodes = members.map(([id, name, role, provider], order) => {
       const quota = quotas.find((item) => item.provider === provider);
       const check = id === 'local' ? checks.desktop
@@ -48,10 +50,10 @@
     if (docker?.ok && Number.isSafeInteger(docker.count)) logs.push({ name: 'docker · containers', status: String(docker.count), at: checks.resources.at });
     for (const node of nodes) if (Number.isFinite(node.at)) logs.push(node);
     logs.sort((a, b) => a.at - b.at);
-    return { nodes, logs, online, offline };
+    return { nodes, logs, online, offline, pending };
   }
 
-  function collect(desk, publish, { timeout = 5000, now = () => performance.now() } = {}) {
+  function collect(desk, publish, { timeout = 30000, pollMs = 1000, now = () => performance.now() } = {}) {
     const start = now();
     const checks = {};
     const control = async (operation) => {
@@ -67,20 +69,48 @@
       desktop: () => desk.desktop.enabled(),
     };
     let active = true;
+    let unsubscribe;
     const cancel = () => {
       active = false;
       clearTimeout(timer);
+      clearInterval(poll);
+      unsubscribe?.();
     };
-    const timer = setTimeout(cancel, timeout);
+    const timer = setTimeout(() => {
+      checks.expired = true;
+      publish(buildBootData(checks));
+      cancel();
+    }, timeout);
     const update = (key, value) => {
       if (!active) return;
       checks[key] = { value, at: (now() - start) / 1000 };
-      publish(buildBootData(checks));
-      if (Object.keys(checks).length === Object.keys(requests).length) cancel();
+      const data = buildBootData(checks);
+      publish(data);
+      if (data.online && Object.keys(requests).every((key) => checks[key])) cancel();
     };
-    for (const [key, request] of Object.entries(requests)) {
-      Promise.resolve().then(request).then((value) => update(key, value), () => update(key, null));
-    }
+    let remoteRevision = 0;
+    const pendingRequests = new Set();
+    const check = (key) => {
+      if (!active || pendingRequests.has(key)) return;
+      pendingRequests.add(key);
+      const revision = remoteRevision;
+      Promise.resolve().then(requests[key]).then((value) => {
+        if (key !== 'remote' || revision === remoteRevision) update(key, value);
+      }, () => {
+        if (key !== 'remote' || revision === remoteRevision) update(key, null);
+      }).finally(() => pendingRequests.delete(key));
+    };
+    const poll = setInterval(() => {
+      if (!buildBootData(checks).online) {
+        check('remote');
+        check('routes');
+      }
+    }, pollMs);
+    unsubscribe = desk.remote.onStatus?.((value) => {
+      remoteRevision += 1;
+      update('remote', value);
+    });
+    for (const key of Object.keys(requests)) check(key);
     return cancel;
   }
 
