@@ -113,6 +113,11 @@
       <div class="timeline" id="timeline" data-direct></div>
       <div class="composer" data-direct>
         <div class="composer-box">
+          <div class="provider-send-error" id="providerSendError" hidden>
+            <span id="providerSendErrorText" role="status"></span>
+            <button type="button" class="btn" data-recover-provider-mode="chat">切换到对话与查看</button>
+            <button type="button" class="btn" data-recover-provider-mode="local">切换到修改本机文件</button>
+          </div>
           <div class="attach-list" id="attachList"></div>
           <textarea id="input" rows="2" aria-label="任务描述" placeholder="描述你想让助手做的事…"></textarea>
           <div class="composer-bar">

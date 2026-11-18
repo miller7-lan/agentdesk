@@ -657,6 +657,7 @@ async function orchestratorControl(frame) {
       const bridgeRoot = localBridgeSettings.workspaces?.[name]?.root;
       if (!bridgeRoot || !project?.localRoot ||
           fs.realpathSync(bridgeRoot) !== fs.realpathSync(project.localRoot)) {
+        audit('failed');
         return { ok: false, error: 'direct_workspace_not_bound' };
       }
     }

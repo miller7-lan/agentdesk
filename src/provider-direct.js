@@ -7,6 +7,7 @@
   const catalogs = new Map();
   const localScopes = new Map();
   const localProposals = new WeakMap();
+  const sendErrors = new WeakMap();
   const names = { codex: 'Codex', claude: 'Claude Code', grok: 'Grok Build', gemini: 'Gemini', antigravity: 'Antigravity' };
   const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review', 'awaiting_approval', 'awaiting_details']);
   const labels = { queued: '等待执行或额度恢复', running: '执行中', planning: '规划中',
@@ -84,6 +85,7 @@
     }
     if (!text) return;
     if (text.length > 9000) { A.toast('单次消息请控制在 9000 字符以内。'); return; }
+    sendErrors.delete(s);
     s.busy = true; s.status = 'running'; A.renderAll();
     try {
       const routes = await control(s, 'routes');
@@ -117,13 +119,15 @@
       s.items.push({ t: 'user', text }, item);
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
-      input.value = ''; A.autosize();
+      if (A.state.active === s.id && !A.state.group && input.value.trim() === text) {
+        input.value = ''; A.autosize();
+      }
       update(s, s.items.at(-1), task);
     } catch (error) {
       s.busy = false; s.status = 'idle';
-      A.toast(errors[error.message] || error.message);
+      sendErrors.set(s, error.message);
       if (s.agentThread) window.__agentThreads?.persist(); else persist();
-      A.renderAll();
+      if (A.state.active === s.id && !A.state.group) A.renderAll(); else A.renderSidebar();
     }
   }
   function itemHtml(it, index) {
@@ -212,7 +216,16 @@
     const s = A.sess(A.state.active);
     if (!handles(s) || s.agentThread) return;
     s.taskMode = event.target.value;
+    sendErrors.delete(s);
     persist(); render(s);
+  });
+  $('#providerSendError').addEventListener('click', (event) => {
+    const mode = event.target.closest('[data-recover-provider-mode]')?.dataset.recoverProviderMode;
+    if (!mode) return;
+    const picker = $('#directTaskMode');
+    picker.value = mode;
+    picker.dispatchEvent(new Event('change'));
+    $('#input').focus();
   });
   $('#directModel').addEventListener('change', (event) => {
     const s = A.sess(A.state.active);
@@ -245,6 +258,13 @@
   }
   function render(s) {
     const other = handles(s);
+    const error = other && !s.agentThread ? sendErrors.get(s) : undefined;
+    const message = $('#providerSendError');
+    message.hidden = !error;
+    $('#providerSendErrorText').textContent = error ? errors[error] || error : '';
+    const wrongMode = ['direct_workspace_not_bound', 'provider_write_not_enabled'].includes(error);
+    message.querySelector('[data-recover-provider-mode="chat"]').hidden = !wrongMode && s?.taskMode !== 'local';
+    message.querySelector('[data-recover-provider-mode="local"]').hidden = !wrongMode || !localSupported;
     $('#directTaskWrap').hidden = !other || Boolean(s.agentThread);
     $('#directModelWrap').hidden = !other || Boolean(s.agentThread);
     if (other && !s.agentThread) renderModels(s);
