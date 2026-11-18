@@ -1542,7 +1542,7 @@ window.__groupReady = (async () => {
       const directButton = event.target.closest('[data-direct-provider]');
       if (directButton) {
         const provider = directButton.dataset.directProvider;
-const direct = A.D.sessions.find((session) => session.project === state.group
+        const direct = A.D.sessions.find((session) => session.project === state.group
           && !session.provider && !session.agentThread && (session.agent || 'codex') === provider)
           || A.D.sessions.find((session) => session.project === state.group
             && !session.agentThread && session.provider === provider);

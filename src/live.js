@@ -1012,7 +1012,7 @@
     const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.preventDefault();
-if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
+    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
     if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择图片文件。'); return; }
     if (!(await ensureReady(session))) return;
     for (const f of imgs) {
@@ -1066,7 +1066,7 @@ if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图�
     const session = sess(state.active);
     if (!session?.live) { toast('示例会话不支持添加文件'); return; }
     if (k === 'tree') { mention(e.dataTransfer.getData(DRAG_TYPE)); return; }
-if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持附件，请用 @ 引用本机文件路径`); return; }
+    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持附件，请用 @ 引用本机文件路径`); return; }
     if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择要发送的文件。'); return; }
     const list = [...e.dataTransfer.files];
     if (!list.length) return;

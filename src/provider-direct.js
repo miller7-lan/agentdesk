@@ -312,12 +312,12 @@
       if (other) element.hidden = true;
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
-$('#attachBtn').disabled = other && (s.agentThread || s.busy || !window.desk.files?.pickChat);
+    $('#attachBtn').disabled = other && (s.agentThread || s.busy || !window.desk.files?.pickChat);
     if (other) {
       $('#attachList').innerHTML = (attachments.get(s) || []).map(file =>
         `<button type="button" class="attach-pill" data-provider-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
     } else if ($('#attachList').querySelector('[data-provider-attachment]')) $('#attachList').replaceChildren();
-    // 本机单聊（agent 字段）由 live.js 自己设置输入提示，别被这里的 Codex 文案覆盖。
+    // 本机 agent 单聊的提示由 live.js 设置；这里只处理 provider-direct 会话和 Codex。
     if (local) $('#input').placeholder = localScopes.get(s.id)?.path || '先选择本机文件或目录，再描述要做的改动…';
     else if (other) {
       $('#input').placeholder = s.taskMode === 'edit'
