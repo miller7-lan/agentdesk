@@ -307,7 +307,8 @@ class ChatLink extends EventEmitter {
         // 结果未知的变更请求不重放：断开连接，让界面明确提示用户。
         this.drop(child, `单聊请求超时（${method}），请检查上一操作的结果`);
       }, timeoutMs);
-      timer.unref?.();
+      // The request's own timeout must keep the loop alive: nothing else may be
+      // holding the process while a call is in flight (e.g. in tests).
       this.pending.set(id, { resolve, reject, timer, child });
       try {
         this.write({ id, method, params });
