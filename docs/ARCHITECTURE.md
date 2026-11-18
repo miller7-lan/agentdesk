@@ -1,12 +1,12 @@
 # AgentDesk 双 VPS 架构
 
-AgentDesk 把 AI 主控与本机开发环境分开。VPS 2 运行 Codex、Claude Code、Grok Build 和 Antigravity CLI，并直接连接各模型供应商。Mac 或 Windows 上的 Bridge 提供工作区文件、获准的开发命令和桌面操作。VPS 1 提供备用转发。
+AgentDesk 把 AI 主控与本机开发环境分开。VPS 2 运行 Codex、Claude Code、Grok Build 和 Antigravity CLI，并直接连接各模型供应商。Mac 或 Windows 上的 Bridge 提供工作区文件、获准的开发命令和桌面操作。VPS 1 提供备用转发：应用层 TLS Relay（22022）和 SSH 跳板（直连失败时经 VPS1 的受限账号转发到 VPS2:22）。
 
 ```mermaid
 flowchart LR
     Desk["AgentDesk · macOS / Windows"]
     Bridge["本机 Bridge"]
-    Relay["VPS 1 · TLS Relay"]
+    Relay["VPS 1 · TLS Relay / SSH 跳板"]
     Orch["VPS 2 · Orchestrator"]
     AppServer["VPS 2 · Codex App Server"]
     ChatServer["VPS 2 · chat-server"]
@@ -18,7 +18,9 @@ flowchart LR
     ChatServer -->|"每轮 spawn / resume"| ChatCLI
     ChatCLI -.->|"MCP → Unix socket"| ChatServer
     ChatServer -.->|"item/tool/call · 审批"| Desk
+    Desk -.->|"直连故障 · SSH 跳板"| Relay
     Bridge -->|"主用 SSH 22"| Orch
+    Bridge -.->|"直连故障 · SSH 跳板"| Relay
     Bridge -->|"备用 TLS 22022"| Relay
     Orch -->|"备用 TLS 22022"| Relay
     Orch --> TaskCLI -->|"HTTPS"| Cloud
@@ -31,6 +33,7 @@ flowchart LR
 
 - 主用线路由本机 Bridge 主动连接 VPS 2。专用 SSH 公钥绑定强制命令，只能接入对应的 Unix socket。普通 Codex 聊天使用另一把 SSH 公钥及独立的 App Server 会话；Claude、Grok、Antigravity 的单聊各用一把独立公钥，强制命令只能启动对应 provider 的 chat-server。
 - 备用线路由 Bridge 和 VPS 2 分别连接 VPS 1。每一对设备使用不同的令牌，Relay 根据配对注册表转发。TLS 在 Relay 终止，生产部署只将 Relay CA 配置给所需的客户端。
+- SSH 跳板与 TLS Relay 相互独立。桌面端、单聊和 Bridge 默认先直连 VPS 2；只有传输层或 DNS 故障才在客户端切换为 `ProxyCommand`，经 VPS 1 的专用 `agentdesk-jump` 账号（`restrict,port-forwarding,permitopen=<VPS2>:22`）用 `-W` 转发到 VPS2:22。外层 SSH 仍端到端认证 VPS 2 并校验它自己的主机指纹；VPS 1 只转发 TCP 字节。目标密钥/known_hosts 与跳板密钥/known_hosts 分离，避免把 VPS 2 的证书交给 VPS 1。跳板认证或主机密钥失败时暂停自动快速重试 10 分钟，防止 VPS 2 的 fail2ban 封禁 VPS 1 的源 IP；`auto` 模式约每 10 分钟用 TCP + SSH banner 探测直连，成功只影响新连接，不迁移或重放已有请求。
 - Mac 面板可查看两路状态、手动切换、提交和管理任务。每台设备分别保存线路选择。文件写入和命令执行共享请求 ID 与操作记录，断线后可用在线线路查询结果。
 - 设备只授权明确配置的工作区和命令。桌面操作由本机应用提供，受本机桌面开关与操作系统权限约束。模型认证保存在 VPS 2 的服务账户下。
 
@@ -58,6 +61,7 @@ flowchart LR
 | 组件 | 文档与示例 |
 | --- | --- |
 | VPS 1 Relay | [运维](../relay/OPERATIONS.md)、[设备注册格式](../relay/devices.example.json)、[传输协议](../relay/PROTOCOL.md) |
+| VPS 1 SSH 跳板 | [部署与回滚](DEPLOY.md) §4、[故障排查](TROUBLESHOOTING.md) |
 | VPS 2 Orchestrator | [运维](../orchestrator/OPERATIONS.md)、[主控配置](../orchestrator/vps2.example.json)、[业务协议](../orchestrator/PROTOCOL.md) |
 | VPS 2 单聊通道 | [chat-server](../orchestrator/chat-server.js)、[chat-mcp](../orchestrator/chat-mcp.js)、[agent-chat.sh](../orchestrator/agent-chat.sh) |
 | macOS Bridge 和应用 | [Mac Bridge 配置](../orchestrator/mac-bridge.example.json)、[Mac 客户端 SSH 配置](../config/mac-remote.example.json) |

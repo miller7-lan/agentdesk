@@ -3,5 +3,11 @@
   "port": 22,
   "tunnelUser": "windows-tunnel",
   "codexUser": "codexdev",
-  "knownHosts": "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyReplaceWithTheServersRealHostKey00"
+  "knownHosts": "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyReplaceWithTheServersRealHostKey00",
+  "jump": {
+    "mode": "auto",
+    "host": "relay.example.invalid",
+    "port": 22,
+    "user": "agentdesk-jump"
+  }
 }

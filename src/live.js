@@ -145,26 +145,28 @@
       const sleeping = cs.state === 'sleeping';
       const ok = cs.state === 'ready';
       const bad = cs.state === 'error' || cs.state === 'retry';
+      const via = cs.route?.route === 'jump' ? '（VPS1 跳板）' : '';
       label = sleeping ? `${agentName(agent)} 已休眠（输入时唤醒）`
-        : ok ? `${agentName(agent)} 已连接`
-        : cs.state === 'connecting' ? `正在连接 ${agentName(agent)}…`
+        : ok ? `${agentName(agent)} 已连接${via}`
+        : cs.state === 'connecting' ? `正在连接 ${agentName(agent)}…${via}`
         : cs.state === 'retry' ? (cs.detail || '连接已断开，正在自动重连')
         : bad ? (cs.detail || '连接失败，点击重新连接') : `${agentName(agent)} 未连接`;
       dot = ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait';
-      title = `单聊通道：${cs.state || 'idle'}${cs.detail ? '\n' + cs.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
+      title = `单聊通道：${cs.state || 'idle'}${cs.route?.route === 'jump' ? ' · VPS1 跳板' : ''}${cs.detail ? '\n' + cs.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
     } else {
       const s = conn;
       const sleeping = s.codex === 'sleeping';
       const ok = s.codex === 'ready' && ['up', 'external'].includes(s.tunnel) && ['running', 'external'].includes(s.sshd);
       const bad = /denied|missing|failed|error/.test((s.sshd || '') + (s.codex || ''));
       const retrying = s.codex === 'retry' || s.tunnel === 'retry';
+      const via = s.route?.route === 'jump' ? '（VPS1 跳板）' : '';
       label = sleeping ? 'Codex 已休眠（输入时唤醒）'
-        : ok ? (isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接')
-        : s.codex === 'ready' ? 'Codex 已连接 · 隧道重连中'
+        : ok ? `${isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接'}${via}`
+        : s.codex === 'ready' ? `Codex 已连接 · 隧道重连中${via}`
         : retrying ? (s.detail || '连接已断开，正在自动重连')
         : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
       dot = ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait';
-      title = `sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
+      title = `${s.route?.route === 'jump' ? '线路：VPS1 跳板  ·  ' : ''}sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
     }
     key = agent + '|' + label + '|' + title;
     if (el.dataset.key === key) return;
@@ -606,7 +608,8 @@
     const agent = agentOf(s);
     if (agent !== 'codex') {
       const cs = chatStatus[agent] || {};
-      sysNote(s, `连接：${agentName(agent)} 单聊 · ${cs.state || 'idle'}${cs.detail ? '（' + cs.detail + '）' : ''}`);
+      const via = cs.route?.route === 'jump' ? ' · VPS1 跳板' : '';
+      sysNote(s, `连接：${agentName(agent)} 单聊 · ${cs.state || 'idle'}${via}${cs.detail ? '（' + cs.detail + '）' : ''}`);
       const modelText = $('#modelSelect').selectedOptions[0]?.text || '默认';
       const effortText = $('#effortWrap').hidden ? '默认' : ($('#effortSelect').selectedOptions[0]?.text || '默认').replace('推理：', '');
       sysNote(s, `工作区：${rootOf(s) || '未绑定'} · 模型：${modelText} · 推理：${effortText}`);
@@ -617,7 +620,7 @@
     }
     const m = $('#modelSelect');
     const u = usage ? usageText(usage) : '未知';
-    sysNote(s, `连接：sshd ${conn.sshd} · 隧道 ${conn.tunnel} · Codex ${conn.codex}${conn.detail ? '（' + conn.detail + '）' : ''}`);
+    sysNote(s, `连接：sshd ${conn.sshd} · 隧道 ${conn.tunnel} · Codex ${conn.codex}${conn.route?.route === 'jump' ? ' · VPS1 跳板' : ''}${conn.detail ? '（' + conn.detail + '）' : ''}`);
     sysNote(s, `模型：${m.selectedOptions[0]?.text || '默认'} · 推理 ${$('#effortSelect').selectedOptions[0]?.text?.replace('推理：', '') || '默认'} · ${$('#tierSelect').selectedOptions[0]?.text || '标准速度'}`);
     sysNote(s, `用量：${u}`);
     sysNote(s, 'Codex 空闲后会自动断开，再次输入时会重新连接。');

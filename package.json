@@ -71,6 +71,14 @@
         "to": "desktop-backend"
       },
       {
+        "from": "orchestrator/ssh-jump.js",
+        "to": "ssh-jump.js"
+      },
+      {
+        "from": "orchestrator/ssh-options.js",
+        "to": "ssh-options.js"
+      },
+      {
         "from": ".",
         "filter": [
           "agentdesk-enrollment.json",

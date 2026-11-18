@@ -10,6 +10,7 @@
 | `relay/*.py` | VPS1（见 `relay/OPERATIONS.md`） |
 | `main.js`、`preload.js`、`remote.js`、`src/**`，以及 Bridge 用到的 `orchestrator/windows.js`、`service.js` 的 `startBridge` | Windows 端重新打包；Mac 端应用重新打包 |
 | `orchestrator/mac-bridge.js` 及它引用的 `orchestrator/*.js` | Mac 端后台 Bridge |
+| `orchestrator/ssh-options.js`、`ssh-route.js`、`ssh-jump.js`、`bridge-ssh.js` | 桌面端重新打包；Mac 端后台 Bridge 同步文件（见 §4） |
 | 只改配置（路由顺序、可改代码的成员、CLI 路径、额度阈值） | 只改对应那一端的配置文件，不用发版 |
 
 同一个文件常常几端都用（`service.js` 既是 VPS2 主控，也是两端 Bridge 的实现）。逐个看改动的文件被谁 `require`，列全受影响的端。
@@ -100,16 +101,24 @@ Windows 的 Bridge 运行在 AgentDesk 应用进程里，所以**代码改动要
 
 模型列表配置、Mac 同步和本机文件验收步骤参见 [模型选择与本机文件](MODELS-AND-LOCAL-FILES.md)。
 
-Mac 有两个独立部分：**AgentDesk 应用**和**后台 Bridge**（launchd 运行仓库里的 `orchestrator/mac-bridge.js`）。
+Mac 有两个独立部分：**AgentDesk 应用**和**后台 Bridge**（launchd 启动 `mac-bridge.js`；可能直接指向仓库，也可能是 `~/Library/Application Support/AgentDesk/bridge/app/` 下的部署副本）。
 
 ### 更新后台 Bridge
 
 ```sh
-cd <Mac 上的仓库目录> && git pull --ff-only
-launchctl kickstart -k gui/$(id -u)/<Bridge 的 launchd 标签>
+launchctl print gui/$(id -u)/<Bridge 的 launchd 标签> | grep -A3 program
 ```
 
 标签以本机 `~/Library/LaunchAgents/` 里的 plist 为准（`launchctl list | grep -i agentdesk` 可查）。plist 的 `ProgramArguments` 是 Node、`mac-bridge.js` 和 Bridge 配置的绝对路径；进程必须在已登录用户的 `gui/<uid>` 会话里，否则辅助功能和屏幕录制权限不生效。
+
+- 指向仓库：`cd <仓库目录> && git pull --ff-only`。
+- 指向部署副本：把仓库里的 `orchestrator/mac-bridge.js` 及它 `require` 的 `orchestrator/*.js`（含 `service.js`、`ssh-options.js`、`ssh-route.js`、`bridge-ssh.js`、`ssh-jump.js`）复制到部署副本的 `orchestrator/`，不要只复制 `mac-bridge.js`。
+
+改完执行：
+
+```sh
+launchctl kickstart -k gui/$(id -u)/<Bridge 的 launchd 标签>
+```
 
 ### 更新应用
 
@@ -133,6 +142,128 @@ launchctl print gui/$(id -u)/<标签> | grep -E 'state|last exit'   # state = ru
 再在应用里看「线路与模型」在线，并发一个只读小任务。
 
 **完成标准：** Bridge `running`，应用线路在线，小任务能看到组长方案和分工进度。
+
+## 4. VPS1 SSH 跳板（直连 VPS2 失败时自动回退）
+
+VPS1 的 22022 是应用层 TLS Relay，只传 JSON 数据帧，不能承载 SSH stdio。SSH 跳板是另一条独立线路：客户端外层 SSH 仍然直连并校验 VPS2 的主机指纹，只在 TCP 层经 VPS1 的专用受限账号转发到 `VPS2:22`。VPS1 看不到 SSH 内容，也没有新增监听端口。
+
+适用对象：桌面端的 Codex、Claude/Grok/Antigravity 单聊、应用内 Bridge，以及 Mac/Windows 独立 Bridge。没有配置 `jump` 的旧客户端完全按直连工作。
+
+### 4.1 VPS1：专用跳板账号
+
+以 root 在 VPS1 执行（示例；`<VPS2_HOST>`、`<VPS1>` 用实际值替换，不要写进仓库）：
+
+```sh
+useradd --system --create-home --shell /usr/sbin/nologin agentdesk-jump
+install -d -m 700 -o agentdesk-jump -g agentdesk-jump /home/agentdesk-jump/.ssh
+```
+
+把客户端公钥追加到 `/home/agentdesk-jump/.ssh/authorized_keys`，一行，选项不能省：
+
+```text
+restrict,port-forwarding,permitopen="<VPS2_HOST>:22" ssh-ed25519 <PUBKEY> agentdesk-jump-mac
+```
+
+- `restrict` 关闭 PTY、agent、X11、user-rc 等一切非转发能力；`port-forwarding` 只重新打开 TCP 转发。
+- `permitopen` 只允许转发到 VPS2 的 22。若客户端 `port`（Codex/单聊用的目标端口）不是 22，再加一个 `permitopen="<VPS2_HOST>:<TARGET_PORT>"`；反向隧道固定连 22。
+- 不需要改 `sshd_config`、不需要 reload，下一次连接即生效。
+
+```sh
+chown agentdesk-jump:agentdesk-jump /home/agentdesk-jump/.ssh/authorized_keys
+chmod 600 /home/agentdesk-jump/.ssh/authorized_keys
+```
+
+### 4.2 客户端：密钥和 known_hosts
+
+跳板密钥与目标 VPS2 密钥完全分开（不要复用 `codex_vps_ed25519` 等）：
+
+```sh
+ssh-keygen -t ed25519 -a 100 -f ~/.agentdesk/jump_ed25519 -N '' -C agentdesk-jump-mac
+ssh-keygen -F <VPS1> -f ~/.ssh/known_hosts > ~/.agentdesk/jump_known_hosts
+chmod 600 ~/.agentdesk/jump_ed25519 ~/.agentdesk/jump_known_hosts
+```
+
+- 只用本机已信任的 `known_hosts` 提取记录，不要用未核对的 `ssh-keyscan`。VPS1 的 SSH 端口不是 22 时，`-F '[<VPS1>]:<PORT>'`。
+- 公钥交给有 VPS1 管理权限的人写入上面的 `authorized_keys`；私钥只留本机。
+- 代码不用 `-J`：`-J` 可能把目标密钥/证书复用给 VPS1。跳板这一跳使用独立 key/known_hosts/证书，并设置 `IdentityAgent=none`。
+
+### 4.3 配置
+
+桌面端 `~/.agentdesk/mac-remote.json`（Windows 为 `%USERPROFILE%\.agentdesk\remote.json`）顶层：
+
+```json
+{
+  "jump": {
+    "mode": "auto",
+    "host": "<VPS1>",
+    "port": 22,
+    "user": "agentdesk-jump",
+    "key": "/Users/<you>/.agentdesk/jump_ed25519",
+    "knownHosts": "/Users/<you>/.agentdesk/jump_known_hosts",
+    "probeMinutes": 10
+  }
+}
+```
+
+独立 Bridge 的配置放在 `ssh.jump` 下，键名相同：
+
+```json
+{
+  "ssh": {
+    "jump": {
+      "mode": "auto",
+      "host": "<VPS1>",
+      "port": 22,
+      "user": "agentdesk-jump",
+      "key": "/Users/<you>/.agentdesk/jump_ed25519",
+      "knownHosts": "/Users/<you>/.agentdesk/jump_known_hosts",
+      "probeMinutes": 10
+    }
+  }
+}
+```
+
+- `mode`：`auto`（默认，先直连，传输/DNS 故障切跳板，定期探测直连恢复）、`direct`（强制直连，紧急回滚）、`jump`（强制跳板，验收用）。
+- `key`、`knownHosts`、`certificate`、`probeMinutes` 只从本机配置读取。安装包里的 `agentdesk-server.json` 最多提供 `host`、`port`、`user`、`mode`；`host/port/user` 安装包优先，`mode` 本机优先。
+- 本机 `jump` 写错（缺 key/knownHosts、端口非法）时只禁用跳板并给出原因，直连不受影响。
+- 目标 VPS2 的 `knownHosts` 是另一份文件，二者不要混用。
+
+### 4.4 部署新代码
+
+- 桌面端：重新打包。`package.json` 的 `extraResources` 会把 `ssh-jump.js` 和 `ssh-options.js` 放到 asar 外；打包后确认 `AgentDesk.app/Contents/Resources/ssh-jump.js` 及 Windows `resources\ssh-jump.js` 存在。
+- Mac 后台 Bridge：按 §3 判断 launchd 指向仓库还是部署副本；部署副本要一并复制 `mac-bridge.js`、`ssh-options.js`、`ssh-route.js`、`bridge-ssh.js`、`ssh-jump.js`。
+- VPS1 不需要部署代码；VPS2 不需要改代码或重启。
+
+### 4.5 验证
+
+跳板这一跳能打印 VPS2 的 SSH banner：
+
+```sh
+ssh -F none -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile=~/.agentdesk/jump_known_hosts -o HostKeyAlgorithms=ssh-ed25519 \
+  -o IdentitiesOnly=yes -o IdentityAgent=none -i ~/.agentdesk/jump_ed25519 \
+  -p <JUMP_PORT> -W <VPS2_HOST>:22 agentdesk-jump@<VPS1> < /dev/null
+```
+
+- 输出以 `SSH-2.0-` 开头即成功。
+- 负向：`-W <其他主机>:22` 或 `-W <VPS2_HOST>:<其他端口>` 必须被 `permitopen` 拒绝；`ssh ... agentdesk-jump@<VPS1> id` 必须因 nologin 失败。
+- 应用状态栏和 `/status` 在跳板时显示「VPS1 跳板」；诊断报告的 `remote.route` 只会是 `direct`/`jump`/`suspended`，不含主机、路径或密钥。
+- 强制 `mode: "jump"` 跑一轮 Codex、三个单聊、附件和 Bridge；再改回 `auto`，阻断直连确认一次重试内切换，恢复后约 `probeMinutes` 分钟回到直连。
+
+### 4.6 故障排查
+
+- 跳板报 VPS1 指纹错误：`jump_known_hosts` 与 VPS1 实际 ED25519 指纹不一致；重新用已信任记录提取，核对后再连。
+- 跳板报 VPS2 指纹错误：目标 `knownHosts` 或目标主机密钥变了；不要改 `StrictHostKeyChecking`，先核对指纹。
+- `administratively prohibited`：VPS1 `permitopen` 与 `jump.host`/目标端口不一致。
+- 跳板认证/主机密钥失败后自动重试被拉长到 10 分钟：这是保护 VPS1 源 IP 不被 VPS2 fail2ban 封禁；修好配置后点「重新连接」立即重试。
+- VPS1 的 22 不稳定时可改用已验证的 22222：同步修改 `jump.port`、`[<VPS1>]:22222` 的 known_hosts 记录和 `permitopen` 的目标端口（`permitopen` 限制的是 VPS2 目标，不是 VPS1 端口）。
+- Windows 打包版 `ssh.exe` 的 ProxyCommand 引号或 `%` 报错：见 §4.3，路径不要含 `"`、换行或 `%`。
+
+### 4.7 回滚
+
+1. 本机把 `jump.mode` 改成 `"direct"`（或删除 `jump`，或恢复 `*.bak-<日期>`），重启应用和 Bridge；无需改代码。
+2. 需要移除 VPS1 权限时，恢复 `authorized_keys` 备份或删掉跳板那一行。
+3. 应用/Bridge 可回滚到备份副本；VPS2 没有改动。
 
 ## 不变的规则
 

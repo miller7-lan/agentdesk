@@ -54,6 +54,28 @@ Windows 配置文件是 `~/.agentdesk/remote.json`，Mac 配置文件是 `~/.age
 
 重启 AgentDesk，按首次运行向导核对并确认指纹。在「工作区」选择本机项目，分别在单聊发送一条只读消息验证线路。可用「附件」选择原文件，每次最多 3 个，每个最多 10 MB。文件能否被解析取决于当前 CLI 和模型。本机改动可使用「每步询问」，先在测试文件上验证审批和写入。供应商登录和订阅由 VPS 管理员处理。
 
+### 可选：VPS1 SSH 跳板
+
+管理员分配 VPS 1 的跳板地址、端口和 `agentdesk-jump` 账户，并在 VPS 1 的 `authorized_keys` 中登记本机专用的跳板公钥（`restrict,port-forwarding,permitopen="<VPS2>:22"`）。本机单独生成 `jump_ed25519`，并从已核验的 `known_hosts` 提取 VPS 1 记录为 `jump_known_hosts`；不要把 VPS 2 的目标密钥或目标 `knownHosts` 复用到跳板。
+
+在 `remote.json` / `mac-remote.json` 顶层增加：
+
+```json
+{
+  "jump": {
+    "mode": "auto",
+    "host": "relay.example.invalid",
+    "port": 22,
+    "user": "agentdesk-jump",
+    "key": "/Users/yourname/.agentdesk/jump_ed25519",
+    "knownHosts": "/Users/yourname/.agentdesk/jump_known_hosts",
+    "probeMinutes": 10
+  }
+}
+```
+
+Bridge 模板的 `ssh` 对象下加同名 `jump`。不配置 `jump` 就是纯直连，旧配置无需迁移。完整步骤、验证和回滚见 [部署说明](DEPLOY.md) §4。
+
 ## 4. 接入群聊和本机项目
 
 1. 从迁移包 `templates` 选择对应的 Bridge 模板，另存为 `windows-bridge.json` 或 `mac-bridge.json`。填写独立的状态目录、工作区绝对路径、SSH 连接和同一份已核验的 `knownHosts`。只保留实际授权的项目和固定命令。项目要接收补丁时启用 `write`，需要桌面操作时启用 `desktop` 并在应用中打开相应权限。只使用 SSH 时可删除模板的 `relay` 配置。备用线路凭据由管理员按设备单独分配。

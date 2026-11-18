@@ -403,10 +403,16 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
 // 远程 Codex：状态、事件、审批请求转发给界面
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
 let lastRemoteState;
+let lastRemoteRoute;
 remote.on('status', (s) => {
+  const route = s.route?.route;
+  if (route !== lastRemoteRoute) {
+    lastRemoteRoute = route;
+    logger?.log('ssh_route', { route });
+  }
   if (s.codex !== lastRemoteState) {
     lastRemoteState = s.codex;
-    logger?.log('remote_connection', { status: s.codex });
+    logger?.log('remote_connection', { status: s.codex, route });
   }
   toUi('remote:status', s);
 });
@@ -666,13 +672,15 @@ function chatLink(agent) {
   if (typeof agent !== 'string' || !CHAT_AGENTS.has(agent)) throw new Error('unknown_chat_agent');
   const link = chatLinks.get(agent);
   for (const key of ['host', 'port', 'knownHosts', 'chatUser', 'chatScript',
-    'claudeKey', 'grokKey', 'antigravityKey', 'claudeUser', 'grokUser', 'antigravityUser']) {
+    'claudeKey', 'grokKey', 'antigravityKey', 'claudeUser', 'grokUser', 'antigravityUser', 'jump']) {
     if (remote.cfg[key] !== undefined) link.cfg[key] = remote.cfg[key];
   }
+  if (remote.cfg.jump === undefined) delete link.cfg.jump;
   if (remote.cfg.configError === undefined) delete link.cfg.configError;
   else link.cfg.configError = remote.cfg.configError;
   link.key = link.cfg[agent + 'Key'];
   link.user = link.cfg[agent + 'User'] || link.cfg.chatUser;
+  link.route = remote.route;
   return link;
 }
 
@@ -720,10 +728,12 @@ async function chatToolTask(agent, params) {
 
 for (const [agent, link] of chatLinks) {
   link.on('status', (status) => toUi('chat:status-event', status));
-  link.on('ready', () => logger?.log('chat_connection', { status: 'ready', projectId: appConfig?.active?.id, agent }));
+  link.on('ready', () => logger?.log('chat_connection', {
+    status: 'ready', projectId: appConfig?.active?.id, agent, route: link.status().route?.route,
+  }));
   link.on('down', (info) => {
     for (const [turnId, turn] of chatTurns) if (turn.agent === agent) chatTurns.delete(turnId);
-    logger?.log('chat_connection', { status: 'down', agent });
+    logger?.log('chat_connection', { status: 'down', agent, route: link.status().route?.route });
     toUi('chat:down', info);
   });
   link.on('sleep', () => toUi('chat:sleep', { agent }));
@@ -1082,6 +1092,12 @@ ipcMain.handle('enrollment:login', async (event, password) => {
     const knownHosts = skipOnboarding ? enrollment.knownHosts : trustedHost.records.get(appConfig.value.confirmedHost.fingerprint);
     session = await createSession({ ...enrollment, knownHosts }, password, ws.root || preferredRoot);
     Object.assign(remote.cfg, session.remote);
+    remote.resetRoute();
+    for (const link of chatLinks.values()) {
+      link.route = remote.route;
+      if (remote.cfg.jump === undefined) delete link.cfg.jump;
+      else link.cfg.jump = remote.cfg.jump;
+    }
     const { startBridge } = require('./orchestrator/service');
     stopBridge = startBridge({
       config: session.bridge, desktop, recycle: shell.trashItem,

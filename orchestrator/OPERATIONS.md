@@ -200,6 +200,8 @@ Antigravity 仍须先核实实际 CLI 的模板参数与登录状态。
 
 Windows Bridge 的 `controlSocket` 使用本机命名管道（样例为 `\\.\pipe\agentdesk-windows-control`），`controlWorkspace` 指定主控已登记的工作区 ID。桌面应用使用该管道发送群聊和成员请求；未配置 Bridge 的 Windows 客户端不开放主控入口。各台电脑使用独立 SSH 公钥和私有工作区。在应用「工作区」里为项目填写相同的主控工作区 ID，并选择已有提交、工作区干净的本机 Git 仓库。
 
+Windows Bridge 也可在 `ssh.jump` 配置 VPS 1 SSH 跳板（见下文）；跳板代码随应用打包，VPS 2 不需要改动。
+
 ```text
 restrict,command="/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/ssh-gateway.js /var/lib/agentdesk-orchestrator/bridge.sock" ssh-ed25519 <WINDOWS_BRIDGE_PUBLIC_KEY>
 ```
@@ -211,6 +213,10 @@ macOS Bridge 与 Windows 可同时保持 SSH 连接。给 Mac 分配独立的 SS
 在本机用 Node.js 24 运行 `orchestrator/mac-bridge.js /absolute/path/to/mac-bridge.json`。SSH 配置提供 `host`、`port`、`user`、`key` 和经校验的 `knownHosts` 绝对路径。`workspaces` 只列出授权的项目和命令。配置 `desktopExecutable` 可接入签入会话中的官方 macOS agent-desktop。文件和命令功能仅依赖 SSH 和项目授权。辅助功能和屏幕录制需要用户在 macOS 设置中分别授予，权限取决于实际运行后台 Bridge 的进程归属。
 
 使用 launchd 时，将进程放在已登录用户的 `gui/<uid>` 会话中，`ProgramArguments` 使用 Node、脚本和配置的绝对路径。管理命令上传和下载时可设置 `AGENTDESK_BRIDGE=mac`，从而让无工作区字段的流消息走 Mac。用 `AGENTDESK_BRIDGE=mac` 执行 `route relay` 或 `route ssh` 只切换 Mac 的链路。Mac 的文件删除移至 Bridge 状态目录内的 `trash`。
+
+### VPS 1 SSH 跳板
+
+桌面端、单聊和 Bridge 的直连 VPS 2 出现传输层/DNS 故障时，可在客户端自动改经 VPS 1 的受限 SSH 账号转发到 VPS2:22。外层 SSH 仍由客户端端到端认证并校验 VPS 2 指纹，VPS 1 只转发 TCP；它不替代 22022 的应用层 Relay，也不改 VPS 2 的编排器或 sshd。VPS 1 需要专用 `agentdesk-jump` 用户和 `restrict,port-forwarding,permitopen="<VPS2>:22"` 的授权行。客户端在桌面配置顶层或 Bridge 的 `ssh.jump` 下配置 `host/port/user/key/knownHosts`；`mode` 为 `auto`（默认）、`direct`（强制直连）或 `jump`（强制跳板）。跳板密钥/known_hosts 必须与目标 VPS 2 的分开。安装步骤、验证和回滚见 [docs/DEPLOY.md](../docs/DEPLOY.md) §4。
 
 ### Mac 应用
 
