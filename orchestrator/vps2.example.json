@@ -3,7 +3,12 @@
   "cliTimeoutMs": 900000,
   "quotaBridges": [],
   "maxConcurrentTasks": 2,
-  "writeProviders": ["codex", "claude", "grok", "gemini", "antigravity"],
+  "writeProviders": [
+    "codex",
+    "claude",
+    "grok",
+    "antigravity"
+  ],
   "adapters": {
     "codex": {
       "bin": "/usr/local/bin/codex",
@@ -32,15 +37,6 @@
         }
       }
     },
-    "gemini": {
-      "bin": "/usr/local/bin/gemini",
-      "models": {
-        "gemini-2.5-flash-lite": {
-          "strengths": "Low-cost classification, extraction, and summarization.",
-          "billing": "subscription"
-        }
-      }
-    },
     "antigravity": {
       "bin": "/usr/local/bin/agy",
       "models": {},
@@ -56,13 +52,22 @@
           "-p",
           "{prompt}"
         ],
-        "readonlyArgs": ["--mode", "plan"],
-        "writeArgs": ["--mode", "accept-edits"],
+        "readonlyArgs": [
+          "--mode",
+          "plan"
+        ],
+        "writeArgs": [
+          "--mode",
+          "accept-edits"
+        ],
         "modelArgs": [
           "--model",
           "{model}"
         ],
-        "resumeArgs": ["--conversation", "{session}"],
+        "resumeArgs": [
+          "--conversation",
+          "{session}"
+        ],
         "outputField": "result.response",
         "sessionField": "result.conversation_id",
         "usageField": "result.usage",
@@ -80,7 +85,6 @@
     ],
     "scout": [
       "antigravity",
-      "gemini",
       "grok"
     ],
     "implement": [
@@ -90,13 +94,11 @@
     ],
     "review": [
       "grok",
-      "antigravity",
-      "gemini"
+      "antigravity"
     ],
     "research": [
       "antigravity",
-      "grok",
-      "gemini"
+      "grok"
     ],
     "accept": [
       "claude"

@@ -2,7 +2,7 @@
 
 ## 安装
 
-在 Ubuntu 上安装 Node.js 24（默认 `/usr/bin/node`，独立安装时通过 `AGENTDESK_NODE_BIN` 指定路径）、Git 和要用的各家官方 CLI（Codex、Claude Code 必装；Grok Build、Gemini、Antigravity 按需），并把 CLI 可执行文件安装在系统服务可访问的位置。样例按订阅登录配置（见下文「订阅登录」）；也可以在 `credentials` 里改用 API Key 文件。输入 VPS root 密码时使用本地 SSH 提示。
+在 Ubuntu 上安装 Node.js 24（默认 `/usr/bin/node`，独立安装时通过 `AGENTDESK_NODE_BIN` 指定路径）、Git 和要用的各家官方 CLI（Codex、Claude Code 必装；Grok Build、Antigravity 按需；Gemini CLI 已停用），并把 CLI 可执行文件安装在系统服务可访问的位置。样例按订阅登录配置（见下文「订阅登录」）；也可以在 `credentials` 里改用 API Key 文件。输入 VPS root 密码时使用本地 SSH 提示。
 
 ```sh
 sudo bash orchestrator/install-ubuntu.sh
@@ -41,11 +41,14 @@ sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /us
 | 能力 | 含义 | 默认候选顺序 |
 |---|---|---|
 | `plan` | 规划和拆分任务 | claude → codex |
-| `scout` | 读代码、日志、文档并写简报 | antigravity → gemini → grok → claude |
-| `implement` | 改代码（唯一可以写文件的能力） | codex → claude |
-| `review` | 审查改动 | grok → antigravity → gemini → claude |
-| `research` | 查资料 | grok → antigravity → gemini |
-| `accept` | 按摘要验收 | claude → codex |
+| `triage` | 出问题时诊断：重试、返工还是放弃 | claude |
+| `scout` | 读代码、日志、文档并写简报 | antigravity → grok（→ gemini） |
+| `implement` | 改代码（唯一可以写文件的能力） | codex → grok → antigravity |
+| `review` | 审查改动 | grok → antigravity（→ gemini） |
+| `research` | 查资料（联网搜索） | antigravity → grok（→ gemini） |
+| `accept` | 按摘要验收 | claude |
+
+Claude 只做 `plan` / `triage` / `accept`，配置无法让它承担其他能力。括号里的 Gemini 只在配置了 Gemini CLI 时作为最后的后备：Google 已于 2026 年 6 月停用 Gemini CLI 并由 Antigravity CLI 取代，样例配置不再包含它。
 
 在 `config.json` 的 `routing` 里改顺序即可调整，未配置的 CLI 会被跳过。Gemini 只能读，不能放进 `implement`。
 
@@ -145,7 +148,7 @@ ad gc          # 立即清理一次，返回清理了哪些任务、释放了多
 
 ### 各 AI 单聊修改
 
-`writeProviders` 显式列出允许生成本机项目补丁的执行者，例如 `["codex","claude","grok","gemini","antigravity"]`。它只启用指定成员的直接修改任务，不改变群聊默认的 Claude 组长与能力分工。未安装、未登录或额度用尽的执行者不会因此变为可用。
+`writeProviders` 显式列出允许生成本机项目补丁的执行者，例如 `["codex","claude","grok","antigravity"]`。它只启用指定成员的直接修改任务，不改变群聊默认的 Claude 组长与能力分工。未安装、未登录或额度用尽的执行者不会因此变为可用。
 
 桌面「新建单聊」可以选择执行者，成员面板也分别提供单聊入口。单聊的计划模式仍只读；其他模式使用 `edit` 任务在 VPS 独立 worktree 生成改动，用户先查看差异，再确认应用到授权本机项目。群聊可使用 `/edit @Grok 任务内容`（也支持 Claude、Gemini 等），直接指定修改者。直接修改不额外唤醒 Claude 验收，由提交人在现有补丁确认流程中审核。补丁写回仍检查本机 Git 基线、冲突与工作区授权。
 
