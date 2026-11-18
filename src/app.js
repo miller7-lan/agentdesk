@@ -188,8 +188,8 @@
           </div>
           ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
           <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
-        </button>` : ''}${dispatched.length ? `<div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
-          own.length && dispatched.length ? '<div class="sess-label">我的单聊</div>' : ''}${own.map(row).join('')}
+        </button>` : ''}${dispatched.length ? `<div class="sess-label">群聊派遣 · 只读记录</div><div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
+          own.length ? '<div class="sess-label">我的单聊 · 直接对话</div>' : ''}${own.map(row).join('')}
         </div></div>`;
     }
     list.innerHTML = html || '<div class="empty-note">没有匹配的会话</div>';
@@ -699,7 +699,8 @@
     $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = true;
     const provider = s?.provider || 'codex';
     const providerName = window.__providerDirect?.names[provider] || 'Codex';
-    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ ' + providerName;
+    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') +
+      (s?.agentThread ? '群聊派遣记录 · ' : '单聊 · ') + providerName;
     renderTimeline();
     $('#conversationTitle').textContent = s?.title || '';
     if (s) {

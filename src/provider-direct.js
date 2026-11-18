@@ -21,8 +21,8 @@
   }
   function persist() {
     store.set('providerDirectSessions', D.sessions.filter(s => s.provider && s.provider !== 'codex' && !s.agentThread).slice(0, 40)
-      .map(({ id, project, provider, title, items, busy, taskId, status, time }) =>
-        ({ id, project, provider, title, items: items.slice(-60).map(({ activity, ...item }) => item), busy, taskId, status, time })));
+      .map(({ id, project, provider, title, items, busy, taskId, taskMode, status, time }) =>
+        ({ id, project, provider, title, taskMode, items: items.slice(-60).map(({ activity, ...item }) => item), busy, taskId, status, time })));
   }
   async function control(s, operation, params = {}) {
     const result = await api.control({ projectId: s.project, operation, ...params });
@@ -83,14 +83,14 @@
     try {
       const routes = await control(s, 'routes');
       if (!routes.providers?.includes(s.provider)) throw Error(`${names[s.provider]} 尚未在 VPS 配置或登录。`);
-      const readonly = $('#modeSelect').value === 'plan';
+      const readonly = s.taskMode !== 'edit' || $('#modeSelect').value === 'plan';
       if (!readonly && !routes.writeProviders?.includes(s.provider)) throw Error('provider_write_not_enabled');
       const history = s.items.slice(-12).flatMap(it => it.t === 'user' ? ['User: ' + it.text]
         : it.t === 'dispatch-step' ? [it.snap?.brief && 'Lead assigned you: ' + it.snap.brief, it.snap?.output && names[s.provider] + ': ' + it.snap.output].filter(Boolean)
         : (it.task?.steps || []).filter(step => step.output).map(step => names[s.provider] + ': ' + step.output)).join('\n').slice(-3000);
       const prompt = (history ? 'Previous messages for context:\n' + history + '\n\nCurrent request:\n' : '') + text;
       const taskId = crypto.randomUUID();
-      const task = await control(s, 'submit', { taskId, provider: s.provider, mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop' });
+      const task = await control(s, 'submit', { taskId, provider: s.provider, mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop', tags: ['direct'] });
       s.items.push({ t: 'user', text }, { t: 'provider-task', task });
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
@@ -166,8 +166,18 @@
   // Sessions handled here instead of by the live Codex connection: every non-Codex AI, and every member's
   // conversation that receives work from the lead (Codex included).
   const handles = (s) => Boolean(s?.provider && (s.provider !== 'codex' || s.agentThread));
+  const ownsTask = (task) => task.tags?.includes('direct') || (typeof task.id === 'string' && D.sessions.some(s => !s.agentThread &&
+    (s.taskId === task.id || s.items?.some(it => it.t === 'provider-task' && it.task?.id === task.id))));
+  $('#directTaskMode').addEventListener('change', (event) => {
+    const s = A.sess(A.state.active);
+    if (!handles(s) || s.agentThread) return;
+    s.taskMode = event.target.value;
+    persist(); render(s);
+  });
   function render(s) {
     const other = handles(s);
+    $('#directTaskWrap').hidden = !other || Boolean(s.agentThread);
+    $('#directTaskMode').value = s.taskMode === 'edit' ? 'edit' : 'chat';
     for (const id of ['modelSelect', 'effortWrap', 'tierSelect']) {
       const element = $('#' + id); if (!element) continue;
       if (other && !controls.has(id)) controls.set(id, element.hidden);
@@ -175,9 +185,11 @@
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
     $('#attachBtn').disabled = other;
-    $('#input').placeholder = other ? `向 ${names[s.provider]} 描述任务…（计划模式只读，其他模式可生成本机补丁）` : '向 Codex 描述任务…';
+    $('#input').placeholder = other ? s.taskMode === 'edit'
+      ? `直接交给 ${names[s.provider]} 修改文件，改动由你确认后应用…`
+      : `与 ${names[s.provider]} 单聊，可查看已授权的本机目录；修改文件请切换任务类型…` : '向 Codex 描述任务…';
   }
-  window.__providerDirect = { names, choose, create, send, render, handles, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
+  window.__providerDirect = { names, choose, create, send, render, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
       if (!s.agentThread) loadActivity(s, s.items.filter(it => it.t === 'provider-task' && it.task && !it.activity).slice(-3)); },
     avatarState: s => s.busy ? 'thinking' : s.status === 'waiting' ? 'asking' : 'idle' };
   const liveItemHtml = window.__live.itemHtml;

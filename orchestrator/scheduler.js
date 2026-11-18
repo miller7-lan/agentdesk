@@ -603,10 +603,10 @@ event(task, state, detail) {
       this.router.quotaAllows('codex', capability) && this.ownerAllows(task, 'codex').allowed ? 'codex' : null;
     const role = task.provider || this.pickForTask(task, capability) || fallback;
     if (!role) throw new Error('executor_waiting:' + capability);
-    if (task.provider && ((role === LEAD_ROLE && !this.config.writeProviders?.includes(role)) || !this.router.available(role) || !this.router.quotaAllows(role, capability) ||
+    if (task.provider && ((role === LEAD_ROLE && !this.config.writeProviders?.includes(role)) || !this.router.available(role) || !this.router.quotaAllowsDirect(role) ||
         !this.ownerAllows(task, role).allowed)) throw new Error('executor_waiting:' + capability);
     if (task.mode === 'review_only' && !this.router.routes.review.includes(role)) throw new Error('invalid_review_provider');
-    const prompt = (task.mode === 'chat' ? 'Respond in read-only mode. Do not modify files or run write operations. Request: '
+    const prompt = (task.mode === 'chat' ? 'Respond in read-only mode. Do not modify files or run write operations. For files on the user\'s computer, use agentdesk_windows MCP tools: first windows_list_locations, then read/list with the chosen root. Your VPS checkout is not the user\'s live filesystem. Request: '
       : 'Review the supplied uncommitted changes without modifying them. Request: ') + task.prompt;
     if (task.mode === 'review_only') {
       const snapshot = task.reviewOf ? await taskPatch(this.config.stateDir, this.tasks.get(task.reviewOf))
@@ -624,9 +624,9 @@ event(task, state, detail) {
       await writeFile(path.join(dir, 'review-input.patch'), snapshot.patch, { mode: 0o600 });
       task.base = snapshot.base;
     } else {
-      const { head } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
-        operation: 'git_baseline', workspace: task.workspace,
-      });
+      // Conversation tools read the live Bridge files; the local project need not be clean or committed.
+      const repo = this.config.workspaces[task.workspace].repository;
+      const head = (await git(repo, ['rev-parse', 'HEAD'], signal)).trim();
       if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('invalid_workspace_baseline');
       task.base = head;
     }
@@ -895,11 +895,12 @@ event(task, state, detail) {
   async invoke(task, step, folder, signal, prompt = step.prompt) {
     const config = this.config.adapters[step.role];
     if (!config) throw new Error(step.role + '_not_configured');
-    const mcp = readOnlyMode(task.mode) || step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
+    const mcp = step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
     const release = await this.acquireCli(task, step, signal);
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
-    if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, runCommands: Boolean(step.write || step.capability === 'scout') });
+    if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace,
+      runCommands: !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout') });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;

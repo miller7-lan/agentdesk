@@ -24,8 +24,9 @@
   for (const saved of (Array.isArray(store.get('agentThreads', [])) ? store.get('agentThreads', []) : []).slice(0, MAX_THREADS)) {
     if (!saved || typeof saved.project !== 'string' || !ROLES.has(saved.provider) || !A.proj(saved.project) ||
         D.sessions.some((s) => s.id === saved.id) || !Array.isArray(saved.items)) continue;
-    D.sessions.push({ ...saved, agentThread: true, live: true, diffs: [], term: [], busy: false,
-      items: saved.items.filter((it) => it && ['user', 'provider-task', 'dispatch-step'].includes(it.t)) });
+    const items = saved.items.filter((it) => it && ['user', 'provider-task', 'dispatch-step'].includes(it.t) &&
+      !P.ownsTask({ id: it.taskId || it.task?.id }));
+    if (items.length) D.sessions.push({ ...saved, agentThread: true, live: true, diffs: [], term: [], busy: false, items });
   }
 
   function persist() {
@@ -61,6 +62,7 @@
 
   // Copies the latest state of a task into the conversations of the members who work on it.
   function apply(project, task) {
+    if (P.ownsTask(task)) return false;
     const touched = new Set();
     for (const step of task.steps || []) {
       if (!ROLES.has(step.role)) continue;

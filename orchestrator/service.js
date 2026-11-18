@@ -240,9 +240,9 @@ function start(config) {
         if (!scope) throw new Error('mcp_permission_denied');
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
-        if (['read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+        if (['locations', 'read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
           value = await files.call(route, scope.taskId, 'file.read', {
-            operation: frame.operation, workspace: scope.workspace, path: frame.path,
+            operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
           });
         } else if (frame.operation === 'commands' || frame.operation === 'run') {

@@ -1042,9 +1042,10 @@
           if (current !== generation || !Array.isArray(summaries)) return;
           const visible = new Set(summaries.map((summary) => summary.id));
           for (const [id, task] of group.records) {
-            if (task.redacted && !visible.has(id)) group.records.delete(id);
+            if ((task.redacted && !visible.has(id)) || window.__providerDirect?.ownsTask(task)) group.records.delete(id);
           }
           for (const summary of summaries) {
+            if (window.__providerDirect?.ownsTask(summary)) { group.records.delete(summary.id); continue; }
             const previous = group.records.get(summary.id);
             updateTask(group, summary.id, { ...summary, ...(previous?.prompt && { prompt: previous.prompt }) });
           }

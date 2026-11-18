@@ -173,8 +173,18 @@ class WindowsOperations {
     const workspaceName = body.workspace;
     const workspace = Object.hasOwn(this.config.workspaces, workspaceName) && this.config.workspaces[workspaceName];
     if (!workspace) throw new Error('workspace_not_authorized');
+    if (kind === 'file.read') {
+      const roots = workspace.readRoots || {};
+      if (body.operation === 'locations') return { locations: [
+        { id: 'project', label: '项目' }, ...Object.keys(roots).filter(id => id !== 'project').map(id => ({ id, label: id === 'desktop' ? '桌面' : id })),
+      ] };
+      const selected = body.root ?? 'project';
+      if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
+      const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
+      return this.read(readRoot, body);
+    }
+    if (body.root !== undefined && body.root !== 'project') throw new Error('read_root_readonly');
     const root = await fs.realpath(workspace.root);
-    if (kind === 'file.read') return this.read(root, body);
     if (kind === 'task.request' && body.operation === 'desktop') {
       if (workspace.desktop !== true || !this.desktop.enabled || !/^desktop_(?:click|double_click|right_click|move|drag|scroll|type|press|key|screenshot|mouse_move|mouse_click|mouse_drag|mouse_wheel|snapshot|find|type_text|press_key)$/.test(body.tool)) {
         throw new Error('desktop_not_authorized');
