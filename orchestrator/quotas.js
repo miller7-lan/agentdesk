@@ -184,12 +184,8 @@ async function quotaStatus(adapters, { liveOnly = false } = {}) {
   }));
 }
 
-async function captureClaudeQuotas(filename, statusLine) {
-  const limits = statusLine.rate_limits;
-  const toWindow = (window) => quotaWindow({ usedPercent: window?.used_percentage, resetsAt: window?.resets_at });
-  const fiveHour = toWindow(limits?.five_hour);
-  const weekly = toWindow(limits?.seven_day);
-  if (!fiveHour && !weekly) return;
+async function writeClaudeSnapshot(filename, fiveHour, weekly) {
+  if (!fiveHour && !weekly) return false;
   const temporary = filename + '.' + randomUUID();
   try {
     await writeFile(temporary, JSON.stringify({
@@ -197,9 +193,36 @@ async function captureClaudeQuotas(filename, statusLine) {
       buckets: [{ id: 'claude-account', fiveHour, weekly }],
     }), { flag: 'wx', mode: 0o600 });
     await rename(temporary, filename);
+    return true;
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+async function captureClaudeQuotas(filename, statusLine) {
+  const limits = statusLine.rate_limits;
+  const toWindow = (window) => quotaWindow({ usedPercent: window?.used_percentage, resetsAt: window?.resets_at });
+  return writeClaudeSnapshot(filename, toWindow(limits?.five_hour), toWindow(limits?.seven_day));
+}
+
+// Claude Code reports the account's limits on every headless turn (`rate_limit_event`). `unifiedWindows` holds
+// both windows as the fraction used (0.54 = 54%), so direct chats and scheduled tasks can refresh the same
+// snapshot a status line would write, without waiting for the CLI's interactive mode.
+function claudeRateLimitBuckets(info) {
+  const unified = info?.unifiedWindows || {};
+  const source = (name) => unified[name] || (info?.rateLimitType === name ? info : null);
+  const toWindow = (window) => {
+    const utilization = Number(window?.utilization);
+    return Number.isFinite(utilization) && utilization >= 0
+      ? quotaWindow({ usedPercent: Math.round(Math.min(1, utilization) * 1000) / 10, resetsAt: window?.resetsAt })
+      : null;
+  };
+  return [{ id: 'claude-account', fiveHour: toWindow(source('five_hour')), weekly: toWindow(source('seven_day')) }];
+}
+
+async function captureClaudeRateLimitEvent(filename, info) {
+  const [bucket] = claudeRateLimitBuckets(info);
+  return writeClaudeSnapshot(filename, bucket.fiveHour, bucket.weekly);
 }
 
 if (require.main === module) {
@@ -216,4 +239,7 @@ if (require.main === module) {
   }
 }
 
-module.exports = { codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets };
+module.exports = {
+  codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets,
+  captureClaudeQuotas, claudeRateLimitBuckets, captureClaudeRateLimitEvent,
+};

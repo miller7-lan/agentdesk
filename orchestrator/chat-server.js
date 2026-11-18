@@ -9,6 +9,7 @@ const { randomBytes, randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { Lines } = require('./transport');
 const { sandboxCommand } = require('./sandbox');
+const { captureClaudeRateLimitEvent } = require('./quotas');
 
 const PROVIDER = String(process.argv[2] || '');
 const PROVIDERS = new Set(['claude', 'grok', 'antigravity']);
@@ -21,6 +22,9 @@ const STATE_DIR = process.env.AGENTDESK_CHAT_STATE || '/var/lib/agentdesk-orches
 const THREADS_DIR = path.join(STATE_DIR, 'chat-workspace', 'threads');
 const SOCKET = path.join(STATE_DIR, `chat-${PROVIDER}.sock`);
 const STATE_FILE = path.join(STATE_DIR, `chat-${PROVIDER}.json`);
+// Claude Code reports the account's rate limits on every headless turn. The direct chat writes them where
+// quota_status already reads them (adapters.claude.quotaFile), so the 5-hour and weekly windows stay current.
+const CLAUDE_QUOTA_FILE = process.env.AGENTDESK_CHAT_CLAUDE_QUOTA || path.join(STATE_DIR, 'claude-quotas.json');
 const MCP_JS = path.join(__dirname, 'chat-mcp.js');
 const TURN_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TURN_TIMEOUT || 30 * 60_000);
 const OUTPUT_LIMIT = Number(process.env.AGENTDESK_CHAT_OUTPUT_LIMIT || 4 * 1024 * 1024);
@@ -738,11 +742,19 @@ function startTurn(turn) {
 
 /* ---------- CLI 事件解析 ---------- */
 function handleEvent(turn, event) {
+  if (event.type === 'rate_limit_event') return captureRateLimits(event);
   if (typeof event.event === 'string') return handleAntigravity(turn, event);
   if (event.type === 'system') return handleSystem(turn, event);
   if (event.type === 'stream_event') return handleStreamEvent(turn, event.event || {});
   if (event.type === 'assistant') return handleAssistant(turn, event);
   if (event.type === 'result') return handleResult(turn, event);
+}
+
+function captureRateLimits(event) {
+  if (PROVIDER !== 'claude' || !event.rate_limit_info) return;
+  // Fire and forget: a quota write must never delay or fail the turn.
+  captureClaudeRateLimitEvent(CLAUDE_QUOTA_FILE, event.rate_limit_info)
+    .catch((error) => log('quota_capture_failed', error.message));
 }
 
 function handleSystem(turn, event) {

@@ -87,6 +87,14 @@ async function main() {
       process.exit(1);
     }
   }
+  if (provider === 'claude' && scenario === 'QUOTA') {
+    const now = Math.floor(Date.now() / 1000);
+    writeLine({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning',
+      unifiedWindows: {
+        five_hour: { utilization: 0.54, resetsAt: now + 3600, status: 'allowed' },
+        seven_day: { utilization: 0.84, resetsAt: now + 3 * 86400, status: 'allowed_warning', surpassedThreshold: 0.75 },
+      } } });
+  }
 
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {
     const listed = await socketRequest(socketPath, { capability, operation: 'tools' });

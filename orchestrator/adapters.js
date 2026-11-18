@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { once } = require('node:events');
 const { createInterface } = require('node:readline');
 const { sandboxCommand } = require('./sandbox');
+const { captureClaudeRateLimitEvent } = require('./quotas');
 
 const providers = {
   codex: {
@@ -235,6 +236,10 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
       }
       try {
         const event = JSON.parse(line);
+        // Claude tasks report the account's limits too, so the quota snapshot also stays live between direct chats.
+        if (name === 'claude' && config.quotaFile && event.type === 'rate_limit_event') {
+          captureClaudeRateLimitEvent(config.quotaFile, event.rate_limit_info).catch(() => {});
+        }
         const id = provider.session(event);
         if (typeof id === 'string') onSession(id);
         const message = provider.output(event);

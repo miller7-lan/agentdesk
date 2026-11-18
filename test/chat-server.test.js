@@ -268,6 +268,23 @@ test('initialize, thread/start and a streaming turn', async (t) => {
   assert.equal(stored.threads[threadId].provider, 'claude');
 });
 
+test('Claude rate limits from a direct turn refresh the quota snapshot', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  const threadId = await thread(client);
+  const { completed } = await runTurn(client, threadId, 'QUOTA');
+  assert.equal(completed.turn.status, 'completed');
+  // The write is fire-and-forget; give it a moment past turn/completed.
+  const file = path.join(dir, 'claude-quotas.json');
+  const started = Date.now();
+  while (!fs.existsSync(file) && Date.now() - started < 2000) await new Promise((resolve) => setTimeout(resolve, 20));
+  const snapshot = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(snapshot.buckets[0].id, 'claude-account');
+  assert.equal(snapshot.buckets[0].fiveHour.usedPercent, 54);
+  assert.equal(snapshot.buckets[0].weekly.usedPercent, 84);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
+
 test('the selected model and reasoning effort are passed to every provider CLI', async (t) => {
   for (const [provider, model, effort, flag] of [
     ['claude', 'claude-opus-5-5', 'high', '--effort'],
