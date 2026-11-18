@@ -70,9 +70,58 @@ function logoImage(id) {
   return images.get(path);
 }
 
+// Codex, Grok Build, Antigravity and Claude Code are drawn by Agent HUD's procedural bot engine
+// (jazzenchen/agent-hud-open, Apache-2.0; src/vendor/agent-hud). The lead's Clawd, 本机 and the rest keep
+// this file's own drawing: Agent HUD's Clawd is Anthropic artwork that its licence does not cover.
+const HUD = { codex: ['openai', 'chatgpt'], grok: ['grok', 'grok'], antigravity: ['antigravity', 'antigravity'], claude: ['claude', 'claude'] };
+const hudBots = new Map();   // host element -> engine handle
+
+// AgentDesk's states in Agent HUD's vocabulary. A failure plays the engine's own failure cue once.
+function hudState(state) {
+  return {
+    idle: {}, asleep: { look: 'asleep' }, limited: { badge: 'limited' }, peek: { hovered: true },
+    thinking: { look: 'thinking' }, tool: { look: 'tool-edit' }, long: { look: 'tool-long-command' },
+    compacting: { look: 'compacting' }, juggling: { look: 'plain', subagents: true }, asking: { look: 'permission' },
+    done: { look: 'done' }, failed: { badge: 'failed' },
+  }[state] || {};
+}
+
+function mountHud(host) {
+  const [key, file] = HUD[host.dataset.member] || [];
+  if (!key || !window.AgentHudBots || !window.AgentHudArtwork?.[file]) return;
+  const state = host.dataset.avatarState;
+  const handle = window.AgentHudBots.mount(host, {
+    key, url: window.AgentHudArtwork?.[file], size: +host.dataset.size, light: isLight(),
+    state: hudState(state), still: host.hasAttribute('data-still') || reduceMotion.matches,
+  });
+  if (state === 'failed') handle.set(hudState(state), { event: 'failed', at: handle.clock() });
+  hudBots.set(host, handle);
+}
+
+function scanHud(records) {
+  for (const mutation of records) {
+    for (const node of mutation.addedNodes) {
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      const hosts = node.matches('[data-hud-bot]') ? [node] : node.querySelectorAll('[data-hud-bot]');
+      for (const host of hosts) if (host.isConnected && !hudBots.has(host)) mountHud(host);
+    }
+  }
+  for (const [host, handle] of hudBots) {
+    if (!host.isConnected) { handle.dispose(); hudBots.delete(host); }
+  }
+}
+
+function remountHud() {
+  for (const [host, handle] of [...hudBots]) { handle.dispose(); hudBots.delete(host); if (host.isConnected) mountHud(host); }
+}
+
 function html(id, { state = 'idle', size = 34, still = false, preview = false, balls = [], key = '' } = {}) {
   if (!M[id]) return '';
   const label = M[id].name + ' · ' + STATES[state].label;
+  if (HUD[id] && window.AgentHudBots) {
+    return `<span class="member-avatar hud-bot" data-hud-bot data-member="${id}" data-avatar-state="${state}" data-size="${size}"
+      ${still ? 'data-still' : ''} role="img" aria-label="${label}" style="display:inline-block;position:relative;flex:none;width:${size}px;height:${size}px;overflow:visible"></span>`;
+  }
   return `<canvas class="member-avatar" data-member="${id}" data-avatar-state="${state}" data-size="${size}"
     data-avatar-key="${key.replace(/[&<>"]/g, '')}" data-balls="${balls.filter((member) => Object.hasOwn(M, member)).join(',')}"
     ${still ? 'data-still' : ''} ${preview ? 'data-preview' : ''} role="img" aria-label="${label}" width="${size}" height="${size}" style="width:${size}px;height:${size}px"></canvas>`;
@@ -464,12 +513,15 @@ function scan(records) {
 
 readColors();
 new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
-new MutationObserver(() => { readColors(); drawAll(true); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+new MutationObserver(scanHud).observe(document.body, { childList: true, subtree: true });
+for (const host of document.querySelectorAll('[data-hud-bot]')) if (!hudBots.has(host)) mountHud(host);
+new MutationObserver(() => { readColors(); drawAll(true); remountHud(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 window.addEventListener('pointermove', (event) => Object.assign(pointer, { x: event.clientX, y: event.clientY, at: performance.now() }), { passive: true });
 window.addEventListener('focus', syncPlayback);
 window.addEventListener('blur', stop);
 document.addEventListener('visibilitychange', syncPlayback);
 reduceMotion.addEventListener('change', () => { drawAll(true); syncPlayback(); });
 
-window.AgentDeskAvatars = { html, states: STATES, previewStates: SHEET_ORDER, members: M };
+window.AgentDeskAvatars = { html, states: STATES, previewStates: SHEET_ORDER, members: M,
+  engine: (id) => HUD[id] && window.AgentHudBots && window.AgentHudArtwork ? 'hud' : 'own' };
 })();

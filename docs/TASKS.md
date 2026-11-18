@@ -149,6 +149,7 @@
 - [ ] Windows 实机启动、正式签名与公证、VPS2 实机验证。
 - [x] 群聊只负责派活和展示（分工进度表、接受与完成总结、验收总结、旧任务折叠）；各成员的工作进入各自的「组长派遣」单聊，可在单聊审核补丁、写回本机、继续追问。样例配置默认五个成员都可改代码。
 - [x] 界面梳理（保留原布局）：状态栏「额度与分工」入口打开额度页——每个成员的双环额度卡片（外环 5 小时、内环每周、软线硬线、重置时间、冷却与登录状态）、实时的分工与降级顺序（每种活由谁接手、其他人为何跳过）、VPS2 资源和规则说明；群聊里 Claude 只以「组长 · Claude」出现一次，未接入的成员收起，成员面板显示各自实际分工和排位；状态栏的额度小条和内存信息并入额度页；Clawd 空闲时也显示黑色眼睛。
+- [x] 头像：Codex、Grok Build、Antigravity、Claude Code 改用 Agent HUD 的程序化机器人引擎（Apache-2.0，原样打包于 `src/vendor/agent-hud`，来源与改动见其 README）；组长 Clawd 仍用自己的绘制，Agent HUD 的 Clawd 精灵图属 Anthropic 版权，未使用。
 - [x] 安全审查与防封：Relay 按地址限连接和封禁、令牌被拒后慢重试、重连抖动、Electron 权限、登记密码 ≥16 位。见 [SECURITY_REVIEW.md](SECURITY_REVIEW.md)。
 - [ ] VPS 上执行：全局 sshd 加固、ufw 只开用到的端口、Relay 对外 443（[SECURITY_REVIEW.md](SECURITY_REVIEW.md) §3、§4.3）。
 - [ ] Relay 支持域名 + 正规证书（客户端同时信任系统 CA 和自签 CA）。

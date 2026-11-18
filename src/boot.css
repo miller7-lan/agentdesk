@@ -19,8 +19,8 @@ html[data-bootplay="yes"] #boot { display: block; }
 .boot-peek { position: absolute; inset: 0; z-index: 0; --av: calc(var(--mark) * .4); }
 .boot-peeker { position: absolute; left: 50%; top: 50%; width: var(--av); height: var(--av); margin: calc(var(--av) / -2) 0 0 calc(var(--av) / -2);
   opacity: 0; transform: translate(calc(var(--x) * .25), calc(var(--y) * .25)) rotate(0deg) scale(.7); }
-.boot-peeker .bob { width: 100%; height: 100%; }
-.boot-peeker canvas { width: 100% !important; height: 100% !important; display: block; }
+.boot-peeker .bob { width: 100%; height: 100%; display: grid; place-items: center; }
+.boot-peeker .bob > canvas { width: 100% !important; height: 100% !important; display: block; }
 
 /* the dark glass tile condenses behind the drawn diamond */
 .boot-tile { transform-origin: 128px 128px; opacity: 0; filter: drop-shadow(0 18px 30px rgba(20, 40, 70, .22)); }

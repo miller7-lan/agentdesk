@@ -193,8 +193,12 @@
     return { READY: 'done', 'QUOTA 0%': 'limited', 'LOGIN REQUIRED': 'asking', 'NOT CONFIGURED': 'asleep', OFFLINE: 'failed' }[node.status] || 'thinking';
   }
 
+  // Sized to the peeking slot (40% of the mark), so Agent HUD's bots draw at their real size.
   function avatar(id, state, still) {
-    return window.AgentDeskAvatars.html(id, { state, size: 96, key: 'boot-peek:' + id, still });
+    // Agent HUD draws its mark edge to edge, our own drawing fills about 65% of its square: match them.
+    const slot = ($('bootMark')?.getBoundingClientRect().width || 160) * 0.4;
+    const size = Math.round(window.AgentDeskAvatars.engine?.(id) === 'hud' ? slot * 0.65 : slot);
+    return window.AgentDeskAvatars.html(id, { state, size, key: 'boot-peek:' + id, still });
   }
 
   function placePeekers(still) {
