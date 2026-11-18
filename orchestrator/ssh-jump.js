@@ -2,7 +2,6 @@
 // ProxyCommand helper：外层 ssh 用 stdin/stdout 和这里通信，这里再用一条
 // 受限 ssh 连接 VPS1，通过 -W 把字节转发到 VPS2。它只做管道，不解析 SSH。
 const { spawn } = require('node:child_process');
-const { jumpArguments } = require('./ssh-options');
 
 const MAX_PAYLOAD = 64 * 1024;
 
@@ -53,6 +52,34 @@ function decodePayload(encoded) {
       port: safePort(target.port, 'target'),
     },
   };
+}
+
+// 打包后的 helper 在 asar 外，不能 require asar 里的 ssh-options。这段必须与
+// ssh-options.jumpArguments 保持一致，test/ssh-jump.test.js 会逐项对照。
+const sshPath = (value) => JSON.stringify(process.platform === 'win32' && typeof value === 'string' ? value.replace(/\\/g, '/') : value);
+
+function formatTarget(host, port) {
+  const value = String(host || '');
+  if (value.startsWith('[') && value.endsWith(']')) return `${value}:${port}`;
+  if (value.includes(':')) return `[${value}]:${port}`;
+  return `${value}:${port}`;
+}
+
+function jumpArguments(payload) {
+  const jump = payload.jump;
+  const target = payload.target;
+  return [
+    '-F', 'none', '-T',
+    '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${sshPath(jump.knownHosts)}`, '-o', 'HostKeyAlgorithms=ssh-ed25519',
+    '-o', 'UpdateHostKeys=no', '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'ForwardAgent=no',
+    '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=20', '-o', 'ServerAliveCountMax=3',
+    '-i', jump.key,
+    ...(jump.certificate ? ['-o', 'CertificateFile=' + sshPath(jump.certificate)] : []),
+    '-p', String(jump.port),
+    '-W', formatTarget(target.host, target.port),
+    '--', jump.user + '@' + jump.host,
+  ];
 }
 
 function buildJumpArgs(payload) {

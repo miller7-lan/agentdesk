@@ -3,6 +3,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { test } = require('node:test');
 const { buildJumpArgs, decodePayload, main } = require('../orchestrator/ssh-jump');
+const { jumpArguments } = require('../orchestrator/ssh-options');
 
 const PAYLOAD = {
   v: 1,
@@ -46,6 +47,7 @@ test('jump arguments are built from the payload, not process state', () => {
   assert.equal(args[args.indexOf('-p') + 1], '2222');
   assert.equal(args[args.indexOf('-W') + 1], 'vps.example.invalid:22');
   assert.deepEqual(args.slice(-2), ['--', 'agentdesk-jump@relay.example.invalid']);
+  assert.deepEqual(args, jumpArguments(PAYLOAD), 'packaged helper must stay in sync with ssh-options');
 });
 
 function harness(t, payload = PAYLOAD) {

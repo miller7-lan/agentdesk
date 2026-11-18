@@ -13,7 +13,7 @@
 | 跳板报 `administratively prohibited` | VPS1 的 `permitopen` 与目标 VPS2 主机/端口不一致；按 `docs/DEPLOY.md` §4 核对，不要放开为任意目标。 |
 | 跳板认证或指纹失败后长时间不重试 | 跳板线路上的认证/主机密钥失败会把自动重试拉长到 10 分钟，避免 VPS2 fail2ban 封禁 VPS1 的源 IP。修好配置后点「重新连接」。 |
 | 跳板一直不回直连 | `auto` 模式只按 `probeMinutes`（默认 10 分钟）做 TCP + SSH banner 探测；探测成功只影响新连接。检查 `jump.probeMinutes` 和 VPS2 的 22 是否可达。 |
-| Windows 打包版跳板报 ProxyCommand 错误 | 确认 `resources\ssh-jump.js` 和 `ssh-options.js` 存在；路径不要含 `"`、换行或 `%`；必要时用 `AGENTDESK_SSH` 指向可用的 `ssh.exe` 复现。 |
+| Windows 打包版跳板报 ProxyCommand 错误 | 确认 `resources\ssh-jump.js` 存在且末次打包包含最新的自包含 helper；路径不要含 `"`、换行或 `%`；必要时用 `AGENTDESK_SSH` 指向可用的 `ssh.exe` 复现。 |
 | 需要排查连接或构建 | 打开「诊断」，预览并导出 `tar.gz`，其中包含版本、有限的运行状态、应用日志和审计记录。诊断里的 `remote.route` 只显示 `direct`/`jump`/`suspended`。 |
 
 应用日志位于 Electron 用户数据目录的 `logs/agentdesk.log`，最多三份，每份 5 MiB。审计文件按本地日期写为 `logs/audit-YYYYMMDD.jsonl`。

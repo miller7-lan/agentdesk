@@ -230,7 +230,7 @@ chmod 600 ~/.agentdesk/jump_ed25519 ~/.agentdesk/jump_known_hosts
 
 ### 4.4 部署新代码
 
-- 桌面端：重新打包。`package.json` 的 `extraResources` 会把 `ssh-jump.js` 和 `ssh-options.js` 放到 asar 外；打包后确认 `AgentDesk.app/Contents/Resources/ssh-jump.js` 及 Windows `resources\ssh-jump.js` 存在。
+- 桌面端：重新打包。`package.json` 的 `extraResources` 会把自包含的 `ssh-jump.js` 放到 asar 外；`ssh-options.js` 仍随主进程打进 asar。打包后确认 `AgentDesk.app/Contents/Resources/ssh-jump.js` 及 Windows `resources\ssh-jump.js` 存在。
 - Mac 后台 Bridge：按 §3 判断 launchd 指向仓库还是部署副本；部署副本要一并复制 `mac-bridge.js`、`ssh-options.js`、`ssh-route.js`、`bridge-ssh.js`、`ssh-jump.js`。
 - VPS1 不需要部署代码；VPS2 不需要改代码或重启。
 
