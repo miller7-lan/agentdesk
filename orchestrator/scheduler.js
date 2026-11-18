@@ -910,8 +910,10 @@ event(task, state, detail) {
     if (!config) throw new Error(step.role + '_not_configured');
     const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
     const mcp = step.id !== 'group-planner' && bridgeTools ? this.config.mcp : undefined;
+    let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
+      attachmentDirectory = directory;
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const files = [];
       for (const item of task.attachments) {
@@ -947,6 +949,7 @@ event(task, state, detail) {
         session: step.session, model: step.model,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort) || undefined,
         mcp: mcp && { socket: mcp.socket, capability },
+        attachmentDirectory,
         onSession: (id) => {
           if (step.session === id) return;
           step.session = id;
@@ -1784,7 +1787,10 @@ event(task, state, detail) {
           .then((list) => this.decorateQuota(list));
       }
       if (named && Array.isArray(this.config.quotaBridges) && this.config.quotaBridges.includes(named)) {
-        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: true })).then((list) => this.decorateQuota(list));
+        // Snapshots are included by default: Claude's is rewritten by every turn's rate_limit_event, so it is
+        // as current as a live reading, and the desktop needs its windows to draw the quota rings.
+        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true }))
+          .then((list) => this.decorateQuota(list));
       }
       throw new Error('quota_access_denied');
     }

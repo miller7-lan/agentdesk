@@ -488,15 +488,17 @@
     const text = ta.value.trim();
     const agent = agentOf(s);
     const chat = isChat(s);
+    const attachments = chat ? (s.chatAttachments || []) : [];
     const api = apiFor(agent);
     if (s.busy) { if (text) return steer(s, text); if (fromButton) return interrupt(s); return; }
-    if (!text && !liveAtt.length) return;
+    if (!text && !(chat ? attachments.length : liveAtt.length)) return;
     if (text.startsWith('/') && runCommand(text)) return;
     const { approvalPolicy, sandbox, sandboxPolicy } = modeToPolicy($('#modeSelect').value);
     if (!(await ensureReady(s))) return;
-    ta.value = ''; A.autosize();
+    if (!chat) { ta.value = ''; A.autosize(); }
     const { input, chips } = chat
-      ? { input: [{ type: 'text', text, text_elements: [] }], chips: [] }
+      ? { input: [{ type: 'text', text: text || '请查看随附的文件。', text_elements: [] }],
+        chips: attachments.map(file => ({ label: '附件 ' + file.name, kind: 'file', title: file.name })) }
       : await buildInput(text);
     if (!chat) { liveAtt = []; renderAtt(); }
     if (s.title === '新会话') s.title = (text || '附件').slice(0, 24);
@@ -510,7 +512,10 @@
     }
     const sel = $('#modelSelect');
     const model = chat ? (sel.value || undefined) : (sel.dataset.live ? sel.value : undefined);
-    if (chat) s.model = model;
+    if (chat) {
+      s.model = model;
+      s.effort = $('#effortWrap').hidden ? undefined : ($('#effortSelect').value || undefined);
+    }
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
       s.localRoot = A.proj(s.project)?.localRoot || localRoot;
@@ -522,8 +527,8 @@
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const turnParams = chat
-      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model,
-        effort: !$('#effortWrap').hidden && $('#effortSelect').value || undefined }
+      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort: s.effort,
+        ...(attachments.length && { attachments }) }
       : {
         threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
         effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
@@ -531,6 +536,13 @@
       };
     const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
+    if (chat) {
+      s.chatAttachments = [];
+      if (state.active === s.id && !state.group) {
+        if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
+        renderAtt();
+      }
+    }
     s.turnId = r.result.turn.id;
   }
   async function steer(s, text) {
@@ -558,7 +570,7 @@
     { cmd: '/compact', desc: '压缩当前会话的上下文', codexOnly: true },
     { cmd: '/rename', desc: '重命名当前会话（/rename 新名称）' },
     { cmd: '/archive', desc: '归档当前会话' },
-    { cmd: '/model', desc: '切换模型、推理强度和速度', codexOnly: true },
+    { cmd: '/model', desc: '切换模型和推理强度' },
     { cmd: '/skills', desc: '浏览云端和本地技能', codexOnly: true },
     { cmd: '/status', desc: '查看连接、模型和用量' },
     { cmd: '/reconnect', desc: '重新连接这个 AI 的单聊通道' },
@@ -579,7 +591,7 @@
           .then((r) => toast(r?.ok ? '已开始压缩上下文' : '压缩失败：' + (r?.error || ''))); return true;
       case '/rename': clear(); if (arg) renameSession(s, arg); else startRename(s); return true;
       case '/archive': clear(); archiveSession(s); return true;
-      case '/model': clear(); $('#modelSelect').focus(); toast('在输入框下方切换模型、推理强度和速度'); return true;
+      case '/model': clear(); $('#modelSelect').focus(); toast(agent === 'codex' ? '在输入框下方切换模型、推理强度和速度' : '在输入框下方切换模型和推理强度'); return true;
       case '/skills': ta.value = '$'; A.autosize(); ta.focus(); openMenu(); return true;
       case '/status': clear(); showStatus(s); return true;
       case '/reconnect': clear();
@@ -595,7 +607,9 @@
     if (agent !== 'codex') {
       const cs = chatStatus[agent] || {};
       sysNote(s, `连接：${agentName(agent)} 单聊 · ${cs.state || 'idle'}${cs.detail ? '（' + cs.detail + '）' : ''}`);
-      sysNote(s, `工作区：${rootOf(s) || '未绑定'} · 模型：默认`);
+      const modelText = $('#modelSelect').selectedOptions[0]?.text || '默认';
+      const effortText = $('#effortWrap').hidden ? '默认' : ($('#effortSelect').selectedOptions[0]?.text || '默认').replace('推理：', '');
+      sysNote(s, `工作区：${rootOf(s) || '未绑定'} · 模型：${modelText} · 推理：${effortText}`);
       sysNote(s, `本机文件：${$('#modeSelect').selectedOptions[0]?.text || '每步询问'} · 修改即时生效`);
       sysNote(s, '连接空闲后会休眠，再次输入时会自动唤醒。');
       A.renderAll();
@@ -714,9 +728,7 @@
 
   /* ---------- 模型 / 推理强度 / 速度 ---------- */
   let models = [];
-  // Levels the direct-chat CLIs accept; Antigravity has no way to set it from the command line yet.
-  const CHAT_EFFORTS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], grok: ['low', 'medium', 'high', 'xhigh'] };
-  const EFFORT_ZH = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra' };
+    const EFFORT_ZH = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra' };
   async function loadModels() {
     const all = []; let cursor;
     for (let i = 0; i < 10; i++) {
@@ -764,24 +776,47 @@
     });
     chatProfileLoads.set(project, loading);
   }
+  function chatProfileModel(s) {
+    const profile = chatProfiles.get(s?.project)?.[agentOf(s)];
+    return profile?.models?.[s?.model] || {};
+  }
+  function applyChatEfforts(s) {
+    const ef = $('#effortSelect');
+    const model = chatProfileModel(s);
+    const list = Array.isArray(model.efforts) ? model.efforts : [];
+    const signature = [s.id, s.model, ...list].join('|');
+    if (ef.dataset.chatSig !== signature) {
+      ef.dataset.chatSig = signature;
+      ef.innerHTML = list.map((effort) =>
+        `<option value="${esc(effort)}">推理：${esc(EFFORT_ZH[effort] || effort)}</option>`).join('');
+    }
+    if (!list.includes(s.effort)) s.effort = list.includes(model.defaultEffort) ? model.defaultEffort : list[0];
+    ef.value = s.effort || '';
+    $('#effortWrap').hidden = !list.length;
+  }
   function applyChatModels(s) {
     const sel = $('#modelSelect');
     const agent = agentOf(s);
     const profile = chatProfiles.get(s.project)?.[agent];
     const options = Object.entries(profile?.models || {});
-    const signature = [s.project, agent, ...options.map(([id]) => id)].join('|');
+    const signature = [s.project, agent, ...options.map(([id, p]) => `${id}:${p?.label || ''}`)].join('|');
     if (sel.dataset.live || sel.dataset.chatSig !== signature) {
       delete sel.dataset.live;
       sel.dataset.chatSig = signature;
-      sel.innerHTML = '<option value="">默认模型</option>' + options.map(([id, p]) =>
-        `<option value="${esc(id)}" title="${esc(p?.strengths || '')}">${esc(id)}</option>`).join('');
+      sel.innerHTML = '<option value="">默认模型（CLI）</option>' + options.map(([id, p]) =>
+        `<option value="${esc(id)}" title="${esc(p?.strengths || '')}">${esc(p?.label || id)}</option>`).join('');
       sel.disabled = !options.length;
     }
-    if (!options.some(([id]) => id === s.model)) s.model = undefined;
+    // 新会话没有选择时用配置里的 defaultModel，其次第一个模型；这样具体版本和推理强度一进来就可见。
+    if (!options.some(([id]) => id === s.model)) {
+      s.model = options.some(([id]) => id === profile?.defaultModel) ? profile.defaultModel : options[0]?.[0];
+    }
     sel.value = s.model || '';
+    const chosen = options.find(([id]) => id === s.model)?.[1];
     sel.title = options.length
-      ? (options.find(([id]) => id === s.model)?.[1]?.strengths || '选择该单聊使用的模型')
+      ? ([s.model, chosen?.strengths].filter(Boolean).join(' · ') || '选择该单聊使用的模型')
       : `${agentName(agent)} 使用默认模型`;
+    applyChatEfforts(s);
   }
 
   // 单聊（Claude/Grok/Antigravity）只保留通用输入；Codex 专有的模型、技能、附件和用量提示按会话切换
@@ -796,7 +831,7 @@
     ta.title = chat ? '@ 引用本机文件 · Enter 发送 · Shift+Enter 换行' : '/ 命令 · $ 技能 · @ 文件';
     const modeSel = $('#modeSelect');
     if (s && modeSel) {
-      const mode = s.mode || (chat ? 'auto' : 'ask');
+      const mode = s.mode || 'ask';
       if (modeSel.value !== mode) {
         modeSel.value = mode;
         $('#sbMode').textContent = modeSel.selectedOptions[0]?.text || '';
@@ -810,22 +845,18 @@
       applyChatModels(s);
     } else if (sel.dataset.chat) {
       delete sel.dataset.chat; delete sel.dataset.chatSig;
-      if (!renderModels()) modelPlaceholder('正在获取模型…');
+      if (!renderModels()) { modelPlaceholder('正在获取模型…'); $('#effortWrap').hidden = true; }
     }
+    if (!chat) delete $('#effortSelect').dataset.chatSig;
     const key = (s?.id || '') + '|' + agent + '|' + chat;
     if (key === composerSession) return;
     composerSession = key;
-    $('#attachBtn').hidden = chat;
+    $('#attachBtn').hidden = false;
+    renderAtt();
     $('#ctxHint').hidden = chat;
     $('#sbTokens').hidden = chat;
     const usageEl = $('#sbUsage'); if (usageEl) usageEl.hidden = chat;
     if (chat) {
-      // Each direct chat picks its own reasoning effort, from the levels its CLI accepts (as Codex does).
-      const levels = CHAT_EFFORTS[agent] || [];
-      const ef = $('#effortSelect');
-      ef.innerHTML = levels.map((level) => `<option value="${level}">推理：${EFFORT_ZH[level] || level}</option>`).join('');
-      ef.value = levels.includes(s?.effort) ? s.effort : levels.includes('medium') ? 'medium' : levels[0] || '';
-      $('#effortWrap').hidden = !levels.length;
       $('#tierWrap').hidden = true;
       if (liveAtt.length) { liveAtt = []; renderAtt(); }
     } else {
@@ -850,13 +881,14 @@
     if (s && isChat(s)) {
       s.model = $('#modelSelect').value || undefined;
       $('#modelSelect').title = $('#modelSelect').selectedOptions[0]?.title || '选择该单聊使用的模型';
+      applyChatEfforts(s);
       return;
     }
     if ($('#modelSelect').dataset.live) { store.set('model', $('#modelSelect').value); applyModelOptions(); }
   });
   $('#effortSelect').addEventListener('change', (e) => {
     const s = sess(state.active);
-    if (s && isChat(s)) { s.effort = e.target.value; return; }   // per conversation, not the Codex default
+    if (s && isChat(s)) { s.effort = e.target.value || undefined; return; }
     store.set('effort', e.target.value);
   });
   $('#tierSelect').addEventListener('change', (e) => store.set('tier', e.target.value));
@@ -1004,15 +1036,39 @@
   function renderAtt() {
     const s = sess(state.active);
     if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
+    if (isChat(s)) {
+      $('#attachList').innerHTML = (s.chatAttachments || []).map(file =>
+        `<button type="button" class="attach-pill" data-live-chat-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
+      return;
+    }
     $('#attachList').innerHTML = liveAtt.map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
   }
   $('#attachList').addEventListener('click', (e) => {
+    const id = e.target.closest('[data-live-chat-attachment]')?.dataset.liveChatAttachment;
+    if (id) {
+      const s = sess(state.active);
+      if (!isChat(s) || s.busy) return;
+      s.chatAttachments = (s.chatAttachments || []).filter(file => file.id !== id);
+      fileApi.forgetChat(id);
+      renderAtt();
+      return;
+    }
     const p = e.target.closest('[data-li]'); if (!p) return;
     e.stopImmediatePropagation(); liveAtt.splice(+p.dataset.li, 1); renderAtt();
   }, true);
   async function attach() {
     const s = sess(state.active);
-    if (isChat(s)) { toast(`${agentName(agentOf(s))} 单聊请用 @ 引用本机文件路径`); return; }
+    if (isChat(s)) {
+      if (s.busy) return;
+      const { files, errors } = await fileApi.pickChat(s.project);
+      const current = s.chatAttachments || [];
+      const accepted = files.slice(0, Math.max(0, 3 - current.length));
+      s.chatAttachments = [...current, ...accepted];
+      for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
+      if (state.active === s.id && !state.group) renderAtt();
+      if (errors.length || accepted.length < files.length) toast(errors.join('；') || '每条消息最多附加 3 个文件。');
+      return;
+    }
     if (!(await ensureReady(s))) return;
     const r = await fileApi.pick();
     liveAtt.push(...(r.files || [])); renderAtt();
@@ -1024,7 +1080,7 @@
     const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.preventDefault();
-    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
+    if (isChat(session)) { toast('请用「附件」选择图片文件。'); return; }
     if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择图片文件。'); return; }
     if (!(await ensureReady(session))) return;
     for (const f of imgs) {

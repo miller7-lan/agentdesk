@@ -2,6 +2,14 @@ name: Build release artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      bundle_connection:
+        description: Embed repository server and enrollment settings
+        type: boolean
+        default: false
+      macos_release_tag:
+        description: Existing GitHub release tag for the generic macOS DMG (optional)
+        type: string
 
 permissions:
   contents: read
@@ -29,6 +37,7 @@ jobs:
       #   AGENTDESK_SERVER_JSON      host, port and SSH host key (key-based login, see docs/INSTALL.md)
       #   AGENTDESK_ENROLLMENT_JSON  optional; switches the build to password login (orchestrator/ENROLLMENT.md)
       - name: Bundle server settings
+        if: inputs.bundle_connection
         shell: bash
         env:
           SERVER_JSON: ${{ secrets.AGENTDESK_SERVER_JSON }}
@@ -45,7 +54,11 @@ jobs:
           if [ ! -f agentdesk-server.json ] && [ ! -f agentdesk-enrollment.json ]; then
             echo "::warning::No server settings bundled; the app will read ~/.agentdesk/remote.json on each computer."
           fi
-      - if: matrix.platform == 'mac'
+      - if: matrix.platform == 'mac' && !inputs.bundle_connection
+        run: npm run dist:mac:release -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - if: matrix.platform == 'mac' && inputs.bundle_connection
         run: npm run dist:mac:release -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -54,7 +67,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - if: matrix.platform == 'windows'
+      - if: matrix.platform == 'windows' && !inputs.bundle_connection
+        run: npm run dist -- --publish never
+      - if: matrix.platform == 'windows' && inputs.bundle_connection
         run: npm run dist -- --publish never
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
@@ -69,3 +84,31 @@ jobs:
             dist/*.zip
             dist/*.blockmap
             dist/latest*.yml
+
+  publish-macos:
+    if: inputs.macos_release_tag != '' && !inputs.bundle_connection
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentdesk-mac
+      - name: Verify and publish generic macOS installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.macos_release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[[:alnum:]._-]+$ ]]
+          for app in ./*.zip; do
+            unzip -Z1 "$app" > app-files.txt
+            grep -q '/Contents/Resources/app\.asar$' app-files.txt
+            if grep -Eiq '(^|/)(agentdesk-(server|enrollment)\.json|known_hosts|[^/]*_ed25519|[^/]*\.token)$' app-files.txt; then
+              echo '::error::Unexpected server settings or credentials in the generic app'
+              exit 1
+            fi
+          done
+          sha256sum -- ./*.dmg > SHA256SUMS-mac.txt
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" ./*.dmg SHA256SUMS-mac.txt

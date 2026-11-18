@@ -73,7 +73,8 @@ async function main() {
   const definition = mcpDefinition();
   const socketPath = definition.args[1];
   const capability = definition.args[2];
-  const report = { provider, scenario, socket: socketPath, capabilityLength: capability.length, args };
+  const report = { provider, scenario, socket: socketPath, capabilityLength: capability.length, args,
+    claudeEffort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null };
 
   if (scenario === 'HANG') {
     writeLine({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } } });
@@ -85,6 +86,14 @@ async function main() {
       process.stderr.write('No conversation found with session ID\n');
       process.exit(1);
     }
+  }
+  if (provider === 'claude' && scenario === 'QUOTA') {
+    const now = Math.floor(Date.now() / 1000);
+    writeLine({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning',
+      unifiedWindows: {
+        five_hour: { utilization: 0.54, resetsAt: now + 3600, status: 'allowed' },
+        seven_day: { utilization: 0.84, resetsAt: now + 3 * 86400, status: 'allowed_warning', surpassedThreshold: 0.75 },
+      } } });
   }
 
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { runAdapter } = require('../orchestrator/adapters');
+const childProcess = require('node:child_process');
 
 // A stand-in CLI that answers in each CLI's output format with the arguments and effort it was given.
 async function fakeCli(dir) {
@@ -22,6 +22,9 @@ test('each CLI gets the reasoning effort the way it accepts it, and unknown leve
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-effort-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const bin = await fakeCli(dir);
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', (file, args, options) => spawn(process.execPath, [file, ...args], options));
+  const { runAdapter } = require('../orchestrator/adapters');
   const run = async (name, effort) => {
     const { output } = await runAdapter({ name, config: { bin, env: { FAKE_KIND: name, PATH: process.env.PATH } }, cwd: dir, prompt: 'p',
       readonly: true, timeout: 10000, signal: new AbortController().signal, log: path.join(dir, name + '.log'), onSession() {}, effort });

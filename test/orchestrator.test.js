@@ -177,9 +177,12 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   await until(() => service.endpoint['ssh:mac']?.ready);
   const liveQuotas = await mcpRequest(path.join(dir, 'control.sock'), { operation: 'quota_status' });
   assert.equal(liveQuotas[0].state, 'available');
-  assert.equal(liveQuotas[1].state, 'unavailable');
-  // The live reading has no Claude numbers, but routing uses the snapshot, and the bridge is told so.
-  assert.deepEqual([liveQuotas[1].used, liveQuotas[1].usedSource], [4, 'snapshot']);
+  // Claude is snapshot-backed; the bridge sees the same windows the desktop draws its rings from.
+  assert.equal(liveQuotas[1].state, 'available');
+  assert.equal(liveQuotas[1].source, 'snapshot');
+  assert.deepEqual(liveQuotas[1].buckets, [{ id: 'shared', fiveHour: { usedPercent: 4, resetsAt: null }, weekly: null }]);
+  assert.equal(liveQuotas[1].used, 4);
+  assert.equal(liveQuotas[1].usedSource, undefined);
   assert.ok(service.scheduler.store.all('received').every((record) =>
     !Array.isArray(record.reply?.body.value)));
   const bridgeStore = new Store(path.join(bridgeState, 'bridge.sqlite'));

@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { readGrokQuotas, antigravityBuckets } = require('../orchestrator/quotas');
+const {
+  readGrokQuotas, antigravityBuckets, claudeRateLimitBuckets, captureClaudeRateLimitEvent,
+} = require('../orchestrator/quotas');
 const { resetDelay } = require('../orchestrator/adapters');
 
 test('Grok credits come from the billing endpoint with the CLI sign-in, which is only read', async (t) => {
@@ -41,6 +43,36 @@ test('Antigravity usage: the Gemini group decides, windows come from the fractio
     fiveHour: { usedPercent: 0, resetsAt: null }, weekly: { usedPercent: 25, resetsAt: Math.ceil(Date.parse(reset) / 1000) } }]);
   assert.throws(() => antigravityBuckets({ status: 'ERROR', error: 'Not eligible in this region.' }), /antigravity_usage_refused/);
   assert.throws(() => antigravityBuckets({ status: 'SUCCESS', command: { name: 'credits' } }), /antigravity_usage_format/);
+});
+
+test('Claude rate_limit_event turns unified windows into a live quota snapshot', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-claude-quota-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const now = Math.floor(Date.now() / 1000);
+  const reset5h = now + 3600;
+  const reset7d = now + 3 * 86400;
+  const info = {
+    status: 'allowed_warning', resetsAt: reset7d, rateLimitType: 'seven_day', utilization: 0.84,
+    unifiedWindows: {
+      five_hour: { utilization: 0.543, resetsAt: reset5h, status: 'allowed' },
+      seven_day: { utilization: 0.84, resetsAt: reset7d, status: 'allowed_warning', surpassedThreshold: 0.75 },
+    },
+    overageEnabled: false,
+  };
+  assert.deepEqual(claudeRateLimitBuckets(info), [{ id: 'claude-account',
+    fiveHour: { usedPercent: 54.3, resetsAt: reset5h }, weekly: { usedPercent: 84, resetsAt: reset7d } }]);
+  const file = path.join(dir, 'claude-quotas.json');
+  assert.equal(await captureClaudeRateLimitEvent(file, info), true);
+  const snapshot = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.deepEqual(snapshot.buckets, claudeRateLimitBuckets(info));
+  assert.ok(Date.parse(snapshot.observedAt) <= Date.now());
+  if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  // Older events name one window with rateLimitType; that window alone is refreshed.
+  assert.deepEqual(claudeRateLimitBuckets({ rateLimitType: 'five_hour', utilization: 0.2, resetsAt: reset5h }),
+    [{ id: 'claude-account', fiveHour: { usedPercent: 20, resetsAt: reset5h }, weekly: null }]);
+  // No numbers at all: nothing is written.
+  assert.equal(await captureClaudeRateLimitEvent(path.join(dir, 'none.json'), { status: 'allowed' }), false);
+  await assert.rejects(fs.stat(path.join(dir, 'none.json')));
 });
 
 test('an exhausted quota keeps the CLI out until the reset it states, plus a minute', () => {

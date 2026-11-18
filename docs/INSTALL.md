@@ -1,5 +1,7 @@
 # 安装 AgentDesk
 
+给新电脑安装并接入现有 VPS 时，请从 [GitHub Releases](https://github.com/miller7-lan/agentdesk/releases) 下载通用迁移包，按[新电脑接入指南](MIGRATION.md)配置。
+
 - Windows x64 使用 `AgentDesk-<版本>-setup.exe` 安装，或启动 `AgentDesk-<版本>-portable.exe`。
 - macOS 将发布包中的 `AgentDesk.app` 拖到「应用程序」。开发构建在 `dist/mac-arm64/AgentDesk.app` 或对应 Intel 输出目录。
 

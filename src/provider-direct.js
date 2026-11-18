@@ -281,8 +281,8 @@
     const models = Object.entries(profiles?.models || {});
     picker.replaceChildren(new Option(profiles?.defaultModel ? '默认 · ' + profiles.defaultModel : 'CLI 默认模型', ''));
     for (const [id, profile] of models) {
-      const option = new Option(({ opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' })[id] || id, id);
-      option.title = profile.strengths || '';
+      const option = new Option(profile.label || id, id);
+      option.title = [id, profile.strengths].filter(Boolean).join(' · ');
       picker.add(option);
     }
     picker.value = models.some(([id]) => id === s.model) ? s.model : '';
@@ -313,6 +313,7 @@
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
     $('#attachBtn').disabled = other && (s.agentThread || s.busy || !window.desk.files?.pickChat);
+    if (other) $('#attachBtn').hidden = false;
     if (other) {
       $('#attachList').innerHTML = (attachments.get(s) || []).map(file =>
         `<button type="button" class="attach-pill" data-provider-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
