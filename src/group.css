@@ -369,3 +369,39 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .sb-quota-open[data-level="reserved"] { color: var(--warn); }
 .sb-quota-open[data-level="stopped"] { color: var(--danger); }
 .sb-quota-open[data-level="reserved"]::after, .sb-quota-open[data-level="stopped"]::after { content: ""; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: currentColor; }
+
+/* Each AI's own low-saturation colour, so whose words are whose reads at a glance.
+   Claude is the lead and shares the lead's terracotta (the colour of its mark). */
+:root {
+  --ai-lead: #c0876b; --ai-codex: #5f9e86; --ai-grok: #7a8496; --ai-antigravity: #8b84c9; --ai-gemini: #7c9ccc; --ai-local: #7a9aa3;
+}
+:root[data-theme="dark"] {
+  --ai-lead: #d39a7f; --ai-codex: #79b59d; --ai-grok: #98a1b1; --ai-antigravity: #a49ddb; --ai-gemini: #96b2dc; --ai-local: #92b1b9;
+}
+[data-member="lead"] { --ai: var(--ai-lead); }
+[data-member="codex"] { --ai: var(--ai-codex); }
+[data-member="grok"] { --ai: var(--ai-grok); }
+[data-member="antigravity"] { --ai: var(--ai-antigravity); }
+[data-member="gemini"] { --ai: var(--ai-gemini); }
+[data-member="local"] { --ai: var(--ai-local); }
+
+/* group: an AI's message sits on a faint wash of its colour with a coloured edge */
+.group-message[data-member]:not([data-member="you"]) .group-message-content {
+  padding: 7px 11px 9px; border-radius: 12px;
+  background: color-mix(in srgb, var(--ai) 9%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ai) 60%, transparent); }
+.group-message[data-member]:not([data-member="you"]) header strong { color: color-mix(in srgb, var(--ai) 70%, var(--text)); }
+.step-row[data-member] { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ai) 55%, transparent); }
+.step-row[data-member] .step-row-name { color: color-mix(in srgb, var(--ai) 70%, var(--text)); }
+.step-summary { background: color-mix(in srgb, var(--ai, var(--panel)) 7%, var(--raised)); }
+
+/* a conversation with one AI: its replies and work records carry that AI's colour */
+.timeline[data-member] .msg-assist .msg-body:not(.thinking) {
+  padding: 8px 12px; border-radius: 4px 14px 14px 14px;
+  background: color-mix(in srgb, var(--ai) 8%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--ai) 55%, transparent); }
+.timeline[data-member] .dispatch-step { border-left-color: color-mix(in srgb, var(--ai) 70%, transparent);
+  background: color-mix(in srgb, var(--ai) 5%, var(--raised)); }
+.timeline[data-member] .dispatch-from { color: color-mix(in srgb, var(--ai) 70%, var(--text)); }
+.timeline[data-member] .group-output { border-left: 3px solid color-mix(in srgb, var(--ai) 55%, transparent);
+  background: color-mix(in srgb, var(--ai) 6%, var(--raised)); padding: 8px 12px; border-radius: 4px 12px 12px 12px; }

@@ -330,7 +330,7 @@
   }
 
   function messageRow(id, metadata, body, kind = 'text') {
-    return `<article class="group-message" data-kind="${kind}">${avatars.html(id, { still: true })}<div class="group-message-content">
+    return `<article class="group-message" data-kind="${kind}" data-member="${id === 'claude' ? 'lead' : id}">${avatars.html(id, { still: true })}<div class="group-message-content">
       <header><strong>${memberName(id)}</strong>${metadata ? `<span>${esc(metadata)}</span>` : ''}</header>${body}
     </div></article>`;
   }
@@ -449,7 +449,7 @@
       const attrs = open ? `type="button" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" title="打开 ${esc(memberName(step.role))} 单聊"` : '';
       const what = [capabilityLabels[step.capability] || (step.write ? '修改' : ''), step.model].filter(Boolean).join(' · ');
       const note = milestone(step);
-      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" ${attrs}>
+      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" ${attrs}>
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
         <span class="step-row-what">${esc(what)}</span>

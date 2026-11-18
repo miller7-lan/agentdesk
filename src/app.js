@@ -348,6 +348,7 @@
     }
     const atBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80 || tl.dataset.sid !== s.id;
     tl.dataset.sid = s.id;
+    tl.dataset.member = s.provider === 'claude' ? 'lead' : s.provider || 'codex';   // tints this AI's replies
     tl.innerHTML = `<div class="tl-inner">${s.loading ? '<div class="empty-note">正在载入历史记录…</div>' : ''}${timelineHtml(s)}</div>`;
     if (atBottom) tl.scrollTop = tl.scrollHeight;
   }
