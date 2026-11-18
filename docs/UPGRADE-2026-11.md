@@ -25,7 +25,9 @@
 
 1. 用 `ad ls` 确认没有 `running`、`applying`、`testing` 的任务；有就等它们结束，或告诉用户。
 2. 备份配置：`sudo cp /etc/agentdesk-orchestrator/config.json /etc/agentdesk-orchestrator/config.json.bak-20261118`
-3. 按 DEPLOY.md §1 更新代码：`git pull --ff-only` 到 `main`，再执行 `sudo bash orchestrator/install-ubuntu.sh`。确认 `/opt/agentdesk-orchestrator/activity.js` 已存在。
+3. 按 DEPLOY.md §1 更新代码：`git pull --ff-only` 到 `main`，再执行 `sudo bash orchestrator/install-ubuntu.sh`。确认 `/opt/agentdesk-orchestrator/` 下有 `activity.js`、`sandbox.js`、`attachments.js`、`extract.js`、`zipfile.js`。
+   - 确认 `/usr/bin/bwrap` 存在（没有就 `apt-get install -y bubblewrap`，先告诉用户）。
+   - 确认 `pdftotext` 存在（PDF 附件提取文字用；没有就 `apt-get install -y poppler-utils`，先告诉用户）。
 4. 用 `sudoedit` 改配置，逐项对照 `orchestrator/vps2.example.json`：
    - `routing.implement` 改成 `["antigravity", "codex", "grok"]`，`routing.review` 和 `routing.research` 都改成 `["antigravity", "grok"]`。整个 `routing` 都没有自定义需求的，直接删掉，用代码里的默认值。
    - 给 `adapters.grok` 和 `adapters.antigravity` 加上 `callLimits`（样例：Grok 每 5 小时 60 次、每周 600 次；Antigravity 每 5 小时 300 次、每周 3000 次），额度页才会显示它们的估算用量。数字请用户按套餐确认。
@@ -57,14 +59,20 @@
 **完成标准：**
 - 开机动画播完后进入主界面，状态栏显示 SSH 主用在线。
 - 点状态栏「额度与分工」，能看到各成员的额度环，页面顶部没有“主控版本较旧”或“没有开放额度读取”的提示。
-- 在一个项目的群聊里发一个只读小任务，能看到组长方案、分工进度表，以及成员的“已接受任务”；点「单聊 ›」能看到该成员的工作过程。
+- 在一个项目的群聊里发一个只读小任务并附一个 .docx，能看到组长方案、分工进度表，以及成员的“已接受任务”；点「单聊 ›」能看到该成员的工作过程；成员能读出 docx 的内容。
+- 附件：Codex、Claude、Grok、Antigravity 单聊各测一次——附件按钮选图片并让它描述；拖入 .xlsx 或 .pdf 让它说出内容；拖入一个小文件夹，显示“已打包 N 个文件”且它能列出文件；在输入框粘贴截图，出现附件。
+- Claude 单聊选「完全访问」，让它在本机项目目录新建再删除一个测试文件，确认成功。
 
 ## 4. Mac
 
 1. 后台 Bridge：在仓库目录 `git pull --ff-only`，再 `launchctl kickstart -k gui/$(id -u)/<Bridge 的 launchd 标签>`（标签用 `launchctl list | grep -i agentdesk` 查）。
 2. 应用：`npm ci && npm run dist:mac -- --arm64`，用 `dist/mac-arm64/AgentDesk.app` 替换 `/Applications/AgentDesk.app`；或使用 Actions 产物 `agentdesk-mac`。
 
-**完成标准：** 与 Windows 相同的三项，外加 `launchctl print gui/$(id -u)/<标签>` 显示 `state = running`。
+**完成标准：** 与 Windows 相同的各项，外加 `launchctl print gui/$(id -u)/<标签>` 显示 `state = running`。
+
+## 直接交给本机 agent 的提示
+
+Mac 和 Windows 各一段，见 [UPGRADE-PROMPTS.md](UPGRADE-PROMPTS.md)。先在 Mac 上运行（它负责 VPS2 和 Mac），VPS2 确认生效后再在 Windows 上运行。
 
 ## 做完后
 
