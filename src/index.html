@@ -170,7 +170,10 @@
             <h1 id="groupTitle"># 群聊</h1>
             <span id="groupSubtitle"></span>
           </div>
-          <div class="group-roster" id="groupRoster" aria-label="群成员"></div>
+          <div class="group-head-actions">
+            <div class="group-roster" id="groupRoster" aria-label="群成员"></div>
+            <button type="button" class="btn group-clear" id="groupClearAll" title="清空所有群聊的消息记录；群聊本身保留">清空全部群聊记录</button>
+          </div>
         </header>
         <div class="group-filters" id="groupFilters" aria-label="消息筛选">
           <button type="button" data-group-filter="all" aria-pressed="true">全部</button>

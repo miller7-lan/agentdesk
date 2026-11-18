@@ -36,9 +36,12 @@
 .group-conversation-head { flex: none; padding: 15px clamp(16px, 3vw, 31px); display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--border); }
 .group-conversation-name h1 { margin: 0; font-size: 20px; line-height: 1.35; white-space: nowrap; }
 .group-conversation-name > span { color: var(--muted); font-size: 11px; }
+.group-head-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .group-roster { display: flex; gap: 4px; }
+.group-clear { flex: none; height: 26px; padding: 0 9px; font-size: 11.5px; color: var(--muted); }
 .group-roster button { min-width: 43px; max-width: 75px; min-height: 45px; display: grid; justify-items: center; gap: 3px; padding: 3px 4px; border-radius: 7px; }
 .group-roster button:hover { background: var(--hover); }
+.group-clear:hover { background: var(--danger-soft); color: var(--danger); }
 .group-roster button > span:last-child { font-size: 9.5px; color: var(--muted); max-width: 100%; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .group-roster .member-avatar { width: 26px; height: 26px; border-radius: 9px; }
 .group-filters { display: flex; flex-wrap: wrap; gap: 5px; padding: 11px clamp(16px, 3vw, 31px) 0; }
