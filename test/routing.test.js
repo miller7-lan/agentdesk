@@ -49,7 +49,7 @@ test('plans that name a capability are assigned by the router; only implement st
     { id: 'check', capability: 'review', role: 'grok', prompt: 'review', dependsOn: ['edit'] },
     { id: 'look', capability: 'research', role: 'codex', prompt: 'look up', dependsOn: [] },
   ]), router.availableRoles(), router);
-  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['codex', true], ['grok', false], ['grok', false]]);
+  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['codex', true], ['grok', false], ['antigravity', false]]);   // research: Antigravity first
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'deploy', prompt: 'x', dependsOn: [] }]), router.availableRoles(), router), /invalid_plan/);
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'implement', role: 'claude', prompt: 'x', dependsOn: [] }]),
     router.availableRoles(), router), /invalid_plan:lead_capability/);

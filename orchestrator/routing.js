@@ -30,7 +30,7 @@ const DEFAULT_ROUTES = {
   scout: ['antigravity', 'gemini', 'grok'],
   implement: ['codex', 'grok', 'antigravity'],
   review: ['grok', 'antigravity', 'gemini'],
-  research: ['grok', 'antigravity', 'gemini'],
+  research: ['antigravity', 'grok', 'gemini'],   // Antigravity searches with Google and has the largest quota
   accept: ['claude'],
 };
 
