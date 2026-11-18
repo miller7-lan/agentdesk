@@ -74,6 +74,10 @@ window.__groupReady = (async () => {
   const input = $('#groupInput');
   const provider = $('#groupRecipient');
   const model = $('#groupModel');
+  function renderModelOptions() {
+    const profiles = routeState.modelProfiles?.[provider.value];
+    $('#groupModelOptions').replaceChildren(...Object.keys(profiles?.models || {}).map(id => new Option(id, id)));
+  }
   const entry = $('#sbOrchestrator');
   const routeStatus = $('#sbGroupRoute');
   const dialog = $('#orchestratorDialog');
@@ -1032,6 +1036,7 @@ window.__groupReady = (async () => {
       }
       if (current !== generation) return;
       routeState = routes || {};
+      renderModelOptions();
       knownRoutes = true;
       connected = Boolean(routeState.ssh || routeState.relay);
       syncProjectChoices();
@@ -1190,6 +1195,7 @@ window.__groupReady = (async () => {
     provider.disabled = Boolean(reply);
     $('#groupMention').disabled = Boolean(reply);
     model.hidden = model.disabled = Boolean(reply) || !provider.value;
+    renderModelOptions();
     input.maxLength = reply ? 2000 : 12000;
     input.placeholder = reply ? '回复组长…' : '向组长描述任务…';
     $('#groupPlanReply').hidden = !reply;

@@ -672,6 +672,45 @@ async function orchestratorControl(frame) {
 ipcMain.handle('orchestrator:control', (event, frame) => fromMainWindow(event) ? orchestratorControl(frame) : { ok: false });
 ipcMain.handle('orchestrator:available', (event) => fromMainWindow(event) && Boolean(mac || enrollment || bridgeControlSocket));
 
+const localChanges = new Map();
+ipcMain.handle('localChange:pick', async (event, kind) => {
+  if (!fromMainWindow(event) || process.platform !== 'win32' || !['directory', 'file'].includes(kind)) return { cancelled: true };
+  try {
+    const picked = await dialog.showOpenDialog(win, {
+      title: kind === 'directory' ? '选择允许新建文件或文件夹的位置' : '选择要读取并修改的文本文件',
+      defaultPath: app.getPath('desktop'),
+      properties: [kind === 'directory' ? 'openDirectory' : 'openFile'],
+    });
+    if (picked.canceled) return { cancelled: true };
+    const scope = await require('./local-change').capture(picked.filePaths[0], kind);
+    const token = randomUUID();
+    if (localChanges.size >= 20) localChanges.delete(localChanges.keys().next().value);
+    localChanges.set(token, scope);
+    return { token, ...scope };
+  } catch (error) { return { error: error.message }; }
+});
+ipcMain.handle('localChange:apply', async (event, { token, proposal } = {}) => {
+  if (!fromMainWindow(event) || process.platform !== 'win32') return { error: '本机文件操作不可用。' };
+  const scope = localChanges.get(token);
+  if (!scope || scope.pending) return { error: '请选择本机文件或目录，再生成变更。' };
+  scope.pending = true;
+  try {
+    const local = require('./local-change');
+    const change = local.prepare(scope, proposal);
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question', title: '确认本机文件操作', message: change.target,
+      detail: change.action === 'mkdir' ? '在此路径新建文件夹。'
+        : (scope.kind === 'file' ? '原内容\n' + scope.before + '\n\n' : '') + '新内容\n' + change.content,
+      buttons: ['取消', '确认应用'], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    if (response !== 1) return { cancelled: true };
+    await local.apply(scope, change);
+    localChanges.delete(token);
+    return { ok: true, path: change.target };
+  } catch (error) { return { error: error.message }; }
+  finally { scope.pending = false; }
+});
+
 function diagnosticSnapshot() {
   return collectDiagnostics({
     version: app.getVersion(), config: appConfig.value, logger, remote: remote.state,

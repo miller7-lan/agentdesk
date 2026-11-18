@@ -57,6 +57,10 @@ contextBridge.exposeInMainWorld('desk', {
     available: () => ipcRenderer.invoke('orchestrator:available'),
     control: (frame) => ipcRenderer.invoke('orchestrator:control', frame),
   },
+  localChange: {
+    pick: (kind) => ipcRenderer.invoke('localChange:pick', kind),
+    apply: (request) => ipcRenderer.invoke('localChange:apply', request),
+  },
   desktop: {
     enabled: () => ipcRenderer.invoke('desktop:enabled'),
     toggle: () => ipcRenderer.invoke('desktop:toggle'),

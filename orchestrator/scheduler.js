@@ -1759,6 +1759,7 @@ event(task, state, detail) {
       const relay = port[bridge ? 'relay:' + bridge : 'relay'];
       return { route: channel, ssh: Boolean(port[bridge ? 'ssh:' + bridge : 'ssh']?.ready), relay: Boolean(relay?.ready && relay.online),
         providers: this.availableRoles(), writeProviders: (this.config.writeProviders || []).filter((role) => this.router.configured(role)),
+        modelProfiles: Object.fromEntries(this.router.roles().map(role => [role, this.config.adapters[role].profiles])),
         // How work is handed out right now, so the desktop can show who takes what and why others are skipped.
         team: { ...this.router.status(), configured: this.router.roles(),
           authRequired: this.router.roles().filter((role) => this.config.adapters[role]?.authRequired) },

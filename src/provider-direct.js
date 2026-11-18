@@ -4,6 +4,9 @@
   if (!A?.LIVE) return;
   const { $, esc, store, D } = A;
   const api = window.desk.orchestrator;
+  const catalogs = new Map();
+  const localScopes = new Map();
+  const localProposals = new WeakMap();
   const names = { codex: 'Codex', claude: 'Claude Code', grok: 'Grok Build', gemini: 'Gemini', antigravity: 'Antigravity' };
   const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review', 'awaiting_approval', 'awaiting_details']);
   const labels = { queued: '等待执行或额度恢复', running: '执行中', planning: '规划中',
@@ -12,7 +15,7 @@
     direct_workspace_not_bound: '此项目尚未绑定同一路径的可写 Bridge 工作区。请选择已绑定的 Git 项目后再生成补丁。',
     cli_quota_exhausted: '该 AI 当前额度已用尽。', cli_auth_required: '该 AI 的登录或账号不可用，需要在 VPS 上处理。',
     cli_tool_permission_required: '本机工具未获执行许可，本次操作没有完成，请检查主控的工具权限配置。',
-    windows_workspace_dirty: '生成项目补丁需要已提交且无未提交改动的 Git 工作区。可以切换到干净的项目，或用「对话与查看」读取文件。桌面目录仅开放读取。',
+    windows_workspace_dirty: '生成项目补丁需要干净的 Git 工作区。若要改桌面或其他目录，请选择「修改本机文件」。',
     bridge_offline: 'Windows Bridge 尚未连接。', claude_reserved: '服务器需要更新以支持 Claude 单聊。' };
   const saved = store.get('providerDirectSessions', []);
   if (Array.isArray(saved)) for (const s of saved.slice(0, 40)) {
@@ -23,8 +26,8 @@
   }
   function persist() {
     store.set('providerDirectSessions', D.sessions.filter(s => s.provider && s.provider !== 'codex' && !s.agentThread).slice(0, 40)
-      .map(({ id, project, provider, title, items, busy, taskId, taskMode, status, time }) =>
-        ({ id, project, provider, title, taskMode, items: items.slice(-60).map(({ activity, ...item }) => item), busy, taskId, status, time })));
+      .map(({ id, project, provider, title, items, busy, taskId, taskMode, model, status, time }) =>
+        ({ id, project, provider, title, taskMode, model, items: items.slice(-60).map(({ activity, ...item }) => item), busy, taskId, status, time })));
   }
   async function control(s, operation, params = {}) {
     const result = await api.control({ projectId: s.project, operation, ...params });
@@ -84,16 +87,34 @@
     s.busy = true; s.status = 'running'; A.renderAll();
     try {
       const routes = await control(s, 'routes');
+      catalogs.set(s.project, routes.modelProfiles || {});
       if (!routes.providers?.includes(s.provider)) throw Error(`${names[s.provider]} 尚未在 VPS 配置或登录。`);
       const readonly = s.taskMode !== 'edit';
+      const scope = s.taskMode === 'local' ? localScopes.get(s.id) : undefined;
+      if (s.taskMode === 'local' && !scope) throw Error('请先选择要修改的本机文件或允许新建的目录。');
       if (!readonly && !routes.writeProviders?.includes(s.provider)) throw Error('provider_write_not_enabled');
       const history = s.items.slice(-12).flatMap(it => it.t === 'user' ? ['User: ' + it.text]
         : it.t === 'dispatch-step' ? [it.snap?.brief && 'Lead assigned you: ' + it.snap.brief, it.snap?.output && names[s.provider] + ': ' + it.snap.output].filter(Boolean)
         : (it.task?.steps || []).filter(step => step.output).map(step => names[s.provider] + ': ' + step.output)).join('\n').slice(-3000);
-      const prompt = (history ? 'Previous messages for context:\n' + history + '\n\nCurrent request:\n' : '') + text;
+      let prompt = (history ? 'Previous messages for context:\n' + history + '\n\nCurrent request:\n' : '') + text;
+      if (scope) {
+        const actions = scope.kind === 'file'
+          ? 'Return JSON only: {"action":"replace","content":"complete replacement text"}. Selected file: ' +
+            JSON.stringify({ name: scope.path.split(/[\\/]/).at(-1), content: scope.before })
+          : 'Return JSON only: {"action":"mkdir","name":"one folder name"} or {"action":"create","name":"one file name","content":"text"}. The destination directory was selected locally.';
+        prompt = 'Propose one local change for user review. Do not call tools or claim to write anything. ' + actions +
+          '\nUse at most 2000 UTF-8 bytes for content. For unsupported requests return {"action":"unsupported"}. User request: ' + text.slice(0, 4000);
+      }
       const taskId = crypto.randomUUID();
-      const task = await control(s, 'submit', { taskId, provider: s.provider, mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop', tags: ['direct'] });
-      s.items.push({ t: 'user', text }, { t: 'provider-task', task });
+      if (s.model && !Object.hasOwn(routes.modelProfiles?.[s.provider]?.models || {}, s.model)) {
+        s.model = '';
+        throw Error('所选模型已从 VPS 列表移除，请重新选择。');
+      }
+      const task = await control(s, 'submit', { taskId, provider: s.provider, model: s.model || undefined,
+        mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop', tags: ['direct'] });
+      const item = { t: 'provider-task', task };
+      if (scope) localProposals.set(item, scope.token);
+      s.items.push({ t: 'user', text }, item);
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
       input.value = ''; A.autosize();
@@ -116,10 +137,14 @@
       .map(step => step.output).join('\n\n');
     const patches = task.detail === 'patches_ready';
     const error = task.state === 'failed' ? errors[task.detail] || task.detail : '';
-    return `<div class="group-output"><strong>${esc(names[task.provider] || 'AI')} · ${esc(labels[task.state] || task.state)}</strong>
+    const model = task.steps?.find(step => step.model)?.model || task.model;
+    const awaitingLocal = task.state === 'completed' && localProposals.has(it);
+    return `<div class="group-output"><strong>${esc(names[task.provider] || 'AI')} · ${awaitingLocal ? '等待确认本机操作' : esc(labels[task.state] || task.state)}${model ? ' · ' + esc(model) : ''}</strong>
       ${work}
       ${output ? `<pre style="white-space:pre-wrap">${esc(output)}</pre>` : ''}
       ${error ? `<p class="err-note">${esc(error)}</p>` : ''}
+      ${awaitingLocal ? `<button class="btn primary" type="button" data-provider-action="local" data-provider-index="${index}">查看并确认本机操作</button>` : ''}
+      ${it.localApplied ? `<p>已应用到 ${esc(it.localApplied)}</p>` : ''}
       ${patches ? `<p>改动已生成，尚未写入本机。请先查看补丁，再确认应用。</p>
         <button class="btn" data-provider-action="diff" data-provider-index="${index}">查看补丁</button>
         ${it.preview !== undefined ? `<pre style="white-space:pre-wrap">${esc(it.preview)}</pre>
@@ -134,7 +159,20 @@
     if (!s?.provider || item?.t !== 'provider-task') return;
     button.disabled = true;
     try {
-      if (button.dataset.providerAction === 'diff') {
+      if (button.dataset.providerAction === 'local') {
+        const output = item.task.steps?.findLast(step => step.output)?.output.trim();
+        const json = output?.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1] || output;
+        let proposal;
+        try { proposal = JSON.parse(json); } catch { throw Error('模型未返回可审核的本机操作。'); }
+        const token = localProposals.get(item);
+        const result = await window.desk.localChange.apply({ token, proposal });
+        if (result.error) throw Error(result.error);
+        if (result.ok) {
+          localProposals.delete(item);
+          if (localScopes.get(s.id)?.token === token) localScopes.delete(s.id);
+          item.localApplied = result.path;
+        }
+      } else if (button.dataset.providerAction === 'diff') {
         const result = await control(s, 'task_diff', { taskId: item.task.id });
         item.preview = result.patch;
       } else if (item.preview !== undefined) {
@@ -176,12 +214,46 @@
     s.taskMode = event.target.value;
     persist(); render(s);
   });
+  $('#directModel').addEventListener('change', (event) => {
+    const s = A.sess(A.state.active);
+    if (!handles(s) || s.agentThread) return;
+    s.model = event.target.value;
+    persist();
+  });
+  const localSupported = window.desk.platform === 'win32' && Boolean(window.desk.localChange);
+  $('#directTaskMode').querySelector('[value="local"]').hidden = !localSupported;
+  for (const [id, kind] of [['pickLocalDirectory', 'directory'], ['pickLocalFile', 'file']]) {
+    $('#' + id).addEventListener('click', async () => {
+      const s = A.sess(A.state.active);
+      const scope = await window.desk.localChange.pick(kind);
+      if (scope.error) A.toast(scope.error);
+      if (scope.token) { localScopes.set(s.id, scope); if (A.state.active === s.id) render(s); }
+    });
+  }
+  function renderModels(s) {
+    const picker = $('#directModel');
+    const profiles = catalogs.get(s.project)?.[s.provider];
+    const models = Object.entries(profiles?.models || {});
+    picker.replaceChildren(new Option(profiles?.defaultModel ? '默认 · ' + profiles.defaultModel : 'CLI 默认模型', ''));
+    for (const [id, profile] of models) {
+      const option = new Option(({ opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' })[id] || id, id);
+      option.title = profile.strengths || '';
+      picker.add(option);
+    }
+    picker.value = models.some(([id]) => id === s.model) ? s.model : '';
+    picker.disabled = !models.length || s.busy;
+  }
   function render(s) {
     const other = handles(s);
     $('#directTaskWrap').hidden = !other || Boolean(s.agentThread);
+    $('#directModelWrap').hidden = !other || Boolean(s.agentThread);
+    if (other && !s.agentThread) renderModels(s);
     $('#permissionModeWrap').hidden = other;
     $('#sbMode').hidden = other;
-    $('#directTaskMode').value = s.taskMode === 'edit' ? 'edit' : 'chat';
+    const local = localSupported && other && !s.agentThread && s.taskMode === 'local';
+    $('#directTaskMode').value = local ? 'local' : s?.taskMode === 'edit' ? 'edit' : 'chat';
+    $('#pickLocalDirectory').hidden = $('#pickLocalFile').hidden = !local;
+    $('#pickLocalDirectory').title = $('#pickLocalFile').title = localScopes.get(s?.id)?.path || '';
     for (const id of ['modelSelect', 'effortWrap', 'tierSelect']) {
       const element = $('#' + id); if (!element) continue;
       if (other && !controls.has(id)) controls.set(id, element.hidden);
@@ -189,11 +261,15 @@
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
     $('#attachBtn').disabled = other;
-    $('#input').placeholder = other ? s.taskMode === 'edit'
-      ? `让 ${names[s.provider]} 修改 Git 项目文件，预览补丁后确认应用。桌面仅可查看…`
+    $('#input').placeholder = local ? localScopes.get(s.id)?.path || '先选择本机文件或目录，再描述要做的改动…' : other ? s.taskMode === 'edit'
+      ? `让 ${names[s.provider]} 修改 Git 项目文件，预览补丁后确认应用…`
       : `与 ${names[s.provider]} 单聊，可查看已授权的本机目录；修改文件请切换任务类型…` : '向 Codex 描述任务…';
   }
   window.__providerDirect = { names, choose, create, send, render, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
+      if (!s.agentThread) control(s, 'routes').then(routes => {
+        catalogs.set(s.project, routes.modelProfiles || {});
+        if (A.state.active === s.id && !A.state.group) renderModels(s);
+      }).catch(() => {});
       if (!s.agentThread) loadActivity(s, s.items.filter(it => it.t === 'provider-task' && it.task && !it.activity).slice(-3)); },
     avatarState: s => s.busy ? 'thinking' : s.status === 'waiting' ? 'asking' : 'idle' };
   const liveItemHtml = window.__live.itemHtml;

@@ -98,6 +98,8 @@ Windows 的 Bridge 运行在 AgentDesk 应用进程里，所以**代码改动要
 
 ## 3. Mac 端
 
+模型列表配置、Mac 同步和本机文件验收步骤参见 [模型选择与本机文件](MODELS-AND-LOCAL-FILES.md)。
+
 Mac 有两个独立部分：**AgentDesk 应用**和**后台 Bridge**（launchd 运行仓库里的 `orchestrator/mac-bridge.js`）。
 
 ### 更新后台 Bridge
