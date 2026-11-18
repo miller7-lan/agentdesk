@@ -196,6 +196,15 @@
                   <option value="antigravity">Antigravity</option>
                 </select>
               </label>
+              <label class="group-recipient" title="组长（最新 Opus）规划、诊断和验收时的思考程度。派给成员用什么模型、什么思考程度由组长决定。">组长思考
+                <select id="groupLeadEffort" aria-label="组长思考程度">
+                  <option value="low">低</option>
+                  <option value="medium">中</option>
+                  <option value="high" selected>高</option>
+                  <option value="xhigh">超高</option>
+                  <option value="max">最高</option>
+                </select>
+              </label>
               <input id="groupModel" type="text" list="groupModelOptions" placeholder="模型 ID（可选）" aria-label="模型 ID" maxlength="128" hidden disabled />
               <datalist id="groupModelOptions"></datalist>
               <span class="grow"></span>

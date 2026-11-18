@@ -36,6 +36,9 @@ const FILE_TOOL = /^agentdesk_(file|command)_[a-z]+$/;
 // AGENTDESK_CHAT_SANDBOX (path of bwrap): the CLI runs inside bubblewrap and may use its own shell and file tools
 // in this conversation's VPS workspace, as Codex does in its sandbox. Without it those stay off.
 const SANDBOX = process.env.AGENTDESK_CHAT_SANDBOX || '';
+// Effort levels each CLI accepts: Claude Code through CLAUDE_CODE_EFFORT_LEVEL, Grok Build through --effort.
+// Antigravity has no flag for it (only its interactive /effort), so none are offered.
+const CHAT_EFFORTS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], grok: ['low', 'medium', 'high', 'xhigh'] }[PROVIDER] || [];
 
 const BIN = {
   claude: process.env.AGENTDESK_CHAT_CLAUDE_BIN || 'claude',
@@ -577,6 +580,7 @@ function providerArgs(turn, workspace) {
       '--rules', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
+    if (turn.effort) args.push('--effort', turn.effort);
     if (session && first) args.push('--session-id', session);
     else if (session) { args.push('--resume', session); turn.resumeAttempt = true; }
     args.push('-p', turn.text);
@@ -659,7 +663,7 @@ function startTurn(turn) {
       : { command: BIN, args };
     child = spawn(launch.command, launch.args, {
       cwd: workspace,
-      env: childEnvironment(),
+      env: { ...childEnvironment(), ...(PROVIDER === 'claude' && turn.effort && { CLAUDE_CODE_EFFORT_LEVEL: turn.effort }) },
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1005,6 +1009,8 @@ async function dispatch(method, params) {
         capability: randomBytes(24).toString('hex'),
         serverName: 'agentdesk_' + randomBytes(4).toString('hex'),
         model: typeof params.model === 'string' ? params.model.slice(0, 128) : '',
+        // Reasoning effort, chosen per conversation like Codex's; a level this CLI does not know is dropped.
+        effort: CHAT_EFFORTS.includes(params.effort) ? params.effort : '',
         agentText: '',
         agentItemId: null,
         assistantText: '',

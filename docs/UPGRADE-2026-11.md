@@ -12,6 +12,13 @@
 | VPS1 Relay | 按来源地址限制未认证连接；令牌反复错误的地址暂时拒绝 |
 | Windows / Mac 应用 | 组长派遣记录与「我的单聊」分开；单聊显示工作过程；群聊的分工进度表与接受、完成、验收总结；状态栏「额度与分工」页；成员按实际分工显示；各 AI 主题色；面板收成三个标签、可拖动宽度；新开机动画；Clawd 黑色长方形眼睛；安装包可内置服务器地址 |
 
+## 补充（同日后续）
+
+- 群聊派活：`adapters.grok`、`adapters.antigravity`、`adapters.claude` 设 `"sandbox": true`，它们在 bubblewrap 沙盒里可以运行命令、跑测试（VPS2 已为 Codex 装好 `bwrap`；确认 `/usr/bin/bwrap` 存在）。
+- 单聊：把 `sandbox.js` 一起复制到 `/opt/agentdesk-orchestrator/`；`agent-chat.sh` 发现 `bwrap` 会自动开启沙盒。三家都能联网搜索。
+- `adapters.claude.defaultModel` 设为 `"opus"`（组长用最新 Opus）。
+- 在 VPS2 上运行 `grok --help`、`agy --help`，确认 `--effort` 的写法；Antigravity 若支持，按 OPERATIONS.md 写 `efforts` 和 `effortArgs`。
+
 ## 1. VPS2
 
 1. 用 `ad ls` 确认没有 `running`、`applying`、`testing` 的任务；有就等它们结束，或告诉用户。

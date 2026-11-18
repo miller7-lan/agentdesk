@@ -1288,7 +1288,8 @@ window.__groupReady = (async () => {
     const reply = group?.planReply;
     provider.disabled = Boolean(reply);
     $('#groupMention').disabled = Boolean(reply);
-    model.hidden = model.disabled = Boolean(reply) || !provider.value;
+    // In the group the lead picks each member's model and effort; the person picks them only in direct chats.
+    model.hidden = model.disabled = true;
     renderModelOptions();
     input.maxLength = reply ? 2000 : 12000;
     input.placeholder = reply ? '回复组长…' : '向组长描述任务…';
@@ -1413,7 +1414,8 @@ window.__groupReady = (async () => {
       operation,
       request: {
         prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined, group: group.id,
-        provider: recipient || undefined, model: recipient && recipient === provider.value && model.value.trim() || undefined,
+        leadEffort: $('#groupLeadEffort')?.value || undefined,
+        provider: recipient || undefined,
       },
     };
   }
@@ -1719,6 +1721,13 @@ window.__groupReady = (async () => {
     if (currentGroup()) markSeen(currentGroup());
     repaint();
   });
+  const leadEffort = $('#groupLeadEffort');
+  if (leadEffort) {
+    const savedEffort = store.get('leadEffort', 'high');
+    if ([...leadEffort.options].some((option) => option.value === savedEffort)) leadEffort.value = savedEffort;
+    leadEffort.addEventListener('change', () => store.set('leadEffort', leadEffort.value));
+  }
+
   window.__group = { createGroup, deleteGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.

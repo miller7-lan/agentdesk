@@ -522,7 +522,8 @@
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const turnParams = chat
-      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model }
+      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model,
+        effort: !$('#effortWrap').hidden && $('#effortSelect').value || undefined }
       : {
         threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
         effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
@@ -713,6 +714,8 @@
 
   /* ---------- 模型 / 推理强度 / 速度 ---------- */
   let models = [];
+  // Levels the direct-chat CLIs accept; Antigravity has no way to set it from the command line yet.
+  const CHAT_EFFORTS = { claude: ['low', 'medium', 'high', 'xhigh', 'max'], grok: ['low', 'medium', 'high', 'xhigh'] };
   const EFFORT_ZH = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra' };
   async function loadModels() {
     const all = []; let cursor;
@@ -817,7 +820,12 @@
     $('#sbTokens').hidden = chat;
     const usageEl = $('#sbUsage'); if (usageEl) usageEl.hidden = chat;
     if (chat) {
-      $('#effortWrap').hidden = true;
+      // Each direct chat picks its own reasoning effort, from the levels its CLI accepts (as Codex does).
+      const levels = CHAT_EFFORTS[agent] || [];
+      const ef = $('#effortSelect');
+      ef.innerHTML = levels.map((level) => `<option value="${level}">推理：${EFFORT_ZH[level] || level}</option>`).join('');
+      ef.value = levels.includes(s?.effort) ? s.effort : levels.includes('medium') ? 'medium' : levels[0] || '';
+      $('#effortWrap').hidden = !levels.length;
       $('#tierWrap').hidden = true;
       if (liveAtt.length) { liveAtt = []; renderAtt(); }
     } else {
@@ -846,7 +854,11 @@
     }
     if ($('#modelSelect').dataset.live) { store.set('model', $('#modelSelect').value); applyModelOptions(); }
   });
-  $('#effortSelect').addEventListener('change', (e) => store.set('effort', e.target.value));
+  $('#effortSelect').addEventListener('change', (e) => {
+    const s = sess(state.active);
+    if (s && isChat(s)) { s.effort = e.target.value; return; }   // per conversation, not the Codex default
+    store.set('effort', e.target.value);
+  });
   $('#tierSelect').addEventListener('change', (e) => store.set('tier', e.target.value));
 
   /* ---------- 用量 / 上下文 ---------- */
