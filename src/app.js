@@ -507,7 +507,10 @@
     $('#sbMode').textContent = e.target.selectedOptions[0].text;
     toast('权限模式：' + e.target.selectedOptions[0].text);
   });
-  $('#modelSelect').addEventListener('change', (e) => toast('模型已切换为 ' + e.target.selectedOptions[0].text + (e.target.dataset.live ? '' : '（mock）')));
+  $('#modelSelect').addEventListener('change', (e) => {
+    const live = e.target.dataset.live || sess(state.active)?.live;
+    toast('模型已切换为 ' + e.target.selectedOptions[0].text + (live ? '' : '（mock）'));
+  });
 
   function renderAttach() {
     $('#attachList').innerHTML = state.attachments.map((a, i) => `<span class="attach-pill" data-i="${i}" title="点击移除">${esc(a)} ×</span>`).join('');
