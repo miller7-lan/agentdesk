@@ -11,6 +11,7 @@ const { quotaStatus } = require('./quotas');
 const { teamAdapter } = require('./team');
 const { cleanup, retention } = require('./cleanup');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
+const { stepActivity } = require('./activity');
 const { hostResources } = require('./host-resources');
 const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, compactProject, clip } = require('./summary');
 const {
@@ -1734,8 +1735,9 @@ event(task, state, detail) {
     const sameProject = named && this.isProjectMember(task?.project, named);
     if (named && this.config.workspaces[task?.workspace]?.sshBridge !== named && !sameProject) throw new Error('unknown_task');
     const owner = route === 'admin' || (named && task?.owner === named);
-    if (['task_diff', 'task_log', 'task_artifacts'].includes(body.operation)) {
+    if (['task_diff', 'task_log', 'task_artifacts', 'task_activity'].includes(body.operation)) {
       if (!task || !owner) throw new Error('task_access_denied');
+      if (body.operation === 'task_activity') return stepActivity(this.config.stateDir, task, body.stepId);
       return taskOutput(this.config.stateDir, task, body);
     }
     if (body.operation === 'status') return owner || route === 'admin' ? this.status(id, body.after) : publicTask(task);

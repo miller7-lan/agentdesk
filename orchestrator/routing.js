@@ -21,13 +21,14 @@ const CAPABILITIES = {
   accept: { write: false },     // judge the summarised results against the plan
 };
 
-// Implementation belongs to Codex alone. If Codex is unavailable the step waits; it never falls back
-// to Claude. Review and scouting deliberately exclude Claude as well.
+// Implementation goes to Codex first and steps down in this order when Codex is out of quota or logged out:
+// Grok Build, then Antigravity. It never falls back to Claude, whose quota is kept for leading; Gemini runs
+// read-only in group work. When none of them can take it, the step waits. Review and scouting exclude Claude too.
 const DEFAULT_ROUTES = {
   plan: ['claude', 'codex'],
   triage: ['claude'],
   scout: ['antigravity', 'gemini', 'grok'],
-  implement: ['codex'],
+  implement: ['codex', 'grok', 'antigravity'],
   review: ['grok', 'antigravity', 'gemini'],
   research: ['grok', 'antigravity', 'gemini'],
   accept: ['claude'],

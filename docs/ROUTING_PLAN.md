@@ -20,7 +20,7 @@ Claude 规划时给每一步标一种能力，主控按候选顺序挑第一个�
 |---|---|---|---|---|
 | 规划 `plan` | 拆任务、定验收标准 | 否 | Claude → Codex | Claude 统筹；Codex 仅在 Claude 不可用时兜底 |
 | 侦察 `scout` | 读代码 / 日志 / 文档，写简报 | 否 | Antigravity → Gemini → Grok | 读得多、写得少，放在不太紧张的额度上；Claude 不参与 |
-| 改代码 `implement` | 按简报修改 | **是** | Codex | 只有 Codex 能写，避免多人同时改代码 |
+| 改代码 `implement` | 按简报修改 | **是** | Codex → Grok Build → Antigravity | 先给 Codex，额度用尽或掉登录时按此顺序降级；永不降到 Claude；同一步只有一个成员在写 |
 | 审查 `review` | 看改动、找问题 | 否 | Grok → Antigravity → Gemini | 和改代码的不是同一家，交叉检查；Claude 不参与 |
 | 查资料 `research` | 仓库外的信息 | 否 | Grok → Antigravity → Gemini | Grok 能联网搜索；Claude 不参与 |
 | 升级 `triage` | 任务卡住时判断下一步 | 否 | Claude | 只有组长决定重试、返工、带风险接受或终止 |

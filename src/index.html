@@ -105,6 +105,11 @@
         </div>
         <span class="conversation-state" id="conversationState"></span>
       </header>
+      <div class="thread-banner" id="threadBanner" data-direct hidden>
+        <span id="threadBannerText"></span>
+        <button type="button" class="btn" id="threadBannerGroup">回到群聊</button>
+        <button type="button" class="btn primary" id="threadBannerNew"></button>
+      </div>
       <div class="timeline" id="timeline" data-direct></div>
       <div class="composer" data-direct>
         <div class="composer-box">
@@ -343,6 +348,7 @@
   <script src="fluid.js"></script>
   <script src="app.js"></script>
   <script src="live.js"></script>
+  <script src="activity-view.js"></script>
   <script src="provider-direct.js"></script>
   <script src="task-graph.js"></script>
   <script src="approvals.js"></script>

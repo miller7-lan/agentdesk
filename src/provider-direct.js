@@ -22,7 +22,7 @@
   function persist() {
     store.set('providerDirectSessions', D.sessions.filter(s => s.provider && s.provider !== 'codex' && !s.agentThread).slice(0, 40)
       .map(({ id, project, provider, title, items, busy, taskId, status, time }) =>
-        ({ id, project, provider, title, items: items.slice(-60), busy, taskId, status, time })));
+        ({ id, project, provider, title, items: items.slice(-60).map(({ activity, ...item }) => item), busy, taskId, status, time })));
   }
   async function control(s, operation, params = {}) {
     const result = await api.control({ projectId: s.project, operation, ...params });
@@ -43,10 +43,29 @@
     polling.add(s.id);
     try {
       const item = s.items.findLast(it => it.t === 'provider-task' && it.task?.id === s.taskId);
-      if (item) update(s, item, await control(s, 'status', { taskId: s.taskId }));
+      if (item) {
+        update(s, item, await control(s, 'status', { taskId: s.taskId }));
+        await loadActivity(s, [item]);
+      }
     } catch (error) {
       if (A.state.active === s.id) A.toast(errors[error.message] || error.message);
     } finally { polling.delete(s.id); }
+  }
+  // The member's working record for each of the given tasks (thinking, commands, edits, replies).
+  async function loadActivity(s, items) {
+    if (!window.__activity) return;
+    let changed = false;
+    for (const item of items) {
+      for (const step of item.task?.steps || []) {
+        if (step.state === 'queued') continue;
+        try {
+          const activity = await window.__activity.load(s.project, item.task.id, step.id);
+          (item.activity ||= {});
+          if (JSON.stringify(activity) !== JSON.stringify(item.activity[step.id])) { item.activity[step.id] = activity; changed = true; }
+        } catch { /* older orchestrators have no activity record; the reply below still shows */ }
+      }
+    }
+    if (changed && A.state.active === s.id && !A.state.group) A.renderAll();
   }
   async function send(s, fromButton) {
     const input = $('#input');
@@ -87,10 +106,16 @@
   function itemHtml(it, index) {
     if (it.t !== 'provider-task') return null;
     const task = it.task;
-    const output = (task.steps || []).filter(step => step.output).map(step => step.output).join('\n\n');
+    const s = A.sess(A.state.active);
+    const running = !terminal.has(task.state);
+    const work = (task.steps || []).map(step => window.__activity?.html(it.activity?.[step.id],
+      { key: task.id + ':' + step.id, open: s?.actOpen, running: running && step.state === 'running' }) || '').join('');
+    const output = (task.steps || []).filter(step => step.output && !window.__activity?.hasReply(it.activity?.[step.id]))
+      .map(step => step.output).join('\n\n');
     const patches = task.detail === 'patches_ready';
     const error = task.state === 'failed' ? errors[task.detail] || task.detail : '';
     return `<div class="group-output"><strong>${esc(names[task.provider] || 'AI')} · ${esc(labels[task.state] || task.state)}</strong>
+      ${work}
       ${output ? `<pre style="white-space:pre-wrap">${esc(output)}</pre>` : ''}
       ${error ? `<p class="err-note">${esc(error)}</p>` : ''}
       ${patches ? `<p>改动已生成，尚未写入本机。请先查看补丁，再确认应用。</p>
@@ -152,7 +177,8 @@
     $('#attachBtn').disabled = other;
     $('#input').placeholder = other ? `向 ${names[s.provider]} 描述任务…（计划模式只读，其他模式可生成本机补丁）` : '向 Codex 描述任务…';
   }
-  window.__providerDirect = { names, choose, create, send, render, handles, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s); },
+  window.__providerDirect = { names, choose, create, send, render, handles, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
+      if (!s.agentThread) loadActivity(s, s.items.filter(it => it.t === 'provider-task' && it.task && !it.activity).slice(-3)); },
     avatarState: s => s.busy ? 'thinking' : s.status === 'waiting' ? 'asking' : 'idle' };
   const liveItemHtml = window.__live.itemHtml;
   window.__live.itemHtml = (it, index) => itemHtml(it, index) ?? liveItemHtml(it, index);

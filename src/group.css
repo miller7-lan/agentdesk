@@ -249,3 +249,52 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .step-summary p { margin: 0; white-space: pre-wrap; }
 .step-summary.failed { background: var(--danger-soft); }
 .step-summary .task-text-link { justify-self: start; }
+
+/* Sidebar: lead-dispatched records sit under the group, the person's own conversations after them. */
+.sess-section.dispatched { margin: 0 0 4px 14px; padding-left: 6px; border-left: 1px solid var(--border); }
+.sess.sess-dispatched { min-height: 30px; font-size: 12.5px; }
+.sess .s-badge { margin-left: auto; padding: 0 6px; border-radius: 8px; background: var(--hover); color: var(--faint); font-size: 10.5px; white-space: nowrap; }
+.sess-label { margin: 6px 0 2px 10px; color: var(--faint); font-size: 11px; }
+
+/* A dispatched record is read-only. */
+.thread-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 16px 6px; padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: 9px; background: var(--panel); color: var(--muted); font-size: 12.5px; }
+.thread-banner[hidden] { display: none; }
+.thread-banner span { flex: 1; min-width: 180px; }
+.composer.composer-locked .composer-box { opacity: .6; }
+
+/* A member's working record: thinking, commands, file changes, tools, replies. */
+.activity { display: grid; gap: 6px; }
+.act { border-radius: 8px; font-size: 12.5px; }
+.act-tag { display: inline-block; flex: none; padding: 0 6px; border-radius: 6px; background: var(--hover); color: var(--faint); font-size: 10.5px; font-weight: 600; line-height: 18px; }
+.act > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 8px; cursor: pointer; list-style: none; }
+.act > summary::-webkit-details-marker { display: none; }
+.act > summary::after { content: "›"; margin-left: auto; color: var(--faint); transition: transform .15s; }
+.act[open] > summary::after { transform: rotate(90deg); }
+.act-preview { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act-think { background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+.act-think .act-tag { background: var(--accent-soft); color: var(--accent); }
+.act-think[open] .act-preview { display: none; }
+.act-think .act-body { padding: 0 10px 8px; color: var(--muted); font-style: italic; white-space: pre-wrap; }
+.act-msg .act-body { padding: 2px 2px; white-space: pre-wrap; line-height: 1.6; }
+.act-cmd, .act-tool { border: 1px solid var(--border); background: var(--raised); }
+.act-cmd code { min-width: 0; font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act-cmd.failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.act-state { flex: none; color: var(--faint); font-size: 11px; }
+.act-cmd.failed .act-state { color: var(--danger); }
+.act-cmd pre, .act-tool pre { margin: 0; max-height: 280px; overflow: auto; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--code-bg);
+  font-size: 11.5px; white-space: pre-wrap; border-radius: 0 0 8px 8px; }
+.act-empty { margin: 0; padding: 4px 10px 8px; color: var(--faint); font-size: 11.5px; }
+.act-edit, .act-line, .act-plan, .act-err { display: flex; align-items: flex-start; gap: 8px; padding: 5px 8px; }
+.act-edit ul, .act-plan ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.act-edit li { display: flex; gap: 8px; } .act-edit li span { color: var(--faint); font-size: 11px; }
+.act-edit code { font-family: var(--mono); font-size: 12px; }
+.act-plan li::before { content: "○ "; color: var(--faint); } .act-plan li.done { color: var(--faint); text-decoration: line-through; } .act-plan li.done::before { content: "● "; }
+.act-err { background: var(--danger-soft); color: var(--danger); }
+.act-err .act-tag { background: transparent; color: var(--danger); }
+.act-error { margin: 2px 0 0; color: var(--danger); }
+.act-note { margin: 0; color: var(--faint); font-size: 11px; }
+.act-live { display: flex; align-items: center; gap: 8px; padding: 2px 8px; color: var(--accent); font-size: 12px; }
+.act-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: act-pulse 1.2s ease-in-out infinite; }
+@keyframes act-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .act-dot { animation: none; } }

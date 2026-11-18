@@ -31,7 +31,7 @@
   function persist() {
     store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, provider, title, items, taskId, status, time }) =>
       ({ id, project, provider, title, taskId, status, time,
-        items: items.slice(-80).map(({ preview, log, ...item }) => item) })));
+        items: items.slice(-80).map(({ preview, log, activity, ...item }) => item) })));
   }
 
   function ensureThread(project, role) {
@@ -127,6 +127,31 @@
   setInterval(sync, 3000);
   setTimeout(sync, 800);
 
+  // How each step was worked on: refreshed while it runs, fetched once when it has finished.
+  let loadingActivity = false;
+  async function refreshActivity() {
+    const s = D.sessions.find((session) => session.id === A.state.active);
+    if (loadingActivity || !s?.agentThread || A.state.group || !window.__activity) return;
+    loadingActivity = true;
+    let changed = false;
+    try {
+      const steps = s.items.filter((it) => it.t === 'dispatch-step' && it.snap && it.snap.state !== 'queued');
+      const wanted = [...steps.filter((it) => it.snap.state === 'running' || it.activityState === 'running'),
+        ...steps.filter((it) => !it.activity).slice(-3)];
+      for (const it of new Set(wanted)) {
+        try {
+          const activity = await window.__activity.load(s.project, it.taskId, it.stepId, { configuredOnly: true });
+          if (JSON.stringify(activity) !== JSON.stringify(it.activity)) { it.activity = activity; changed = true; }
+          it.activityState = activity.state;
+        } catch { it.activity ||= { items: [] }; }
+      }
+    } finally {
+      loadingActivity = false;
+    }
+    if (changed && A.state.active === s.id && !A.state.group) A.renderAll();
+  }
+  setInterval(refreshActivity, 2500);
+
   async function open(project, role, taskId) {
     if (!ROLES.has(role)) return;
     const s = ensureThread(project, role);
@@ -147,9 +172,12 @@
     const what = [capabilities[snap.capability] || (snap.write ? '修改' : ''), snap.model].filter(Boolean).join(' · ');
     const state = stepStates[snap.state] || snap.state || '排队';
     const patches = snap.write && snap.detail === 'patches_ready' && !it.applied;
-    const body = snap.error ? `<p class="err-note">${esc(P.errors[snap.error] || snap.error)}</p>`
-      : snap.output ? `<pre class="dispatch-output">${esc(snap.output)}</pre>`
-      : snap.state === 'running' ? `<p class="dispatch-wait">${esc(name)} 正在处理…</p>` : '';
+    const running = snap.state === 'running';
+    const work = window.__activity?.html(it.activity, { key: it.taskId + ':' + it.stepId, open: s?.actOpen, running }) || '';
+    const body = [work,
+      snap.error ? `<p class="err-note">${esc(P.errors[snap.error] || snap.error)}</p>` : '',
+      snap.output && !window.__activity?.hasReply(it.activity) ? `<pre class="dispatch-output">${esc(snap.output)}</pre>` : '',
+      !work && running ? `<p class="dispatch-wait">${esc(name)} 正在处理…</p>` : ''].join('');
     return `<div class="dispatch-step" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
       <header><span class="dispatch-from">组长派遣</span><span class="mono">#${esc(snap.label || it.taskId.slice(0, 8))}</span>
         ${what ? `<span>${esc(what)}</span>` : ''}<span class="dispatch-state">${esc(state)}</span></header>
@@ -159,7 +187,7 @@
       ${snap.files ? `<p class="dispatch-files">涉及 ${snap.files} 个文件</p>` : ''}
       ${it.applied ? '<p class="dispatch-files">已写入本机。</p>' : ''}
       <div class="task-actions">
-        <button class="btn" type="button" data-dispatch-action="log" data-dispatch-index="${index}">完整日志</button>
+        <button class="btn" type="button" data-dispatch-action="log" data-dispatch-index="${index}">原始日志</button>
         ${patches ? `<button class="btn" type="button" data-dispatch-action="diff" data-dispatch-index="${index}">查看补丁</button>` : ''}
         ${patches && it.preview !== undefined ? `<button class="btn primary" type="button" data-dispatch-action="apply" data-dispatch-index="${index}">确认并应用到本机</button>` : ''}
         <button class="btn" type="button" data-dispatch-action="group" data-dispatch-index="${index}">回到群聊任务</button>
@@ -207,6 +235,34 @@
     ? { running: 'tool', waiting: 'asking', done: 'done' }[threadStatus(s)] || 'idle'
     : previousAvatar(s);
 
-  window.__agentThreads = { open, persist, onOpen: () => sync() };
+  // Lead-dispatched conversations are a record of group work, kept apart from the person's own conversations:
+  // nothing is typed here. Extra requests go back to the group (@member) or into a separate conversation.
+  const banner = $('#threadBanner');
+  const previousRender = P.render;
+  P.render = (s) => {
+    previousRender(s);
+    const dispatched = Boolean(s?.agentThread);
+    banner.hidden = !dispatched;
+    $('#input').disabled = dispatched;
+    $('#sendBtn').disabled = dispatched;
+    $('.composer[data-direct]')?.classList.toggle('composer-locked', dispatched);
+    if (dispatched) {
+      $('#threadBannerText').textContent = `组长在群聊派给 ${P.names[s.provider]} 的工作记录，只读。`;
+      $('#threadBannerNew').textContent = `新建 ${P.names[s.provider]} 单聊`;
+      $('#input').placeholder = `这里不能直接发消息。要追加要求，回群聊 @${P.names[s.provider]}，或新建单聊。`;
+    }
+  };
+  const previousSend = P.send;
+  P.send = (s, fromButton) => s?.agentThread ? A.toast('组长派遣的记录是只读的；请回群聊或新建单聊。') : previousSend(s, fromButton);
+  $('#threadBannerGroup').addEventListener('click', () => {
+    const s = D.sessions.find((session) => session.id === A.state.active);
+    if (s?.agentThread) A.openGroup(s.project);
+  });
+  $('#threadBannerNew').addEventListener('click', () => {
+    const s = D.sessions.find((session) => session.id === A.state.active);
+    if (s?.agentThread) A.newDirect(s.project, s.provider);
+  });
+
+  window.__agentThreads = { open, persist, onOpen: () => { sync(); refreshActivity(); } };
   A.renderSidebar();
 })();

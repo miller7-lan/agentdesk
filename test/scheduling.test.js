@@ -62,6 +62,7 @@ test('a blocked implementer keeps the task queued and resumes without planning a
   };
   const scheduler = new Scheduler({ config, store, files: { endpoint: {} }, adapter });
   scheduler.router.block('codex', 'quota', 60_000);
+  scheduler.router.block('grok', 'quota', 60_000);   // every implementer in the step-down order is out
   try {
     const id = randomUUID();
     const task = scheduler.submit(id, { workspace: 'mac', prompt: 'change the fixture' });
@@ -186,19 +187,20 @@ test('Claude waiting does not hand acceptance or triage to another CLI', () => {
   const router = new Router({ adapters: adapters('codex', 'claude', 'grok') });
   router.block('claude', 'quota', 60_000);
   router.block('codex', 'quota', 60_000);
+  router.block('grok', 'quota', 60_000);
   for (const capability of ['accept', 'triage']) {
     assert.throws(() => parsePlan(JSON.stringify([
       { id: 'check', capability, prompt: 'judge', dependsOn: [] },
     ]), router.availableRoles(), router), new RegExp('executor_waiting:' + capability));
   }
-  // Implementation waits for Codex even though Claude is configured and would be readable code-wise.
+  // With Codex and Grok Build both out, implementation waits rather than going to Claude.
   assert.throws(() => parsePlan(JSON.stringify([
     { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
   ]), router.availableRoles(), router), /executor_waiting:implement/);
 });
 
 test('a capability with no configured candidate fails instead of waiting forever', () => {
-  const router = new Router({ adapters: adapters('grok') });
+  const router = new Router({ adapters: adapters('gemini') });   // Gemini is read-only in group work
   assert.throws(() => parsePlan(JSON.stringify([
     { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
   ]), router.availableRoles(), router), /no_executor:implement/);

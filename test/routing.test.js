@@ -21,7 +21,8 @@ test('the router picks the first available candidate and skips blocked CLIs unti
   assert.deepEqual(Object.keys(router.status().blocked), ['grok']);
   now = 1001;
   assert.equal(router.pick('review'), 'grok');
-  assert.equal(router.pick('implement', ['codex']), null);   // implementation never falls back to Claude
+  assert.equal(router.pick('implement', ['codex']), 'grok');            // implementation steps down in order…
+  assert.equal(router.pick('implement', ['codex', 'grok']), null);     // …but never to Claude or read-only Gemini
 });
 
 test('a configured CLI awaiting interactive login is retained but never dispatched', () => {
@@ -174,7 +175,9 @@ test('quota decides who works: Claude and Codex step back early and keep their q
   quota({ claude: 70, codex: 80 });
   assert.equal(router.pick('plan'), 'claude');                 // above 60%: still plans
   assert.equal(router.pick('implement'), 'codex');             // above 70%: still implements
-  assert.equal(router.pick('implement', ['codex']), null);     // Claude no longer takes implementation work
+  assert.equal(router.pick('implement', ['codex']), 'grok');   // Codex out: Grok Build, then Antigravity
+  assert.equal(router.pick('implement', ['codex', 'grok']), 'antigravity');
+  assert.equal(router.pick('implement', ['codex', 'grok', 'antigravity']), null);   // never Claude
   assert.equal(router.pick('accept', ['claude']), null);       // nor Codex acceptance work
   assert.equal(router.pick('review'), 'grok');
   quota({ claude: 96, codex: 10, grok: 97 });
