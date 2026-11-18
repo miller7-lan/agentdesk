@@ -22,11 +22,14 @@
     const records = result.projects.map((item) => ({
       ...item, branch: 'main', live: true, configured: true,
     }));
-    const retained = D.projects.filter((item) => !item.configured && item.id !== 'live');
+    // Built-in demos are only useful before a real workspace is configured.
+    const priorExamples = new Set(D.projects.filter(item => item.example).map(item => item.id));
+    const retained = D.projects.filter((item) => !item.configured && item.id !== 'live' && (!records.length || !item.example));
     D.projects.splice(0, D.projects.length, ...records, ...retained);
     const valid = new Set(D.projects.map(({ id }) => id));
     for (let index = D.sessions.length - 1; index >= 0; index--) {
-      if (old.has(D.sessions[index].project) && !valid.has(D.sessions[index].project)) D.sessions.splice(index, 1);
+      const { project } = D.sessions[index];
+      if ((old.has(project) || priorExamples.has(project)) && !valid.has(project)) D.sessions.splice(index, 1);
     }
     snapshot = result;
     if (A.state.group ? !valid.has(A.state.group) : !A.sess(A.state.active)) openProject(result.activeProject);

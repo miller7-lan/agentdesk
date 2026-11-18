@@ -36,4 +36,6 @@
 3. 核对 Mac 的 Bridge 配置中工作区根目录、`write: true` 与项目绑定一致。要允许单聊读取桌面，可在对应工作区配置 `readRoots.desktop`，指向真实桌面路径。项目写入仍经补丁确认。
 4. 打开成员单聊选择模型，先读一个测试文件，再生成项目补丁并预览。Windows 的项目外变更入口目前仅适用于 C/D 盘，Mac 使用工作区补丁流程。
 
+配置了真实工作区后，侧栏自动移除内置示例项目。右键真实项目并选「删除项目」只移除 AgentDesk 中的项目入口。
+
 模型资料：[Claude Code 模型配置](https://code.claude.com/docs/en/model-config) · [Grok Build 模型设置](https://docs.x.ai/build/settings)。
