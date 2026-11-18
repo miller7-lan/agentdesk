@@ -205,3 +205,47 @@
 #onboardingContent label:has(input[type="radio"]) { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 #onboardingContent > .btn { justify-self: start; }
 #diagnosticsReport { max-height: 45vh; overflow: auto; margin: 8px 0; font-size: 11px; background: var(--bg); }
+
+/* Progress board: one per task in the group chat. Each member's full work lives in its own conversation. */
+.step-board { display: grid; gap: 2px; width: min(100%, 560px); padding: 4px; border: 1px solid var(--border); border-radius: 9px; background: var(--raised); }
+.step-row { display: grid; grid-template-columns: 22px minmax(70px, auto) minmax(0, auto) auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  min-height: 32px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; }
+button.step-row { cursor: pointer; }
+button.step-row:hover, button.step-row:focus-visible { background: var(--hover); }
+.step-row-name { font-weight: 600; white-space: nowrap; }
+.step-row-what { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-row-state { padding: 1px 7px; border-radius: 9px; background: var(--hover); color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.step-row[data-state="running"] .step-row-state { background: var(--accent-soft); color: var(--accent); }
+.step-row[data-state="completed"] .step-row-state { color: var(--ok); }
+.step-row[data-state="failed"] .step-row-state { background: var(--danger-soft); color: var(--danger); }
+.step-row-note { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.step-row-open { color: var(--accent); font-size: 11.5px; white-space: nowrap; }
+@media (max-width: 760px) { .step-row { grid-template-columns: 22px auto minmax(0, 1fr) auto; } .step-row-what, .step-row-note { display: none; } }
+
+/* Older finished tasks fold into one line. */
+.dispatch-thread.folded { padding-block: 2px; }
+.group-folded { display: flex; align-items: center; gap: 8px; width: min(100%, 560px); min-height: 30px; padding: 4px 10px; border: 1px dashed var(--border);
+  border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.group-folded > span:nth-child(3) { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-folded:hover { background: var(--hover); }
+.group-folded-more { color: var(--accent); }
+
+/* A step the lead handed to this member, inside the member's own conversation. */
+.dispatch-step { display: grid; gap: 8px; margin: 6px 0 12px; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 9px; background: var(--raised); }
+.dispatch-step[data-state="failed"] { border-left-color: var(--danger); }
+.dispatch-step[data-state="queued"], .dispatch-step[data-state="waiting"] { border-left-color: var(--border); }
+.dispatch-step header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--faint); font-size: 12px; }
+.dispatch-from { color: var(--text); font-weight: 600; }
+.dispatch-state { margin-left: auto; padding: 1px 8px; border-radius: 9px; background: var(--hover); color: var(--muted); font-size: 11px; }
+.dispatch-step[data-state="running"] .dispatch-state { background: var(--accent-soft); color: var(--accent); }
+.dispatch-brief { padding: 7px 9px; border-radius: 7px; background: var(--panel); }
+.dispatch-brief strong { display: block; margin-bottom: 2px; color: var(--faint); font-size: 11px; font-weight: 600; }
+.dispatch-brief p { margin: 0; white-space: pre-wrap; }
+.dispatch-output { margin: 0; max-height: 360px; overflow: auto; padding: 8px 10px; border-radius: 7px; background: var(--code-bg); white-space: pre-wrap; font-size: 12px; }
+.dispatch-wait, .dispatch-files, .dispatch-verdict { margin: 0; color: var(--muted); font-size: 12.5px; }
+.agent-ack { font-size: 11px; }
+.step-summary { display: grid; gap: 4px; width: min(100%, 560px); padding: 7px 10px; border-radius: 8px; background: var(--panel); }
+.step-summary p { margin: 0; white-space: pre-wrap; }
+.step-summary.failed { background: var(--danger-soft); }
+.step-summary .task-text-link { justify-self: start; }

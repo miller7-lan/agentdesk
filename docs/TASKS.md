@@ -147,6 +147,7 @@
 - [x] Windows SHA-256、macOS hardened runtime、公证钩子、手动发布工作流和可选更新检查。
 - [x] 用户文档：[安装](INSTALL.md) · [权限](PERMISSIONS.md) · [排查](TROUBLESHOOTING.md) · [签名与发布](SIGNING.md)。
 - [ ] Windows 实机启动、正式签名与公证、VPS2 实机验证。
+- [x] 群聊只负责派活和展示（分工进度表、接受与完成总结、验收总结、旧任务折叠）；各成员的工作进入各自的「组长派遣」单聊，可在单聊审核补丁、写回本机、继续追问。样例配置默认五个成员都可改代码。
 - [x] 安全审查与防封：Relay 按地址限连接和封禁、令牌被拒后慢重试、重连抖动、Electron 权限、登记密码 ≥16 位。见 [SECURITY_REVIEW.md](SECURITY_REVIEW.md)。
 - [ ] VPS 上执行：全局 sshd 加固、ufw 只开用到的端口、Relay 对外 443（[SECURITY_REVIEW.md](SECURITY_REVIEW.md) §3、§4.3）。
 - [ ] Relay 支持域名 + 正规证书（客户端同时信任系统 CA 和自签 CA）。

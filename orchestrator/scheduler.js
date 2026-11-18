@@ -609,7 +609,9 @@ event(task, state, detail) {
         })),
         ...(groupPlan.approved && { approved: groupPlan.approved }),
       } }),
-      steps: steps.map(({ prompt, output, ...step }) => ({ ...step, output: output?.slice(0, 1600), paths: step.paths?.slice(0, 20) })),
+      // brief: what the lead asked this member to do, shown at the top of that member's own conversation.
+      steps: steps.map(({ prompt, output, ...step }) => ({ ...step, brief: prompt?.slice(0, 800), output: output?.slice(0, 1600),
+        paths: step.paths?.slice(0, 20) })),
       events: this.store.events(id, after),
     };
   }

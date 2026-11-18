@@ -400,7 +400,7 @@
   }
 
   async function send(s, fromButton) {
-    if (s.provider && s.provider !== 'codex') return window.__providerDirect.send(s, fromButton);
+    if (window.__providerDirect?.handles(s)) return window.__providerDirect.send(s, fromButton);
     const ta = $('#input');
     const text = ta.value.trim();
     if (s.busy) { if (text) return steer(s, text); if (fromButton) return interrupt(s); return; }
@@ -538,7 +538,7 @@
       prev.subscribed = false;
     }
     const s = sess(id);
-    if (s?.provider && s.provider !== 'codex') return window.__providerDirect.onOpen(s);
+    if (window.__providerDirect?.handles(s)) return window.__providerDirect.onOpen(s);
     if (s && s.live && s.history && !s.loaded) openHistory(s);
     if (s && s.live) renderTokens(s);
   }
@@ -984,7 +984,7 @@
 
   /* ---------- 初始化 ---------- */
   function avatarState(s) {
-    if (s.provider && s.provider !== 'codex') return window.__providerDirect.avatarState(s);
+    if (window.__providerDirect?.handles(s)) return window.__providerDirect.avatarState(s);
     if (!s.live) return null;
     if (s.status === 'waiting') return 'asking';
     if (s.busy) {

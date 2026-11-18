@@ -14,13 +14,13 @@
     bridge_offline: 'Windows Bridge 尚未连接。', claude_reserved: '服务器需要更新以支持 Claude 单聊。' };
   const saved = store.get('providerDirectSessions', []);
   if (Array.isArray(saved)) for (const s of saved.slice(0, 40)) {
-    if (!s || !names[s.provider] || s.provider === 'codex' || typeof s.id !== 'string' ||
+    if (!s || !names[s.provider] || s.provider === 'codex' || s.agentThread || typeof s.id !== 'string' ||
         typeof s.project !== 'string' || !Array.isArray(s.items)) continue;
     D.sessions.push({ ...s, live: true, diffs: [], term: [],
       items: s.items.filter(it => it && ['user', 'provider-task'].includes(it.t)) });
   }
   function persist() {
-    store.set('providerDirectSessions', D.sessions.filter(s => s.provider && s.provider !== 'codex').slice(0, 40)
+    store.set('providerDirectSessions', D.sessions.filter(s => s.provider && s.provider !== 'codex' && !s.agentThread).slice(0, 40)
       .map(({ id, project, provider, title, items, busy, taskId, status, time }) =>
         ({ id, project, provider, title, items: items.slice(-60), busy, taskId, status, time })));
   }
@@ -34,7 +34,7 @@
     s.busy = !terminal.has(task.state);
     s.status = task.state === 'completed' ? 'done' : task.detail === 'patches_ready' ? 'waiting' : s.busy ? 'running' : 'idle';
     s.time = '刚刚';
-    persist();
+    if (s.agentThread) window.__agentThreads?.persist(); else persist();
     if (A.state.active === s.id) A.renderAll(); else A.renderSidebar();
   }
   const polling = new Set();
@@ -67,7 +67,8 @@
       const readonly = $('#modeSelect').value === 'plan';
       if (!readonly && !routes.writeProviders?.includes(s.provider)) throw Error('provider_write_not_enabled');
       const history = s.items.slice(-12).flatMap(it => it.t === 'user' ? ['User: ' + it.text]
-        : (it.task?.steps || []).filter(step => step.output).map(step => names[s.provider] + ': ' + step.output)).join('\n').slice(-2000);
+        : it.t === 'dispatch-step' ? [it.snap?.brief && 'Lead assigned you: ' + it.snap.brief, it.snap?.output && names[s.provider] + ': ' + it.snap.output].filter(Boolean)
+        : (it.task?.steps || []).filter(step => step.output).map(step => names[s.provider] + ': ' + step.output)).join('\n').slice(-3000);
       const prompt = (history ? 'Previous messages for context:\n' + history + '\n\nCurrent request:\n' : '') + text;
       const taskId = crypto.randomUUID();
       const task = await control(s, 'submit', { taskId, provider: s.provider, mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop' });
@@ -79,7 +80,8 @@
     } catch (error) {
       s.busy = false; s.status = 'idle';
       A.toast(errors[error.message] || error.message);
-      persist(); A.renderAll();
+      if (s.agentThread) window.__agentThreads?.persist(); else persist();
+      A.renderAll();
     }
   }
   function itemHtml(it, index) {
@@ -112,7 +114,8 @@
         const task = await control(s, 'apply', { taskId: item.task.id });
         delete item.preview; update(s, item, task);
       }
-      persist(); A.renderAll();
+      if (s.agentThread) window.__agentThreads?.persist(); else persist();
+      A.renderAll();
     } catch (error) { button.disabled = false; A.toast(errors[error.message] || error.message); }
   });
   function create(project, provider) {
@@ -135,8 +138,11 @@
     document.body.appendChild(dialog); dialog.showModal();
   }
   const controls = new Map();
+  // Sessions handled here instead of by the live Codex connection: every non-Codex AI, and every member's
+  // conversation that receives work from the lead (Codex included).
+  const handles = (s) => Boolean(s?.provider && (s.provider !== 'codex' || s.agentThread));
   function render(s) {
-    const other = Boolean(s?.provider && s.provider !== 'codex');
+    const other = handles(s);
     for (const id of ['modelSelect', 'effortWrap', 'tierSelect']) {
       const element = $('#' + id); if (!element) continue;
       if (other && !controls.has(id)) controls.set(id, element.hidden);
@@ -146,7 +152,7 @@
     $('#attachBtn').disabled = other;
     $('#input').placeholder = other ? `向 ${names[s.provider]} 描述任务…（计划模式只读，其他模式可生成本机补丁）` : '向 Codex 描述任务…';
   }
-  window.__providerDirect = { names, choose, create, send, render, onOpen: poll,
+  window.__providerDirect = { names, choose, create, send, render, handles, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s); },
     avatarState: s => s.busy ? 'thinking' : s.status === 'waiting' ? 'asking' : 'idle' };
   const liveItemHtml = window.__live.itemHtml;
   window.__live.itemHtml = (it, index) => itemHtml(it, index) ?? liveItemHtml(it, index);

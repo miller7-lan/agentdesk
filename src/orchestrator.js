@@ -421,12 +421,67 @@
     respondApproval(group, card, true, { remember: data.has('remember'), answers });
   });
 
+  const RECENT_TASKS = 4;
+  const threadRoles = new Set(['codex', 'claude', 'grok', 'gemini', 'antigravity']);
+  const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
+  const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
+
+  function milestone(step) {
+    const text = step.verdict?.summary || step.error || step.output || '';
+    const line = text.trim().split('\n').find((part) => part.trim()) || '';
+    return line.length > 90 ? line.slice(0, 90) + '…' : line;
+  }
+
+  // A short closing summary for the group: the member's verdict, or the opening lines of its final reply.
+  function closingSummary(step) {
+    if (step.verdict?.summary) return step.verdict.summary;
+    const text = (step.error || step.output || '').trim();
+    if (!text) return '';
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 3).join(' ');
+    return lines.length > 260 ? lines.slice(0, 260) + '…' : lines;
+  }
+
+  function stepBoard(task, steps) {
+    if (!steps.length) return '';
+    const rows = steps.map((step) => {
+      const open = !task.redacted && threadRoles.has(step.role);
+      const tag = open ? 'button' : 'div';
+      const attrs = open ? `type="button" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" title="打开 ${esc(memberName(step.role))} 单聊"` : '';
+      const what = [capabilityLabels[step.capability] || (step.write ? '修改' : ''), step.model].filter(Boolean).join(' · ');
+      const note = milestone(step);
+      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" ${attrs}>
+        ${avatars.html(step.role, { size: 22, still: true })}
+        <span class="step-row-name">${esc(memberName(step.role))}</span>
+        <span class="step-row-what">${esc(what)}</span>
+        <span class="step-row-state">${esc(stepStates[step.state] || step.state || '排队')}</span>
+        <span class="step-row-note">${esc(note)}</span>
+        ${open ? '<span class="step-row-open">单聊 ›</span>' : ''}
+      </${tag}>`;
+    }).join('');
+    return `<div class="step-board">${rows}</div>`;
+  }
+
+  function foldedTask(task) {
+    const steps = task.steps || [];
+    const roles = [...new Set(steps.map((step) => step.role))].map(memberName).join('、');
+    const summary = [task.prompt ? task.prompt.slice(0, 36) + (task.prompt.length > 36 ? '…' : '') : '', roles, steps.length ? steps.length + ' 步' : '']
+      .filter(Boolean).join(' · ');
+    return `<div class="dispatch-thread folded" data-message-id="${esc(task.id)}">
+      <button type="button" class="group-folded" data-expand-task="${esc(task.id)}">
+        <span class="mono">${taskLabel(task)}</span>${pill(task.state)}<span>${esc(summary)}</span><span class="group-folded-more">展开</span>
+      </button></div>`;
+  }
+
   function renderTimeline() {
     const group = currentGroup();
     const { records } = group;
     const broadcasts = new Set();
     const atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
-    const html = [...records.values()].sort((a, b) => (Date.parse(a.createdAt || '') || a.time || 0) - (Date.parse(b.createdAt || '') || b.time || 0)).filter((task) => filter !== 'attention' || task.state === 'needs_review' || waitingForPlan(task)).map((task) => {
+    const ordered = [...records.values()].sort((a, b) => (Date.parse(a.createdAt || '') || a.time || 0) - (Date.parse(b.createdAt || '') || b.time || 0)).filter((task) => filter !== 'attention' || task.state === 'needs_review' || waitingForPlan(task));
+    // Finished tasks beyond the most recent few fold into one line each, so the group does not grow without end.
+    const folded = new Set(ordered.slice(0, -RECENT_TASKS).filter((task) => ['completed', 'failed', 'cancelled'].includes(task.state) && !group.expanded?.has(task.id)).map((task) => task.id));
+    const html = ordered.map((task) => {
+      if (folded.has(task.id)) return foldedTask(task);
       const sender = task.plan && !task.plan.approved ? 'lead' : owner(task);
       const steps = task.steps || [];
       const acceptance = acceptanceLabel(task);
@@ -472,20 +527,39 @@
       }
       if (requiresReview && (!filterSelect.value || filterSelect.value === 'local')) {
         const title = task.detail === 'patches_ready' ? '待审核的本机补丁' : '待核对的本机操作';
+        const writer = !task.redacted && steps.findLast((step) => step.write && threadRoles.has(step.role))?.role;
         messages.push(messageRow('local', '工作区', `<div class="group-review">
           <strong>${svg('shield')}${title}</strong>
+          ${writer ? `<button type="button" class="btn primary" data-agent-thread="${writer}" data-agent-task="${esc(task.id)}">在 ${esc(memberName(writer))} 单聊中审核</button>` : ''}
           <button type="button" class="btn" data-task-id="${esc(task.id)}">查看任务 ${taskLabel(task)}</button>
         </div>`));
       }
-      for (const step of steps) {
-        if (filter === 'mine' || !members[step.role] || !(step.output || step.error) || (filterSelect.value && filterSelect.value !== step.role)) continue;
-        const text = step.error || step.output;
-        const lines = text.trim().split('\n');
-        const excerpt = lines[0].slice(0, 200);
-        messages.push(messageRow(step.role, step.model || members[step.role].role, `<div class="step-excerpt">
-          <p>${esc(excerpt)}${excerpt.length < text.trim().length ? '…' : ''}</p>
-          <button type="button" class="task-text-link" data-task-id="${esc(task.id)}">查看步骤输出 ${svg('chev')}</button>
-        </div>`));
+      // One progress board per task: who does what, on which model, how far, and a one-line result.
+      // The full work of each member lives in that member's own conversation, so the group stays short.
+      const board = stepBoard(task, steps);
+      if (board && filter !== 'mine' && (!filterSelect.value || steps.some((step) => step.role === filterSelect.value))) {
+        messages.push(messageRow('lead', '分工进度', board, 'board'));
+      }
+      // Forwarded from each member's own conversation: that it took the work, and its closing summary.
+      if (filter !== 'mine') {
+        for (const step of steps) {
+          if (!members[step.role] || (filterSelect.value && filterSelect.value !== step.role)) continue;
+          const what = capabilityLabels[step.capability] || (step.write ? '修改' : '任务');
+          if (['running', 'completed', 'failed'].includes(step.state)) {
+            messages.push(`<p class="group-system agent-ack">${esc(memberName(step.role))} 已接受${esc(what)}任务${step.model ? ' · ' + esc(step.model) : ''}</p>`);
+          }
+          const summary = closingSummary(step);
+          if (summary && ['completed', 'failed'].includes(step.state)) {
+            const link = !task.redacted && threadRoles.has(step.role)
+              ? `<button type="button" class="task-text-link" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}">在单聊查看全文 ${svg('chev')}</button>` : '';
+            messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : '完成总结', what].join(' · '),
+              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}"><p>${esc(summary)}</p>${link}</div>`, 'summary'));
+          }
+        }
+        if (task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
+          messages.push(messageRow('lead', '验收总结 · ' + acceptanceLabel(task),
+            `<div class="step-summary"><p>${esc(task.acceptance.summary || acceptanceLabel(task))}</p></div>`, 'summary'));
+        }
       }
       const reply = `<button class="task-text-link group-reference" type="button" data-reference="${esc(task.id)}">引用</button>`;
       return messages.length ? `<div class="dispatch-thread" data-message-id="${esc(task.id)}">${messages.join('')}${reply}</div>` : '';
@@ -1342,6 +1416,17 @@
     surface.addEventListener('click', (event) => {
       if (!state.group) return;
       const group = currentGroup();
+      const thread = event.target.closest('[data-agent-thread]');
+      if (thread) {
+        window.__agentThreads?.open(group.id, thread.dataset.agentThread, thread.dataset.agentTask);
+        return;
+      }
+      const expand = event.target.closest('[data-expand-task]');
+      if (expand) {
+        (group.expanded ||= new Set()).add(expand.dataset.expandTask);
+        render();
+        return;
+      }
       if (event.target.closest('[data-clear-group-approvals]')) {
         approvals.clear(localStorage, group.id);
         A.renderPanel();
@@ -1500,7 +1585,20 @@
     if (currentGroup()) markSeen(currentGroup());
     repaint();
   });
-  window.__group = { createGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel };
+  window.__group = { createGroup, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+    projects: () => [...groups.keys()], isExample,
+    // Full status fetched for members' conversations also feeds the group's summaries.
+    merge(project, task) {
+      const group = groups.get(project);
+      if (!group?.records.has(task.id)) return;
+      updateTask(group, task.id, task);
+      if (group === currentGroup()) render();
+    },
+    tasks: (id) => [...(groups.get(id)?.records.values() || [])],
+    showTask(project, id) {
+      A.openGroup(project);
+      if (groups.get(project)?.records.has(id)) selectTask(id);
+    } };
   A.renderSidebar();
   if (supported) setInterval(refresh, 5000);
 })();

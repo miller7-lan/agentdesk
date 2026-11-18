@@ -3,6 +3,7 @@
   "cliTimeoutMs": 900000,
   "quotaBridges": [],
   "maxConcurrentTasks": 2,
+  "writeProviders": ["codex", "claude", "grok", "gemini", "antigravity"],
   "adapters": {
     "codex": {
       "bin": "/usr/local/bin/codex",

@@ -258,6 +258,7 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   assert.equal(groupResult.steps[0].role, 'gemini');
   assert.equal(groupResult.steps[0].model, 'fixture-model');
   assert.equal(groupResult.steps[0].output, 'Gemini finished');
+  assert.equal(groupResult.steps[0].brief, 'Implement with the confirmed scope');   // shown in the member's own conversation
   assert.equal(groupResult.steps[0].attempts, 1);
   assert.equal(await fs.readFile(path.join(workspace, 'README.md'), 'utf8'), 'base\n');
 });
