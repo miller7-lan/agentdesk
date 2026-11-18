@@ -4,13 +4,29 @@
   if (!A || !A.LIVE) return;
   const { D, state, $, esc, svg, store, sess, toast, pet, setBusy } = A;
   const cx = window.desk.codex, rm = window.desk.remote, wsApi = window.desk.ws, skApi = window.desk.skills, fileApi = window.desk.files;
+  const chatApi = window.desk.chat;
   const isMac = window.desk.platform === 'darwin';
+  const agentName = A.agentName;
+  const CHAT_AGENTS = ['claude', 'grok', 'antigravity'];
   let localRoot = '';
   let workspaceRevision = 0;
 
   let cfg = { workspace: undefined, projectId: undefined };
   let ready = false;
   let conn = {};
+  const chatStatus = Object.fromEntries(CHAT_AGENTS.map((agent) => [agent, { agent, state: 'idle', detail: '' }]));
+  const agentOf = (s) => (CHAT_AGENTS.includes(s?.agent) ? s.agent : 'codex');
+  const isChat = (s) => !!(s && s.live && agentOf(s) !== 'codex');
+  const chatAgentApi = (agent) => ({
+    request: (method, params) => chatApi.request(agent, method, params),
+    respond: (id, result, error) => chatApi.respond(agent, id, result, error),
+    reconnect: () => chatApi.reconnect(agent),
+    wake: () => chatApi.wake(agent),
+    status: () => chatApi.status(agent),
+  });
+  const apiFor = (agent) => (agent === 'codex' || !CHAT_AGENTS.includes(agent)
+    ? { request: cx.request, respond: cx.respond, reconnect: () => rm.reconnect(), wake: () => rm.wake(), status: () => rm.status() }
+    : chatAgentApi(agent));
   const byThread = new Map();
   const W = { access: null, tree: [], treeTruncated: false, changes: null, diffCache: new Map(), open: new Set(), collapsedDirs: new Set(store.get('collapsedDirs', [])), sel: null, preview: null };
   let skills = { cloud: [], local: [] };
@@ -45,16 +61,35 @@
     return Math.round(d / 86400) + ' 天前';
   };
   const winPath = (r) => isMac ? localRoot + '/' + r : localRoot + '\\' + String(r).replace(/\//g, '\\');
+  function rootOf(s = sess(state.active)) {
+    return (s?.live && s.localRoot) || A.proj(s?.project)?.localRoot || localRoot;
+  }
+  const pathFor = (s, r) => isMac ? rootOf(s) + '/' + r : localRoot + '\\' + String(r).replace(/\//g, '\\');
   let rafPending = false;
   function render() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; A.renderAll(); }); }
   const isActive = (s) => s && s.id === state.active;
   function sysNote(s, text, err) { s.items.push({ t: 'assist', html: `<p class="${err ? 'err-note' : 'sys-note'}">${esc(text)}</p>` }); }
   function newSession(extra = {}) {
-    return { id: 'L' + Date.now() + Math.random().toString(36).slice(2, 6), project: 'live', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, term: [], diffs: [], ...extra };
+    const session = { id: 'L' + Date.now() + Math.random().toString(36).slice(2, 6), project: 'live', agent: 'codex', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, term: [], diffs: [], ...extra };
+    if (!session.mode) session.mode = session.agent === 'codex' ? 'ask' : 'auto';
+    return session;
   }
 
   /* ---------- 连接 ---------- */
-  async function ensureReady() {
+  async function ensureReady(s = sess(state.active)) {
+    const agent = agentOf(s);
+    if (agent !== 'codex') {
+      const current = await chatApi.status(agent);
+      if (current.ok && current.state === 'ready') return true;
+      toast(`正在连接 VPS 上的 ${agentName(agent)}…`);
+      const ok = await chatApi.wake(agent);
+      const st = await chatApi.status(agent);
+      if (!(ok && st.ok && st.state === 'ready')) {
+        toast(`${agentName(agent)} 暂时连不上${st.detail ? '：' + st.detail : '，请看状态栏的连接详情'}`);
+        return false;
+      }
+      return true;
+    }
     const current = await rm.status();
     if (ready && current.codex === 'ready') return true;
     if (current.codex !== 'ready') ready = false;
@@ -72,12 +107,13 @@
   async function waitLoaded(s) {
     for (let i = 0; i < 200 && s.loading; i++) await new Promise((r) => setTimeout(r, 50));
   }
-  async function resumeThread(threadId, params = {}) {
+  async function resumeThread(s, params = {}) {
     let last = { ok: false, error: '未知错误' };
+    const agent = agentOf(s);
     for (let attempt = 0; attempt < 5; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, 300 * attempt));
-      if (!(await ensureReady())) return { ok: false, error: 'Codex 未连接' };
-      last = await cx.request('thread/resume', { threadId, ...params });
+      if (!(await ensureReady(s))) return { ok: false, error: `${agentName(agent)} 未连接` };
+      last = await apiFor(agent).request('thread/resume', { threadId: s.threadId, ...params });
       if (last.ok) return last;
       if (!/active writer/i.test(last.error || '')) break;
     }
@@ -87,28 +123,55 @@
     if (!s.threadId || s.subscribed) return true;
     await waitLoaded(s);
     if (s.subscribed) return true;
-    const r = await resumeThread(s.threadId, { excludeTurns: true });
+    const r = await resumeThread(s, { excludeTurns: true });
     if (!r.ok) { toast('恢复会话失败：' + r.error); s.resumeError = r.error; return false; }
     s.resumeError = '';
     s.subscribed = true; byThread.set(s.threadId, s); return true;
   }
 
+  function activeAgent() {
+    if (state.group) return 'codex';
+    const s = sess(state.active);
+    return s?.live ? agentOf(s) : 'codex';
+  }
+
   function renderConn(st) {
     conn = st || conn;
     const el = $('#sbConn'); if (!el) return;
-    const s = conn;
-    const sleeping = s.codex === 'sleeping';
-    const ok = s.codex === 'ready' && ['up', 'external'].includes(s.tunnel) && ['running', 'external'].includes(s.sshd);
-    const bad = /denied|missing|failed|error/.test((s.sshd || '') + (s.codex || ''));
-    const retrying = s.codex === 'retry' || s.tunnel === 'retry';
-    const label = sleeping ? 'Codex 已休眠（输入时唤醒）'
-      : ok ? (isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接')
-      : s.codex === 'ready' ? 'Codex 已连接 · 隧道重连中'
-      : retrying ? (s.detail || '连接已断开，正在自动重连')
-      : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
-    el.innerHTML = `<span class="dot ${ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait'}"></span>${label}`;
+    const agent = activeAgent();
+    let label, dot, title, key;
+    if (agent !== 'codex') {
+      const cs = chatStatus[agent] || { state: 'idle', detail: '' };
+      const sleeping = cs.state === 'sleeping';
+      const ok = cs.state === 'ready';
+      const bad = cs.state === 'error' || cs.state === 'retry';
+      label = sleeping ? `${agentName(agent)} 已休眠（输入时唤醒）`
+        : ok ? `${agentName(agent)} 已连接`
+        : cs.state === 'connecting' ? `正在连接 ${agentName(agent)}…`
+        : cs.state === 'retry' ? (cs.detail || '连接已断开，正在自动重连')
+        : bad ? (cs.detail || '连接失败，点击重新连接') : `${agentName(agent)} 未连接`;
+      dot = ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait';
+      title = `单聊通道：${cs.state || 'idle'}${cs.detail ? '\n' + cs.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
+    } else {
+      const s = conn;
+      const sleeping = s.codex === 'sleeping';
+      const ok = s.codex === 'ready' && ['up', 'external'].includes(s.tunnel) && ['running', 'external'].includes(s.sshd);
+      const bad = /denied|missing|failed|error/.test((s.sshd || '') + (s.codex || ''));
+      const retrying = s.codex === 'retry' || s.tunnel === 'retry';
+      label = sleeping ? 'Codex 已休眠（输入时唤醒）'
+        : ok ? (isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接')
+        : s.codex === 'ready' ? 'Codex 已连接 · 隧道重连中'
+        : retrying ? (s.detail || '连接已断开，正在自动重连')
+        : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
+      dot = ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait';
+      title = `sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
+    }
+    key = agent + '|' + label + '|' + title;
+    if (el.dataset.key === key) return;
+    el.dataset.key = key;
+    el.innerHTML = `<span class="dot ${dot}"></span>${label}`;
+    el.title = title;
     A.renderSidebar();
-    el.title = `sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
   }
 
   /* ---------- 时间线条目 ---------- */
@@ -145,7 +208,11 @@
       const a = item.arguments || {};
       const cmd = a.command || a.path || JSON.stringify(a);
       const win = item.server === 'ssh';
-      return { kind: win ? (item.tool === 'ssh_exec' ? '在 Windows 上运行' : 'Windows · ' + item.tool) : `${item.server} · ${item.tool}`, icon: win ? 'term' : 'spark',
+      const local = item.server === 'agentdesk' && typeof item.tool === 'string' && item.tool.startsWith('agentdesk_file_');
+      const kind = local ? '本机文件 · ' + item.tool.slice('agentdesk_file_'.length)
+        : win ? (item.tool === 'ssh_exec' ? '在 Windows 上运行' : 'Windows · ' + item.tool)
+        : `${item.server} · ${item.tool}`;
+      return { kind, icon: local ? 'file' : win ? 'term' : 'spark',
         arg: String(cmd).replace(/\s+/g, ' ').slice(0, 140), input: typeof cmd === 'string' ? cmd : JSON.stringify(a, null, 2) };
     }
     if (item.type === 'dynamicToolCall' && typeof item.tool === 'string' && item.tool.startsWith('desktop_')) {
@@ -153,6 +220,9 @@
     }
     if (item.type === 'dynamicToolCall' && typeof item.tool === 'string' && item.tool.startsWith('windows_file_')) {
       return { kind: '本机文件 · ' + item.tool.slice('windows_file_'.length), icon: 'file', arg: item.arguments?.path || '', input: '' };
+    }
+    if (item.type === 'dynamicToolCall' && typeof item.tool === 'string' && item.tool.startsWith('agentdesk_file_')) {
+      return { kind: '本机文件 · ' + item.tool.slice('agentdesk_file_'.length), icon: 'file', arg: item.arguments?.path || '', input: '' };
     }
     if (item.type === 'sleep') {
       return { kind: '等待', icon: 'spark', arg: item.durationMs != null ? (item.durationMs / 1000).toFixed(1) + 's' : '', input: '' };
@@ -231,11 +301,13 @@
       it.meta = item.error?.message === 'user rejected MCP tool call' ? '已拒绝'
         : [item.durationMs != null ? (item.durationMs / 1000).toFixed(1) + 's' : '', code != null ? '退出码 ' + code : ''].filter(Boolean).join(' · ') || item.status;
       if (!history && item.tool === 'ssh_exec') it.output.split('\n').forEach((l) => s.term.push([it.err ? 'e' : '', l]));
-      if (!history && item.server === 'ssh') refreshChanges();
+      if (!history && (item.server === 'ssh' || item.server === 'agentdesk')) refreshChanges();
     } else if (item.type === 'dynamicToolCall') {
       it.err = item.success === false || item.status === 'failed';
       it.meta = it.err ? '失败' : '完成';
-      if (it.err) it.output = (item.contentItems || []).find((content) => content.type === 'inputText')?.text || '';
+      const text = (item.contentItems || []).find((content) => content.type === 'inputText')?.text;
+      if (text) it.output = text;
+      if (!history && !it.err) refreshChanges();
     } else if (item.type === 'fileChange') {
       it.output = (item.changes || []).map((c) => c.diff || '').join('\n');
       it.meta = item.status === 'completed' ? '已应用' : item.status;
@@ -285,7 +357,7 @@
       case 'turn/plan/updated': updatePlan(s, p); break;
       case 'turn/diff/updated': s.diffs = p.diff ? [p.diff] : []; break;
       case 'thread/name/updated': if (p.threadName) s.title = p.threadName; break;
-      case 'error': if (!p.willRetry) sysNote(s, 'Codex 错误：' + (p.error?.message || JSON.stringify(p.error)), true); break;
+      case 'error': if (!p.willRetry) sysNote(s, `${agentName(m.agent || agentOf(s))} 错误：` + (p.error?.message || JSON.stringify(p.error)), true); break;
       case 'serverRequest/resolved': {
         const it = s.items.find((x) => x.reqId === p.requestId && x.state === 'pending');
         if (it) it.state = 'approved';
@@ -311,13 +383,24 @@
   /* ---------- 审批 ---------- */
   function onServerRequest(m) {
     const p = m.params || {};
+    const agent = m.agent || 'codex';
     const session = p.threadId && byThread.get(p.threadId);
-    if (session?.live && window.__group?.acceptApproval(session.project, m)) return;
+    if (!m.agent && session?.live && window.__group?.acceptApproval(session.project, m)) return;
     const s = session || (!p.threadId && sess(state.active));
-    if (!s || !s.live) return cx.respond(m.id, null, { code: -32603, message: 'no session' });
+    if (!s || !s.live) {
+      try { apiFor(agent).respond(m.id, null, { code: -32603, message: 'no session' }); } catch {}
+      return;
+    }
     const base = { t: 'approval', reqId: m.id, method: m.method, state: 'pending' };
     let card;
-    if (m.method === 'mcpServer/elicitation/request') {
+    if (m.method === 'item/tool/requestApproval') {
+      const tool = String(p.tool || '').replace(/^agentdesk_file_/, '');
+      const raw = p.arguments || {};
+      card = { ...base, sessionable: true,
+        title: `请求修改本机文件（${agentName(agent)}）`,
+        desc: `AI 想在本机（${s.localRoot || localRoot}）上执行：${tool}`,
+        cmd: String(raw.path || raw.destination || JSON.stringify(raw, null, 2)).slice(0, 1500) };
+    } else if (m.method === 'mcpServer/elicitation/request') {
       const meta = p._meta || {}; const tp = meta.tool_params || {}; const win = p.serverName === 'ssh';
       card = { ...base, sessionable: false,
         title: win ? `请求在 Windows 上执行（${meta.tool_name || 'MCP 工具'}）` : `请求调用 ${p.serverName} · ${meta.tool_name || ''}`,
@@ -348,7 +431,7 @@
     let result, error;
     switch (it.method) {
       case 'mcpServer/elicitation/request': result = ok ? { action: 'accept', content: {} } : { action: 'decline', content: null }; break;
-      case 'item/commandExecution/requestApproval': case 'item/fileChange/requestApproval':
+      case 'item/commandExecution/requestApproval': case 'item/fileChange/requestApproval': case 'item/tool/requestApproval':
         result = { decision: ok ? (remember ? 'acceptForSession' : 'accept') : 'decline' }; break;
       case 'execCommandApproval': case 'applyPatchApproval':
         result = { decision: ok ? (remember ? 'approved_for_session' : 'approved') : 'denied' }; break;
@@ -358,7 +441,7 @@
       }
       default: error = { code: -32601, message: 'unsupported request' };
     }
-    cx.respond(it.reqId, result, error);
+    apiFor(agentOf(s)).respond(it.reqId, result, error);
     it.state = ok ? 'approved' : 'rejected';
     s.status = 'running'; thinking(s, ok ? '执行中' : '继续中');
     A.renderAll(); pet(s, 'working', 'PostToolUse');
@@ -403,38 +486,55 @@
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.send(s, fromButton);
     const ta = $('#input');
     const text = ta.value.trim();
+    const agent = agentOf(s);
+    const chat = isChat(s);
+    const api = apiFor(agent);
     if (s.busy) { if (text) return steer(s, text); if (fromButton) return interrupt(s); return; }
     if (!text && !liveAtt.length) return;
     if (text.startsWith('/') && runCommand(text)) return;
     const { approvalPolicy, sandbox, sandboxPolicy } = modeToPolicy($('#modeSelect').value);
-    if (!(await ensureReady())) return;
+    if (!(await ensureReady(s))) return;
     ta.value = ''; A.autosize();
-    const { input, chips } = await buildInput(text);
-    liveAtt = []; renderAtt();
+    const { input, chips } = chat
+      ? { input: [{ type: 'text', text, text_elements: [] }], chips: [] }
+      : await buildInput(text);
+    if (!chat) { liveAtt = []; renderAtt(); }
     if (s.title === '新会话') s.title = (text || '附件').slice(0, 24);
     s.items.push({ t: 'user', text, chips });
     s.busy = true; s.status = 'running'; s.time = '刚刚';
     s.items.push({ t: 'thinking', text: '思考中' });
     A.renderAll(); pet(s, 'thinking', 'UserPromptSubmit');
     if (sandbox === 'danger-full-access') {
-      if (!isMac) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
+      if (isMac) input[0].text += '\n\n[AgentDesk：完全访问本机（macOS）]\n你可以用 agentdesk_file_* 工具读写这台 Mac 的文件，路径必须是绝对 POSIX 路径，修改会立即生效。覆盖已有文件时需 overwrite:true；写之前先读取确认。不要使用 VPS 上的文件工具。';
+      else if (!chat) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
-    const sel = $('#modelSelect'); const model = sel.dataset.live ? sel.value : undefined;
+    const sel = $('#modelSelect');
+    const model = chat ? (sel.value || undefined) : (sel.dataset.live ? sel.value : undefined);
+    if (chat) s.model = model;
+    const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
-      const r = await cx.request('thread/start', { projectId: A.proj(s.project)?.configured ? s.project : undefined, approvalPolicy, sandbox, approvalsReviewer: 'user', model });
+      s.localRoot = A.proj(s.project)?.localRoot || localRoot;
+      const params = chat
+        ? { projectId, approvalPolicy, sandboxPolicy, model }
+        : { projectId, approvalPolicy, sandbox, approvalsReviewer: 'user', model };
+      const r = await api.request('thread/start', params);
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
-    const r = await cx.request('turn/start', {
-      threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
-      effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
-      serviceTier: model && $('#tierSelect').value ? $('#tierSelect').value : undefined,
-    });
+    const turnParams = chat
+      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model }
+      : {
+        threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
+        effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
+        serviceTier: model && $('#tierSelect').value ? $('#tierSelect').value : undefined,
+      };
+    const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
     s.turnId = r.result.turn.id;
   }
   async function steer(s, text) {
     if (!s.turnId) return;
+    if (isChat(s)) { toast(`${agentName(agentOf(s))} 单聊暂不支持插话，请等本轮结束或先停止`); return; }
     const ta = $('#input'); ta.value = ''; A.autosize();
     const r = await cx.request('turn/steer', { threadId: s.threadId, expectedTurnId: s.turnId, input: [{ type: 'text', text, text_elements: [] }] });
     if (!r.ok) { toast('插话失败：' + r.error); ta.value = text; return; }
@@ -442,7 +542,7 @@
   }
   async function interrupt(s) {
     if (!s.threadId || !s.turnId) return;
-    const r = await cx.request('turn/interrupt', { threadId: s.threadId, turnId: s.turnId });
+    const r = await apiFor(agentOf(s)).request('turn/interrupt', { threadId: s.threadId, turnId: s.turnId });
     if (!r.ok) toast('停止失败：' + r.error);
   }
   function fail(s, msg) {
@@ -453,36 +553,53 @@
   /* ---------- 斜杠命令 ---------- */
   const COMMANDS = [
     { cmd: '/new', desc: '新建会话' },
-    { cmd: '/review', desc: '让 Codex 审查 Windows 测试目录里未提交的改动' },
-    { cmd: '/compact', desc: '压缩当前会话的上下文' },
+    { cmd: '/review', desc: '让 Codex 审查本机工作区里未提交的改动', codexOnly: true },
+    { cmd: '/compact', desc: '压缩当前会话的上下文', codexOnly: true },
     { cmd: '/rename', desc: '重命名当前会话（/rename 新名称）' },
     { cmd: '/archive', desc: '归档当前会话' },
-    { cmd: '/model', desc: '切换模型、推理强度和速度' },
-    { cmd: '/skills', desc: '浏览云端和本地技能' },
+    { cmd: '/model', desc: '切换模型、推理强度和速度', codexOnly: true },
+    { cmd: '/skills', desc: '浏览云端和本地技能', codexOnly: true },
     { cmd: '/status', desc: '查看连接、模型和用量' },
-    { cmd: '/reconnect', desc: '重新连接 VPS 上的 Codex' },
+    { cmd: '/reconnect', desc: '重新连接这个 AI 的单聊通道' },
   ];
   function runCommand(text) {
     const [c, ...rest] = text.split(/\s+/); const arg = rest.join(' ').trim();
     const s = sess(state.active);
+    const agent = agentOf(s);
     const ta = $('#input'); const clear = () => { ta.value = ''; A.autosize(); };
+    if (COMMANDS.find((item) => item.cmd === c)?.codexOnly && agent !== 'codex') {
+      clear(); toast(`${agentName(agent)} 单聊不支持 ${c}`); return true;
+    }
     switch (c) {
-      case '/new': clear(); A.newDirect(); return true;
-      case '/review': ta.value = `请审查 ${localRoot} 中尚未提交的改动：先用一次 ssh_exec 运行 git status --short 和 git diff，然后按严重程度列出问题、风险和建议。不要修改任何文件。`; A.autosize(); return false;
+      case '/new': clear(); A.newDirect(undefined, agent); return true;
+      case '/review': ta.value = `请审查 ${rootOf(s)} 中尚未提交的改动：先用一次 ssh_exec 运行 git status --short 和 git diff，然后按严重程度列出问题、风险和建议。不要修改任何文件。`; A.autosize(); return false;
       case '/compact': clear(); if (!s?.threadId) { toast('当前会话还没有内容'); return true; }
-        ensureReady().then((ok) => ok && subscribe(s)).then(() => cx.request('thread/compact/start', { threadId: s.threadId }))
+        ensureReady(s).then((ok) => ok && subscribe(s)).then(() => cx.request('thread/compact/start', { threadId: s.threadId }))
           .then((r) => toast(r?.ok ? '已开始压缩上下文' : '压缩失败：' + (r?.error || ''))); return true;
       case '/rename': clear(); if (arg) renameSession(s, arg); else startRename(s); return true;
       case '/archive': clear(); archiveSession(s); return true;
       case '/model': clear(); $('#modelSelect').focus(); toast('在输入框下方切换模型、推理强度和速度'); return true;
       case '/skills': ta.value = '$'; A.autosize(); ta.focus(); openMenu(); return true;
       case '/status': clear(); showStatus(s); return true;
-      case '/reconnect': clear(); rm.reconnect(); toast('正在重新连接…'); return true;
+      case '/reconnect': clear();
+        if (agent !== 'codex') { chatApi.reconnect(agent); toast(`正在重新连接 ${agentName(agent)}…`); }
+        else { rm.reconnect(); toast('正在重新连接…'); }
+        return true;
       default: return false;
     }
   }
   function showStatus(s) {
     if (!s) return;
+    const agent = agentOf(s);
+    if (agent !== 'codex') {
+      const cs = chatStatus[agent] || {};
+      sysNote(s, `连接：${agentName(agent)} 单聊 · ${cs.state || 'idle'}${cs.detail ? '（' + cs.detail + '）' : ''}`);
+      sysNote(s, `工作区：${rootOf(s) || '未绑定'} · 模型：默认`);
+      sysNote(s, `本机文件：${$('#modeSelect').selectedOptions[0]?.text || '每步询问'} · 修改即时生效`);
+      sysNote(s, '连接空闲后会休眠，再次输入时会自动唤醒。');
+      A.renderAll();
+      return;
+    }
     const m = $('#modelSelect');
     const u = usage ? usageText(usage) : '未知';
     sysNote(s, `连接：sshd ${conn.sshd} · 隧道 ${conn.tunnel} · Codex ${conn.codex}${conn.detail ? '（' + conn.detail + '）' : ''}`);
@@ -515,8 +632,8 @@
     if (s.loaded || s.loading) return;
     s.loading = true; A.renderAll();
     try {
-      if (!(await ensureReady())) return;
-      const r = await resumeThread(s.threadId);
+      if (!(await ensureReady(s))) return;
+      const r = await resumeThread(s);
       if (!r.ok) { sysNote(s, '载入历史失败：' + r.error, true); return; }
       s.items = [];
       for (const turn of r.result.thread.turns || []) {
@@ -533,19 +650,24 @@
   }
   function onOpen(prevId, id) {
     const prev = sess(prevId);
-    if (prev && prev.live && prev.threadId && prev.subscribed && !prev.busy && prevId !== id && ready) {
-      cx.request('thread/unsubscribe', { threadId: prev.threadId });          // 让 VPS 释放不在前台的会话
-      prev.subscribed = false;
+    if (prev && prev.live && prev.threadId && prev.subscribed && !prev.busy && prevId !== id) {
+      const agent = agentOf(prev);
+      const connected = agent === 'codex' ? ready : chatStatus[agent]?.state === 'ready';
+      if (connected) {
+        apiFor(agent).request('thread/unsubscribe', { threadId: prev.threadId });   // 让 VPS 释放不在前台的会话
+        prev.subscribed = false;
+      }
     }
     const s = sess(id);
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.onOpen(s);
     if (s && s.live && s.history && !s.loaded) openHistory(s);
-    if (s && s.live) renderTokens(s);
+    if (s && s.live) { if (agentOf(s) === 'codex') renderTokens(s); }
+    renderConn();
   }
   async function renameSession(s, name) {
     if (!s || !s.live || !name) return;
     s.title = name; A.renderAll();
-    if (s.threadId && (await ensureReady())) { const r = await cx.request('thread/name/set', { threadId: s.threadId, name }); if (!r.ok) toast('重命名失败：' + r.error); }
+    if (s.threadId && (await ensureReady(s))) { const r = await apiFor(agentOf(s)).request('thread/name/set', { threadId: s.threadId, name }); if (!r.ok) toast('重命名失败：' + r.error); }
   }
   function startRename(s) {
     const row = document.querySelector(`.sess[data-id="${s.id}"] .s-title`); if (!row) return;
@@ -559,14 +681,15 @@
     if (!s || !s.live) return;
     if (s.busy) { toast('会话还在运行，先停止再归档'); return; }
     if (s.threadId) {
-      if (!(await ensureReady())) return;
-      const r = await cx.request('thread/archive', { threadId: s.threadId });
+      if (!(await ensureReady(s))) return;
+      const r = await apiFor(agentOf(s)).request('thread/archive', { threadId: s.threadId });
       if (!r.ok) { toast('归档失败：' + r.error); return; }
       byThread.delete(s.threadId);
     }
     D.sessions.splice(D.sessions.indexOf(s), 1);
     if (state.active === s.id) {
-      const next = D.sessions.find((x) => x.live) || (D.sessions.unshift(newSession()), D.sessions[0]);
+      const next = D.sessions.find((x) => x.live)
+        || (D.sessions.unshift(newSession({ project: s.project, agent: agentOf(s) })), D.sessions[0]);
       A.openSession(next.id);
     } else A.renderAll();
     toast('已归档');
@@ -599,8 +722,15 @@
       all.push(...(r.result?.data || [])); cursor = r.result?.nextCursor; if (!cursor) break;
     }
     models = all.filter((m) => !m.hidden);
+    const active = sess(state.active);
+    const shown = isChat(active) ? models.length > 0 : renderModels();
+    syncSession(active);
+    return shown;
+  }
+  function renderModels() {
     if (!models.length) return false;
     const sel = $('#modelSelect'); const keep = store.get('model');
+    delete sel.dataset.chat;
     sel.dataset.live = '1';
     sel.innerHTML = models.map((m) => `<option value="${esc(m.model)}" title="${esc(m.description || '')}">${esc(m.displayName || m.model)}</option>`).join('');
     sel.value = models.some((m) => m.model === keep) ? keep : (models.find((m) => m.isDefault) || models[0]).model;
@@ -614,6 +744,86 @@
     sel.innerHTML = `<option value="">${esc(text)}</option>`; sel.disabled = true; sel.title = '模型列表来自 VPS 上的 Codex';
   }
   modelPlaceholder('正在获取模型…');
+
+  // 单聊模型：Claude/Grok/Antigravity 的候选来自 VPS2 的 adapters.<provider>.models，每个会话各自记住选择。
+  const chatProfiles = new Map();      // projectId -> routes.modelProfiles
+  const chatProfileLoads = new Map();  // projectId -> Promise
+  function loadChatProfiles(s) {
+    const project = s?.project;
+    const control = window.desk.orchestrator?.control;
+    if (!project || !control || chatProfiles.has(project) || chatProfileLoads.has(project)) return;
+    const loading = control({ projectId: project, operation: 'routes' }).then((r) => {
+      if (r?.ok) chatProfiles.set(project, r.value?.modelProfiles || {});
+    }).catch(() => {}).finally(() => {
+      chatProfileLoads.delete(project);
+      const active = sess(state.active);
+      if (active && isChat(active) && active.project === project) syncSession(active);
+    });
+    chatProfileLoads.set(project, loading);
+  }
+  function applyChatModels(s) {
+    const sel = $('#modelSelect');
+    const agent = agentOf(s);
+    const profile = chatProfiles.get(s.project)?.[agent];
+    const options = Object.entries(profile?.models || {});
+    const signature = [s.project, agent, ...options.map(([id]) => id)].join('|');
+    if (sel.dataset.live || sel.dataset.chatSig !== signature) {
+      delete sel.dataset.live;
+      sel.dataset.chatSig = signature;
+      sel.innerHTML = '<option value="">默认模型</option>' + options.map(([id, p]) =>
+        `<option value="${esc(id)}" title="${esc(p?.strengths || '')}">${esc(id)}</option>`).join('');
+      sel.disabled = !options.length;
+    }
+    if (!options.some(([id]) => id === s.model)) s.model = undefined;
+    sel.value = s.model || '';
+    sel.title = options.length
+      ? (options.find(([id]) => id === s.model)?.[1]?.strengths || '选择该单聊使用的模型')
+      : `${agentName(agent)} 使用默认模型`;
+  }
+
+  // 单聊（Claude/Grok/Antigravity）只保留通用输入；Codex 专有的模型、技能、附件和用量提示按会话切换
+  let composerSession = '';
+  function syncSession(s) {
+    // 远程的任务式单聊（provider 字段）由 provider-direct.js 自己渲染，不要套用 Codex 单聊的控件状态。
+    if (window.__providerDirect?.handles(s)) return;
+    const agent = agentOf(s);
+    const chat = isChat(s);
+    const ta = $('#input');
+    ta.placeholder = chat ? `向 ${agentName(agent)} 描述任务…` : '向 Codex 描述任务…';
+    ta.title = chat ? '@ 引用本机文件 · Enter 发送 · Shift+Enter 换行' : '/ 命令 · $ 技能 · @ 文件';
+    const modeSel = $('#modeSelect');
+    if (s && modeSel) {
+      const mode = s.mode || (chat ? 'auto' : 'ask');
+      if (modeSel.value !== mode) {
+        modeSel.value = mode;
+        $('#sbMode').textContent = modeSel.selectedOptions[0]?.text || '';
+      }
+    }
+    renderConn();
+    const sel = $('#modelSelect');
+    if (chat) {
+      sel.dataset.chat = '1'; delete sel.dataset.live;
+      loadChatProfiles(s);
+      applyChatModels(s);
+    } else if (sel.dataset.chat) {
+      delete sel.dataset.chat; delete sel.dataset.chatSig;
+      if (!renderModels()) modelPlaceholder('正在获取模型…');
+    }
+    const key = (s?.id || '') + '|' + agent + '|' + chat;
+    if (key === composerSession) return;
+    composerSession = key;
+    $('#attachBtn').hidden = chat;
+    $('#ctxHint').hidden = chat;
+    $('#sbTokens').hidden = chat;
+    const usageEl = $('#sbUsage'); if (usageEl) usageEl.hidden = chat;
+    if (chat) {
+      $('#effortWrap').hidden = true;
+      $('#tierWrap').hidden = true;
+      if (liveAtt.length) { liveAtt = []; renderAtt(); }
+    } else {
+      $('#ctxHint').hidden = false;
+    }
+  }
   function applyModelOptions() {
     const m = models.find((x) => x.model === $('#modelSelect').value); if (!m) return;
     $('#modelSelect').title = m.description || '';
@@ -627,7 +837,15 @@
     const keepT = store.get('tier', ''); ts.value = tiers.some((t) => t.id === keepT) ? keepT : '';
     $('#tierWrap').hidden = !tiers.length;
   }
-  $('#modelSelect').addEventListener('change', () => { if ($('#modelSelect').dataset.live) { store.set('model', $('#modelSelect').value); applyModelOptions(); } });
+  $('#modelSelect').addEventListener('change', () => {
+    const s = sess(state.active);
+    if (s && isChat(s)) {
+      s.model = $('#modelSelect').value || undefined;
+      $('#modelSelect').title = $('#modelSelect').selectedOptions[0]?.title || '选择该单聊使用的模型';
+      return;
+    }
+    if ($('#modelSelect').dataset.live) { store.set('model', $('#modelSelect').value); applyModelOptions(); }
+  });
   $('#effortSelect').addEventListener('change', (e) => store.set('effort', e.target.value));
   $('#tierSelect').addEventListener('change', (e) => store.set('tier', e.target.value));
 
@@ -688,25 +906,34 @@
     return [...local, ...sys, ...other];
   }
   function buildMenu(tok) {
+    const s = sess(state.active);
+    const chat = isChat(s);
     if (tok.kind === '/') {
-      const cmds = COMMANDS.filter((c) => c.cmd.slice(1).startsWith(tok.q)).map((c) => ({ type: 'cmd', label: c.cmd, desc: c.desc, group: '命令', value: c.cmd }));
-      return [...cmds, ...skillRows(tok.q)].slice(0, 400);
+      const cmds = COMMANDS.filter((c) => c.cmd.slice(1).startsWith(tok.q) && (!chat || !c.codexOnly))
+        .map((c) => ({ type: 'cmd', label: c.cmd, desc: c.desc, group: '命令', value: c.cmd }));
+      return (chat ? cmds : [...cmds, ...skillRows(tok.q)]).slice(0, 400);
     }
-    if (tok.kind === '$') return skillRows(tok.q).slice(0, 400);
+    if (tok.kind === '$') return chat ? [] : skillRows(tok.q).slice(0, 400);
+    const root = rootOf(s);
     const files = W.tree.filter((n) => !n.dir && (!tok.q || n.path.toLowerCase().includes(tok.q))).slice(0, 60)
-      .map((n) => ({ type: 'file', label: n.path, desc: '', group: W.access?.ok ? `工作区（${localRoot}）` : '没有读取权限', value: winPath(n.path) + ' ' }));
+      .map((n) => ({ type: 'file', label: n.path, desc: '', group: W.access?.ok ? `工作区（${root}）` : '没有读取权限', value: pathFor(s, n.path) + ' ' }));
     return files;
   }
   function openMenu() {
     const tok = tokenAtCaret();
     if (!tok) return closeMenu();
+    const s = sess(state.active);
+    const chat = isChat(s);
     // 插件技能可能在连接后才陆续就绪：没拿到插件技能时，打开菜单顺手重新拉取（最多 30 秒一次）
-    if (tok.kind !== '@' && ready && Date.now() - skillsAt > 4000 &&!skills.cloud.some((k) => k.scope !== 'system')) {
+    if (!chat && tok.kind !== '@' && ready && Date.now() - skillsAt > 4000 &&!skills.cloud.some((k) => k.scope !== 'system')) {
       loadSkills().then(() => { if (!menu.hidden) openMenu(); });
     }
     menuTok = tok; menuItems = buildMenu(tok); menuSel = 0;
     if (!menuItems.length) {
-      menu.innerHTML = `<div class="cm-empty">${tok.kind === '@' ? (W.access?.ok ? '没有匹配的文件' : '没有读取测试目录的权限') : ready || skills.cloud.length ? '没有匹配项' : 'Codex 连接后会列出云端技能'}</div>`;
+      const empty = tok.kind === '$' && chat ? `${agentName(agentOf(s))} 单聊不支持技能`
+        : tok.kind === '@' ? (W.access?.ok ? '没有匹配的文件' : '没有读取工作区的权限')
+        : chat ? '没有匹配的命令' : ready || skills.cloud.length ? '没有匹配项' : 'Codex 连接后会列出云端技能';
+      menu.innerHTML = `<div class="cm-empty">${empty}</div>`;
       menu.hidden = false; return;
     }
     renderMenu(); menu.hidden = false;
@@ -750,13 +977,21 @@
   // 输入时：休眠中则提前唤醒，并刷新空闲计时
   let lastTouch = 0;
   ta.addEventListener('input', () => {
-    if (!sess(state.active)?.live) return;
+    const s = sess(state.active);
+    if (!s?.live) return;
+    const agent = agentOf(s);
+    if (agent !== 'codex') {
+      if (chatStatus[agent]?.state === 'sleeping') chatApi.wake(agent);
+      return;
+    }
     if (conn.codex === 'sleeping') rm.wake();
     else if (Date.now() - lastTouch > 30000) { lastTouch = Date.now(); rm.touch(); }
   });
 
   /* ---------- 附件 ---------- */
   function renderAtt() {
+    const s = sess(state.active);
+    if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
     $('#attachList').innerHTML = liveAtt.map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
   }
   $('#attachList').addEventListener('click', (e) => {
@@ -764,17 +999,22 @@
     e.stopImmediatePropagation(); liveAtt.splice(+p.dataset.li, 1); renderAtt();
   }, true);
   async function attach() {
-    if (!(await ensureReady())) return;
+    const s = sess(state.active);
+    if (isChat(s)) { toast(`${agentName(agentOf(s))} 单聊请用 @ 引用本机文件路径`); return; }
+    if (!(await ensureReady(s))) return;
     const r = await fileApi.pick();
     liveAtt.push(...(r.files || [])); renderAtt();
     if (!r.ok) toast('上传失败：' + r.error); else if (r.files.length) toast(`已上传 ${r.files.length} 个文件到 VPS`);
   }
   ta.addEventListener('paste', async (e) => {
-    if (!sess(state.active)?.live) return;
+    const session = sess(state.active);
+    if (!session?.live) return;
     const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.preventDefault();
-    if (!(await ensureReady())) return;
+    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持图片附件`); return; }
+    if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择图片文件。'); return; }
+    if (!(await ensureReady(session))) return;
     for (const f of imgs) {
       const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(f); });
       const name = f.name && f.name !== 'image.png' ? f.name : `粘贴图片-${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.png`;
@@ -799,11 +1039,13 @@
   const hideOverlay = () => { clearTimeout(dragTimer); overlayKind = ''; overlay.hidden = true; };
   const showOverlay = (k) => {
     clearTimeout(dragTimer); dragTimer = setTimeout(hideOverlay, 300);
-    const live = !!sess(state.active)?.live;
-    if (!overlay.hidden && overlayKind === k + live) return;
-    overlayKind = k + live;
-    overlay.innerHTML = `<div class="drop-card">${k === 'tree' ? svg('file') : '<svg viewBox="0 0 24 24"><path d="M20 11.5l-7.8 7.8a5 5 0 01-7.1-7.1l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8"/></svg>'}<div><b>${!live ? '示例会话不支持添加文件' : k === 'tree' ? '松开以引用这个路径' : '松开以添加为附件'}</b><span>${!live ? '请切换到“Windows 开发机 · Codex”会话' : k === 'tree' ? '插入到输入框，Codex 会通过 ssh_exec 访问' : '测试目录内的文件直接引用路径；其他文件上传到 VPS（每个 ≤10 MB）'}</span></div></div>`;
-    overlay.classList.toggle('bad', !live);
+    const session = sess(state.active);
+    const live = !!session?.live;
+    const chat = isChat(session);
+    if (!overlay.hidden && overlayKind === k + live + chat) return;
+    overlayKind = k + live + chat;
+    overlay.innerHTML = `<div class="drop-card">${k === 'tree' ? svg('file') : '<svg viewBox="0 0 24 24"><path d="M20 11.5l-7.8 7.8a5 5 0 01-7.1-7.1l8.5-8.5a3.3 3.3 0 014.7 4.7l-8.5 8.5a1.7 1.7 0 01-2.4-2.4l7.8-7.8"/></svg>'}<div><b>${!live ? '示例会话不支持添加文件' : k === 'tree' ? '松开以引用这个路径' : chat ? '单聊不支持附件' : '松开以添加为附件'}</b><span>${!live ? '请切换到已连接工作区的会话' : k === 'tree' ? `插入到输入框，${agentName(agentOf(session))} 会通过本机文件工具访问` : chat ? '请用 @ 引用本机文件路径，或直接输入绝对路径' : '测试目录内的文件直接引用路径；其他文件上传到 VPS（每个 ≤10 MB）'}</span></div></div>`;
+    overlay.classList.toggle('bad', !live || (chat && k === 'files'));
     overlay.hidden = false;
   };
   // 整个窗口都拦住默认行为，避免把文件当网页打开；只有在对话区上方才显示遮罩
@@ -821,8 +1063,11 @@
   center.addEventListener('drop', async (e) => {
     const k = dragKind(e); if (!k) return;
     e.preventDefault(); e.stopPropagation(); hideOverlay();
-    if (!sess(state.active)?.live) { toast('示例会话不支持添加文件'); return; }
+    const session = sess(state.active);
+    if (!session?.live) { toast('示例会话不支持添加文件'); return; }
     if (k === 'tree') { mention(e.dataTransfer.getData(DRAG_TYPE)); return; }
+    if (isChat(session)) { toast(`${agentName(agentOf(session))} 单聊不支持附件，请用 @ 引用本机文件路径`); return; }
+    if (window.__providerDirect?.handles(session)) { toast('请用「附件」选择要发送的文件。'); return; }
     const list = [...e.dataTransfer.files];
     if (!list.length) return;
     await addDropped(list);
@@ -846,7 +1091,7 @@
   $('#panelBody').addEventListener('dragstart', (e) => {
     const n = e.target.closest?.('.node[data-path]'); if (!n || !sess(state.active)?.live) return;
     e.dataTransfer.setData(DRAG_TYPE, n.dataset.path);
-    e.dataTransfer.setData('text/plain', winPath(n.dataset.path));
+    e.dataTransfer.setData('text/plain', pathFor(sess(state.active), n.dataset.path));
     e.dataTransfer.effectAllowed = 'copyLink';
   });
 
@@ -929,7 +1174,7 @@
     else renderFiles(body);
   }
   function mention(p) {
-    const v = ta.value; const ins = winPath(p) + ' ';
+    const v = ta.value; const ins = pathFor(sess(state.active), p) + ' ';
     ta.value = v && !/\s$/.test(v) ? v + ' ' + ins : v + ins; A.autosize(); ta.focus();
   }
   $('#panelBody').addEventListener('click', async (e) => {
@@ -940,7 +1185,7 @@
       const f = ch.closest('.chg-file')?.dataset.path;
       if (ch.dataset.ch === 'refresh') { refreshChanges(true); toast('已刷新'); }
       else if (ch.dataset.ch === 'mention') mention(f);
-      else if (ch.dataset.ch === 'revert') { ta.value = `请撤销 ${winPath(f)} 的所有未提交改动（用 git restore / 删除新文件），完成后用 git status --short 确认。`; A.autosize(); ta.focus(); }
+      else if (ch.dataset.ch === 'revert') { ta.value = `请撤销 ${pathFor(s, f)} 的所有未提交改动（用 git restore / 删除新文件），完成后用 git status --short 确认。`; A.autosize(); ta.focus(); }
       return;
     }
     const row = e.target.closest('.chg-row');
@@ -992,13 +1237,15 @@
       if (item?.kind === '压缩上下文') return 'compacting';
       return item?.t === 'reason' || item?.t === 'thinking' ? 'thinking' : 'tool';
     }
+    const agent = agentOf(s);
+    if (agent !== 'codex') return chatStatus[agent]?.state === 'sleeping' ? 'asleep' : 'idle';
     if (conn.codex === 'sleeping') return 'asleep';
     const limits = usage?.rateLimits || usage;
     if ([limits?.primary, limits?.secondary].some((limit) => limit?.usedPercent >= 100)) return 'limited';
     return 'idle';
   }
 
-  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage };
+  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
   async function workspaceChanged() {
     const revision = ++workspaceRevision;
     const [config, access] = await Promise.all([rm.config(), wsApi.access()]);
@@ -1023,8 +1270,17 @@
   }
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
-  $('#sbConn').addEventListener('click', () => { if (conn.codex === 'sleeping') { rm.wake(); toast('正在唤醒 Codex…'); } else { rm.reconnect(); toast('正在重新连接…'); } });
-  $('#sbReconnect').addEventListener('click', () => { rm.reconnect(); toast('正在重新连接…'); });
+  function reconnectActive() {
+    const agent = activeAgent();
+    if (agent !== 'codex' && chatApi) {
+      if (chatStatus[agent]?.state === 'sleeping') { chatApi.wake(agent); toast(`正在唤醒 ${agentName(agent)}…`); }
+      else { chatApi.reconnect(agent); toast(`正在重新连接 ${agentName(agent)}…`); }
+      return;
+    }
+    if (conn.codex === 'sleeping') { rm.wake(); toast('正在唤醒 Codex…'); } else { rm.reconnect(); toast('正在重新连接…'); }
+  }
+  $('#sbConn').addEventListener('click', reconnectActive);
+  $('#sbReconnect').addEventListener('click', reconnectActive);
   const desktopButton = $('#sbDesktop');
   const displayDesktop = (enabled) => {
     desktopButton.textContent = enabled ? '本机桌面：开启' : '本机桌面：关闭';
@@ -1035,6 +1291,23 @@
   desktopButton.addEventListener('click', () => window.desk.desktop.toggle().then(displayDesktop));
   cx.onEvent(onEvent);
   cx.onServerRequest(onServerRequest);
+  if (chatApi) {
+    chatApi.onEvent(onEvent);
+    chatApi.onServerRequest(onServerRequest);
+    chatApi.onStatus((status) => {
+      if (!status?.agent || !chatStatus[status.agent]) return;
+      chatStatus[status.agent] = { ...chatStatus[status.agent], ...status };
+      renderConn();
+      A.renderSidebar();
+    });
+    chatApi.onDown((info) => { const agent = info?.agent || 'claude'; lost(agent, `${agentName(agent)} 连接断开，本轮已中止。重连后可以继续对话。`); });
+    chatApi.onSleep((info) => { const agent = info?.agent || 'claude'; lost(agent, `${agentName(agent)} 已休眠。`, { sleep: true }); });
+    chatApi.status().then((result) => {
+      if (!result?.ok || !result.agents) return;
+      for (const [agent, status] of Object.entries(result.agents)) if (chatStatus[agent]) chatStatus[agent] = status;
+      renderConn();
+    }).catch(() => {});
+  }
   const loadedHistory = new Set();
   // 每次连上都补齐还没拿到的数据（首次连接可能因网络抖动失败，之后的重连要能补上）
   async function onReady() {
@@ -1047,7 +1320,7 @@
     await Promise.all(jobs);
     if (!usage) { const u = await cx.request('account/rateLimits/read', {}); if (u.ok) { usage = u.result; renderUsage(); } }
     if (!models.length) {
-      modelPlaceholder('模型获取失败，重试中…');
+      if (!isChat(sess(state.active))) modelPlaceholder('模型获取失败，重试中…');
       [3000, 8000, 15000, 30000].forEach((ms) => setTimeout(() => { if (ready && !models.length) loadModels().catch(() => false); }, ms));
     }
     // app-server 启动后约 6–9 秒插件技能才就绪，且不会发通知：补拉几次直到拿到
@@ -1056,15 +1329,19 @@
     }, ms));
   }
   cx.onReady(onReady);
-  const lost = (why) => {
-    ready = false;
-    for (const s of D.sessions) if (s.live) {
+  const lost = (agent, why, { sleep = false } = {}) => {
+    if (agent === 'codex') ready = false;
+    else if (!sleep && chatStatus[agent]) chatStatus[agent] = { ...chatStatus[agent], state: 'error', detail: why };
+    for (const s of D.sessions) {
+      if (!s.live || agentOf(s) !== agent) continue;
       s.subscribed = false;
       if (s.busy) fail(s, why);
     }
+    renderConn();
+    A.renderSidebar();
   };
-  cx.onDown(() => lost('Codex 连接断开，本轮已中止。重连后可以继续对话。'));
-  cx.onSleep(() => lost('Codex 已休眠。'));
+  cx.onDown(() => lost('codex', 'Codex 连接断开，本轮已中止。重连后可以继续对话。'));
+  cx.onSleep(() => lost('codex', 'Codex 已休眠。', { sleep: true }));
   rm.status().then((st) => { if (st.codex === 'ready') onReady(); });
   workspaceChanged().catch(() => {});
   window.desk.projects.onChanged(() => workspaceChanged().catch(() => {}));

@@ -92,6 +92,33 @@ Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述�
 
 3. 用 `ad submit project '只读：总结 README' ` 加 `ad status` 验证一次；步骤里应出现 `antigravity` 并有输出。Antigravity 如果有地方能读到额度，可以像 Claude 一样写成快照文件（`quotaFile`）。
 
+### 单聊通道（Claude / Grok / Antigravity）
+
+单聊与调度器是两条独立进程，部署或更新单聊文件不需要重启 orchestrator。生产变更前先备份 `authorized_keys`。
+
+1. 复制文件到 `/opt/agentdesk-orchestrator/`：`chat-server.js`、`chat-mcp.js`、`transport.js`、`agent-chat.sh`。两个 JS 用 `node --check` 校验；`agent-chat.sh` 设为 `0755`、`root:root`，只允许 sshd 通过强制命令调用。
+2. 在 Mac 上为三家各生成一把专用 ed25519 密钥（目录 `0700`、私钥 `0600`）：
+
+   ```sh
+   mkdir -p ~/.agentdesk/keys && chmod 700 ~/.agentdesk/keys
+   for agent in claude grok antigravity; do
+     ssh-keygen -t ed25519 -N '' -C "agentdesk-chat-$agent" -f ~/.agentdesk/keys/${agent}_ed25519
+   done
+   ```
+
+3. 把公钥追加到 sshd 使用的 `authorized_keys`（本项目的部署文件为 `/etc/ssh/agentdesk-authorized-keys`），每行绑定一个 provider：
+
+   ```text
+   restrict,command="/opt/agentdesk-orchestrator/agent-chat.sh claude" ssh-ed25519 AAAA... agentdesk-chat-claude
+   restrict,command="/opt/agentdesk-orchestrator/agent-chat.sh grok" ssh-ed25519 AAAA... agentdesk-chat-grok
+   restrict,command="/opt/agentdesk-orchestrator/agent-chat.sh antigravity" ssh-ed25519 AAAA... agentdesk-chat-antigravity
+   ```
+
+4. 准备服务账户目录，属主为 `agentdesk:agentdesk`、权限 `0700`：`homes/claude`、`homes/grok-chat`、`homes/antigravity`、`chat-workspace`。Claude 和 Antigravity 复用任务模式的 home，登录一次即可；Grok 的 `homes/grok-chat/.grok/auth.json` 由 chat-server 每轮从任务模式 `homes/grok/.grok/auth.json` 按 mtime 复制。
+5. Antigravity 需要先用服务账户完成 `agy` 登录（见上文）。未登录时单聊会返回明确的认证错误，不会影响其它三家。
+6. 在 Mac 的 `~/.agentdesk/mac-remote.json` 确认 `claudeKey`、`grokKey`、`antigravityKey` 指向第 2 步的私钥；默认就是上面的路径。
+7. 校验并验证：`sshd -t`；从 Mac 用三把密钥各连一次，确认只能握手、不能执行任意命令；再在 AgentDesk 里新建单聊发一条消息。sshd 每次连接会重新读取 `authorized_keys`，不需要重启；单聊服务也不依赖 orchestrator。
+
 ### 多人同时使用（2～3 人）
 
 每个人的电脑通过密码登记（见 [ENROLLMENT.md](ENROLLMENT.md)）或静态配置各有一个 Bridge 和自己的工作区，任务互不可见；同一项目可以让多个工作区指向同一个 Git 镜像（`repository`）。
@@ -142,7 +169,7 @@ ad gc          # 立即清理一次，返回清理了哪些任务、释放了多
 
 每个成员的具体工作在它的「派遣」记录里（侧栏群聊下方，每个项目每个成员一个）：组长派给它的任务说明、实时状态和完整工作过程——思考、运行的命令及输出、计划、改了哪些文件、调用的工具和搜索、回复；改了文件的步骤可以在这里查看补丁并确认写回本机。派遣记录只读，和你自己开的单聊（侧栏「我的单聊」）分开：要追加要求，回群聊 @成员，或点「新建单聊」。你自己的单聊同样显示每个任务的工作过程。别人的任务只在群聊里显示进度。
 
-工作过程来自 VPS 上每个步骤的 CLI 日志（`task_activity` 操作，只对任务提交人开放）：Codex、Claude、Gemini 按各自的事件格式解析；Antigravity 等按模板配置的 CLI 尽量取事件里的文字；Grok 的纯文本输出按原文显示。
+工作过程来自 VPS 上每个步骤的 CLI 日志（`task_activity` 操作，只对任务提交人开放）：Codex、Claude 按各自的事件格式解析；Antigravity 等按模板配置的 CLI 尽量取事件里的文字；Grok 的纯文本输出按原文显示。
 
 组长自动分工时，改代码按 Antigravity → Codex → Grok Build 的顺序降级，永不派给 Claude；困难、跨模块或高风险的改动由组长直接点名 Codex。审查交给与改代码不同的成员。Gemini 在群聊分工里只读。
 
@@ -150,11 +177,13 @@ Antigravity 使用 Google AI Ultra 20x 订阅，可选 Gemini 4 系列：`gemini
 
 ### 各 AI 单聊修改
 
+> 本机当前版本同时提供「本机文件单聊」（见上文「单聊通道（Claude / Grok / Antigravity）」）：桌面「新建单聊」和成员面板的单聊入口会优先创建 `agent` 会话，由 `chat-server` 流式执行，`agentdesk_file_*` 工具直接读写本机，改动即时生效。本节的 `edit` 任务补丁流程仍用于群聊 `/edit`、成员的「派遣」记录和旧版 `provider` 会话；两条通道互不影响。
+
 `writeProviders` 显式列出允许生成本机项目补丁的执行者，例如 `["codex","claude","grok","antigravity"]`。它只启用指定成员的直接修改任务，不改变群聊默认的 Claude 组长与能力分工。未安装、未登录或额度用尽的执行者不会因此变为可用。
 
-桌面「新建单聊」可以选择执行者，成员面板也分别提供单聊入口。单聊的计划模式仍只读；其他模式使用 `edit` 任务在 VPS 独立 worktree 生成改动，用户先查看差异，再确认应用到授权本机项目。群聊可使用 `/edit @Grok 任务内容`（也支持 Claude、Gemini 等），直接指定修改者。直接修改不额外唤醒 Claude 验收，由提交人在现有补丁确认流程中审核。补丁写回仍检查本机 Git 基线、冲突与工作区授权。
+群聊任务式单聊的计划模式仍只读；其他模式使用 `edit` 任务在 VPS 独立 worktree 生成改动，用户先查看差异，再确认应用到授权本机项目。群聊可使用 `/edit @Grok 任务内容`（也支持 Claude、Antigravity 等），直接指定修改者。直接修改不额外唤醒 Claude 验收，由提交人在现有补丁确认流程中审核。补丁写回仍检查本机 Git 基线、冲突与工作区授权。
 
-Gemini 的写入模式只开放文件读取、`write_file` 与 `replace`，不开放 shell；只读模式继续使用独立的只读策略。Antigravity 仍须先核实实际 CLI 的模板参数与登录状态。
+Antigravity 仍须先核实实际 CLI 的模板参数与登录状态。
 
 1. 将 `windows-bridge.example.json` 复制到 Windows 用户的 `.agentdesk` 目录，填写项目路径、已授权命令、Windows 自有 Relay 令牌和 VPS 2 SSH 配置。命令使用固定的程序与参数数组。若需要执行 Maven 或 Gradle 的批处理文件，可配置固定的 `cmd.exe /d /c` 参数数组。项目设为 `write:true` 才能改文件，启用 `desktop:true` 后再通过 AgentDesk 桌面开关启停本机控制。
 2. 给 Windows Bridge 一把独立 SSH 密钥。在 VPS 2 为 `agentdesk` 用户登记其公钥，限制为下面的强制命令。保留独立的现有 Codex App Server 公钥，以继续使用原 AgentDesk 界面。核对 SSH 主机指纹后更新 Windows 的 `known_hosts`。

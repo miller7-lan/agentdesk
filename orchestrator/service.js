@@ -7,6 +7,7 @@ const { Lines, Relay } = require('./transport');
 const { Endpoint, direct, expireMessages } = require('./rpc');
 const { WindowsOperations, RemoteFiles } = require('./windows');
 const { Scheduler } = require('./scheduler');
+const { sweepAttachments } = require('./attachments');
 const { modelProfiles } = require('./model-profiles');
 
 function relayConfig(config, role) {
@@ -75,6 +76,28 @@ function providerSettings(settings, name, home) {
   const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile,
     authRequired: settings.authRequired === true, ...(settings.callLimits !== undefined && { callLimits: callLimits(settings.callLimits, name) }) };
   if (settings.template !== undefined || name === 'antigravity') adapter.template = validateTemplate(settings.template, name);
+  if (name === 'antigravity') {
+    const directory = path.join(home, '.gemini', 'config');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const filename = path.join(directory, 'mcp_config.json');
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(filename, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    existing.mcpServers ||= {};
+    if (!Object.hasOwn(existing.mcpServers, 'agentdesk_windows')) {
+      existing.mcpServers.agentdesk_windows = {
+        command: process.execPath,
+        args: [path.join(__dirname, 'mcp.js')],
+        enabledTools: ['windows_list_locations', 'windows_list_directory', 'windows_stat_file',
+          'windows_search_files', 'windows_grep_files', 'windows_read_file_chunk'],
+      };
+      const temporary = filename + '.' + randomUUID();
+      try {
+        fs.writeFileSync(temporary, JSON.stringify(existing, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        fs.renameSync(temporary, filename);
+      } finally { fs.rmSync(temporary, { force: true }); }
+    }
+  }
   if (name !== 'gemini' || adapter.template) return adapter;
   fs.accessSync(settings.bin, fs.constants.X_OK);
   const reviewPolicy = path.join(home, 'agentdesk-review.toml');
@@ -240,9 +263,9 @@ function start(config) {
         if (!scope) throw new Error('mcp_permission_denied');
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
-        if (['read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+        if (['locations', 'read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
           value = await files.call(route, scope.taskId, 'file.read', {
-            operation: frame.operation, workspace: scope.workspace, path: frame.path,
+            operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
           });
         } else if (frame.operation === 'commands' || frame.operation === 'run') {
@@ -317,8 +340,12 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, attachments, after, workspace: requestedWorkspace }) => {
       try {
+        if (operation === 'attachment_state') {
+          wire.send({ ok: true, value: config.stateDir });
+          return;
+        }
         const id = taskId || randomUUID();
         const status = async () => {
           for (const channel of ['ssh', 'relay']) {
@@ -349,7 +376,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace);
           if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
           if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
-            Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });
+            Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf, attachments });
           }
         }
         const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : 10000);
@@ -365,6 +392,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   const maintenance = setInterval(() => {
     try { expireMessages(store); } catch (error) { log('bridge maintenance:', error.message); }
     operations.sweepStreams().catch((error) => log('stream cleanup:', error.message));
+    sweepAttachments(config.stateDir).catch((error) => log('attachment cleanup:', error.code || error.message));
   }, 60000).unref();
   return () => {
     clearInterval(maintenance);

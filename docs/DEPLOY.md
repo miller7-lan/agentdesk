@@ -98,6 +98,8 @@ Windows 的 Bridge 运行在 AgentDesk 应用进程里，所以**代码改动要
 
 ## 3. Mac 端
 
+模型列表配置、Mac 同步和本机文件验收步骤参见 [模型选择与本机文件](MODELS-AND-LOCAL-FILES.md)。
+
 Mac 有两个独立部分：**AgentDesk 应用**和**后台 Bridge**（launchd 运行仓库里的 `orchestrator/mac-bridge.js`）。
 
 ### 更新后台 Bridge
@@ -111,7 +113,7 @@ launchctl kickstart -k gui/$(id -u)/<Bridge 的 launchd 标签>
 
 ### 更新应用
 
-Apple Silicon 上 `npm ci && npm run dist:mac -- --arm64`，产物在 `dist/mac-arm64/AgentDesk.app`；或用 Actions 产物 `agentdesk-mac` 里的 DMG。替换 `/Applications/AgentDesk.app` 后打开。
+Apple Silicon 上 `npm ci && npm run dist:mac -- --arm64`，产物在 `dist/mac-arm64/AgentDesk.app`；或用 Actions 产物 `agentdesk-mac` 里的 DMG。替换 `/Applications/AgentDesk.app` 后打开。如果这台机器无法访问 GitHub 的 release 资源，可先设置 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 和 `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/` 再构建。
 
 ### 只改配置
 

@@ -9,9 +9,9 @@
   }
   document.documentElement.classList.toggle('native-mac', window.desk?.platform === 'darwin');
   if (LIVE) {
-    D.projects.forEach((p) => { p.name += '（示例）'; });
+    D.projects.forEach((p) => { p.name += '（示例）'; p.example = true; });
     D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区' : 'Windows 开发机', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
-    D.sessions.unshift({ id: 'L1', project: 'live', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
+    D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', mode: 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
   }
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -67,6 +67,8 @@
   };
 
   const statusLabels = { idle: '空闲', running: '运行中', waiting: '待批准', done: '已完成' };
+  const AGENT_NAMES = { codex: 'Codex', claude: 'Claude', grok: 'Grok', antigravity: 'Antigravity' };
+  const agentName = (agent) => AGENT_NAMES[agent] || AGENT_NAMES.codex;
   const sess = (id) => D.sessions.find((s) => s.id === id);
   const proj = (id) => D.projects.find((p) => p.id === id);
 
@@ -176,7 +178,7 @@
       const own = items.filter((s) => !s.agentThread);
       const row = (s) => `
           <div class="sess ${s.agentThread ? 'sess-dispatched ' : ''}${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.agentThread ? s.title + '（只读记录）' : s.title)}" role="button" tabindex="0">
-            ${avatars.html(s.provider || 'codex', { size: s.agentThread ? 20 : 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.agentThread ? (window.__providerDirect?.names[s.provider] || s.provider) : s.title)}</span>${s.agentThread ? '<span class="s-badge">派遣</span>' : `<span class="s-time">${esc(s.time)}</span>`}
+            ${avatars.html(s.provider || s.agent || 'codex', { size: s.agentThread ? 20 : 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.agentThread ? (window.__providerDirect?.names[s.provider] || s.provider) : s.title)}</span>${s.agentThread ? '<span class="s-badge">派遣</span>' : `<span class="s-time">${esc(s.time)}</span>`}
           </div>`;
       const col = state.collapsed.has(p.id) && !q;
       html += `<div class="group ${col ? 'collapsed' : ''}" data-proj="${p.id}">
@@ -188,8 +190,8 @@
           </div>
           ${showGroup ? `<button class="sess group-link ${state.group === p.id ? 'active' : ''}" type="button" data-open-group="${p.id}" aria-pressed="${state.group === p.id}">
           <span class="channel-mark">#</span><span class="s-title">群聊</span>${G()?.unreadCount(p.id) ? `<span class="group-unread">${G().unreadCount(p.id)}</span>` : ''}
-        </button>` : ''}${dispatched.length ? `<div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
-          own.length && dispatched.length ? '<div class="sess-label">我的单聊</div>' : ''}${own.map(row).join('')}
+        </button>` : ''}${dispatched.length ? `<div class="sess-label">群聊派遣 · 只读记录</div><div class="sess-section dispatched" aria-label="组长派遣">${dispatched.map(row).join('')}</div>` : ''}${
+          own.length ? '<div class="sess-label">我的单聊 · 直接对话</div>' : ''}${own.map(row).join('')}
         </div></div>`;
     }
     list.innerHTML = html || '<div class="empty-note">没有匹配的会话</div>';
@@ -226,14 +228,17 @@
     $('#sessionList').querySelector('.sess.active')?.focus();
   });
 
-  function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), provider) {
-    if (provider && provider !== 'codex' && window.__providerDirect) return window.__providerDirect.create(project, provider);
+  function newDirect(project = state.group || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex') {
     const p = proj(project);
     if (!p) return;
+    agent = AGENT_NAMES[agent] ? agent : 'codex';
+    if (agent !== 'codex' && p.live && !p.configured) {
+      toast('请先为这个项目选择本机目录，再开始 ' + agentName(agent) + ' 单聊');
+      return;
+    }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
-    D.sessions.unshift(p.live
-      ? { id, project, title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] }
-      : { id, project, title: '新会话', status: 'idle', time: '刚刚', items: [] });
+    const base = { id, project, agent, mode: agent === 'codex' ? 'ask' : 'auto', title: '新会话', status: 'idle', time: '刚刚', items: [] };
+    D.sessions.unshift(p.live ? { ...base, live: true, diffs: [], term: [] } : base);
     state.collapsed.delete(project);
     openSession(id);
     $('#input').focus();
@@ -273,13 +278,13 @@
   }
 
   /* ---------- 时间线 ---------- */
-  function itemHtml(it, idx) {
+  function itemHtml(it, idx, agent = 'codex') {
     if (L()?.itemHtml) { const h = L().itemHtml(it, idx); if (h != null) return h; }
     if (it.t === 'user') return `<div class="msg-user">${esc(it.text)}</div>`;
     if (it.t === 'assist' || it.t === 'thinking') {
       const thinking = it.t === 'thinking';
       const content = thinking ? `<i></i><i></i><i></i>${esc(it.text || '思考中')}` : it.html;
-      return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(sess(state.active)?.provider || 'codex', { size: 32, still: true })}</span>
+      return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(sess(state.active)?.provider || agent || 'codex', { size: 32, still: true })}</span>
         <div class="msg-body${thinking ? ' thinking' : ''}">${content}</div></div>`;
     }
     if (it.t === 'tool') return `<div class="tool ${it.open ? 'open' : ''} ${it.err ? 'err' : ''}" data-idx="${idx}">
@@ -306,19 +311,20 @@
   function timelineHtml(s) {
     if (!s.items.length) return '<div class="empty-note">新的会话。在下方描述你的任务吧。</div>';
     if (!s.repeatExpand) s.repeatExpand = new Set();
+    const agent = s.agent || 'codex';
     const parts = [];
     for (let i = 0; i < s.items.length;) {
       const key = toolRepeatKey(s.items[i]);
-      if (!key) { parts.push(itemHtml(s.items[i], i)); i += 1; continue; }
+      if (!key) { parts.push(itemHtml(s.items[i], i, agent)); i += 1; continue; }
       let j = i + 1;
       while (j < s.items.length && toolRepeatKey(s.items[j]) === key) j += 1;
       const count = j - i;
       const shown = Math.min(3, count);
-      for (let k = 0; k < shown; k++) parts.push(itemHtml(s.items[i + k], i + k));
+      for (let k = 0; k < shown; k++) parts.push(itemHtml(s.items[i + k], i + k, agent));
       if (count > 3) {
         const id = i + '-' + j;
         const open = s.repeatExpand.has(id);
-        if (open) for (let k = 3; k < count; k++) parts.push(itemHtml(s.items[i + k], i + k));
+        if (open) for (let k = 3; k < count; k++) parts.push(itemHtml(s.items[i + k], i + k, agent));
         const n = count - 3;
         parts.push(`<button type="button" class="repeat-toggle ${open ? 'open' : ''}" data-repeat="${id}">${
           open ? `收起后面 ${n} 条重复指令` : `已隐藏 ${n} 条相同指令 · 点击展开`
@@ -484,14 +490,21 @@
     send(e); // 与发送键相同：发送 / 插话 / 停止
   });
 
-  $('#modeSelect').addEventListener('change', (e) => { $('#sbMode').textContent = e.target.selectedOptions[0].text; toast('权限模式：' + e.target.selectedOptions[0].text); });
+  $('#modeSelect').addEventListener('change', (e) => {
+    const s = sess(state.active);
+    if (s && s.live) s.mode = e.target.value;
+    $('#sbMode').textContent = e.target.selectedOptions[0].text;
+    toast('权限模式：' + e.target.selectedOptions[0].text);
+  });
   $('#modelSelect').addEventListener('change', (e) => toast('模型已切换为 ' + e.target.selectedOptions[0].text + (e.target.dataset.live ? '' : '（mock）')));
 
   function renderAttach() {
     $('#attachList').innerHTML = state.attachments.map((a, i) => `<span class="attach-pill" data-i="${i}" title="点击移除">${esc(a)} ×</span>`).join('');
   }
   $('#attachBtn').addEventListener('click', () => {
-    if (sess(state.active)?.live && L()) return L().attach();
+    const session = sess(state.active);
+    if (window.__providerDirect?.handles(session)) return window.__providerDirect.attach(session);
+    if (session?.live && L()) return L().attach();
     const pool = ['handler.ts', 'retry.ts', 'README.md', 'screenshot.png'];
     const next = pool.find((p) => !state.attachments.includes(p));
     if (next) { state.attachments.push(next); renderAttach(); } else toast('mock 附件已全部添加');
@@ -666,13 +679,13 @@
       else if (sess(previous.direct)) openSession(previous.direct);
     } else if (k === 'b') { e.preventDefault(); toggleSidebar(); }
     else if (k === 'j') { e.preventDefault(); togglePanel(); }
-    else if (k === 'n') { e.preventDefault(); newDirect(); }
+    else if (k === 'n') { e.preventDefault(); newDirect(undefined, sess(state.active)?.agent || 'codex'); }
     else if (k === 'k') { e.preventDefault(); focusSearch(); }
     else if (e.shiftKey && k === 'l') { e.preventDefault(); toggleTheme(); }
   });
 
   /* ---------- 对外接口（live.js 使用） ---------- */
-  window.__desk = { D, state, LIVE, $, $$, esc, svg, store, sess, proj, toast, pet, setBusy, renderAll: () => renderAll(), renderPanel: () => renderPanel(),
+  window.__desk = { D, state, LIVE, $, $$, esc, svg, store, sess, proj, toast, pet, setBusy, agentName, AGENT_NAMES, renderAll: () => renderAll(), renderPanel: () => renderPanel(),
     renderTerm: () => renderTerm(), showPanel, openSession, openGroup, newDirect, renderSidebar, autosize, renderAttach, applyLayout: () => applyLayout() };
   const L = () => window.__live;
 
@@ -697,20 +710,22 @@
       return;
     }
     $('#sbGroupRoute').hidden = $('#sbGroupMembers').hidden = $('#sbQuota').hidden = $('#sbResources').hidden = true;
-    const provider = s?.provider || 'codex';
-    const providerName = window.__providerDirect?.names[provider] || 'Codex';
-    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') + '@ ' + providerName;
+const provider = s?.provider || s?.agent || 'codex';
+    const providerName = window.__providerDirect?.names[provider] || agentName(provider);
+    $('#directBreadcrumb').textContent = (project?.name ? project.name + ' / ' : '') +
+      (s?.agentThread ? '群聊派遣记录 · ' : '单聊 · ') + providerName;
     renderTimeline();
     $('#conversationTitle').textContent = s?.title || '';
     if (s) {
       const avatar = $('#directAvatar');
       const status = directAvatarState(s);
-      const key = s.id + ':' + status;
+      const key = s.id + ':' + (s.agent || 'codex') + ':' + status;
       if (avatar.dataset.rendered !== key) {
         avatar.dataset.rendered = key;
         avatar.innerHTML = avatars.html(provider, { size: 36, key: 'direct-header:' + s.id, state: status });
       }
     }
+    window.__live?.syncSession?.(s);
     if (s?.live) setBusy(!!s.busy);
     else renderSessionStatus();
     window.__providerDirect?.render(s);

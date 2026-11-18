@@ -134,6 +134,11 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
+  if (mcp && name === 'antigravity' && provider.template) {
+    env.AGENTDESK_MCP_SOCKET = mcp.socket;
+    env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
+    args.unshift('--settings', JSON.stringify({ permissions: { allow: ['mcp(agentdesk_windows/*)'] } }));
+  }
   if (mcp && !provider.template && name !== 'gemini') {
     const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
     if (name === 'codex') {
@@ -147,7 +152,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     } else {
       env.AGENTDESK_MCP_SOCKET = mcp.socket;
       env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
-      args.unshift('--allow', 'MCPTool(agentdesk_windows:*)');
+      args.unshift('--allow', 'MCPTool(agentdesk_windows__*)');
     }
   }
   const child = spawn(config.bin, args, {
@@ -188,6 +193,9 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
       }
       stream.write(channel + ' ' + safe + '\n');
       if (channel === 'stderr' || provider.plain) tail = (tail + safe + '\n').slice(-4000);   // JSON output holds the model's own text
+      if (channel === 'stderr' && /permission required:.*was not run.*headless run cannot ask for approval/i.test(safe)) {
+        failure = 'cli_tool_permission_required';
+      }
       if (channel === 'stderr') return;
       if (provider.plain) {
         output = (output + safe + '\n').slice(-12000);
@@ -213,7 +221,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     const [code] = await once(child, 'close');
     if (stopped) throw stopped;
     if (code !== 0 || failure) {
-      const kind = classifyFailure((failure || '') + '\n' + tail);
+      const kind = failure === 'cli_tool_permission_required' ? failure : classifyFailure((failure || '') + '\n' + tail);
       const retryAfterMs = kind === 'cli_quota_exhausted' ? resetDelay((failure || '') + '\n' + tail) : null;
       throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')),
         { provider: name, usage, ...(retryAfterMs && { retryAfterMs }) });

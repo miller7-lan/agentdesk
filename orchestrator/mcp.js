@@ -3,6 +3,7 @@ const { connect } = require('node:net');
 const { Lines } = require('./transport');
 
 const operations = {
+  windows_list_locations: ['locations', []],
   windows_list_directory: ['list', ['path']],
   windows_stat_file: ['stat', ['path']],
   windows_search_files: ['search', ['path', 'query']],
@@ -13,6 +14,7 @@ const operations = {
 };
 
 const descriptions = {
+  locations: 'List the named local directories authorized by this computer, including the project and any additional read-only locations. Use the returned id as root in file tools.',
   list: 'List a directory in the authorized project on the person\'s machine.',
   stat: 'Get a file\'s size and SHA-256 version on the person\'s machine.',
   search: 'Search file and folder names in the authorized project on the person\'s machine.',
@@ -30,6 +32,7 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
     type: 'object',
     properties: {
       ...(required.includes('path') ? { path: { type: 'string', description: 'Slash-separated path relative to the project. Empty string means project root.' } } : {}),
+      ...(required.includes('path') ? { root: { type: 'string', description: 'A location id returned by windows_list_locations. Defaults to project. Additional locations are read-only.' } } : {}),
       ...(required.includes('query') ? { query: { type: 'string' } } : {}),
       ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
@@ -63,7 +66,8 @@ function request(socketPath, frame, timeout = 35000, limit) {
 }
 
 if (require.main === module) {
-  const [socketPath, capability] = process.argv.slice(2);
+  const [socketPath = process.env.AGENTDESK_MCP_SOCKET, capability = process.env.AGENTDESK_MCP_CAPABILITY] = process.argv.slice(2);
+  if (!socketPath || !capability) process.exit(1);
   const input = createInterface({ input: process.stdin });
   input.on('line', async (line) => {
     let frame;
@@ -80,7 +84,7 @@ if (require.main === module) {
       } else if (frame.method === 'tools/call' && Object.hasOwn(operations, frame.params.name)) {
         const [operation] = operations[frame.params.name];
         const args = frame.params.arguments || {};
-        const value = await request(socketPath, { capability, operation, path: args.path, query: args.query, offset: args.offset,
+        const value = await request(socketPath, { capability, operation, root: args.root, path: args.path, query: args.query, offset: args.offset,
           version: args.version, caseSensitive: args.caseSensitive, command: args.command }, operation === 'run' ? 320000 : 35000);
         result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
       } else {

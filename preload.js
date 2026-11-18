@@ -57,6 +57,10 @@ contextBridge.exposeInMainWorld('desk', {
     available: () => ipcRenderer.invoke('orchestrator:available'),
     control: (frame) => ipcRenderer.invoke('orchestrator:control', frame),
   },
+  localChange: {
+    pick: (kind) => ipcRenderer.invoke('localChange:pick', kind),
+    apply: (request) => ipcRenderer.invoke('localChange:apply', request),
+  },
   desktop: {
     enabled: () => ipcRenderer.invoke('desktop:enabled'),
     toggle: () => ipcRenderer.invoke('desktop:toggle'),
@@ -93,6 +97,8 @@ contextBridge.exposeInMainWorld('desk', {
   },
   files: {
     pick: () => ipcRenderer.invoke('files:pick'),
+    pickChat: (projectId) => ipcRenderer.invoke('files:pickChat', projectId),
+    forgetChat: (id) => ipcRenderer.invoke('files:forgetChat', id),
     uploadData: (name, b64) => ipcRenderer.invoke('files:uploadData', name, b64),
     // 从资源管理器拖进来的文件：在预加载脚本里取真实路径，交给主进程处理
     drop: (files) => ipcRenderer.invoke('files:drop', [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),
@@ -105,5 +111,17 @@ contextBridge.exposeInMainWorld('desk', {
     onReady: on('codex:ready'),
     onDown: on('codex:down'),
     onSleep: on('codex:sleep'),
+  },
+  chat: {
+    request: (agent, method, params) => ipcRenderer.invoke('chat:request', agent, method, params),
+    respond: (agent, id, result, error) => ipcRenderer.invoke('chat:respond', agent, id, result, error),
+    status: (agent) => ipcRenderer.invoke('chat:status', agent),
+    wake: (agent) => ipcRenderer.invoke('chat:wake', agent),
+    reconnect: (agent) => ipcRenderer.invoke('chat:reconnect', agent),
+    onEvent: on('chat:event'),
+    onServerRequest: on('chat:server-request'),
+    onStatus: on('chat:status-event'),
+    onDown: on('chat:down'),
+    onSleep: on('chat:sleep'),
   },
 });
