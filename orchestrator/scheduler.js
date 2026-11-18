@@ -603,7 +603,8 @@ event(task, state, detail) {
       this.router.quotaAllows('codex', capability) && this.ownerAllows(task, 'codex').allowed ? 'codex' : null;
     const role = task.provider || this.pickForTask(task, capability) || fallback;
     if (!role) throw new Error('executor_waiting:' + capability);
-    if (task.provider && ((role === LEAD_ROLE && !this.config.writeProviders?.includes(role)) || !this.router.available(role) || !this.router.quotaAllowsDirect(role) ||
+    if (task.provider && ((role === LEAD_ROLE && !this.config.writeProviders?.includes(role)) || !this.router.available(role) ||
+        !(task.mode === 'chat' && task.tags?.includes('direct') ? this.router.quotaAllowsDirect(role) : this.router.quotaAllows(role, capability)) ||
         !this.ownerAllows(task, role).allowed)) throw new Error('executor_waiting:' + capability);
     if (task.mode === 'review_only' && !this.router.routes.review.includes(role)) throw new Error('invalid_review_provider');
     const prompt = (task.mode === 'chat' ? 'Respond in read-only mode. Do not modify files or run write operations. For files on the user\'s computer, use agentdesk_windows MCP tools: first windows_list_locations, then read/list with the chosen root. Your VPS checkout is not the user\'s live filesystem. Request: '
@@ -895,12 +896,13 @@ event(task, state, detail) {
   async invoke(task, step, folder, signal, prompt = step.prompt) {
     const config = this.config.adapters[step.role];
     if (!config) throw new Error(step.role + '_not_configured');
-    const mcp = step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
+    const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
+    const mcp = step.id !== 'group-planner' && bridgeTools ? this.config.mcp : undefined;
     const release = await this.acquireCli(task, step, signal);
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace,
-      runCommands: !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout') });
+      runCommands: step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout') });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
@@ -1312,8 +1314,10 @@ event(task, state, detail) {
     const before = readonlyStep ? await worktreeState(folder, signal) : undefined;
     const savedState = () => ['awaiting_acceptance', 'triaging'].includes(task.state) ? task.state : 'running';
     for (;;) {
+      const quotaAllowed = step.pinnedReadOnly && task.mode === 'chat' && task.tags?.includes('direct')
+        ? this.router.quotaAllowsDirect(step.role) : this.router.quotaAllows(step.role, step.capability);
       if ((step.fixedReview || step.pinnedReadOnly) &&
-          (!this.router.available(step.role) || !this.router.quotaAllows(step.role, step.capability) || !this.ownerAllows(task, step.role).allowed)) {
+          (!this.router.available(step.role) || !quotaAllowed || !this.ownerAllows(task, step.role).allowed)) {
         throw new Error('executor_waiting:' + step.capability);
       }
       step.state = 'running';

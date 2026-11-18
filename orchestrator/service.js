@@ -75,6 +75,28 @@ function providerSettings(settings, name, home) {
   const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile,
     authRequired: settings.authRequired === true, ...(settings.callLimits !== undefined && { callLimits: callLimits(settings.callLimits, name) }) };
   if (settings.template !== undefined || name === 'antigravity') adapter.template = validateTemplate(settings.template, name);
+  if (name === 'antigravity') {
+    const directory = path.join(home, '.gemini', 'config');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const filename = path.join(directory, 'mcp_config.json');
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(filename, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    existing.mcpServers ||= {};
+    if (!Object.hasOwn(existing.mcpServers, 'agentdesk_windows')) {
+      existing.mcpServers.agentdesk_windows = {
+        command: process.execPath,
+        args: [path.join(__dirname, 'mcp.js')],
+        enabledTools: ['windows_list_locations', 'windows_list_directory', 'windows_stat_file',
+          'windows_search_files', 'windows_grep_files', 'windows_read_file_chunk'],
+      };
+      const temporary = filename + '.' + randomUUID();
+      try {
+        fs.writeFileSync(temporary, JSON.stringify(existing, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        fs.renameSync(temporary, filename);
+      } finally { fs.rmSync(temporary, { force: true }); }
+    }
+  }
   if (name !== 'gemini' || adapter.template) return adapter;
   fs.accessSync(settings.bin, fs.constants.X_OK);
   const reviewPolicy = path.join(home, 'agentdesk-review.toml');

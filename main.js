@@ -652,6 +652,14 @@ async function orchestratorControl(frame) {
   };
   try {
     const workspace = project?.orchestratorWorkspace;
+    if (localBridgeSettings && frame.operation === 'submit' && frame.mode === 'edit' && frame.tags?.includes('direct')) {
+      const name = workspace || localBridgeSettings.controlWorkspace;
+      const bridgeRoot = localBridgeSettings.workspaces?.[name]?.root;
+      if (!bridgeRoot || !project?.localRoot ||
+          fs.realpathSync(bridgeRoot) !== fs.realpathSync(project.localRoot)) {
+        return { ok: false, error: 'direct_workspace_not_bound' };
+      }
+    }
     const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : 16000);
     audit('ok', value);
     return { ok: true, value };
@@ -741,6 +749,7 @@ ipcMain.handle('enrollment:login', async (event, password) => {
 
 let stopBridge;
 let bridgeControlSocket;
+let localBridgeSettings;
 function startOrchestratorBridge() {
   const config = remote.cfg.orchestratorBridge;
   if (!config) return;
@@ -756,6 +765,7 @@ function startOrchestratorBridge() {
       spawnSsh: (ssh) => remote.openBridge(ssh),
     });
     bridgeControlSocket = settings.controlSocket;
+    localBridgeSettings = settings;
   } catch (error) {
     console.error('AgentDesk Orchestrator Bridge:', error.message);
   }

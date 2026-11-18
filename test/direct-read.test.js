@@ -55,7 +55,9 @@ test('direct chat reads live files without a clean local Git baseline and cannot
   await fs.writeFile(path.join(local, 'note.txt'), 'uncommitted user content\n');
   const mcp = { socket: 'fixture.sock', capabilities: new Map() };
   const config = { stateDir: path.join(dir, 'state'), quota: false, mcp,
-    adapters: { grok: { bin: 'fixture', env: {} } }, workspaces: { project: { repository: mirror } } };
+    writeProviders: ['claude'],
+    adapters: { codex: { bin: 'fixture' }, claude: { bin: 'fixture' }, grok: { bin: 'fixture' },
+      antigravity: { bin: 'fixture', template: {} } }, workspaces: { project: { repository: mirror } } };
   let calls = 0;
   const scheduler = new Scheduler({ config, store,
     files: { call: async () => { throw Error('Chat must not inspect local Git or apply a patch'); } },
@@ -71,11 +73,15 @@ test('direct chat reads live files without a clean local Git baseline and cannot
     },
   });
   scheduler.stopped = true;
-  const task = scheduler.submit(randomUUID(), { workspace: 'project', provider: 'grok', mode: 'chat', tags: ['direct'], prompt: '看看桌面有什么文件' }, true);
-  await scheduler.run(task, signal);
-  assert.equal(task.state, 'completed');
-  assert.equal(task.groupPlan, undefined);
-  assert.equal(calls, 1);
+  scheduler.router.setQuota([{ provider: 'codex', buckets: [{ weekly: { usedPercent: 86 } }] },
+    { provider: 'claude', buckets: [{ weekly: { usedPercent: 63 } }] }]);
+  for (const provider of Object.keys(config.adapters)) {
+    const task = scheduler.submit(randomUUID(), { workspace: 'project', provider, mode: 'chat', tags: ['direct'], prompt: '看看桌面有什么文件' }, true);
+    await scheduler.run(task, signal);
+    assert.equal(task.state, 'completed', provider);
+    assert.equal(task.groupPlan, undefined);
+  }
+  assert.equal(calls, 4);
   assert.equal(mcp.capabilities.size, 0);
   assert.equal(await fs.readFile(path.join(local, 'note.txt'), 'utf8'), 'uncommitted user content\n');
 });

@@ -134,6 +134,11 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
+  if (mcp && name === 'antigravity' && provider.template) {
+    env.AGENTDESK_MCP_SOCKET = mcp.socket;
+    env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
+    args.unshift('--settings', JSON.stringify({ permissions: { allow: ['mcp(agentdesk_windows/*)'] } }));
+  }
   if (mcp && !provider.template && name !== 'gemini') {
     const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
     if (name === 'codex') {

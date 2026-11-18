@@ -9,9 +9,10 @@
   const labels = { queued: '等待执行或额度恢复', running: '执行中', planning: '规划中',
     completed: '已完成', failed: '失败', cancelled: '已停止', needs_review: '等待确认', applying: '正在写入本机' };
   const errors = { provider_write_not_enabled: '服务器尚未启用此 AI 的修改能力。',
+    direct_workspace_not_bound: '此项目尚未绑定同一路径的可写 Bridge 工作区。请选择已绑定的 Git 项目后再生成补丁。',
     cli_quota_exhausted: '该 AI 当前额度已用尽。', cli_auth_required: '该 AI 的登录或账号不可用，需要在 VPS 上处理。',
     cli_tool_permission_required: '本机工具未获执行许可，本次操作没有完成，请检查主控的工具权限配置。',
-    windows_workspace_dirty: '本机项目有未提交的改动，请先处理后再生成补丁。',
+    windows_workspace_dirty: '生成项目补丁需要已提交且无未提交改动的 Git 工作区。可以切换到干净的项目，或用「对话与查看」读取文件。桌面目录仅开放读取。',
     bridge_offline: 'Windows Bridge 尚未连接。', claude_reserved: '服务器需要更新以支持 Claude 单聊。' };
   const saved = store.get('providerDirectSessions', []);
   if (Array.isArray(saved)) for (const s of saved.slice(0, 40)) {
@@ -84,7 +85,7 @@
     try {
       const routes = await control(s, 'routes');
       if (!routes.providers?.includes(s.provider)) throw Error(`${names[s.provider]} 尚未在 VPS 配置或登录。`);
-      const readonly = s.taskMode !== 'edit' || $('#modeSelect').value === 'plan';
+      const readonly = s.taskMode !== 'edit';
       if (!readonly && !routes.writeProviders?.includes(s.provider)) throw Error('provider_write_not_enabled');
       const history = s.items.slice(-12).flatMap(it => it.t === 'user' ? ['User: ' + it.text]
         : it.t === 'dispatch-step' ? [it.snap?.brief && 'Lead assigned you: ' + it.snap.brief, it.snap?.output && names[s.provider] + ': ' + it.snap.output].filter(Boolean)
@@ -178,6 +179,8 @@
   function render(s) {
     const other = handles(s);
     $('#directTaskWrap').hidden = !other || Boolean(s.agentThread);
+    $('#permissionModeWrap').hidden = other;
+    $('#sbMode').hidden = other;
     $('#directTaskMode').value = s.taskMode === 'edit' ? 'edit' : 'chat';
     for (const id of ['modelSelect', 'effortWrap', 'tierSelect']) {
       const element = $('#' + id); if (!element) continue;
@@ -187,7 +190,7 @@
     }
     $('#attachBtn').disabled = other;
     $('#input').placeholder = other ? s.taskMode === 'edit'
-      ? `直接交给 ${names[s.provider]} 修改文件，改动由你确认后应用…`
+      ? `让 ${names[s.provider]} 修改 Git 项目文件，预览补丁后确认应用。桌面仅可查看…`
       : `与 ${names[s.provider]} 单聊，可查看已授权的本机目录；修改文件请切换任务类型…` : '向 Codex 描述任务…';
   }
   window.__providerDirect = { names, choose, create, send, render, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);

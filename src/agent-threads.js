@@ -4,7 +4,8 @@
 // and for a step that changed files, the patch to review and apply to this computer. The person can carry on
 // there with follow-up requests, which run as that member's direct tasks. The group chat only shows a progress
 // board per task, so it stays short.
-(() => {
+window.__agentThreadsReady = (async () => {
+  await window.__groupReady;
   const A = window.__desk;
   const G = window.__group;
   const P = window.__providerDirect;
@@ -159,9 +160,16 @@
     const s = ensureThread(project, role);
     persist();
     A.openSession(s.id);
-    if (taskId) fetched.delete(taskId);
-    await sync();
-    if (!taskId) return;
+    if (!taskId) { await sync(); return; }
+    try {
+      const task = await control(project, 'status', { taskId });
+      if (apply(project, task)) persist();
+      G.merge(project, task);
+    } catch {
+      if (!s.items.some(it => it.taskId === taskId)) A.toast('原派遣记录暂时无法读取。');
+    }
+    if (A.state.active !== s.id || A.state.group) return;
+    A.renderAll();
     requestAnimationFrame(() => document.querySelector(`[data-dispatch="${CSS.escape(taskId + ':' + role)}"]`)
       ?.scrollIntoView({ block: 'start' }));
   }

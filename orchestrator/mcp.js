@@ -66,7 +66,8 @@ function request(socketPath, frame, timeout = 35000, limit) {
 }
 
 if (require.main === module) {
-  const [socketPath, capability] = process.argv.slice(2);
+  const [socketPath = process.env.AGENTDESK_MCP_SOCKET, capability = process.env.AGENTDESK_MCP_CAPABILITY] = process.argv.slice(2);
+  if (!socketPath || !capability) process.exit(1);
   const input = createInterface({ input: process.stdin });
   input.on('line', async (line) => {
     let frame;

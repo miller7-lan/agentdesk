@@ -115,14 +115,41 @@
     dialog.close();
     openProject(result.activeProject);
   });
-  $('#workspaceRemove').addEventListener('click', async () => {
-    if (!editing) return;
-    const result = await api.remove(editing);
-    if (!result.ok) { status.textContent = result.error; return; }
+  async function removeProject(id) {
+    const project = snapshot?.projects.find(item => item.id === id);
+    if (!project || !window.confirm(`从 AgentDesk 删除「${project.name}」？本机文件和远程仓库会保留。`)) return;
+    const result = await api.remove(id);
+    if (!result.ok) { A.toast(result.error); return; }
     apply(result);
-    dialog.close();
-    openProject(result.activeProject);
+    if (dialog.open) dialog.close();
+  }
+  $('#workspaceRemove').addEventListener('click', () => removeProject(editing));
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.hidden = true;
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.textContent = '删除项目…';
+  menu.append(remove);
+  document.body.append(menu);
+  $('#sessionList').addEventListener('contextmenu', (event) => {
+    menu.hidden = true;
+    const id = event.target.closest('.group-head')?.closest('[data-proj]')?.dataset.proj;
+    if (!snapshot?.projects.some(project => project.id === id)) return;
+    event.preventDefault();
+    menu.dataset.project = id;
+    menu.hidden = false;
+    menu.style.left = Math.max(0, Math.min(event.clientX, innerWidth - menu.offsetWidth)) + 'px';
+    menu.style.top = Math.max(0, Math.min(event.clientY, innerHeight - menu.offsetHeight)) + 'px';
+    remove.focus();
   });
+  remove.addEventListener('click', () => {
+    menu.hidden = true;
+    removeProject(menu.dataset.project).catch(error => A.toast(error.message));
+  });
+  window.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) menu.hidden = true; });
+  window.addEventListener('keydown', event => { if (event.key === 'Escape') menu.hidden = true; });
   api.onChanged(apply);
   window.AgentDeskProjects = { select, openSettings: () => $('#workspaceSettings').click() };
   api.list().then((result) => {
