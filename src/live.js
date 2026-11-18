@@ -757,6 +757,8 @@
 
   /* ---------- 附件 ---------- */
   function renderAtt() {
+    const s = sess(state.active);
+    if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
     $('#attachList').innerHTML = liveAtt.map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
   }
   $('#attachList').addEventListener('click', (e) => {
@@ -774,6 +776,7 @@
     const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.preventDefault();
+    if (window.__providerDirect?.handles(sess(state.active))) { toast('请用「附件」选择图片文件。'); return; }
     if (!(await ensureReady())) return;
     for (const f of imgs) {
       const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(f); });
@@ -823,6 +826,7 @@
     e.preventDefault(); e.stopPropagation(); hideOverlay();
     if (!sess(state.active)?.live) { toast('示例会话不支持添加文件'); return; }
     if (k === 'tree') { mention(e.dataTransfer.getData(DRAG_TYPE)); return; }
+    if (window.__providerDirect?.handles(sess(state.active))) { toast('请用「附件」选择要发送的文件。'); return; }
     const list = [...e.dataTransfer.files];
     if (!list.length) return;
     await addDropped(list);

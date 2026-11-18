@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { randomUUID } = require('crypto');
+const { randomUUID, createHash } = require('crypto');
 const os = require('node:os');
 const { createUpdateChecks } = require('./updates');
 const { createLogger } = require('./logger');
@@ -518,6 +518,38 @@ ipcMain.handle('files:pick', async () => {
   catch (e) { return { ok: false, error: String(e.message || e), files: out }; }
   return { ok: true, files: out };
 });
+const { attachmentLimit, maxAttachments, attachmentRoot, validAttachments } = require('./orchestrator/attachments');
+const chatAttachments = new Map();
+ipcMain.handle('files:pickChat', async (event, projectId) => {
+  if (!fromMainWindow(event) || typeof projectId !== 'string' || !appConfig?.value.projects.some(item => item.id === projectId)) {
+    return { files: [], errors: ['无法为此项目添加附件。'] };
+  }
+  const picked = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'],
+    title: '选择附件（每条消息最多 3 个，每个不超过 10 MB）' });
+  const files = [], errors = [];
+  if (picked.canceled) return { files, errors };
+  if (picked.filePaths.length > maxAttachments) return { files, errors: ['一次最多选择 3 个附件。'] };
+  for (const filename of picked.filePaths) {
+    const name = path.basename(filename).replace(/[\x00-\x1f]/g, '_').slice(0, 180);
+    try {
+      const file = await fs.promises.open(filename, 'r');
+      try {
+        const info = await file.stat();
+        if (!info.isFile() || info.size > attachmentLimit) throw Error('单个附件必须不超过 10 MB。');
+        const content = Buffer.alloc(info.size + 1);
+        const { bytesRead } = await file.read(content, 0, content.length, 0);
+        if (bytesRead !== info.size) throw Error('文件在读取时发生变化，请重新选择。');
+        const bytes = content.subarray(0, bytesRead);
+        const item = { id: randomUUID(), name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+        if (chatAttachments.size >= 12) throw Error('待发送的附件过多，请先移除或发送已有附件。');
+        chatAttachments.set(item.id, { item, bytes, projectId });
+        files.push(item);
+      } finally { await file.close(); }
+    } catch (error) { errors.push(name + '：' + error.message); }
+  }
+  return { files, errors };
+});
+ipcMain.handle('files:forgetChat', (event, id) => fromMainWindow(event) && chatAttachments.delete(id));
 // 拖入的文件：测试目录内的文件/文件夹直接引用路径（Codex 能通过 ssh_exec 访问）；
 // 其他文件上传到 VPS；外部文件夹不上传（体积不可控），提示用户
 ipcMain.handle('files:drop', async (_e, paths) => {
@@ -661,7 +693,23 @@ async function orchestratorControl(frame) {
         return { ok: false, error: 'direct_workspace_not_bound' };
       }
     }
+    const attachments = frame.attachments;
+    if (attachments !== undefined) {
+      if (frame.operation !== 'submit' || !project || !validAttachments(attachments) ||
+          attachments.some(item => {
+            const record = chatAttachments.get(item.id);
+            return !record || record.projectId !== project.id || record.item.sha256 !== item.sha256 ||
+              record.item.name !== item.name || record.item.size !== item.size;
+          })) return { ok: false, error: 'invalid_attachment' };
+      const stateDir = await request(socket, { operation: 'attachment_state' }, 3000);
+      if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir)) return { ok: false, error: 'bridge_offline' };
+      const folder = attachmentRoot(stateDir, frame.taskId);
+      await fs.promises.mkdir(folder, { recursive: true, mode: 0o700 });
+      for (const item of attachments) await fs.promises.writeFile(path.join(folder, item.id), chatAttachments.get(item.id).bytes,
+        { flag: 'wx', mode: 0o600 });
+    }
     const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : 16000);
+    for (const item of attachments || []) chatAttachments.delete(item.id);
     audit('ok', value);
     return { ok: true, value };
   } catch (error) {

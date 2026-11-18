@@ -97,6 +97,8 @@ contextBridge.exposeInMainWorld('desk', {
   },
   files: {
     pick: () => ipcRenderer.invoke('files:pick'),
+    pickChat: (projectId) => ipcRenderer.invoke('files:pickChat', projectId),
+    forgetChat: (id) => ipcRenderer.invoke('files:forgetChat', id),
     uploadData: (name, b64) => ipcRenderer.invoke('files:uploadData', name, b64),
     // 从资源管理器拖进来的文件：在预加载脚本里取真实路径，交给主进程处理
     drop: (files) => ipcRenderer.invoke('files:drop', [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),

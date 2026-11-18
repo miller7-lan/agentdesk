@@ -8,6 +8,7 @@
   const localScopes = new Map();
   const localProposals = new WeakMap();
   const sendErrors = new WeakMap();
+  const attachments = new WeakMap();
   const names = { codex: 'Codex', claude: 'Claude Code', grok: 'Grok Build', gemini: 'Gemini', antigravity: 'Antigravity' };
   const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review', 'awaiting_approval', 'awaiting_details']);
   const labels = { queued: '等待执行或额度恢复', running: '执行中', planning: '规划中',
@@ -16,6 +17,8 @@
     direct_workspace_not_bound: '此项目尚未绑定同一路径的可写 Bridge 工作区。请选择已绑定的 Git 项目后再生成补丁。',
     cli_quota_exhausted: '该 AI 当前额度已用尽。', cli_auth_required: '该 AI 的登录或账号不可用，需要在 VPS 上处理。',
     cli_tool_permission_required: '本机工具未获执行许可，本次操作没有完成，请检查主控的工具权限配置。',
+    invalid_attachment: '附件校验失败，请移除后重新选择。',
+    attachments_unsupported: '当前主控版本尚不支持此单聊的附件，请先更新 VPS2 和 Bridge。',
     windows_workspace_dirty: '生成项目补丁需要干净的 Git 工作区。若要改桌面或其他目录，请选择「修改本机文件」。',
     bridge_offline: 'Windows Bridge 尚未连接。', claude_reserved: '服务器需要更新以支持 Claude 单聊。' };
   const saved = store.get('providerDirectSessions', []);
@@ -75,7 +78,9 @@
   }
   async function send(s, fromButton) {
     const input = $('#input');
-    const text = input.value.trim();
+    const draft = input.value.trim();
+    const files = attachments.get(s) || [];
+    const text = draft || (files.length ? '请查看随附的文件。' : '');
     if (s.busy) {
       if (text) { A.toast('当前任务正在执行；可清空输入框后点击停止，再发送新任务。'); return; }
       if (fromButton && s.taskId) {
@@ -91,6 +96,7 @@
       const routes = await control(s, 'routes');
       catalogs.set(s.project, routes.modelProfiles || {});
       if (!routes.providers?.includes(s.provider)) throw Error(`${names[s.provider]} 尚未在 VPS 配置或登录。`);
+      if (files.length && !routes.directAttachments) throw Error('attachments_unsupported');
       const readonly = s.taskMode !== 'edit';
       const scope = s.taskMode === 'local' ? localScopes.get(s.id) : undefined;
       if (s.taskMode === 'local' && !scope) throw Error('请先选择要修改的本机文件或允许新建的目录。');
@@ -104,7 +110,7 @@
           ? 'Return JSON only: {"action":"replace","content":"complete replacement text"}. Selected file: ' +
             JSON.stringify({ name: scope.path.split(/[\\/]/).at(-1), content: scope.before })
           : 'Return JSON only: {"action":"mkdir","name":"one folder name"} or {"action":"create","name":"one file name","content":"text"}. The destination directory was selected locally.';
-        prompt = 'Propose one local change for user review. Do not call tools or claim to write anything. ' + actions +
+        prompt = 'Propose one local change for user review. Do not call write tools or claim to write anything. ' + actions +
           '\nUse at most 2000 UTF-8 bytes for content. For unsupported requests return {"action":"unsupported"}. User request: ' + text.slice(0, 4000);
       }
       const taskId = crypto.randomUUID();
@@ -113,13 +119,14 @@
         throw Error('所选模型已从 VPS 列表移除，请重新选择。');
       }
       const task = await control(s, 'submit', { taskId, provider: s.provider, model: s.model || undefined,
-        mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop', tags: ['direct'] });
+        mode: readonly ? 'chat' : 'edit', prompt, via: 'desktop', tags: ['direct'], ...(files.length && { attachments: files }) });
       const item = { t: 'provider-task', task };
       if (scope) localProposals.set(item, scope.token);
-      s.items.push({ t: 'user', text }, item);
+      s.items.push({ t: 'user', text: text + (files.length ? '\n📎 ' + files.map(file => file.name).join('、') : '') }, item);
+      attachments.delete(s);
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
-      if (A.state.active === s.id && !A.state.group && input.value.trim() === text) {
+      if (A.state.active === s.id && !A.state.group && input.value.trim() === draft) {
         input.value = ''; A.autosize();
       }
       update(s, s.items.at(-1), task);
@@ -207,6 +214,29 @@
     document.body.appendChild(dialog); dialog.showModal();
   }
   const controls = new Map();
+  async function attach(s) {
+    if (s.agentThread || s.busy || !window.desk.files?.pickChat) return;
+    try {
+      const { files, errors } = await window.desk.files.pickChat(s.project);
+      const existing = attachments.get(s) || [];
+      const added = files.slice(0, Math.max(0, 3 - existing.length));
+      attachments.set(s, [...existing, ...added]);
+      for (const extra of files.slice(added.length)) window.desk.files.forgetChat(extra.id);
+      if (errors.length || added.length < files.length) {
+        sendErrors.set(s, errors.join('；') || '每条消息最多附加 3 个文件。');
+      } else if (added.length) sendErrors.delete(s);
+      if (A.state.active === s.id && !A.state.group) render(s);
+    } catch (error) { A.toast(error.message); }
+  }
+  $('#attachList').addEventListener('click', (event) => {
+    const id = event.target.closest('[data-provider-attachment]')?.dataset.providerAttachment;
+    if (!id) return;
+    const s = A.sess(A.state.active);
+    if (!s || s.busy) return;
+    attachments.set(s, (attachments.get(s) || []).filter(file => file.id !== id));
+    window.desk.files.forgetChat(id);
+    render(s);
+  });
   // Sessions handled here instead of by the live Codex connection: every non-Codex AI, and every member's
   // conversation that receives work from the lead (Codex included).
   const handles = (s) => Boolean(s?.provider && (s.provider !== 'codex' || s.agentThread));
@@ -280,12 +310,16 @@
       if (other) element.hidden = true;
       else if (controls.has(id)) { element.hidden = controls.get(id); controls.delete(id); }
     }
-    $('#attachBtn').disabled = other;
+    $('#attachBtn').disabled = other && (s.agentThread || s.busy || !window.desk.files?.pickChat);
+    if (other) {
+      $('#attachList').innerHTML = (attachments.get(s) || []).map(file =>
+        `<button type="button" class="attach-pill" data-provider-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
+    } else if ($('#attachList').querySelector('[data-provider-attachment]')) $('#attachList').replaceChildren();
     $('#input').placeholder = local ? localScopes.get(s.id)?.path || '先选择本机文件或目录，再描述要做的改动…' : other ? s.taskMode === 'edit'
       ? `让 ${names[s.provider]} 修改 Git 项目文件，预览补丁后确认应用…`
       : `与 ${names[s.provider]} 单聊，可查看已授权的本机目录；修改文件请切换任务类型…` : '向 Codex 描述任务…';
   }
-  window.__providerDirect = { names, choose, create, send, render, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
+  window.__providerDirect = { names, choose, create, send, render, attach, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
       if (!s.agentThread) control(s, 'routes').then(routes => {
         catalogs.set(s.project, routes.modelProfiles || {});
         if (A.state.active === s.id && !A.state.group) renderModels(s);

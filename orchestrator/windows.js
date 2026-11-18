@@ -5,6 +5,7 @@ const { spawn } = require('node:child_process');
 const { tmpdir } = require('node:os');
 const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
+const { attachmentRoot, idPattern } = require('./attachments');
 
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;
@@ -170,6 +171,14 @@ class WindowsOperations {
       }
     }
     if (kind === 'file.read' && body.operation === 'artifact') return this.artifact(taskId, body);
+    if (kind === 'file.read' && body.operation === 'chat_attachment') {
+      if (typeof body.attachmentId !== 'string' || !idPattern.test(body.attachmentId)) throw Error('invalid_attachment');
+      const root = await fs.realpath(attachmentRoot(this.config.stateDir, taskId));
+      const filename = await within(root, body.attachmentId);
+      const info = await fs.stat(filename);
+      if (!info.isFile() || info.size > MAX_FILE) throw Error('invalid_attachment');
+      return this.readChunk(filename, info.size, body.offset);
+    }
     const workspaceName = body.workspace;
     const workspace = Object.hasOwn(this.config.workspaces, workspaceName) && this.config.workspaces[workspaceName];
     if (!workspace) throw new Error('workspace_not_authorized');
@@ -481,12 +490,12 @@ class RemoteFiles {
     return id;
   }
 
-  async download(route, taskId, body) {
+  async download(route, taskId, body, signal) {
     const chunks = [];
     let size;
     let version = body.version;
     for (let offset = 0; size === undefined || offset < size;) {
-      const chunk = await this.call(route, taskId, 'file.read', { ...body, version, offset });
+      const chunk = await this.call(route, taskId, 'file.read', { ...body, version, offset }, undefined, signal);
       const bytes = decode(chunk.data);
       size ??= chunk.size;
       version ??= chunk.version;

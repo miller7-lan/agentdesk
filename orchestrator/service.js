@@ -7,6 +7,7 @@ const { Lines, Relay } = require('./transport');
 const { Endpoint, direct, expireMessages } = require('./rpc');
 const { WindowsOperations, RemoteFiles } = require('./windows');
 const { Scheduler } = require('./scheduler');
+const { sweepAttachments } = require('./attachments');
 const { modelProfiles } = require('./model-profiles');
 
 function relayConfig(config, role) {
@@ -339,8 +340,12 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, after, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, attachments, after, workspace: requestedWorkspace }) => {
       try {
+        if (operation === 'attachment_state') {
+          wire.send({ ok: true, value: config.stateDir });
+          return;
+        }
         const id = taskId || randomUUID();
         const status = async () => {
           for (const channel of ['ssh', 'relay']) {
@@ -371,7 +376,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace);
           if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
           if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
-            Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf });
+            Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf, attachments });
           }
         }
         const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : 10000);
@@ -387,6 +392,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   const maintenance = setInterval(() => {
     try { expireMessages(store); } catch (error) { log('bridge maintenance:', error.message); }
     operations.sweepStreams().catch((error) => log('stream cleanup:', error.message));
+    sweepAttachments(config.stateDir).catch((error) => log('attachment cleanup:', error.code || error.message));
   }, 60000).unref();
   return () => {
     clearInterval(maintenance);
