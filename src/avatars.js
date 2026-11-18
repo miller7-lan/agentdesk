@@ -189,7 +189,15 @@ function drawBot(a, now) {
   if (E && (k > 0.02 || E.holes)) {
     const u = L / 24;
     ctx.translate(-L / 2, -L / 2);
-    ctx.globalAlpha = E.holes ? 1 : k;
+    // Clawd: fill the mark's eye holes with its body colour first, so a short eye never shows white around it;
+    // the eyes then take the same opacity as the body (pale while asleep).
+    const bodyAlpha = st === 'asleep' && !yawning ? 0.55 : st === 'limited' ? 0.4 : 1;
+    if (E.holes) {
+      ctx.globalAlpha = bodyAlpha;
+      ctx.fillStyle = '#D97757';
+      for (const ex0 of E.x) ctx.fillRect((ex0 - E.w / 2 - 0.05) * u, (E.y - E.h / 2 - 0.05) * u, (E.w + 0.1) * u, (E.h + 0.1) * u);
+    }
+    ctx.globalAlpha = E.holes ? bodyAlpha : k;
     let gx = 0, gy = 0;
     if (!still) {
       if (st === 'thinking') { gx = Math.sin(t * 1.1) * 0.35; gy = -0.3; }
@@ -212,11 +220,14 @@ function drawBot(a, now) {
     else if (st === 'failed') face = 'x';
     else if (annoyed) face = 'flat';
     else if (poked) face = 'squint';
+    // Clawd keeps the original mark's eyes: plain black rectangles, no white rim. Moods change their height only.
+    if (E.holes && face !== 'x') face = 'pill';
     let w = E.w, h = E.h;
+    if (E.holes && st === 'done') h *= 0.5;
     if (st === 'tool' || st === 'long' || st === 'compacting') h *= 0.6;
     if (st === 'asking') { w *= 1.1; h *= 1.12; }
     let ink = id === 'claude' ? '#000000' : '#15171b';
-    let halo = id === 'claude' ? null : '#ffffff';
+    let halo = id === 'claude' || E.holes ? null : '#ffffff';
     if (E.plate) {
       const light = isLight();
       ctx.fillStyle = light ? '#24282e' : '#d6d9de';
@@ -230,7 +241,7 @@ function drawBot(a, now) {
       const path = new Path2D();
       if (face === 'pill') {
         const hh = Math.max(0.3, h * open) * u, ww = w * u;
-        if (path.roundRect) path.roundRect(ex - ww / 2, ey - hh / 2, ww, hh, ww / 2); else path.rect(ex - ww / 2, ey - hh / 2, ww, hh);
+        if (path.roundRect && !E.holes) path.roundRect(ex - ww / 2, ey - hh / 2, ww, hh, ww / 2); else path.rect(ex - ww / 2, ey - hh / 2, ww, hh);
         if (!E.holes && halo) { ctx.strokeStyle = halo; ctx.lineWidth = 0.7 * u; ctx.stroke(path); }
         ctx.fillStyle = ink; ctx.fill(path);
         return;
