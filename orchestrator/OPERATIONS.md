@@ -94,9 +94,14 @@ Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述�
 
 ### 单聊通道（Claude / Grok / Antigravity）
 
+三家都和 Codex 一样能联网搜索、读网页。装有 bubblewrap（`/usr/bin/bwrap`，Codex 的沙盒也要用它）时，`agent-chat.sh` 让 CLI 在沙盒里运行，并开放它自己的 shell 和读写工具：只作用于这个会话在 VPS 上的工作目录（只读轮次连它也只读），看不到其他会话、其他 CLI 的登录、任务数据库和主控配置。用户电脑上的文件仍只能通过 `agentdesk_file_*` 工具，写操作需要批准；用户授权过的本机命令通过 `agentdesk_command_list` / `agentdesk_command_run` 运行，同样需要批准。命令只来自 Bridge 配置里该项目工作区的 `commands` 和 `agentCommands`（Windows 读 `remote.json` 的 `orchestratorBridge`；Mac 在 `mac-remote.json` 写 `agentCommandsFile` 指向 Mac Bridge 的配置），按固定的程序和参数直接执行、不经过 shell，在项目目录运行，5 分钟超时。Codex 单聊在完全访问模式下也提供这两个工具。设 `AGENTDESK_CHAT_SANDBOX=off` 可关闭沙盒，此时 shell 和自带文件工具也一并关闭。
+
+群聊派活同理：在 `adapters.<cli>.sandbox` 设为 `true`（样例已为 Grok、Antigravity、Claude 打开），这些 CLI 改代码时可以运行命令、跑测试，范围限于该步骤的工作副本（只读步骤只读），看不到其他任务、其他 CLI 的登录和 `/etc/agentdesk-*`。Codex 用它自带的沙盒，不受此项影响。
+
+
 单聊与调度器是两条独立进程，部署或更新单聊文件不需要重启 orchestrator。生产变更前先备份 `authorized_keys`。
 
-1. 复制文件到 `/opt/agentdesk-orchestrator/`：`chat-server.js`、`chat-mcp.js`、`transport.js`、`agent-chat.sh`。两个 JS 用 `node --check` 校验；`agent-chat.sh` 设为 `0755`、`root:root`，只允许 sshd 通过强制命令调用。
+1. 复制文件到 `/opt/agentdesk-orchestrator/`：`chat-server.js`、`chat-mcp.js`、`transport.js`、`sandbox.js`、`agent-chat.sh`。两个 JS 用 `node --check` 校验；`agent-chat.sh` 设为 `0755`、`root:root`，只允许 sshd 通过强制命令调用。
 2. 在 Mac 上为三家各生成一把专用 ed25519 密钥（目录 `0700`、私钥 `0600`）：
 
    ```sh

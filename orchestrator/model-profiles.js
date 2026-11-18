@@ -7,7 +7,7 @@ const EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const abilities = {
   codex: 'Strongest implementer for hard, cross-cutting or risky changes; repository navigation, debugging and verification in a sandbox that can run tests. Scarce quota.',
   claude: 'Independent design and code review, reasoning about edge cases, and synthesizing findings.',
-  grok: 'Code review from a different vendor, research with web search, quick second opinions. Cannot run shell commands.',
+  grok: 'Code review from a different vendor, research with web search, quick second opinions. Runs shell commands and tests when the server sandboxes it.',
   gemini: 'Read-only repository investigation, comparison, and synthesis in group collaboration.',
   antigravity: 'Google Gemini 4 on an Ultra 20x subscription: the most quota by far. Routine and multi-file implementation, reading large codebases, logs and documents, research with Google search, and review. Choose the model per step from its profiles.',
 };

@@ -3,6 +3,7 @@ const { createWriteStream } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { once } = require('node:events');
 const { createInterface } = require('node:readline');
+const { sandboxCommand } = require('./sandbox');
 
 const providers = {
   codex: {
@@ -122,6 +123,13 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     onSession(session);
   }
   const args = provider.args(prompt, readonly, session, model);
+  // In the sandbox these CLIs may run shell commands, as Codex does in its own sandbox.
+  const sandboxed = Boolean(config.sandbox) && name !== 'codex';
+  if (sandboxed && name === 'grok' && !provider.template) {
+    const deny = args.findIndex((arg, index) => arg === 'Bash' && args[index - 1] === '--deny');
+    if (deny > 0) args.splice(deny - 1, 2, '--allow', 'Bash');
+  }
+  if (sandboxed && name === 'claude' && !provider.template && !readonly) args.push('--allowedTools', 'Bash');
   if (name === 'gemini' && !provider.template) {
     if (!readonly && !config.writePolicy) throw new Error('provider_write_not_enabled');
     args.push('--admin-policy', readonly ? config.reviewPolicy : config.writePolicy);
@@ -134,10 +142,13 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
-  if (mcp && name === 'antigravity' && provider.template) {
-    env.AGENTDESK_MCP_SOCKET = mcp.socket;
-    env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
-    args.unshift('--settings', JSON.stringify({ permissions: { allow: ['mcp(agentdesk_windows/*)'] } }));
+  if (name === 'antigravity' && provider.template && (mcp || sandboxed)) {
+    if (mcp) {
+      env.AGENTDESK_MCP_SOCKET = mcp.socket;
+      env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
+    }
+    const allow = [...(mcp ? ['mcp(agentdesk_windows/*)'] : []), ...(sandboxed ? ['command(*)'] : [])];
+    args.unshift('--settings', JSON.stringify({ permissions: { allow } }));
   }
   if (mcp && !provider.template && name !== 'gemini') {
     const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
@@ -155,7 +166,11 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
       args.unshift('--allow', 'MCPTool(agentdesk_windows__*)');
     }
   }
-  const child = spawn(config.bin, args, {
+  const launch = sandboxed
+    ? sandboxCommand(config.bin, args, { bin: config.sandbox.bin, cwd, home: env.HOME, writable: !readonly,
+      hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [] })
+    : { command: config.bin, args };
+  const child = spawn(launch.command, launch.args, {
     cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const stream = createWriteStream(log, { flags: 'a', mode: 0o600 });

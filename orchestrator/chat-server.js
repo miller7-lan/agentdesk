@@ -8,6 +8,7 @@ const path = require('node:path');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { Lines } = require('./transport');
+const { sandboxCommand } = require('./sandbox');
 
 const PROVIDER = String(process.argv[2] || '');
 const PROVIDERS = new Set(['claude', 'grok', 'antigravity']);
@@ -25,17 +26,22 @@ const TURN_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TURN_TIMEOUT || 30 * 60_0
 const OUTPUT_LIMIT = Number(process.env.AGENTDESK_CHAT_OUTPUT_LIMIT || 4 * 1024 * 1024);
 const TOOL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TOOL_TIMEOUT || 65_000);
 const APPROVAL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_APPROVAL_TIMEOUT || 60_000);
-const READ_ONLY_TOOLS = new Set(['agentdesk_file_list', 'agentdesk_file_read']);
+const READ_ONLY_TOOLS = new Set(['agentdesk_file_list', 'agentdesk_file_read', 'agentdesk_command_list']);
+// Running one of the person's authorized commands on their computer asks for approval, like a file change.
 const WRITE_TOOLS = new Set([
   'agentdesk_file_write', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash',
+  'agentdesk_command_run',
 ]);
-const FILE_TOOL = /^agentdesk_file_[a-z]+$/;
+const FILE_TOOL = /^agentdesk_(file|command)_[a-z]+$/;
 // 实测各 CLI 接受的推理强度：Claude/Antigravity 还接受 max，Grok 最高为 xhigh。
 const EFFORTS = {
   claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
   grok: new Set(['low', 'medium', 'high', 'xhigh']),
   antigravity: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
 }[PROVIDER];
+// AGENTDESK_CHAT_SANDBOX (path of bwrap): the CLI runs inside bubblewrap and may use its own shell and file tools
+// in this conversation's VPS workspace, as Codex does in its sandbox. Without it those stay off.
+const SANDBOX = process.env.AGENTDESK_CHAT_SANDBOX || '';
 
 const BIN = {
   claude: process.env.AGENTDESK_CHAT_CLAUDE_BIN || 'claude',
@@ -49,13 +55,16 @@ const HOME = {
   antigravity: process.env.AGENTDESK_CHAT_HOME_ANTIGRAVITY || path.join(STATE_DIR, 'homes', 'antigravity'),
 }[PROVIDER];
 
-const CLAUDE_DISALLOWED = [
-  'Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch',
-  'Task', 'KillShell', 'BashOutput', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
-];
+// Web search and fetch are on for every provider, as for Codex. Shell and the CLI's own file tools are on only
+// in the sandbox; editing ones only when the turn may write.
+const CLAUDE_WEB = ['WebSearch', 'WebFetch'];
+const CLAUDE_SHELL_READ = ['Bash', 'BashOutput', 'KillShell', 'Read', 'Glob', 'Grep'];
+const CLAUDE_SHELL_WRITE = ['Edit', 'Write', 'NotebookEdit'];
+const CLAUDE_DISALLOWED = ['Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
+const GROK_WEB = ['web_search', 'web_fetch'];
+const GROK_SHELL_READ = ['run_terminal_command', 'get_command_or_subagent_output', 'kill_command_or_subagent', 'read_file', 'list_dir', 'grep'];
+const GROK_SHELL_WRITE = ['write', 'search_replace'];
 const GROK_DISALLOWED = [
-  'read_file', 'write', 'search_replace', 'list_dir', 'grep', 'run_terminal_command',
-  'web_search', 'web_fetch', 'kill_command_or_subagent', 'get_command_or_subagent_output',
   'spawn_subagent', 'scheduler_create', 'scheduler_delete', 'scheduler_list', 'monitor',
   'workflow', 'enter_plan_mode', 'exit_plan_mode', 'ask_user_question', 'send_feedback',
   'image_gen', 'image_edit', 'image_to_video', 'reference_to_video',
@@ -519,7 +528,14 @@ function cleanupConfigs(turn) {
 
 function instructions(turn) {
   const root = turn.thread.localRoot || '(未提供)';
+  const workspace = workspaceFor(turn.threadId);
+  const vps = SANDBOX
+    ? `- 你可以在 VPS 上的会话工作目录 ${workspace} 里使用 shell 和自带的读写工具（运行命令、跑测试、下载依赖），它在沙盒里，${turn.readOnly ? '本轮只读' : '可以写'}；这里不是用户电脑。`
+    : '- VPS 上的 shell 和自带文件工具未开启。';
   return `${turn.thread.systemPrompt ? turn.thread.systemPrompt + '\n\n' : ''}[AgentDesk 单聊｜本机文件]
+- 需要最新信息时可以联网搜索和读取网页。
+${vps}
+- 用户电脑上授权过的命令：先用 agentdesk_command_list 查看，再用 agentdesk_command_run 运行（需要用户批准）；不能运行列表以外的命令。
 - 你运行在一台 VPS 上，但用户的真实文件在 Mac 上，路径根目录是：${root}
 - 读写用户文件只能调用 MCP 工具 agentdesk_file_list/read/write/mkdir/copy/move/trash（服务器名 ${turn.serverName}）。
 - 所有路径必须是 Mac 上的绝对 POSIX 路径，例如 ${root}/note.txt；不要使用 VPS 的 shell 或内置 Read/Write/Bash 工具操作本地文件。
@@ -543,8 +559,10 @@ function providerArgs(turn, workspace) {
       '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--disable-slash-commands',
       '--strict-mcp-config', '--mcp-config',
       JSON.stringify({ mcpServers: { [turn.serverName]: mcpDefinition(turn) } }),
-      '--allowedTools', `mcp__${turn.serverName}__*`,
-      '--disallowedTools', CLAUDE_DISALLOWED.join(','),
+      '--allowedTools', [`mcp__${turn.serverName}__*`, ...CLAUDE_WEB,
+        ...(SANDBOX ? [...CLAUDE_SHELL_READ, ...(turn.readOnly ? [] : CLAUDE_SHELL_WRITE)] : [])].join(','),
+      '--disallowedTools', [...CLAUDE_DISALLOWED, ...(SANDBOX ? [] : CLAUDE_SHELL_READ),
+        ...(SANDBOX && !turn.readOnly ? [] : CLAUDE_SHELL_WRITE)].join(','),
       '--append-system-prompt', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
@@ -557,9 +575,12 @@ function providerArgs(turn, workspace) {
   if (PROVIDER === 'grok') {
     const args = [
       '--trust', '--no-auto-update', '--output-format', 'streaming-messages-json', '--include-partial-messages',
-      '--permission-mode', 'dontAsk', '--tools', 'todo_write', '--no-subagents', '--disable-web-search',
-      '--allow', `MCPTool(${turn.serverName}__*)`,
-      '--disallowed-tools', GROK_DISALLOWED.join(','),
+      '--permission-mode', 'dontAsk', '--no-subagents',
+      '--tools', ['todo_write', ...GROK_WEB, ...(SANDBOX ? [...GROK_SHELL_READ, ...(turn.readOnly ? [] : GROK_SHELL_WRITE)] : [])].join(','),
+      '--allow', `MCPTool(${turn.serverName}__*)`, '--allow', 'WebSearch', '--allow', 'WebFetch',
+      ...(SANDBOX ? ['--allow', 'Bash', '--allow', 'Read', '--allow', 'Grep', ...(turn.readOnly ? [] : ['--allow', 'Edit'])] : []),
+      '--disallowed-tools', [...GROK_DISALLOWED, ...(SANDBOX ? [] : GROK_SHELL_READ),
+        ...(SANDBOX && !turn.readOnly ? [] : GROK_SHELL_WRITE)].join(','),
       '--rules', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
@@ -574,8 +595,11 @@ function providerArgs(turn, workspace) {
     allow: [
       `mcp(${turn.serverName}/*)`,
       ...turn.tools.map((tool) => `mcp(${turn.serverName}/${tool.name})`),
+      'read_url(*)', 'search_web(*)',
+      ...(SANDBOX ? ['read_file(*)', 'command(*)', ...(turn.readOnly ? [] : ['write_file(*)'])] : []),
     ],
-    deny: ['read_file(*)', 'write_file(*)', 'command(*)', 'read_url(*)', 'execute_url(*)', 'download_url(*)'],
+    deny: ['execute_url(*)', ...(SANDBOX ? [] : ['read_file(*)', 'command(*)']),
+      ...(SANDBOX && !turn.readOnly ? [] : ['write_file(*)'])],
     ask: [],
   };
   const args = [
@@ -636,7 +660,13 @@ function startTurn(turn) {
     writeMcpConfig(turn, workspace);
     const args = providerArgs(turn, workspace);
     log('turn_start', turn.id, 'args=' + args.length, 'resume=' + !!turn.resumeAttempt);
-    child = spawn(BIN, args, {
+    // In the sandbox the CLI sees this conversation's workspace, its own home and the MCP socket; the rest of
+    // the orchestrator's state (other conversations, other logins, tasks) is hidden.
+    const launch = SANDBOX
+      ? sandboxCommand(BIN, args, { bin: SANDBOX, cwd: workspace, home: HOME, writable: !turn.readOnly,
+        hide: [STATE_DIR], sockets: [SOCKET] })
+      : { command: BIN, args };
+    child = spawn(launch.command, launch.args, {
       cwd: workspace,
       env: childEnvironment(),
       detached: true,

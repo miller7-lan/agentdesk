@@ -20,6 +20,11 @@ const desktop = new Desktop(desktopExecutable(app));
 const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
 const localFiles = require('./local-files');
+const localCommands = require('./local-commands');
+// Where the person's authorized commands are defined: the Bridge configuration (Windows runs its Bridge in the
+// app), or on a Mac the file named by agentCommandsFile in mac-remote.json (normally the Mac Bridge's config).
+const commandsFile = () => remote.cfg.agentCommandsFile || remote.cfg.orchestratorBridge || null;
+const chatToolSpecs = () => [...localFiles.specs, ...localCommands.specs];
 const { ChatLink, AGENTS: CHAT_AGENTS } = require('./chat-link');
 const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
@@ -410,6 +415,16 @@ remote.on('server-request', (m) => {
   if (m.method === 'item/tool/call') {
     const connection = remote.codexProc;
     const params = m.params || {};
+    const command = !enrollment && typeof params.tool === 'string' && localCommands.isCommandTool(params.tool);
+    if (command) {
+      const allowedTurn = !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId;
+      const connection = remote.codexProc;
+      (allowedTurn
+        ? localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: localRootFor(appConfig?.active?.id) })
+        : Promise.resolve(localFiles.result(false, { error: '本机命令需要处于完全访问模式的活动轮次' })))
+        .then((result) => { if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result); }).catch(() => {});
+      return;
+    }
     const winFile = !mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
     const macFile = mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('agentdesk_file_');
     const allowed = !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId;
@@ -592,7 +607,8 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
-      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac && !enrollment ? localFiles.specs : []), ...(mac || enrollment ? [] : windowsFiles.specs)] };
+      params = { ...params, dynamicTools: [...desktopSpecs, ...(mac && !enrollment ? localFiles.specs : []), ...(mac || enrollment ? [] : windowsFiles.specs),
+        ...(enrollment ? [] : localCommands.specs)] };
       if (method === 'thread/resume' && desktop.enabled && params?.threadId) desktopThreads.add(params.threadId);
     }
     if (method === 'turn/start') {
@@ -663,7 +679,7 @@ function rememberChatThread(agent, threadId, { projectId, localRoot, tools, appr
     localRoot: localRoot || '',
     tools: tools instanceof Set
       ? new Set(tools)
-      : new Set((tools || localFiles.specs).map((tool) => tool.name)),
+      : new Set((tools || chatToolSpecs()).map((tool) => tool.name)),
     approvalPolicy,
     sandboxPolicy,
   });
@@ -681,6 +697,10 @@ async function chatToolTask(agent, params) {
   if (typeof params.tool !== 'string' || !mapping.tools.has(params.tool)) return invalid('该工具在当前单聊中不可用');
   const turn = chatTurns.get(params.turnId);
   if (!turn || turn.agent !== agent || turn.threadId !== params.threadId) return invalid('单聊轮次已结束，请重试');
+  if (localCommands.isCommandTool(params.tool)) {
+    if (turn.readOnly && localCommands.isRunTool(params.tool)) return invalid('只读轮次不能在本机运行命令');
+    return localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: mapping.localRoot });
+  }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
   return localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target));
 }
@@ -756,7 +776,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
         ...rest,
         projectId: projectId ?? appConfig?.active?.id ?? null,
         localRoot,
-        dynamicTools: localFiles.specs,
+        dynamicTools: chatToolSpecs(),
       };
       const result = await link.request(method, request);
       const threadId = result?.thread?.id;
@@ -764,7 +784,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       rememberChatThread(agent, threadId, {
         projectId: request.projectId,
         localRoot,
-        tools: localFiles.specs,
+        tools: chatToolSpecs(),
         approvalPolicy: request.approvalPolicy,
         sandboxPolicy: request.sandboxPolicy,
       });
@@ -780,7 +800,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
         rememberChatThread(agent, threadId, {
           projectId: result?.projectId ?? previous?.projectId,
           localRoot: result?.localRoot || previous?.localRoot || localRootFor(result?.projectId ?? previous?.projectId),
-          tools: Array.isArray(result?.dynamicTools) ? result.dynamicTools : previous?.tools || localFiles.specs,
+          tools: Array.isArray(result?.dynamicTools) ? result.dynamicTools : previous?.tools || chatToolSpecs(),
           approvalPolicy: result?.approvalPolicy ?? previous?.approvalPolicy,
           sandboxPolicy: result?.sandboxPolicy ?? previous?.sandboxPolicy,
         });

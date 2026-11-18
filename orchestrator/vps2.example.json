@@ -51,7 +51,8 @@
           "efforts": ["low", "medium", "high", "xhigh", "max"],
           "defaultEffort": "high"
         }
-      }
+      },
+      "sandbox": true
     },
     "grok": {
       "bin": "/usr/local/bin/grok",
@@ -89,7 +90,8 @@
       "callLimits": {
         "fiveHour": 60,
         "weekly": 600
-      }
+      },
+      "sandbox": true
     },
     "antigravity": {
       "bin": "/usr/local/bin/agy",
@@ -153,7 +155,8 @@
       "callLimits": {
         "fiveHour": 300,
         "weekly": 3000
-      }
+      },
+      "sandbox": true
     }
   },
   "routing": {

@@ -20,6 +20,16 @@ export PATH="/opt/agentdesk-orchestrator:/usr/local/bin:/usr/bin:/bin"
 mkdir -p "$HOME" "$STATE_DIR/chat-workspace"
 cd "$STATE_DIR/chat-workspace"
 
+# The CLI runs in bubblewrap (as Codex runs its commands) and may then use its shell in the conversation's
+# VPS workspace. On by default where bwrap is installed; AGENTDESK_CHAT_SANDBOX=off turns it off.
+if [ "${AGENTDESK_CHAT_SANDBOX:-auto}" = off ]; then
+  unset AGENTDESK_CHAT_SANDBOX
+elif [ -x /usr/bin/bwrap ]; then
+  export AGENTDESK_CHAT_SANDBOX=/usr/bin/bwrap
+else
+  unset AGENTDESK_CHAT_SANDBOX
+fi
+
 NODE="${AGENTDESK_CHAT_NODE:-/opt/agentdesk-orchestrator/node}"
 if [ ! -x "$NODE" ]; then
   NODE="$(command -v node || true)"

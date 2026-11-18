@@ -33,6 +33,7 @@
       "remote.js",
       "chat-link.js",
       "local-files.js",
+      "local-commands.js",
       "workspace.js",
       "build/icon.png",
       "src/**/*",
