@@ -8,7 +8,7 @@
 
 | 端 | 内容 |
 |---|---|
-| VPS2 主控 | 新增 `task_activity` 操作（每步的思考、命令、改文件等工作过程）；任务状态带上每步的任务说明；线路状态带上实时分工；改代码按 Codex → Grok Build → Antigravity 降级；查资料改为 Antigravity 首选；重连加随机抖动 |
+| VPS2 主控 | 新增 `task_activity` 操作（每步的思考、命令、改文件等工作过程）；任务状态带上每步的任务说明；线路状态带上实时分工；改代码改为 Antigravity 首选（Codex、Grok Build 依次降级，难的由组长点名 Codex）；审查改为交叉审查；查资料改为 Antigravity 首选；重连加随机抖动 |
 | VPS1 Relay | 按来源地址限制未认证连接；令牌反复错误的地址暂时拒绝 |
 | Windows / Mac 应用 | 组长派遣记录与「我的单聊」分开；单聊显示工作过程；群聊的分工进度表与接受、完成、验收总结；状态栏「额度与分工」页；成员按实际分工显示；各 AI 主题色；面板收成三个标签、可拖动宽度；新开机动画；Clawd 黑色长方形眼睛；安装包可内置服务器地址 |
 
@@ -18,7 +18,8 @@
 2. 备份配置：`sudo cp /etc/agentdesk-orchestrator/config.json /etc/agentdesk-orchestrator/config.json.bak-20261118`
 3. 按 DEPLOY.md §1 更新代码：`git pull --ff-only` 到 `main`，再执行 `sudo bash orchestrator/install-ubuntu.sh`。确认 `/opt/agentdesk-orchestrator/activity.js` 已存在。
 4. 用 `sudoedit` 改配置，逐项对照 `orchestrator/vps2.example.json`：
-   - `routing.implement` 改成 `["codex", "grok", "antigravity"]`，`routing.research` 改成 `["antigravity", "grok"]`。整个 `routing` 都没有自定义需求的，直接删掉，用代码里的默认值。
+   - `routing.implement` 改成 `["antigravity", "codex", "grok"]`，`routing.review` 和 `routing.research` 都改成 `["antigravity", "grok"]`。整个 `routing` 都没有自定义需求的，直接删掉，用代码里的默认值。
+   - `adapters.antigravity.models` 按样例写入 Gemini 4 的三档模型和各自擅长说明，`defaultModel` 设为 Hydrogen；模型 ID 以 `agy models` 的实际输出为准。
    - 删掉 `adapters.gemini`（Gemini CLI 已停用），并从 `routing` 各列表和 `writeProviders` 里去掉 `gemini`。如果这台服务器上的 Gemini CLI 确实还能用，这一项跳过。
    - `writeProviders` 设为 `["codex", "claude", "grok", "antigravity"]`。
    - `quotaBridges` 加上每台电脑 Bridge 的名称（与 `sshBridges` 中的名称一致），桌面端的「额度与分工」页才能读到额度。

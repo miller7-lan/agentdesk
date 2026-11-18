@@ -1,11 +1,11 @@
 const modelId = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$/;
 
 const abilities = {
-  codex: 'Repository navigation, implementation, debugging, and verification. Can generate patches in automatic collaboration.',
+  codex: 'Strongest implementer for hard, cross-cutting or risky changes; repository navigation, debugging and verification in a sandbox that can run tests. Scarce quota.',
   claude: 'Independent design and code review, reasoning about edge cases, and synthesizing findings.',
-  grok: 'Research, quick second opinions, and alternative approaches. The integration exposes web search.',
+  grok: 'Code review from a different vendor, research with web search, quick second opinions. Cannot run shell commands.',
   gemini: 'Read-only repository investigation, comparison, and synthesis in group collaboration.',
-  antigravity: 'Reading large codebases, logs and documents, and writing short briefs; a second opinion in review.',
+  antigravity: 'Google Gemini 4 on an Ultra 20x subscription: the most quota by far. Routine and multi-file implementation, reading large codebases, logs and documents, research with Google search, and review. Choose the model per step from its profiles.',
 };
 
 function modelProfiles(settings) {

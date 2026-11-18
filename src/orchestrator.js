@@ -781,7 +781,7 @@
   // What each member actually does, read from the live hand-out order: "改代码（首选）· 审查（第 2）".
   function duties(id) {
     const routes = routeState.team?.routes || (isExample(state.group) ? { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'],
-      implement: ['codex', 'grok', 'antigravity'], review: ['grok', 'antigravity'], research: ['antigravity', 'grok'], accept: ['claude'] } : null);
+      implement: ['antigravity', 'codex', 'grok'], review: ['antigravity', 'grok'], research: ['antigravity', 'grok'], accept: ['claude'] } : null);
     const role = id === 'lead' ? 'claude' : id;
     if (!routes) return '';
     const order = ['plan', 'triage', 'implement', 'scout', 'review', 'research', 'accept'];

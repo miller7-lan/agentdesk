@@ -39,7 +39,20 @@
     },
     "antigravity": {
       "bin": "/usr/local/bin/agy",
-      "models": {},
+      "models": {
+        "gemini-4-hydrogen": {
+          "strengths": "Fast with plenty of quota. Default for scouting, research with Google search, routine single-file edits and first-pass review.",
+          "billing": "subscription"
+        },
+        "gemini-4-argon": {
+          "strengths": "Frontier coding agent for multi-file implementation and long multi-step tasks. Use for implement steps beyond a small edit.",
+          "billing": "subscription"
+        },
+        "gemini-4-carbon": {
+          "strengths": "Deepest reasoning (Ultra only), slower. Hard debugging, architecture questions and security-sensitive review; use sparingly.",
+          "billing": "subscription"
+        }
+      },
       "template": {
         "prompt": "arg",
         "output": "jsonl",
@@ -72,7 +85,8 @@
         "sessionField": "result.conversation_id",
         "usageField": "result.usage",
         "errorField": "result.error"
-      }
+      },
+      "defaultModel": "gemini-4-hydrogen"
     }
   },
   "routing": {
@@ -88,13 +102,13 @@
       "grok"
     ],
     "implement": [
+      "antigravity",
       "codex",
-      "grok",
-      "antigravity"
+      "grok"
     ],
     "review": [
-      "grok",
-      "antigravity"
+      "antigravity",
+      "grok"
     ],
     "research": [
       "antigravity",

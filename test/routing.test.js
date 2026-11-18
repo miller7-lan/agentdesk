@@ -49,7 +49,7 @@ test('plans that name a capability are assigned by the router; only implement st
     { id: 'check', capability: 'review', role: 'grok', prompt: 'review', dependsOn: ['edit'] },
     { id: 'look', capability: 'research', role: 'codex', prompt: 'look up', dependsOn: [] },
   ]), router.availableRoles(), router);
-  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['codex', true], ['grok', false], ['antigravity', false]]);   // research: Antigravity first
+  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['antigravity', true], ['grok', false], ['antigravity', false]]);   // Antigravity implements and researches
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'deploy', prompt: 'x', dependsOn: [] }]), router.availableRoles(), router), /invalid_plan/);
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'implement', role: 'claude', prompt: 'x', dependsOn: [] }]),
     router.availableRoles(), router), /invalid_plan:lead_capability/);
@@ -174,17 +174,17 @@ test('quota decides who works: Claude and Codex step back early and keep their q
     provider, buckets: [{ fiveHour: { usedPercent: 10 }, weekly: { usedPercent: percent } }] })));
   quota({ claude: 70, codex: 80 });
   assert.equal(router.pick('plan'), 'claude');                 // above 60%: still plans
-  assert.equal(router.pick('implement'), 'codex');             // above 70%: still implements
-  assert.equal(router.pick('implement', ['codex']), 'grok');   // Codex out: Grok Build, then Antigravity
-  assert.equal(router.pick('implement', ['codex', 'grok']), 'antigravity');
-  assert.equal(router.pick('implement', ['codex', 'grok', 'antigravity']), null);   // never Claude
+  assert.equal(router.pick('implement'), 'antigravity');                    // Antigravity has the most quota
+  assert.equal(router.pick('implement', ['antigravity']), 'codex');          // above 70%: Codex still implements
+  assert.equal(router.pick('implement', ['antigravity', 'codex']), 'grok');
+  assert.equal(router.pick('implement', ['antigravity', 'codex', 'grok']), null);   // never Claude
   assert.equal(router.pick('accept', ['claude']), null);       // nor Codex acceptance work
-  assert.equal(router.pick('review'), 'grok');
+  assert.equal(router.pick('review'), 'antigravity');
   quota({ claude: 96, codex: 10, grok: 97 });
   assert.equal(router.pick('plan'), 'codex');                  // Claude above 95%: out entirely
-  assert.equal(router.pick('review'), 'antigravity');          // Grok above 95%: skipped
+  assert.equal(router.pick('review', ['antigravity']), null);  // Grok above 95%: skipped
   quota({});                                                   // unknown quota counts as available
-  assert.equal(router.pick('review'), 'grok');
+  assert.equal(router.pick('review', ['antigravity']), 'grok');
   assert.equal(validateQuotaPolicy({ claude: { soft: 40 } }).claude.hard, 95);
   assert.throws(() => validateQuotaPolicy({ claude: { soft: 99, hard: 90 } }), /invalid_quota_policy:claude/);
   assert.throws(() => validateQuotaPolicy({ codex: { keepFor: ['deploy'] } }), /invalid_quota_policy:codex/);
@@ -196,4 +196,25 @@ test('a task is charged the quota each CLI used between its start and end', () =
     { provider: 'grok', buckets: [] },
   ]);
   assert.deepEqual(windows, { codex: { fiveHour: 20, weekly: 30 } });
+});
+
+test('a review goes to a different member than the one who wrote the change', () => {
+  const router = new Router({ adapters: adapters('codex', 'claude', 'grok', 'antigravity') });
+  const plan = (steps) => parsePlan(JSON.stringify(steps), router.availableRoles(), router).map((step) => step.role);
+  // Antigravity writes, so the review that would have gone to Antigravity goes to Grok Build.
+  assert.deepEqual(plan([
+    { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
+    { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
+  ]), ['antigravity', 'grok']);
+  // The lead names Codex for a hard change; Antigravity, first in line for review, reviews it.
+  assert.deepEqual(plan([
+    { id: 'edit', capability: 'implement', role: 'codex', prompt: 'hard change', dependsOn: [] },
+    { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
+  ]), ['codex', 'antigravity']);
+  // Nobody else can review: the author's own review is kept rather than none.
+  router.block('grok', 'quota', 60_000);
+  assert.deepEqual(plan([
+    { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
+    { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
+  ]), ['antigravity', 'antigravity']);
 });

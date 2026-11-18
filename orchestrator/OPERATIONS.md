@@ -43,8 +43,8 @@ sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /us
 | `plan` | 规划和拆分任务 | claude → codex |
 | `triage` | 出问题时诊断：重试、返工还是放弃 | claude |
 | `scout` | 读代码、日志、文档并写简报 | antigravity → grok（→ gemini） |
-| `implement` | 改代码（唯一可以写文件的能力） | codex → grok → antigravity |
-| `review` | 审查改动 | grok → antigravity（→ gemini） |
+| `implement` | 改代码（唯一可以写文件的能力） | antigravity → codex → grok |
+| `review` | 审查改动（交叉审查：改代码的成员不审自己的改动，除非没有别人可用） | antigravity → grok（→ gemini） |
 | `research` | 查资料（联网搜索） | antigravity → grok（→ gemini） |
 | `accept` | 按摘要验收 | claude |
 
@@ -144,7 +144,9 @@ ad gc          # 立即清理一次，返回清理了哪些任务、释放了多
 
 工作过程来自 VPS 上每个步骤的 CLI 日志（`task_activity` 操作，只对任务提交人开放）：Codex、Claude、Gemini 按各自的事件格式解析；Antigravity 等按模板配置的 CLI 尽量取事件里的文字；Grok 的纯文本输出按原文显示。
 
-组长自动分工时，改代码按 Codex → Grok Build → Antigravity 的顺序降级，永不派给 Claude；Gemini 在群聊分工里只读。
+组长自动分工时，改代码按 Antigravity → Codex → Grok Build 的顺序降级，永不派给 Claude；困难、跨模块或高风险的改动由组长直接点名 Codex。审查交给与改代码不同的成员。Gemini 在群聊分工里只读。
+
+Antigravity 使用 Google AI Ultra 20x 订阅，可选 Gemini 4 系列：`gemini-4-hydrogen`（默认，快、额度足，用于侦察、查资料、小改动、初审）、`gemini-4-argon`（多文件实现和长任务）、`gemini-4-carbon`（最强推理，用于疑难调试、架构和安全审查，较慢）。组长按 `adapters.antigravity.models` 里写的擅长说明为每一步选模型。模型 ID 以登录后 `agy models` 的输出为准，样例里的名字需要核对。
 
 ### 各 AI 单聊修改
 

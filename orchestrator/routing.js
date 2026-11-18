@@ -21,15 +21,17 @@ const CAPABILITIES = {
   accept: { write: false },     // judge the summarised results against the plan
 };
 
-// Implementation goes to Codex first and steps down in this order when Codex is out of quota or logged out:
-// Grok Build, then Antigravity. It never falls back to Claude, whose quota is kept for leading; Gemini runs
-// read-only in group work. When none of them can take it, the step waits. Review and scouting exclude Claude too.
+// Antigravity (Google AI Ultra 20x, Gemini 4) has by far the most quota, so it takes implementation first;
+// the lead names Codex for hard, cross-cutting or risky changes, and Codex and then Grok Build take over when
+// Antigravity is out. It never falls back to Claude, whose quota is kept for leading; Gemini runs read-only in
+// group work. When none of them can take it, the step waits. Review and scouting exclude Claude too, and a
+// review goes to a different member than the one who wrote the change (see validateSteps in scheduler.js).
 const DEFAULT_ROUTES = {
   plan: ['claude', 'codex'],
   triage: ['claude'],
   scout: ['antigravity', 'gemini', 'grok'],
-  implement: ['codex', 'grok', 'antigravity'],
-  review: ['grok', 'antigravity', 'gemini'],
+  implement: ['antigravity', 'codex', 'grok'],
+  review: ['antigravity', 'grok', 'gemini'],
   research: ['antigravity', 'grok', 'gemini'],   // Antigravity searches with Google and has the largest quota
   accept: ['claude'],
 };

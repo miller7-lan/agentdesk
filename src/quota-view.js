@@ -30,8 +30,8 @@
         buckets: [{ fiveHour: { usedPercent: 12, resetsAt: now(4) }, weekly: { usedPercent: 9, resetsAt: now(130) } }] },
     ],
     team: {
-      routes: { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'], implement: ['codex', 'grok', 'antigravity'],
-        review: ['grok', 'antigravity'], research: ['antigravity', 'grok'], accept: ['claude'] },
+      routes: { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'], implement: ['antigravity', 'codex', 'grok'],
+        review: ['antigravity', 'grok'], research: ['antigravity', 'grok'], accept: ['claude'] },
       configured: ['claude', 'codex', 'grok', 'antigravity'], authRequired: [], blocked: {},
       quotaPolicy: { claude: { soft: 60, hard: 95, keepFor: ['plan', 'triage', 'accept'] }, codex: { soft: 70, hard: 95, keepFor: ['implement'] },
         grok: { soft: 95, hard: 95, keepFor: [] }, antigravity: { soft: 95, hard: 95, keepFor: [] } },
@@ -204,7 +204,8 @@
         <li>额度按 5 小时窗口和每周窗口里<b>用得多的那个</b>算。</li>
         <li>过了软线只接自己的主业，过了硬线不再派活；Claude 只当组长（规划、诊断、验收），配置也改不了。</li>
         <li>CLI 报额度用尽会冷却 30 分钟，报登录失效会停 6 小时，到时自动恢复。</li>
-        <li>改代码按 Codex → Grok Build → Antigravity 降级，永不派给 Claude。</li>
+        <li>改代码按 Antigravity → Codex → Grok Build 降级，永不派给 Claude；困难的改动由组长点名 Codex。</li>
+        <li>审查交给与改代码不同的成员（交叉审查），没有别人可用时才由作者自审。</li>
       </ul></section>`;
     dialog.querySelector('.qv-time').textContent = loading ? '刷新中…' : loadedAt ? '更新于 ' + new Date(loadedAt).toLocaleTimeString() : '';
   }
