@@ -419,3 +419,13 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .panel-seg button { flex: 1; height: 26px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
 .panel-seg button[aria-selected="true"] { background: var(--raised); color: var(--text); box-shadow: 0 1px 3px rgba(20, 40, 70, .12); }
 .qv-est { padding: 0 6px; border-radius: 7px; background: rgba(19, 34, 58, .07); color: var(--faint); font-size: 10.5px; }
+
+/* The lead's reasoning while it plans, folded under its plan in the group */
+.lead-think { width: min(100%, 560px); border-radius: 10px; background: color-mix(in srgb, var(--ai-lead) 6%, var(--raised)); }
+.lead-think > summary { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; color: var(--muted); font-size: 12.5px; list-style: none; }
+.lead-think > summary::-webkit-details-marker { display: none; }
+.lead-think > summary::before { content: "›"; transition: transform .15s; }
+.lead-think[open] > summary::before { transform: rotate(90deg); }
+.lead-think > summary small { margin-left: auto; color: var(--faint); }
+.lead-think .activity, .lead-think .panel-note { padding: 2px 10px 10px; }
+.lead-live { padding: 0 7px; border-radius: 8px; background: color-mix(in srgb, var(--ai-lead) 18%, transparent); color: color-mix(in srgb, var(--ai-lead) 75%, var(--text)); font-size: 11px; }

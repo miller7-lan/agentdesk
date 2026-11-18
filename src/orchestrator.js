@@ -476,6 +476,51 @@ window.__groupReady = (async () => {
       </button></div>`;
   }
 
+  // The lead's own reasoning while it plans: read from its planning step's working record, on demand.
+  // Expanded records refresh while the lead is still planning.
+  const leadThoughts = new Map();   // taskId -> { activity, at, state }
+  function leadThinking(task) {
+    if (task.redacted || isExample(state.group) || !(task.plan?.rounds?.length || task.state === 'planning') || !window.__activity) return '';
+    const entry = leadThoughts.get(task.id);
+    const live = task.state === 'planning';
+    const body = entry?.activity?.items?.length
+      ? window.__activity.html(entry.activity, { key: 'lead:' + task.id, running: live })
+      : `<p class="panel-note">${entry ? (entry.error ? '读取失败：' + esc(entry.error) : '还没有记录到思考内容') : '展开后读取…'}</p>`;
+    return `<details class="lead-think" data-step="lead:${esc(task.id)}" data-lead-think="${esc(task.id)}">
+      <summary>组长 Opus 的思考过程${live ? '<span class="lead-live">思考中</span>' : ''}${entry?.activity?.items?.length ? `<small>${entry.activity.items.length} 条</small>` : ''}</summary>${body}</details>`;
+  }
+  async function loadLeadThinking(group, id) {
+    const entry = leadThoughts.get(id) || {};
+    if (entry.loading) return;
+    entry.loading = true;
+    leadThoughts.set(id, entry);
+    try {
+      entry.activity = await control('task_activity', { taskId: id, stepId: 'group-planner' })
+        .catch(() => control('task_activity', { taskId: id, stepId: 'planner' }));
+      delete entry.error;
+    } catch (error) {
+      entry.error = error.message;
+    } finally {
+      entry.loading = false;
+      entry.at = Date.now();
+      if (group === currentGroup()) render();
+    }
+  }
+  // Keep open records of a lead that is still planning up to date.
+  setInterval(() => {
+    const group = currentGroup();
+    if (!group || !state.group) return;
+    for (const details of $$('details[data-lead-think][open]', timeline)) {
+      const task = group.records.get(details.dataset.leadThink);
+      if (task?.state === 'planning') loadLeadThinking(group, task.id);
+    }
+  }, 3000);
+  timeline.addEventListener('toggle', (event) => {
+    const details = event.target;
+    if (!details.matches?.('details[data-lead-think]') || !details.open || !state.group) return;
+    loadLeadThinking(currentGroup(), details.dataset.leadThink);
+  }, true);
+
   function renderTimeline() {
     const group = currentGroup();
     const { records } = group;
@@ -525,6 +570,10 @@ window.__groupReady = (async () => {
         messages.push(messageRow(sender, task.model || members[sender]?.role, card, 'dispatch'));
       }
       messages.push(...planMessages(task));
+      const thinking = leadThinking(task);
+      if (thinking && filter !== 'mine' && (!filterSelect.value || filterSelect.value === 'lead')) {
+        messages.push(messageRow('lead', '思考过程', thinking, 'thinking'));
+      }
       if (filter !== 'mine' && !filterSelect.value) {
         for (const note of reassignments(task)) messages.push(`<p class="group-system">${esc(note)}</p>`);
         for (const note of systemNotes(task)) messages.push(`<p class="group-system" data-kind="event">${esc(note)}</p>`);
