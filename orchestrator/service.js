@@ -50,6 +50,16 @@ function validateTemplate(template, name) {
   return { prompt: 'stdin', output: 'plain', session: 'none', ...structuredClone(template) };
 }
 
+// Roughly how many CLI calls a subscription allows per window, for CLIs that report no quota of their own.
+function callLimits(value, name) {
+  const ok = (n) => n === undefined || (Number.isInteger(n) && n > 0 && n <= 100000);
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['fiveHour', 'weekly'].includes(key)) ||
+      !ok(value.fiveHour) || !ok(value.weekly) || (value.fiveHour === undefined && value.weekly === undefined)) {
+    throw new Error('invalid_call_limits:' + name);
+  }
+  return { ...(value.fiveHour && { fiveHour: value.fiveHour }), ...(value.weekly && { weekly: value.weekly }) };
+}
+
 function providerSettings(settings, name, home) {
   const safe = ['PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'TZ'];
   const env = Object.fromEntries(safe.filter((name) => process.env[name]).map((name) => [name, process.env[name]]));
@@ -63,7 +73,7 @@ function providerSettings(settings, name, home) {
     env[key] = fs.readFileSync(filename, 'utf8').trim();
   }
   const adapter = { bin: settings.bin, env, profiles: modelProfiles(settings), quotaFile: settings.quotaFile,
-    authRequired: settings.authRequired === true };
+    authRequired: settings.authRequired === true, ...(settings.callLimits !== undefined && { callLimits: callLimits(settings.callLimits, name) }) };
   if (settings.template !== undefined || name === 'antigravity') adapter.template = validateTemplate(settings.template, name);
   if (name !== 'gemini' || adapter.template) return adapter;
   fs.accessSync(settings.bin, fs.constants.X_OK);

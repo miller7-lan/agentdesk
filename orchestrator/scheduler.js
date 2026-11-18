@@ -57,6 +57,9 @@ async function worktreeState(folder, signal) {
   return createHash('sha256').update(status).update('\0').update(diff).digest('hex');
 }
 
+const FIVE_HOURS = 5 * 3600_000;
+const WEEK = 7 * 24 * 3600_000;
+
 function parseJson(output) {
   try {
     return JSON.parse(output.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/g, ''));
@@ -217,7 +220,7 @@ class Scheduler {
   async refreshQuota(maxAgeMs = 120_000) {
     if (this.config.quota === false) return this.quotaSnapshot || [];
     if (this.quotaSnapshot && this.now() - this.quotaAt < maxAgeMs) return this.quotaSnapshot;
-    this.quotaReading ||= quotaStatus(this.config.adapters).then((status) => {
+    this.quotaReading ||= quotaStatus(this.config.adapters).then((status) => this.withEstimates(status)).then((status) => {
       this.quotaSnapshot = status;
       this.quotaAt = this.now();
       this.router.setQuota(status);
@@ -226,9 +229,38 @@ class Scheduler {
     return this.quotaReading;
   }
 
+  // Every CLI call is remembered for a week, so a CLI that reports no quota can still be judged by how often
+  // it has been called against the limits configured for it (adapters.<cli>.callLimits).
+  recordCall(role) {
+    if (!this.config.adapters[role]?.callLimits) return;
+    const now = this.now();
+    const calls = (this.store.get('settings', 'calls:' + role)?.at || []).filter((time) => now - time < WEEK);
+    calls.push(now);
+    this.store.put('settings', 'calls:' + role, { at: calls });
+  }
+
+  // Fills in an estimated 5-hour and weekly window for each CLI without a quota source but with call limits.
+  withEstimates(list) {
+    const now = this.now();
+    return (list || []).map((entry) => {
+      const limits = this.config.adapters[entry.provider]?.callLimits;
+      if (!limits || entry.buckets?.length) return entry;
+      const calls = (this.store.get('settings', 'calls:' + entry.provider)?.at || []).filter((time) => now - time < WEEK);
+      const window = (span, limit) => {
+        if (!limit) return null;
+        const inside = calls.filter((time) => now - time < span);
+        return { usedPercent: Math.min(100, Math.round(inside.length / limit * 1000) / 10),
+          resetsAt: inside.length ? Math.ceil((inside[0] + span) / 1000) : null, calls: inside.length, limit };
+      };
+      return { ...entry, state: 'available', source: 'estimate', reason: undefined,
+        buckets: [{ id: entry.provider + '-estimate', fiveHour: window(FIVE_HOURS, limits.fiveHour), weekly: window(WEEK, limits.weekly) }] };
+    });
+  }
+
   // Adds what routing makes of each CLI's quota: the percent the router uses (live, or the cached snapshot when
   // the live reading has none), its limits, and whether it is working normally, reserved for its main jobs, or stopped.
   decorateQuota(list) {
+    list = this.withEstimates(list);
     const cached = this.quotaSnapshot || [];
     return list.map((entry) => {
       const routing = cached.find((item) => item.provider === entry.provider);
@@ -864,6 +896,7 @@ event(task, state, detail) {
     if (!config) throw new Error(step.role + '_not_configured');
     const mcp = readOnlyMode(task.mode) || step.id === 'group-planner' || !['codex', 'claude', 'grok'].includes(step.role) || config.template ? undefined : this.config.mcp;
     const release = await this.acquireCli(task, step, signal);
+    this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, runCommands: Boolean(step.write || step.capability === 'scout') });
     try {

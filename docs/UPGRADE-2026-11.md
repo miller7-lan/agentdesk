@@ -19,6 +19,7 @@
 3. 按 DEPLOY.md §1 更新代码：`git pull --ff-only` 到 `main`，再执行 `sudo bash orchestrator/install-ubuntu.sh`。确认 `/opt/agentdesk-orchestrator/activity.js` 已存在。
 4. 用 `sudoedit` 改配置，逐项对照 `orchestrator/vps2.example.json`：
    - `routing.implement` 改成 `["antigravity", "codex", "grok"]`，`routing.review` 和 `routing.research` 都改成 `["antigravity", "grok"]`。整个 `routing` 都没有自定义需求的，直接删掉，用代码里的默认值。
+   - 给 `adapters.grok` 和 `adapters.antigravity` 加上 `callLimits`（样例：Grok 每 5 小时 60 次、每周 600 次；Antigravity 每 5 小时 300 次、每周 3000 次），额度页才会显示它们的估算用量。数字请用户按套餐确认。
    - `adapters.antigravity.models` 按样例写入 Gemini 4 的三档模型和各自擅长说明，`defaultModel` 设为 Hydrogen；模型 ID 以 `agy models` 的实际输出为准。
    - 删掉 `adapters.gemini`（Gemini CLI 已停用），并从 `routing` 各列表和 `writeProviders` 里去掉 `gemini`。如果这台服务器上的 Gemini CLI 确实还能用，这一项跳过。
    - `writeProviders` 设为 `["codex", "claude", "grok", "antigravity"]`。

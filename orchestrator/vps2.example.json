@@ -35,6 +35,10 @@
           "strengths": "Quick code investigation and web development research.",
           "billing": "subscription"
         }
+      },
+      "callLimits": {
+        "fiveHour": 60,
+        "weekly": 600
       }
     },
     "antigravity": {
@@ -86,7 +90,11 @@
         "usageField": "result.usage",
         "errorField": "result.error"
       },
-      "defaultModel": "gemini-4-hydrogen"
+      "defaultModel": "gemini-4-hydrogen",
+      "callLimits": {
+        "fiveHour": 300,
+        "weekly": 3000
+      }
     }
   },
   "routing": {

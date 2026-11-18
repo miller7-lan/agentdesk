@@ -418,3 +418,4 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .panel-seg { display: flex; gap: 3px; margin: 10px 12px 2px; padding: 3px; border-radius: 10px; background: color-mix(in srgb, var(--text) 6%, transparent); }
 .panel-seg button { flex: 1; height: 26px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
 .panel-seg button[aria-selected="true"] { background: var(--raised); color: var(--text); box-shadow: 0 1px 3px rgba(20, 40, 70, .12); }
+.qv-est { padding: 0 6px; border-radius: 7px; background: rgba(19, 34, 58, .07); color: var(--faint); font-size: 10.5px; }

@@ -218,3 +218,32 @@ test('a review goes to a different member than the one who wrote the change', ()
     { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
   ]), ['antigravity', 'antigravity']);
 });
+
+test('a CLI without a quota source is judged by its own calls against its configured limits', () => {
+  const store = new Store(':memory:');
+  try {
+    let now = Date.parse('2026-11-18T10:00:00Z');
+    const config = { stateDir: os.tmpdir(), workspaces: {}, adapters: {
+      antigravity: { bin: 'agy', env: {}, callLimits: { fiveHour: 10, weekly: 100 } }, grok: { bin: 'grok', env: {} } } };
+    const scheduler = new Scheduler({ config, store, files: {}, adapter: async () => ({ output: '' }), now: () => now });
+    for (let i = 0; i < 9; i++) { scheduler.recordCall('antigravity'); now += 60_000; }
+    scheduler.recordCall('grok');   // no limits configured: not tracked
+    const [agy, grok] = scheduler.withEstimates([
+      { provider: 'antigravity', state: 'unavailable', buckets: [] }, { provider: 'grok', state: 'unavailable', buckets: [] }]);
+    assert.equal(agy.source, 'estimate');
+    assert.equal(agy.buckets[0].fiveHour.usedPercent, 90);
+    assert.equal(agy.buckets[0].weekly.usedPercent, 9);
+    assert.equal(agy.buckets[0].fiveHour.resetsAt, Math.ceil((Date.parse('2026-11-18T10:00:00Z') + 5 * 3600_000) / 1000));
+    assert.equal(grok.source, undefined);
+    scheduler.router.setQuota([agy]);
+    assert.equal(scheduler.router.pick('implement'), 'antigravity');   // 90% is under its 95% hard line
+    scheduler.recordCall('antigravity');
+    scheduler.router.setQuota(scheduler.withEstimates([{ provider: 'antigravity', state: 'unavailable', buckets: [] }]));
+    assert.notEqual(scheduler.router.pick('implement'), 'antigravity');   // 100%: steps back
+    now += 5 * 3600_000;                                                    // the 5-hour window rolls on
+    scheduler.router.setQuota(scheduler.withEstimates([{ provider: 'antigravity', state: 'unavailable', buckets: [] }]));
+    assert.equal(scheduler.router.pick('implement'), 'antigravity');
+  } finally {
+    store.close();
+  }
+});
