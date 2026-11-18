@@ -16,7 +16,7 @@
 
 - 群聊派活：`adapters.grok`、`adapters.antigravity`、`adapters.claude` 设 `"sandbox": true`，它们在 bubblewrap 沙盒里可以运行命令、跑测试（VPS2 已为 Codex 装好 `bwrap`；确认 `/usr/bin/bwrap` 存在）。
 - 单聊：把 `sandbox.js` 一起复制到 `/opt/agentdesk-orchestrator/`；`agent-chat.sh` 发现 `bwrap` 会自动开启沙盒。三家都能联网搜索。
-- `adapters.claude.defaultModel` 设为 `"opus"`（组长用最新 Opus）。
+- 将 `orchestrator/vps2.example.json` 中的最新 Opus 配置加入 `adapters.claude.models`，再将 `adapters.claude.defaultModel` 设为同一个模型 ID。当前示例为 `claude-opus-5-5`。默认模型必须在本机配置的 `models` 中存在，否则主控无法启动。
 - 在 VPS2 上运行 `grok --help`、`agy --help`，确认 `--effort` 的写法；Antigravity 若支持，按 OPERATIONS.md 写 `efforts` 和 `effortArgs`。
 
 ## 1. VPS2
