@@ -405,3 +405,16 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .timeline[data-member] .dispatch-from { color: color-mix(in srgb, var(--ai) 70%, var(--text)); }
 .timeline[data-member] .group-output { border-left: 3px solid color-mix(in srgb, var(--ai) 55%, transparent);
   background: color-mix(in srgb, var(--ai) 6%, var(--raised)); padding: 8px 12px; border-radius: 4px 12px 12px 12px; }
+
+/* Splitters: easy to grab, and visible as a handle when the pointer is near (they are transparent in the glass layout). */
+.splitter { width: 10px !important; padding: 0 !important; background: transparent !important; position: relative; }
+.splitter::after { content: ""; position: absolute; top: 50%; left: 50%; width: 4px; height: 44px; border-radius: 2px; transform: translate(-50%, -50%);
+  background: color-mix(in srgb, var(--text) 28%, transparent); opacity: 0; transition: opacity .15s, height .15s; }
+.splitter:hover::after, .splitter.drag::after { opacity: 1; height: 64px; }
+.splitter.drag::after { background: var(--accent); }
+.splitter.hidden { display: none; }
+
+/* 任务 tab: one switch for details, dispatch graph, changed files and output */
+.panel-seg { display: flex; gap: 3px; margin: 10px 12px 2px; padding: 3px; border-radius: 10px; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.panel-seg button { flex: 1; height: 26px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.panel-seg button[aria-selected="true"] { background: var(--raised); color: var(--text); box-shadow: 0 1px 3px rgba(20, 40, 70, .12); }

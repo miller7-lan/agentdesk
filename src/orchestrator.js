@@ -944,21 +944,26 @@
     </div>`;
   }
 
+  // The group panel has three tabs: 成员, 任务, 文件. Inside 任务 a switch picks the task's details,
+  // its dispatch graph, its changed files or its output, so related views share one tab.
+  const TASK_VIEWS = [['tasks', '详情'], ['graph', '调度图'], ['diff', '改动'], ['terminal', '输出']];
   function renderPanel(panel, body) {
     const task = getSelected();
-    if (panel === 'avatars') setHtml(body, panelAvatars());
-    else if (panel === 'members') setHtml(body, panelMembers());
-    else if (panel === 'tasks') setHtml(body, panelTasks());
-    else if (panel === 'graph') setHtml(body, panelGraph());
+    const inTasks = TASK_VIEWS.some(([key]) => key === panel);
+    const put = (html) => setHtml(body, (inTasks ? `<div class="panel-seg" role="tablist" aria-label="任务视图">${TASK_VIEWS.map(([key, label]) =>
+      `<button type="button" role="tab" data-task-sub="${key}" aria-selected="${key === panel}">${label}</button>`).join('')}</div>` : '') + html);
+    if (panel === 'avatars') put(panelAvatars());
+    else if (panel === 'members') put(panelMembers());
+    else if (panel === 'tasks') put(panelTasks());
+    else if (panel === 'graph') put(panelGraph());
     else if (panel === 'diff') {
       const paths = pathsOf(task);
-      $('#diffBadge').textContent = paths.length || '';
-      setHtml(body, task ? `<div class="project-panel-body"><h3>任务 ${taskLabel(task)} · 改动文件</h3>
+      put(task ? `<div class="project-panel-body"><h3>任务 ${taskLabel(task)} · 改动文件</h3>
         ${paths.length ? `<ul class="task-paths">${paths.map((path) => `<li>${svg('file')}<span class="mono">${esc(path)}</span></li>`).join('')}</ul>` : '<p class="panel-note">当前任务暂无改动文件。</p>'}
       </div>` : '<div class="empty-note">选择任务以查看改动文件。</div>');
     } else if (panel === 'terminal') {
       const output = task?.steps?.filter((step) => step.output || step.error) || [];
-      setHtml(body, output.length ? `<div class="project-panel-body"><h3>任务 ${taskLabel(task)} · 输出摘要</h3>
+      put(output.length ? `<div class="project-panel-body"><h3>任务 ${taskLabel(task)} · 输出摘要</h3>
         ${output.map((step) => `<div class="group-output"><strong>${esc(memberName(step.role))}</strong><pre>${esc(step.error || step.output)}</pre></div>`).join('')}
       </div>` : '<div class="empty-note">任务的步骤输出会显示在这里。</div>');
     } else {
@@ -1439,6 +1444,8 @@
     surface.addEventListener('click', (event) => {
       if (!state.group) return;
       const group = currentGroup();
+      const sub = event.target.closest('[data-task-sub]');
+      if (sub) { A.showPanel(sub.dataset.taskSub); return; }
       const thread = event.target.closest('[data-agent-thread]');
       if (thread) {
         window.__agentThreads?.open(group.id, thread.dataset.agentThread, thread.dataset.agentTask);

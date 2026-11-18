@@ -518,8 +518,10 @@
     panelSession = state.group || state.active;
     $('#panelTitle').textContent = state.group ? '群聊详情' : '检查工作区';
     $$('[data-group-panel]').forEach((tab) => { tab.hidden = !state.group; });
+    $$('[data-direct-panel]').forEach((tab) => { tab.hidden = Boolean(state.group); });   // in a group they live under 任务
+    const shownTab = state.group && ['graph', 'diff', 'terminal'].includes(state.panel) ? 'tasks' : state.panel;
     $$('.ptab').forEach((b) => {
-      const active = b.dataset.panel === state.panel;
+      const active = b.dataset.panel === shownTab;
       b.classList.toggle('active', active);
       b.setAttribute('aria-pressed', String(active));
     });
@@ -610,7 +612,7 @@
   });
 
   /* ---------- 布局与拖拽 ---------- */
-  const defaultWidths = { sideW: 254, panelW: 360 };
+  const defaultWidths = { sideW: 232, panelW: 320 };
   const sideW = store.get('sideW', defaultWidths.sideW), panelW = store.get('panelW', defaultWidths.panelW);
   $('#sidebar').style.width = sideW + 'px';
   $('#panel').style.width = panelW + 'px';
