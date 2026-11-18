@@ -53,6 +53,7 @@ window.__groupReady = (async () => {
     triage_retry: '组长要求重试，任务重新排队。',
     triage_rework: '组长要求返工，任务重新排队。',
     triage_limit: '诊断次数已达上限，请人工处理。',
+
     triage_retry_required: '重试没有可执行的步骤，请人工处理。',
     triage_retry_failed: '重试后的测试仍然失败，等待组长诊断。',
     triage_unparseable: '诊断结果无法解析，请人工处理。',
@@ -287,6 +288,17 @@ window.__groupReady = (async () => {
     if (executor) return `等待 ${memberName(executor[1])} 可用：额度或登录状态恢复后自动继续，不会改派给其他成员。`;
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
+    const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
+    if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长重新分配。`;
+    const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
+    if (round) return `组长正在重新安排这个环节（第 ${round[2]}/${round[3]} 次）。`;
+    const byLead = /:reassigned_by_lead:(\w+)(?:\/([^>]+))?->(\w+)(?:\/(.+))?$/.exec(detail || '');
+    if (byLead) {
+      const who = (role, model) => memberName(role) + (model ? `（${model}）` : '');
+      return `组长把这个环节从 ${who(byLead[1], byLead[2])} 改派给 ${who(byLead[3], byLead[4])}。`;
+    }
+    const limit = /^reassign_limit(?::([\w-]+))?$/.exec(detail || '');
+    if (limit) return '这个环节已重新安排 3 次仍然失败，任务结束。';
     const escalated = /^escalated:(\w+)$/.exec(detail || '');
     if (escalated) return '任务遇到问题，已升级给组长处理。';
     const decision = /^triage_decision:(\w+)$/.exec(detail || '');
@@ -472,7 +484,7 @@ window.__groupReady = (async () => {
   const RECENT_TASKS = 4;
   const threadRoles = new Set(['codex', 'claude', 'grok', 'gemini', 'antigravity']);
   const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
-  const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
+  const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', replaced: '已重新分配', cancelled: '已停止', skipped: '跳过' };
 
   function milestone(step) {
     const text = step.verdict?.summary || step.error || step.output || '';
@@ -496,7 +508,9 @@ window.__groupReady = (async () => {
       const tag = open ? 'button' : 'div';
       const attrs = open ? `type="button" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" title="打开 ${esc(memberName(step.role))} 单聊"` : '';
       const what = [capabilityLabels[step.capability] || (step.write ? '修改' : ''), step.model].filter(Boolean).join(' · ');
-      const note = milestone(step);
+      const tried = (step.history || []).map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : ''));
+      const note = step.state === 'replaced' ? '已由新步骤接替'
+        : step.reassigns ? `重排 ${step.reassigns}/3 · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
       return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" ${attrs}>
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
@@ -798,6 +812,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));

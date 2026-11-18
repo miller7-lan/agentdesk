@@ -167,7 +167,9 @@ function buildTriageBrief(task, reason) {
       reviewConflicts: task.reviewConflicts || 0,
       reworkRounds: task.reworkRounds || 0,
       triageRounds: task.triageRounds || 0,
+      ...(task.lastStepFailure && { steps: task.lastStepFailure }),
     },
+    ...(task.lastStepFailure && task.reassignOptions && { reassignOptions: task.reassignOptions }),
   };
   return fitBrief(brief);
 }

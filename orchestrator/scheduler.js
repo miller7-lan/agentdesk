@@ -24,6 +24,9 @@ const { validateOwnerCaps, allow: ownerAllow, nextReset, ownerUsageReport } = re
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 const MAX_TRIAGE = 2;
+// A planned step that fails goes back to the lead, who reassigns it (another member or model) or replans it.
+// Each step may be handed back at most this many times; a replacement step inherits the count.
+const MAX_REASSIGN = 3;
 const taskModes = new Set(['normal', 'chat', 'duo', 'team', 'review_only', 'edit']);
 const readOnlyMode = (mode) => mode === 'chat' || mode === 'review_only';
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1040,7 +1043,11 @@ event(task, state, detail) {
         if (!wave.length) throw new Error('dependency_failed');
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
         const failed = results.find((result) => result.status === 'rejected');
-        if (failed) throw failed.reason;
+        if (failed) {
+          if (!this.requestReassign(task, failed.reason, signal)) throw failed.reason;
+          await this.consumePendingTriage(task, repo, root, signal);
+          return;
+        }
       }
       signal.throwIfAborted();
       // Competing review verdicts are escalated before acceptance; the triage may add fix steps.
@@ -1460,10 +1467,106 @@ event(task, state, detail) {
     return false;
   }
 
+  // A planned step failed. Unless the task was cancelled, is waiting for an executor, or has used its
+  // reassignments, the failure goes to the lead, who reassigns the step or replans it (MAX_REASSIGN times).
+  requestReassign(task, error, signal) {
+    if (signal.aborted || !error || error.message?.startsWith('executor_waiting:')) return false;
+    const failed = task.steps.filter((step) => step.state === 'failed' && step.capability &&
+      !['triage', 'accept', 'plan'].includes(step.capability));
+    if (!failed.length || task.escalation?.active) return false;
+    const spent = failed.find((step) => (step.reassigns || 0) >= MAX_REASSIGN);
+    if (spent) {
+      this.save(task, task.state, 'reassign_limit:' + spent.id);
+      return false;
+    }
+    for (const step of failed) {
+      step.reassigns = (step.reassigns || 0) + 1;
+      step.failedRoles = [...new Set([...(step.failedRoles || []), step.role])];
+      step.history = [...(step.history || []), { role: step.role, model: step.model, error: clip(step.error || error.message, 200) }];
+      this.save(task, task.state, `step_failed:${step.id}:${step.role}`);
+    }
+    task.lastStepFailure = failed.map((step) => ({ step: step.id, role: step.role, model: step.model, capability: step.capability,
+      error: clip(step.error || error.message, 600), tried: step.history, round: step.reassigns, limit: MAX_REASSIGN }));
+    // The lead may switch to another member or another model of the same member; these are the choices.
+    task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => role !== LEAD_ROLE), this.config.adapters);
+    task.pendingTriage ||= { reason: 'step_failed', applied: Boolean(task.applied) };
+    return true;
+  }
+
+  // The executor the lead named, when it can take this capability now; otherwise undefined.
+  namedExecutor(task, capability, executor) {
+    if (typeof executor !== 'string' || executor === LEAD_ROLE) return undefined;
+    return this.router.candidates(capability, []).includes(executor) && this.ownerAllows(task, executor).allowed
+      ? executor : undefined;
+  }
+
+  // Retry after a failure: the lead's choice, else the next executor for the capability that has not failed
+  // this step, else the same one again.
+  // A model named without a member stays with the same member (switching model is a reassignment too).
+  reassignStep(task, step, decision = {}) {
+    const named = this.namedExecutor(task, step.capability, decision.executor);
+    const sameRoleModel = !named && decision.model && Object.hasOwn(this.config.adapters[step.role]?.profiles?.models || {}, decision.model);
+    let next = named || (sameRoleModel ? step.role : this.pickForTask(task, step.capability, step.failedRoles || [])) || step.role;
+    if (step.write && !this.router.canWrite(next)) next = step.role;
+    const before = step.role + (step.model ? '/' + step.model : '');
+    if (next !== step.role) {
+      step.role = next;
+      delete step.session;
+      delete step.model;
+      delete step.effort;
+    }
+    this.chooseModel(step, decision);
+    const after = step.role + (step.model ? '/' + step.model : '');
+    if (after !== before) this.save(task, task.state, `${step.id}:reassigned_by_lead:${before}->${after}`);
+  }
+
+  // The lead's model and effort for a step, when the step's member has them; otherwise its defaults.
+  chooseModel(step, choice = {}) {
+    const config = this.config.adapters[step.role];
+    if (typeof choice.model === 'string' && Object.hasOwn(config?.profiles?.models || {}, choice.model)) {
+      if (choice.model !== step.model) delete step.session;
+      step.model = choice.model;
+    }
+    if (typeof choice.effort === 'string' && effortsFor(step.role, config).includes(choice.effort)) step.effort = choice.effort;
+  }
+
+  // Rework after a failure: the new steps take the failed step's place, with its inputs and its dependents.
+  // The new steps are placed right after the failed one, so the plan board shows them in its place.
+  replaceFailedSteps(task, steps) {
+    const failedSteps = task.steps.filter((step) => step.state === 'failed');
+    if (!steps.length || !failedSteps.length) return false;
+    const last = steps.at(-1).id;
+    for (const failed of failedSteps) {
+      failed.state = 'replaced';
+      failed.replacedBy = last;
+      steps[0].dependsOn = [...new Set([...steps[0].dependsOn, ...failed.dependsOn])];
+      for (const step of task.steps) step.dependsOn = step.dependsOn.map((id) => id === failed.id ? last : id);
+    }
+    // The replacement keeps the step's count, so one stage is handed back at most MAX_REASSIGN times in all.
+    const inherited = Math.max(...failedSteps.map((step) => step.reassigns || 0));
+    const history = failedSteps.flatMap((step) => step.history || []);
+    for (const step of steps) {
+      step.reassigns = inherited;
+      step.history = history;
+      step.failedRoles = [...new Set(failedSteps.flatMap((failed) => failed.failedRoles || []))];
+      step.replaces = failedSteps.map((failed) => failed.id);
+    }
+    task.steps.splice(task.steps.indexOf(failedSteps.at(-1)) + 1, 0, ...steps);
+    return true;
+  }
+
   // Only one escalation is pending at a time. beginTriage decides whether the task is allowed to start
   // another triage round at all.
   beginTriage(task, reason, { applied = false } = {}) {
     if (task.escalation?.active) return false;
+    if (reason === 'step_failed') {
+      task.reassignRounds = (task.reassignRounds || 0) + 1;   // a total for the metrics; the limit is per step
+      task.escalation = { reason, applied: Boolean(applied), active: true, requestedAt: new Date(this.now()).toISOString() };
+      task.stage = 'triaging';
+      const first = task.lastStepFailure?.[0];
+      this.save(task, 'triaging', `reassign_started:${first?.step || 'step'}:${first?.round || 1}/${MAX_REASSIGN}`);
+      return true;
+    }
     if ((task.triageRounds || 0) >= MAX_TRIAGE) {
       this.save(task, 'needs_review', 'triage_limit');
       return false;
@@ -1511,9 +1614,10 @@ event(task, state, detail) {
     }
     let step = escalation.stepId && task.steps.find((item) => item.id === escalation.stepId);
     if (!step) {
-      const round = (task.triageRounds || 0) + 1;
+      const reassign = escalation.reason === 'step_failed';
+      const round = reassign ? task.reassignRounds + '-' + (task.lastStepFailure?.[0]?.step || 'step') : (task.triageRounds || 0) + 1;
       step = {
-        id: 'triage-' + round, role: lead, capability: 'triage', write: false, usesBrief: true,
+        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true,
         state: 'queued', attempts: 0, dependsOn: [], reason: escalation.reason,
         prompt: 'Diagnose this escalation and choose exactly one next action.',
         brief: buildTriageBrief(task, escalation.reason),
@@ -1543,7 +1647,7 @@ event(task, state, detail) {
     const decision = escalation.decision || parseTriageDecision(step.output);
     if (fresh) {
       escalation.decision = decision;
-      task.triageRounds = (task.triageRounds || 0) + 1;
+      if (escalation.reason !== 'step_failed') task.triageRounds = (task.triageRounds || 0) + 1;
     }
     this.save(task, 'triaging', 'triage_decision:' + decision.decision);
     await this.applyTriageDecision(task, decision, signal);
@@ -1562,6 +1666,7 @@ event(task, state, detail) {
           return 'retry';
         }
         for (const step of retryable) {
+          if (escalation.reason === 'step_failed') this.reassignStep(task, step, decision);
           step.state = 'queued';
           step.attempts = 0;
           delete step.error;
@@ -1610,7 +1715,7 @@ event(task, state, detail) {
         }
         throw error;
       }
-      task.steps.push(...steps);
+      if (escalation.reason !== 'step_failed' || !this.replaceFailedSteps(task, steps)) task.steps.push(...steps);
       task.reworkRounds = (task.reworkRounds || 0) + 1;
       delete task.acceptance;
       escalation.active = false;
@@ -1650,7 +1755,8 @@ event(task, state, detail) {
     let parent = [...task.steps].reverse().find((step) => step.write && step.paths?.length && !step.supersededBy);
     for (const item of raw.slice(0, 4)) {
       const capability = item.capability || 'implement';
-      const role = this.pickForTask(task, capability);
+      const role = this.namedExecutor(task, capability, item.executor) || this.pickForTask(task, capability, item.exclude || []) ||
+        this.pickForTask(task, capability);
       if (!role) {
         const configured = (this.router.routes[capability] || []).filter((candidate) => this.router.configured(candidate));
         throw new Error(configured.length ? 'executor_waiting:' + capability : 'no_executor:' + capability);
@@ -1666,6 +1772,7 @@ event(task, state, detail) {
         state: 'queued', attempts: 0, dependsOn,
         prompt: item.prompt,
       };
+      this.chooseModel(step, item);
       if (capability === 'implement' && parent) step.reworkOf = parent.id;
       if (step.write) parent = step;
       steps.push(step);

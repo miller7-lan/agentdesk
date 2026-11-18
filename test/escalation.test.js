@@ -340,3 +340,127 @@ test('a test failure after apply triages but never rewrites already applied patc
   assert.equal(task.steps.filter((step) => step.id.startsWith('fix-')).length, 0);
   assert.equal(task.steps.find((step) => step.id === 'edit').supersededBy, undefined);
 });
+function failingScoutTask(scheduler, head, extra = []) {
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'inspect the fixture' });
+  task.base = head;
+  task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }, ...extra]);
+  return task;
+}
+
+test('a failed step goes back to the lead, who reassigns it to another member', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const calls = [];
+  const scheduler = schedulerFor(dir, mirror, async ({ name, prompt }) => {
+    calls.push(name);
+    if (name === 'claude') {
+      assert.match(prompt, /step_failed/);
+      return { output: decision('retry', { executor: 'grok' }) };
+    }
+    if (name === 'gemini') throw new Error('cli_exit_1');
+    return { output: 'looked around' };
+  }, { acceptance: { mode: 'off' } });
+  t.after(() => scheduler.store.close());
+
+  const task = failingScoutTask(scheduler, head);
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.state, 'queued');
+  assert.equal(task.detail, 'triage_retry');
+  assert.equal(task.reassignRounds, 1);
+  assert.equal(task.triageRounds || 0, 0);   // reassignments do not use up the test and review triage rounds
+  const look = task.steps.find((step) => step.id === 'look');
+  assert.equal(look.role, 'grok');
+  assert.deepEqual(look.failedRoles, ['gemini']);
+
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.state, 'completed');
+  const events = scheduler.store.events(task.id).map((event) => event.detail);
+  assert.ok(events.includes('step_failed:look:gemini'));
+  assert.ok(events.includes('reassign_started:look:1/3'));
+  assert.ok(events.includes('look:reassigned_by_lead:gemini->grok'));
+});
+
+test('each step is handed back to the lead at most three times, then the task fails', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  let leadCalls = 0;
+  const scheduler = schedulerFor(dir, mirror, async ({ name }) => {
+    if (name === 'claude') {
+      leadCalls += 1;
+      return { output: decision('retry') };
+    }
+    throw new Error('cli_exit_1');
+  }, { acceptance: { mode: 'off' } });
+  t.after(() => scheduler.store.close());
+
+  const task = failingScoutTask(scheduler, head);
+  for (let run = 0; run < 4; run += 1) {
+    await scheduler.run(task, new AbortController().signal).catch((error) => scheduler.save(task, 'failed', error.message));
+  }
+  assert.equal(leadCalls, 3);
+  assert.equal(task.steps.find((step) => step.id === 'look').reassigns, 3);
+  assert.equal(task.state, 'failed');
+  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'reassign_limit:look'));
+});
+
+test('a lead rework replaces the failed step and its dependents wait for the replacement', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const prompts = [];
+  const scheduler = schedulerFor(dir, mirror, async ({ name, prompt }) => {
+    if (name === 'claude') {
+      return { output: decision('rework', { steps: [{ capability: 'scout', prompt: 'look somewhere else', executor: 'grok' }] }) };
+    }
+    prompts.push([name, prompt]);
+    if (prompt.startsWith('look around')) throw new Error('cli_exit_1');
+    return { output: 'done: ' + prompt.slice(0, 20) };
+  }, { acceptance: { mode: 'off' } });
+  t.after(() => scheduler.store.close());
+
+  const task = failingScoutTask(scheduler, head, [{ id: 'after', capability: 'scout', prompt: 'summarize findings', dependsOn: ['look'] }]);
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.detail, 'triage_rework');
+  const look = task.steps.find((step) => step.id === 'look');
+  assert.equal(look.state, 'replaced');
+  const fix = task.steps.find((step) => step.id === look.replacedBy);
+  assert.equal(fix.role, 'grok');
+  assert.deepEqual(task.steps.find((step) => step.id === 'after').dependsOn, [fix.id]);
+
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.state, 'completed');
+  assert.ok(prompts.some(([, prompt]) => prompt.startsWith('look somewhere else')));
+  assert.ok(prompts.some(([, prompt]) => prompt.startsWith('summarize findings')));
+});
+
+test('each step has its own three reassignments, and the lead can switch model without switching member', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const seen = [];
+  const config = adapters('codex', 'claude', 'grok', 'gemini');
+  config.grok.profiles = { defaultModel: 'grok-fast', models: { 'grok-fast': {}, 'grok-heavy': {} } };
+  let failFirst = 2;
+  let failSecond = 2;
+  const scheduler = schedulerFor(dir, mirror, async ({ name, prompt, model }) => {
+    if (name === 'claude') return { output: decision('retry', { executor: 'grok', model: 'grok-heavy' }) };
+    seen.push([prompt.slice(0, 12), name, model]);
+    if (prompt.startsWith('first') && failFirst-- > 0) throw new Error('cli_exit_1');
+    if (prompt.startsWith('second') && failSecond-- > 0) throw new Error('cli_exit_1');
+    return { output: 'ok' };
+  }, { acceptance: { mode: 'off' }, adapters: config });
+  t.after(() => scheduler.store.close());
+
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'two stages' });
+  task.base = head;
+  task.planRaw = JSON.stringify([
+    { id: 'one', capability: 'scout', prompt: 'first stage', dependsOn: [] },
+    { id: 'two', capability: 'scout', prompt: 'second stage', dependsOn: ['one'] },
+  ]);
+  for (let run = 0; run < 6 && task.state !== 'completed'; run += 1) await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.state, 'completed');
+  // Four handbacks in all, two per stage: more than three per task, within three per stage.
+  assert.equal(task.reassignRounds, 4);
+  assert.deepEqual(task.steps.filter((step) => ['one', 'two'].includes(step.id)).map((step) => step.reassigns), [2, 2]);
+  const one = task.steps.find((step) => step.id === 'one');
+  assert.equal(one.role, 'grok');
+  assert.equal(one.model, 'grok-heavy');
+  assert.deepEqual(one.history.map((entry) => entry.role), ['gemini', 'grok']);
+  const events = scheduler.store.events(task.id).map((event) => event.detail);
+  assert.ok(events.includes('one:reassigned_by_lead:gemini->grok/grok-heavy'));
+  assert.ok(seen.some(([, name, model]) => name === 'grok' && model === 'grok-heavy'));
+});

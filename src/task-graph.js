@@ -3,7 +3,7 @@
     queued: '排队中', planning: '规划中', awaiting_details: '待你补充', awaiting_approval: '待你确认',
     running: '执行中', applying: '应用补丁', testing: '验证中', needs_review: '待处理',
     triaging: '升级诊断', awaiting_acceptance: '待验收', auth_expired: '登录过期', quota_limited: '额度受限', accepted: '已验收',
-    completed: '已完成', failed: '失败', cancelled: '已取消', pending: '未开始', proposed: '拟执行',
+    completed: '已完成', failed: '失败', cancelled: '已取消', pending: '未开始', proposed: '拟执行', replaced: '已重新分配',
   };
   const endStates = new Set(['completed', 'failed', 'cancelled']);
   const stepKey = (id) => 'step:' + id;
@@ -48,7 +48,9 @@
     }
 
     const waiting = new Map(steps.map((step) => [stepKey(step.id), step]));
-    const predecessor = (step) => Array.isArray(step.dependsOn) ? step.dependsOn.map(stepKey) : null;
+    // A step the lead replaced after it failed stays on the graph, linked to the steps that took its place.
+    const predecessor = (step) => Array.isArray(step.dependsOn)
+      ? [...new Set([...step.dependsOn, ...(step.replaces || [])])].map(stepKey) : null;
     const entryDepth = ready.get(entry).depth;
     while (waiting.size) {
       const count = waiting.size;
@@ -60,9 +62,12 @@
         const completeDependencies = deps && deps.every((parent) => ready.has(parent));
         add({
           key, step, parents, depth: Math.max(entryDepth, ...parents.map((parent) => ready.get(parent).depth)) + 1,
-          title: memberName(step.role), subtitle: step.id,
+          title: memberName(step.role),
+          subtitle: [step.id, step.model, step.reassigns ? `重排 ${step.reassigns}/3` : ''].filter(Boolean).join(' · '),
           state: proposedOnly ? 'proposed' : step.state || 'pending',
-          description: step.prompt,
+          description: [step.prompt || step.brief, (step.history || []).length
+            ? '之前尝试：' + step.history.map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : '')).join('、') : '']
+            .filter(Boolean).join('\n'),
           missingDependencies: !completeDependencies,
         });
         waiting.delete(key);
@@ -71,7 +76,7 @@
     }
     if (nodes.some((node) => node.step)) {
       const upstream = new Set(edges.map((edge) => edge.from));
-      const terminalSteps = nodes.filter((node) => node.step && !upstream.has(node.key));
+      const terminalSteps = nodes.filter((node) => node.step && node.step.state !== 'replaced' && !upstream.has(node.key));
       const stopped = task.state === 'failed' || task.state === 'cancelled';
       const detail = {
         patches_ready: '等待你审核并应用补丁',

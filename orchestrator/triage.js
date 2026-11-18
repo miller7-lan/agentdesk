@@ -8,10 +8,21 @@ const MAX_STEPS = 4;
 const TRIAGE_INSTRUCTION = 'You are the lead diagnosing a task that got stuck. Choose exactly one next action. ' +
   'End your reply with one fenced JSON object and nothing after it: ' +
   '{"decision":"retry|rework|accept_with_risk|fail","reason":"what went wrong",' +
-  '"instructions":"what the next step must do","steps":[{"capability":"implement","prompt":"concrete work"}]}. ' +
+  '"instructions":"what the next step must do","executor":"optional member for a retry","model":"optional model ID","effort":"optional",' +
+  '"steps":[{"capability":"implement","prompt":"concrete work","executor":"optional member","model":"optional","effort":"optional"}]}. ' +
+  'When the reason is step_failed, a member\u2019s step failed (failures.steps lists who and which model already tried, and how many ' +
+  'of the 3 reassignments that step has used): retry hands the same step to another member or another model ' +
+  '(set executor and/or model from reassignOptions; a model alone keeps the member), rework replaces the step with new steps, ' +
+  'and fail ends the task when no member or model can do it. Pick executors only from reassignOptions; never claude. ' +
   'Use retry only when the failure looks transient, rework when another edit can fix it (at most 4 steps), ' +
   'accept_with_risk when the result is usable despite the failure, and fail when the approach is wrong. ' +
   'Never ask Claude to implement: implementation steps must be implement/review/scout/research capability steps.';
+
+// An optional model ID and effort level; the scheduler checks them against the member's configuration.
+function choice(value) {
+  const ok = (text) => typeof text === 'string' && /^[A-Za-z0-9._:\/-]{1,96}$/.test(text);
+  return { ...(ok(value.model) && { model: value.model }), ...(ok(value.effort) && { effort: value.effort }) };
+}
 
 function clip(value, max) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -31,12 +42,15 @@ function validateDecision(value) {
     }
     const capability = step.capability ?? 'implement';
     if (!REWORK_CAPABILITIES.has(capability)) throw new Error('invalid_decision:step_' + index);
-    return { capability, prompt: step.prompt.trim() };
+    const executor = typeof step.executor === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(step.executor) ? step.executor : undefined;
+    return { capability, prompt: step.prompt.trim(), ...(executor && { executor }), ...choice(step) };
   });
   return {
     decision: value.decision,
     reason: clip(value.reason, 2000),
     instructions: clip(value.instructions, 4000),
+    ...(typeof value.executor === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(value.executor) && { executor: value.executor }),
+    ...choice(value),
     steps: normalized,
   };
 }
