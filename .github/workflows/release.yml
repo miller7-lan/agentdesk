@@ -7,6 +7,9 @@ on:
         description: Embed repository server and enrollment settings
         type: boolean
         default: false
+      macos_release_tag:
+        description: Existing GitHub release tag for the generic macOS DMG (optional)
+        type: string
 
 permissions:
   contents: read
@@ -81,3 +84,31 @@ jobs:
             dist/*.zip
             dist/*.blockmap
             dist/latest*.yml
+
+  publish-macos:
+    if: inputs.macos_release_tag != '' && !inputs.bundle_connection
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentdesk-mac
+      - name: Verify and publish generic macOS installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.macos_release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[[:alnum:]._-]+$ ]]
+          for app in ./*.zip; do
+            unzip -Z1 "$app" > app-files.txt
+            grep -q '/Contents/Resources/app\.asar$' app-files.txt
+            if grep -Eiq '(^|/)(agentdesk-(server|enrollment)\.json|known_hosts|[^/]*_ed25519|[^/]*\.token)$' app-files.txt; then
+              echo '::error::Unexpected server settings or credentials in the generic app'
+              exit 1
+            fi
+          done
+          sha256sum -- ./*.dmg > SHA256SUMS-mac.txt
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" ./*.dmg SHA256SUMS-mac.txt
