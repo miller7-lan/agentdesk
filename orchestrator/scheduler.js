@@ -892,11 +892,13 @@ event(task, state, detail) {
         prompt: clip(prompt, 600), ...(output && { output: clip(output, 600) }), dependsOn })),
       capabilities: Object.fromEntries(Object.entries(this.router.routes)
         .map(([name, list]) => [name, this.ordered(task, name, list.filter((role) => this.router.available(role)))])),
+      models: plannerProfiles(this.availableRoles(), this.config.adapters, task.provider, task.model),
     };
     const prompt = [
       'You are 组长, the group lead. While the members were working, the person sent a new message about this task (newMessage).',
       'Decide for every step that is queued or running: "continue" when the message does not affect it, "guide" when it should take the message into account and carry on with the work it has done (give a short instruction in the person’s language), "stop" only when the step is now pointless or wrong. Prefer guide over stop: stopping throws away half-done work.',
       'If the message needs work no step covers, add steps in "add" with the same fields as a plan step (id, capability, prompt, optional role, model, effort, dependsOn); dependsOn may name existing steps.',
+      'In add, model must be an exact id listed under models for that role (never a label, a family name or the person’s shorthand), and effort one of that model’s efforts; leave either out to use the member’s default. Match the newest generation and the size of the model to the work, as in the original plan.',
       'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"..."}},"add":[]}.',
       JSON.stringify(context),
     ].join('\n');
@@ -911,7 +913,7 @@ event(task, state, detail) {
     if (terminal.has(task.state)) return;
     const record = task.revisions?.at(-1);
     const actions = decision.steps && typeof decision.steps === 'object' ? decision.steps : {};
-    const outcome = { continued: [], guided: [], stopped: [], added: [] };
+    const outcome = { continued: [], guided: [], stopped: [], added: [], modelFallbacks: [] };
     for (const item of steps) {
       if (!['running', 'queued'].includes(item.state)) continue;
       const choice = actions[item.id] || {};
@@ -942,8 +944,9 @@ event(task, state, detail) {
       const ask = !this.autoApproves(task, added);
       added.forEach((item, index) => {
         const models = this.config.adapters[item.role]?.profiles?.models || {};
-        const model = raw[index]?.model;
-        item.model = typeof model === 'string' && Object.hasOwn(models, model) ? model : preferredModel(this.config.adapters[item.role]?.profiles);
+        const requestedModel = raw[index]?.model;
+        const resolvedModel = this.resolveModel(item.role, requestedModel);
+        item.model = resolvedModel || preferredModel(this.config.adapters[item.role]?.profiles);
         const effort = raw[index]?.effort;
         if (typeof effort === 'string' && effortsFor(item.role, this.config.adapters[item.role], item.model).includes(effort)) item.effort = effort;
         item.dependsOn = [...outside[index], ...item.dependsOn.map((id) => renamed.get(id) || id)];
@@ -952,6 +955,11 @@ event(task, state, detail) {
         item.addedBy = 'revision';
         task.steps.push(item);
         outcome.added.push(item.id);
+        // A name the lead invented (often the person's shorthand) is not silently swapped for the default: say so
+        // in the revision record, so the group chat can show which model the added steps really run on.
+        if (typeof requestedModel === 'string' && requestedModel.trim() && !resolvedModel) {
+          outcome.modelFallbacks.push({ step: item.id, requested: clip(requestedModel.trim(), 80), used: item.model || '(default)' });
+        }
       });
     }
     if (record) Object.assign(record, { state: 'decided', summary: clip(String(decision.summary || ''), 600), ...outcome });
@@ -962,6 +970,19 @@ event(task, state, detail) {
         proposed ? 'revise_needs_approval' : 'revise_decided');
       this.pump();
     } else this.save(task, task.state, proposed ? 'revise_needs_approval' : 'revise_decided');
+  }
+
+  // The lead names a model for an added step: accept an exact id, the same id ignoring case and punctuation, or a
+  // profile's display label. Anything else is a miss; the caller falls back to the member's default and records it.
+  resolveModel(role, requested) {
+    if (typeof requested !== 'string' || !requested.trim()) return null;
+    const models = this.config.adapters[role]?.profiles?.models || {};
+    if (Object.hasOwn(models, requested)) return requested;
+    const fold = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const wanted = fold(requested);
+    return Object.keys(models).find((id) => fold(id) === wanted)
+      || Object.keys(models).find((id) => fold(models[id]?.label || '') === wanted)
+      || null;
   }
 
   // The lead could not decide (unavailable or an unusable reply): every member at work gets the message as

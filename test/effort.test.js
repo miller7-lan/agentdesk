@@ -158,7 +158,7 @@ test('while members work, the lead decides per step: continue, guide with the wo
     ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
     execute: async () => ({ output: JSON.stringify(reply) }),
   };
-  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan']) self[name] = S[name].bind(self);
+  for (const name of ['decideRevision', 'resolveModel', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan']) self[name] = S[name].bind(self);
   const task = { id: 't2', state: 'running', approval: 'always', prompt: '修登录', groupPlan: { approved: 1, rounds: [{ revision: 1, summary: 's', steps: [] }] },
     steps: [{ id: 'scout', role: 'grok', state: 'completed', dependsOn: [] }, { id: 'edit', role: 'codex', state: 'running', dependsOn: ['scout'] },
       { id: 'docs', role: 'grok', state: 'running', dependsOn: ['scout'] }, { id: 'review', role: 'grok', state: 'queued', dependsOn: ['edit'] }] };
@@ -182,6 +182,40 @@ test('while members work, the lead decides per step: continue, guide with the wo
   for (let i = 0; i < 50 && task.revisions.at(-1).state === 'deciding'; i += 1) await new Promise((r) => setTimeout(r, 5));
   assert.equal(task.revisions.at(-1).state, 'fallback');
   assert.equal(step('docs').guidance.at(-1).text, '再加个日志');
+});
+
+test('the lead gets exact model ids when it revises, and an invalid name is reported instead of hidden', async () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  let prompt = '';
+  const reply = { summary: 'ok', steps: {}, add: [
+    { id: 'a', capability: 'implement', prompt: 'x', model: 'Gemini 4 Hydrogen (High)' },
+    { id: 'b', capability: 'implement', prompt: 'y', model: '4hydragon' },
+  ] };
+  const routes = { implement: ['antigravity'] };
+  const self = {
+    config: { stateDir: require('node:os').tmpdir(), adapters: { antigravity: { profiles: { defaultModel: 'gemini-4-neon-high', models: {
+      'gemini-4-hydrogen-high': { label: 'Gemini 4 Hydrogen (High)', strengths: 'x', billing: 'subscription' },
+      'gemini-4-neon-high': { label: 'Gemini 4 Neon (High)', strengths: 'x', billing: 'subscription' } } } } } },
+    router: { routes, quotaAllows: () => true, canWrite: () => true, available: () => true, pick: () => 'antigravity' },
+    running: new Map(), stepControllers: new Map(), now: () => Date.now(),
+    save() {}, status: (id) => ({ id }), pump() {},
+    pickForTask: () => 'antigravity', availableRoles: () => ['antigravity'], ordered: (t, n, list) => list,
+    ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
+    execute: async (task, step, cwd, signal, text) => { prompt = text; return { output: JSON.stringify(reply) }; },
+  };
+  for (const name of ['decideRevision', 'resolveModel', 'leadModelFor', 'autoApproves', 'approveAddition']) self[name] = S[name].bind(self);
+  const task = { id: 't3', state: 'running', approval: 'auto', prompt: 'p', groupPlan: { rounds: [] }, steps: [],
+    revisions: [{ text: '用 hydrogen', state: 'deciding' }] };
+  await S.decideRevision.call(self, task, '用 hydrogen');
+  // The context carries the exact ids and labels the lead must choose from.
+  assert.match(prompt, /gemini-4-hydrogen-high/);
+  assert.match(prompt, /Gemini 4 Hydrogen \(High\)/);
+  assert.match(prompt, /exact id/);
+  // A label resolves to its id; an invented shorthand falls back to the default and is recorded for the chat.
+  assert.equal(task.steps.find((step) => step.id === 'a').model, 'gemini-4-hydrogen-high');
+  assert.equal(task.steps.find((step) => step.id === 'b').model, 'gemini-4-neon-high');
+  assert.deepEqual(task.revisions.at(-1).modelFallbacks, [{ step: 'b', requested: '4hydragon', used: 'gemini-4-neon-high' }]);
 });
 
 test('the lead prefers new models: newest generation first, full before small, a date is not a version', () => {

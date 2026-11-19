@@ -943,10 +943,16 @@ window.__groupReady = (async () => {
       if (board && filter !== 'mine' && (!filterSelect.value || steps.some((step) => step.role === filterSelect.value))) {
         messages.push(messageRow('lead', '分工进度', board, 'board'));
       }
-      // What the person said while the work was under way, and how the lead applied it to each step.
+      // What the person said while the work was under way, and how the lead applied it. The lead's reply is shown
+      // once per task: later changes already show on the board and in the events, and repeating the summary
+      // after every mid-work message buried the conversation.
+      let adjustmentShown = false;
       for (const revision of task.revisions || []) {
         if (!filterSelect.value) messages.push(messageRow('you', '改方向', `<p class="group-user-text">${esc(revision.text)}</p>`));
-        if (revision.state === 'deciding') { messages.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>')); continue; }
+        if (revision.state === 'deciding') {
+          if (!adjustmentShown) messages.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>'));
+          continue;
+        }
         const names = (ids) => (ids || []).map((stepId) => {
           const step = (task.steps || []).find((item) => item.id === stepId);
           return step ? memberName(step.role) + '（' + (capabilityLabels[step.capability] || stepId) + '）' : stepId;
@@ -957,10 +963,18 @@ window.__groupReady = (async () => {
             revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
             revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
             revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
-            revision.added?.length ? '新增：' + names(revision.added) : ''].filter(Boolean);
+            revision.added?.length ? '新增：' + names(revision.added) : '',
+            revision.modelFallbacks?.length ? '模型名无效，已改用默认：' + revision.modelFallbacks.map((item) => `${item.step}「${item.requested}」→ ${item.used}`).join('、') : ''].filter(Boolean);
         const waiting = (task.steps || []).some((step) => step.state === 'proposed') && revision === task.revisions.at(-1);
-        messages.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + (waiting
-          ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '')));
+        const addition = waiting
+          ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '';
+        if (adjustmentShown) {
+          // Only a pending approval still needs the person; the repeated summary stays out of the chat.
+          if (waiting) messages.push(messageRow('lead', '待确认', addition));
+          continue;
+        }
+        adjustmentShown = true;
+        messages.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + addition));
       }
       // Forwarded from each member's own conversation: that it took the work, and its closing summary.
       if (filter !== 'mine') {
