@@ -462,6 +462,7 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .flow-node { overflow: visible; }
 .flow-node .flow-node-dot { position: absolute; left: -5px; top: calc(50% - 5px); }
 .light-arrived .step-node, .light-arrived .flow-node-dot { background: var(--node-color); animation: node-arrive 1.2s ease-out; }
+.lane-node.light-arrived { --node-color: var(--lane); background: var(--lane); animation: node-arrive 1.2s ease-out; }
 .light-arrived { animation: node-glow 1.2s ease-out; }
 @keyframes node-arrive { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--node-color) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
 @keyframes node-glow { 0% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--node-color, var(--accent)) 55%, transparent), 0 0 14px color-mix(in srgb, var(--node-color, var(--accent)) 35%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }

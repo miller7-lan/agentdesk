@@ -1180,7 +1180,9 @@ window.__groupReady = (async () => {
     const groupLanes = groupsOf(project).map(({ id, name }) => {
       const tasks = [...(groups.get(id)?.records.values() || [])].filter((task) => !isExample(id) || task.id)
         .sort((a, b) => (Date.parse(a.createdAt || '') || a.time || 0) - (Date.parse(b.createdAt || '') || b.time || 0)).slice(-24);
-      const nodes = tasks.map((task) => `<button type="button" class="lane-node" data-lane-group="${esc(id)}" data-lane-task="${esc(task.id)}"
+      // Each task node takes the colour of the member doing (or that did) the work.
+      const worker = (task) => [...(task.steps || [])].reverse().find((step) => step.role && step.role !== 'claude')?.role || task.provider || 'lead';
+      const nodes = tasks.map((task) => `<button type="button" class="lane-node" style="--lane:${laneColour(worker(task))}" data-lane-group="${esc(id)}" data-lane-task="${esc(task.id)}" data-flight-task="${esc(task.id)}"
         data-node-state="${stateClass(task.state)}" title="${esc(taskLabel(task) + ' · ' + statusName(task.state) + ' · ' + (task.prompt || '').slice(0, 60))}"></button>`).join('<i class="lane-link"></i>');
       return `<div class="lane" style="--lane:${laneColour('lead')}"><button type="button" class="lane-head" data-lane-open-group="${esc(id)}"><span class="channel-mark">#</span>${esc(name)}</button>
         <div class="lane-track">${nodes || '<span class="lane-empty">还没有任务</span>'}</div></div>`;
@@ -1915,7 +1917,16 @@ window.__groupReady = (async () => {
     leadEffort.addEventListener('change', () => store.set('leadEffort', leadEffort.value));
   }
 
-  window.__group = { addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+  // Example groups only: change a task the way a status update would, to preview the board, lights and lanes.
+  function demoUpdate(id, patch) {
+    const group = currentGroup();
+    if (!group || !isExample(group.id) || !group.records.has(id)) return false;
+    updateTask(group, id, patch);
+    render();
+    if (state.panelOpen) A.renderPanel();
+    return true;
+  }
+  window.__group = { demoUpdate, addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {

@@ -24,11 +24,17 @@
       for (const { key, role } of fresh) {
         const source = root.querySelector(`[data-flight-from="${CSS.escape(key)}"]`);
         if (!source) continue;
+        // A summary scrolled out of sight would send a light from nowhere; the node still fills in on render.
+        const seen = source.getBoundingClientRect();
+        const view = root.getBoundingClientRect();
+        if (seen.bottom < view.top || seen.top > view.bottom) continue;
         // Every node of that step gets a light: its row on the progress board and, when the dispatch graph is
         // open, its node there. Targets are looked up on each frame, so a re-render does not lose them.
-        const targets = document.querySelectorAll(`[data-flight-to="${CSS.escape(key)}"]`);
+        // ...and the task's node on the project lanes, when they are open.
+        const selector = `[data-flight-to="${CSS.escape(key)}"], [data-flight-task="${CSS.escape(key.split(':')[0])}"]`;
+        const targets = document.querySelectorAll(selector);
         targets.forEach((_, index) => {
-          const find = () => document.querySelectorAll(`[data-flight-to="${CSS.escape(key)}"]`)[index];
+          const find = () => document.querySelectorAll(selector)[index];
           try {
             const flight = layer.emit({ id: key + ':' + index + ':' + Date.now(), source, target: find, color: colour(role) });
             flight.finished.then((result) => { if (result === 'arrived') arrive(find()); });
