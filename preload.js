@@ -107,6 +107,15 @@ contextBridge.exposeInMainWorld('desk', {
     // 从资源管理器拖进来的文件：在预加载脚本里取真实路径，交给主进程处理
     drop: (files) => ipcRenderer.invoke('files:drop', [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),
   },
+  // A single chat in its own Git worktree (session-worktrees.js).
+  worktrees: {
+    create: (projectId, sessionId) => ipcRenderer.invoke('worktrees:create', projectId, sessionId),
+    diff: (sessionId) => ipcRenderer.invoke('worktrees:diff', sessionId),
+    merge: (sessionId) => ipcRenderer.invoke('worktrees:merge', sessionId),
+    discard: (sessionId) => ipcRenderer.invoke('worktrees:discard', sessionId),
+    forThread: (threadId) => ipcRenderer.invoke('worktrees:forThread', threadId),
+    bind: (sessionId, threadId) => ipcRenderer.invoke('worktrees:bind', sessionId, threadId),
+  },
   // Undo the files a turn changed on this computer (checkpoints.js).
   checkpoints: {
     undo: (turnId, force = false) => ipcRenderer.invoke('checkpoints:undo', turnId, force),

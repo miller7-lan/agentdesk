@@ -36,6 +36,7 @@
       "local-commands.js",
       "attachment-files.js",
       "checkpoints.js",
+      "session-worktrees.js",
       "workspace.js",
       "build/icon.png",
       "src/**/*",

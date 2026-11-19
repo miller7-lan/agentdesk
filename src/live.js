@@ -521,6 +521,7 @@
     A.renderAll(); pet(s, 'thinking', 'UserPromptSubmit');
     if (sandbox === 'danger-full-access') {
       if (isMac) input[0].text += '\n\n[AgentDesk：完全访问本机（macOS）]\n你可以用 agentdesk_file_* 工具读写这台 Mac 的文件，路径必须是绝对 POSIX 路径，修改会立即生效。覆盖已有文件时需 overwrite:true；写之前先读取确认。不要使用 VPS 上的文件工具。';
+      if (s.worktree) input[0].text += `\n[独立工作树] 这个会话只在 ${s.worktree.path}（分支 ${s.worktree.branch}）里改文件，不要改原项目目录；用户会在确认后合回 ${s.worktree.baseBranch}。`;
       else if (!chat) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
     const sel = $('#modelSelect');
@@ -531,13 +532,14 @@
     }
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
-      s.localRoot = A.proj(s.project)?.localRoot || localRoot;
+      s.localRoot = s.worktree?.path || A.proj(s.project)?.localRoot || localRoot;
       const params = chat
-        ? { projectId, approvalPolicy, sandboxPolicy, model }
+        ? { projectId, approvalPolicy, sandboxPolicy, model, ...(s.worktree && { worktreeSession: s.worktree.key || s.id }) }
         : { projectId, approvalPolicy, sandbox, approvalsReviewer: 'user', model };
       const r = await api.request('thread/start', params);
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
+      if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const turnParams = chat
       ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort: s.effort,

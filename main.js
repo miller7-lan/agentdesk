@@ -615,6 +615,39 @@ ipcMain.handle('files:pasteChat', async (event, projectId, name, b64) => {
   try { return { files: [stageChat(projectId, name, Buffer.from(b64, 'base64'))], errors: [] }; }
   catch (error) { return { files: [], errors: [error.message] }; }
 });
+// Single chats in their own Git worktree (session-worktrees.js). The page names a session; the paths come
+// from the main process's own record.
+const { SessionWorktrees } = require('./session-worktrees');
+let worktreeStore;
+const worktrees = () => worktreeStore ||= new SessionWorktrees(path.join(app.getPath('userData'), 'worktrees.json'));
+const worktreeView = (record, key) => record && { key, path: record.path, branch: record.branch, baseBranch: record.baseBranch, mergedAt: record.mergedAt };
+ipcMain.handle('worktrees:create', async (event, projectId, sessionId) => {
+  if (!fromMainWindow(event) || typeof projectId !== 'string' || typeof sessionId !== 'string') return { ok: false, error: 'invalid_request' };
+  const root = localRootFor(projectId);
+  if (!root) return { ok: false, error: '请先为这个项目选择本机目录' };
+  try { return { ok: true, worktree: worktreeView(await worktrees().create(projectId, root, sessionId), sessionId) }; }
+  catch (error) { return { ok: false, error: error.message }; }
+});
+for (const action of ['diff', 'merge', 'discard']) {
+  ipcMain.handle('worktrees:' + action, async (event, sessionId) => {
+    if (!fromMainWindow(event) || typeof sessionId !== 'string') return { ok: false, error: 'invalid_request' };
+    try {
+      const value = await worktrees()[action](sessionId);
+      logger?.audit('session_worktree', { status: action, projectId: worktrees().get(sessionId)?.projectId });
+      return { ok: true, ...value, worktree: worktreeView(worktrees().get(sessionId), sessionId) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+}
+ipcMain.handle('worktrees:bind', (event, sessionId, threadId) => {
+  if (!fromMainWindow(event) || typeof sessionId !== 'string' || typeof threadId !== 'string') return false;
+  worktrees().bindThread(sessionId, threadId);
+  return true;
+});
+ipcMain.handle('worktrees:forThread', (event, threadId) => {
+  if (!fromMainWindow(event) || typeof threadId !== 'string') return null;
+  const record = worktrees().forThread(threadId);
+  return record ? worktreeView(record, record.key) : null;
+});
 ipcMain.handle('checkpoints:undo', async (event, turnId, force) => {
   if (!fromMainWindow(event) || typeof turnId !== 'string') return { ok: false, error: 'invalid_request' };
   try { return { ok: true, ...(await checkpoints().undo(turnId, { force: force === true })) }; }
@@ -823,9 +856,15 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
 
     if (method === 'thread/start') {
-      const { projectId, ...rest } = request;
-      const localRoot = localRootFor(projectId);
+      const { projectId, worktreeSession, ...rest } = request;
+      let localRoot = localRootFor(projectId);
       if (!localRoot) throw new Error('请先为当前项目选择本机目录，再开始单聊');
+      if (worktreeSession !== undefined) {
+        // The conversation works in its own worktree instead of the project folder.
+        const record = typeof worktreeSession === 'string' && worktrees().get(worktreeSession);
+        if (!record || record.projectId !== projectId) throw new Error('找不到这个会话的独立工作树');
+        localRoot = record.path;
+      }
       request = {
         ...rest,
         projectId: projectId ?? appConfig?.active?.id ?? null,
@@ -835,6 +874,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       const result = await link.request(method, request);
       const threadId = result?.thread?.id;
       if (!threadId) throw new Error('单聊服务没有返回会话 ID');
+      if (worktreeSession !== undefined) worktrees().bindThread(worktreeSession, threadId);
       rememberChatThread(agent, threadId, {
         projectId: request.projectId,
         localRoot,

@@ -309,6 +309,28 @@ class Scheduler {
     this.store.saveTask(task, { ...this.event(task, task.state, 'quota_charged'), quota: charged });
   }
 
+  // Budget for one task tree (planning, every member call, reassignments, rework, acceptance), like Lancer's
+  // limits on branches and tokens. Tokens are input plus output; cached reads are not counted. Past the budget
+  // the next step does not start and the task waits for the person (needs_review, budget_exceeded:<kind>).
+  budget() {
+    const configured = this.config.taskBudget || {};
+    const value = (number, fallback) => Number.isSafeInteger(number) && number >= 0 ? number : fallback;   // 0 turns a limit off
+    return { steps: value(configured.steps, 24), tokens: value(configured.tokens, 3_000_000) };
+  }
+
+  spent(task) {
+    const steps = (task.steps || []).reduce((sum, step) => sum + (step.attempts || 0), 0);
+    const tokens = Object.values(task.usage || {}).reduce((sum, usage) => sum + (usage.input_tokens || 0) + (usage.output_tokens || 0), 0);
+    return { steps, tokens };
+  }
+
+  checkBudget(task) {
+    const limit = this.budget();
+    const used = this.spent(task);
+    const kind = limit.steps && used.steps >= limit.steps ? 'steps' : limit.tokens && used.tokens >= limit.tokens ? 'tokens' : null;
+    if (kind) throw Object.assign(new Error('budget_exceeded:' + kind), { budget: { limit, used } });
+  }
+
   recordUsage(task, step, usage) {
     if (!usage) return;
     step.usage = addUsage(step.usage, usage);
@@ -914,6 +936,11 @@ event(task, state, detail) {
         return;
       }
       if (!controller.signal.aborted || task.state !== 'cancelled') {
+        if (error.message?.startsWith('budget_exceeded:')) {
+          task.budget = error.budget;
+          this.save(task, 'needs_review', error.message);
+          return;
+        }
         const unknown = task.pendingRequest && !error.remoteConfirmed;
         if (!unknown) {
           delete task.pendingRequest;
@@ -1389,6 +1416,7 @@ event(task, state, detail) {
           (!this.router.available(step.role) || !quotaAllowed || !this.ownerAllows(task, step.role).allowed)) {
         throw new Error('executor_waiting:' + step.capability);
       }
+      this.checkBudget(task);
       step.state = 'running';
       step.attempts += 1;
       this.save(task, savedState(), step.id + ':started');
@@ -1494,7 +1522,7 @@ event(task, state, detail) {
   // A planned step failed. Unless the task was cancelled, is waiting for an executor, or has used its
   // reassignments, the failure goes to the lead, who reassigns the step or replans it (MAX_REASSIGN times).
   requestReassign(task, error, signal) {
-    if (signal.aborted || !error || error.message?.startsWith('executor_waiting:')) return false;
+    if (signal.aborted || !error || error.message?.startsWith('executor_waiting:') || error.message?.startsWith('budget_exceeded:')) return false;
     const failed = task.steps.filter((step) => step.state === 'failed' && step.capability &&
       !['triage', 'accept', 'plan'].includes(step.capability));
     if (!failed.length || task.escalation?.active) return false;

@@ -8,6 +8,10 @@
     "minFreePercent": 15
   },
   "cliTimeoutMs": 900000,
+  "taskBudget": {
+    "steps": 24,
+    "tokens": 3000000
+  },
   "quotaBridges": [],
   "maxConcurrentTasks": 2,
   "writeProviders": [

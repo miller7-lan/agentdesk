@@ -464,3 +464,30 @@ test('each step has its own three reassignments, and the lead can switch model w
   assert.ok(events.includes('one:reassigned_by_lead:gemini->grok/grok-heavy'));
   assert.ok(seen.some(([, name, model]) => name === 'grok' && model === 'grok-heavy'));
 });
+
+test('a task stops at its budget and waits for the person instead of failing or reassigning', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  let calls = 0;
+  const scheduler = schedulerFor(dir, mirror, async ({ name }) => {
+    calls += 1;
+    if (name === 'claude') return { output: decision('retry') };
+    return { output: 'looked', usage: { input_tokens: 600, output_tokens: 500, cached_input_tokens: 99999 } };
+  }, { acceptance: { mode: 'off' }, taskBudget: { steps: 10, tokens: 2000 } });
+  t.after(() => scheduler.store.close());
+
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'three looks' });
+  task.base = head;
+  task.planRaw = JSON.stringify([
+    { id: 'one', capability: 'scout', prompt: 'first', dependsOn: [] },
+    { id: 'two', capability: 'scout', prompt: 'second', dependsOn: ['one'] },
+    { id: 'three', capability: 'scout', prompt: 'third', dependsOn: ['two'] },
+  ]);
+  scheduler.start(task);
+  await new Promise((resolve) => { const wait = () => scheduler.running.has(task.id) ? setTimeout(wait, 20) : resolve(); wait(); });
+  assert.equal(task.state, 'needs_review');
+  assert.equal(task.detail, 'budget_exceeded:tokens');
+  assert.equal(calls, 2);                                  // 2 × 1100 tokens passes 2000; cached reads do not count
+  assert.equal(task.steps.find((step) => step.id === 'three').state, 'queued');
+  assert.equal(task.budget.used.tokens, 2200);
+  assert.equal(task.reassignRounds, undefined);
+});

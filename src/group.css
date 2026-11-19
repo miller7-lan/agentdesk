@@ -466,3 +466,27 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 @keyframes node-arrive { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--node-color) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
 @keyframes node-glow { 0% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--node-color, var(--accent)) 55%, transparent), 0 0 14px color-mix(in srgb, var(--node-color, var(--accent)) 35%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .light-arrived, .light-arrived .step-node, .light-arrived .flow-node-dot { animation: none; } }
+
+/* 项目泳道 */
+.lanes-panel h4 { margin: 12px 0 4px; font-size: 11px; color: var(--faint); font-weight: 600; }
+.lane { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.lane-head { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12px; color: var(--text); text-align: left; }
+.lane-head span:not(.channel-mark) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-head small { color: var(--faint); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lane-head:hover { color: var(--accent); }
+.lane-track { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; min-width: 0; }
+.lane-link { display: inline-block; width: 10px; height: 2px; background: color-mix(in srgb, var(--lane) 45%, transparent); }
+.lane-node { flex: none; width: 11px; height: 11px; padding: 0; border-radius: 50%; border: 1.7px solid var(--lane); background: var(--panel, #fff); }
+button.lane-node { cursor: pointer; }
+.lane-node[data-node-state="completed"] { background: var(--lane); }
+.lane-node[data-node-state="failed"] { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 30%, transparent); }
+.lane-node[data-node-state="cancelled"] { opacity: .4; }
+.lane-node[data-node-state="needs_review"] { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 35%, transparent); }
+.lane-node[data-node-state="running"] { animation: lane-pulse 1.6s ease-in-out infinite; }
+.lane-node.delivery { border-radius: 2px; transform: rotate(45deg) scale(.9); }
+.lane-node.merge { box-shadow: 0 0 0 2px var(--panel, #fff), 0 0 0 3.5px var(--lane); }
+.lane-node:hover { transform: scale(1.25); }
+.lane-node.delivery:hover { transform: rotate(45deg) scale(1.15); }
+.lane-empty { font-size: 11px; color: var(--faint); }
+@keyframes lane-pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--lane) 30%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .lane-node[data-node-state="running"] { animation: none; } }

@@ -239,7 +239,7 @@
     $('#sessionList').querySelector('.sess.active')?.focus();
   });
 
-  function newDirect(project = (state.group && projectIdOf(state.group)) || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex') {
+  async function newDirect(project = (state.group && projectIdOf(state.group)) || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex', { worktree = false } = {}) {
     project = projectIdOf(project);
     const p = proj(project);
     if (!p) return;
@@ -250,6 +250,14 @@
     }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
     const base = { id, project, agent, mode: 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [] };
+    if (worktree) {
+      // Its own branch and checkout, made before the first message so the AI never touches the project folder.
+      if (!p.live || !p.configured || !window.desk?.worktrees) { toast('独立工作树需要已连接、并选好本机目录的项目'); return; }
+      toast('正在创建独立工作树…');
+      const r = await window.desk.worktrees.create(project, id);
+      if (!r.ok) { toast('没能创建独立工作树：' + r.error); return; }
+      base.worktree = r.worktree;
+    }
     D.sessions.unshift(p.live ? { ...base, live: true, diffs: [], term: [] } : base);
     state.collapsed.delete(project);
     openSession(id);
@@ -548,7 +556,7 @@
     $('#panelTitle').textContent = state.group ? '群聊详情' : '检查工作区';
     $$('[data-group-panel]').forEach((tab) => { tab.hidden = !state.group; });
     $$('[data-direct-panel]').forEach((tab) => { tab.hidden = Boolean(state.group); });   // in a group they live under 任务
-    const shownTab = state.group && ['graph', 'diff', 'terminal'].includes(state.panel) ? 'tasks' : state.panel;
+    const shownTab = state.group && ['graph', 'lanes', 'diff', 'terminal'].includes(state.panel) ? 'tasks' : state.panel;
     $$('.ptab').forEach((b) => {
       const active = b.dataset.panel === shownTab;
       b.classList.toggle('active', active);
@@ -743,6 +751,8 @@ const provider = s?.provider || s?.agent || 'codex';
       }
     }
     window.__live?.syncSession?.(s);
+    window.__worktreeBar?.(s);
+    window.__stageStrip?.(s);
     if (s?.live) setBusy(!!s.busy);
     else renderSessionStatus();
     window.__providerDirect?.render(s);

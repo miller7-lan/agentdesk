@@ -115,6 +115,8 @@
             <button type="button" class="btn" data-recover-provider-mode="chat">切换到对话与查看</button>
             <button type="button" class="btn" data-recover-provider-mode="local">切换到修改本机文件</button>
           </div>
+          <div class="stage-strip" id="stageStrip" hidden></div>
+          <div class="worktree-bar" id="worktreeBar" hidden></div>
           <div class="attach-list" id="attachList"></div>
           <textarea id="input" rows="2" aria-label="任务描述" placeholder="描述你想让助手做的事…"></textarea>
           <div class="composer-bar">
@@ -130,6 +132,7 @@
             <div class="select-wrap" id="directModelWrap" hidden>
               <select id="directModel" aria-label="单聊模型"></select>
             </div>
+            <button type="button" class="chip" id="stageBtn" title="会话流程：按阶段推进（调研 → 实现 → 自查等）" hidden><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 12h3M14 12h3"/></svg>流程</button>
             <button class="chip" id="attachBtn" title="附加任意类型的文件（按住 Shift 选择文件夹，打包成 .zip）；也可以拖入或粘贴"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
             <div class="select-wrap" id="permissionModeWrap">
               <select id="modeSelect" title="权限模式">
@@ -383,6 +386,8 @@
   <script src="live.js"></script>
   <script src="activity-view.js"></script>
   <script src="provider-direct.js"></script>
+  <script src="worktree-ui.js"></script>
+  <script src="stages.js"></script>
   <script src="task-graph.js"></script>
   <script src="approvals.js"></script>
   <script src="orchestrator.js"></script>
