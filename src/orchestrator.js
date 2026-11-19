@@ -423,8 +423,8 @@ window.__groupReady = (async () => {
     if (waiting) return `等待 ${memberName(waiting[1])} 空闲：同一时间每个 AI 只跑一个任务，可能有其他成员正在使用。`;
     const executor = /^executor_waiting:(\w+)$/.exec(detail || '');
     if (executor) return `等待 ${memberName(executor[1])} 可用：额度或登录状态恢复后自动继续，不会改派给其他成员。`;
-    const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
-    if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
+    const moved = /:reassigned:(\w+)->(\w+):(quota|auth|busy)$/.exec(detail || '');
+    if (moved) return `${memberName(moved[1])} ${{ quota: '额度用尽', auth: '需要重新登录', busy: '正忙' }[moved[3]]}，改由 ${memberName(moved[2])} 接手。`;
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
@@ -1012,9 +1012,9 @@ window.__groupReady = (async () => {
 
   // "review:reassigned:grok->gemini:quota" → a one-line note in the thread.
   function reassignments(task) {
-    return (task.events || []).map((event) => /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(event.detail || ''))
+    return (task.events || []).map((event) => /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth|busy)$/.exec(event.detail || ''))
       .filter(Boolean).map(([, , from, to, reason]) =>
-        `${memberName(from)} ${reason === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(to)} 接手`);
+        `${memberName(from)} ${{ quota: '额度用尽', auth: '需要重新登录', busy: '正忙' }[reason]}，改由 ${memberName(to)} 接手`);
   }
 
   // Only the events a person needs to understand a stuck task; ordinary step start/finish stays in

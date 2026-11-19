@@ -510,3 +510,49 @@ test('the person can rank the members of a capability; the order only ranks memb
   assert.equal(task.steps[0].role, 'grok');      // the routes would have picked gemini first
   assert.deepEqual(used, ['grok']);
 });
+
+test('a step whose member is busy moves to an idle member of the same kind of work, unless that member was chosen', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  let release;
+  const holding = new Promise((resolve) => { release = resolve; });
+  const used = [];
+  const scheduler = schedulerFor(dir, mirror, async ({ name, prompt }) => {
+    used.push([prompt.slice(0, 6), name]);
+    if (prompt.startsWith('first')) await holding;     // gemini stays busy with the first step
+    return { output: 'ok' };
+  }, { acceptance: { mode: 'off' } });
+  t.after(() => scheduler.store.close());
+
+  // Two independent scout steps: both prefer gemini; the second moves to grok instead of waiting.
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'two looks' });
+  task.base = head;
+  task.planRaw = JSON.stringify([
+    { id: 'one', capability: 'scout', prompt: 'first look', dependsOn: [] },
+    { id: 'two', capability: 'scout', prompt: 'second look', dependsOn: [] },
+  ]);
+  const running = scheduler.run(task, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(used.map(([, name]) => name).sort(), ['gemini', 'grok']);
+  release();
+  await running;
+  assert.equal(task.state, 'completed');
+  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'two:reassigned:gemini->grok:busy'));
+
+  // A member the lead named is waited for.
+  used.length = 0;
+  let releaseNamed;
+  const holdingNamed = new Promise((resolve) => { releaseNamed = resolve; });
+  scheduler.adapter = async ({ name, prompt }) => { used.push([prompt.slice(0, 6), name]); if (prompt.startsWith('first')) await holdingNamed; return { output: 'ok' }; };
+  const named = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'named' });
+  named.base = head;
+  named.planRaw = JSON.stringify([
+    { id: 'one', capability: 'scout', prompt: 'first look', dependsOn: [] },
+    { id: 'two', capability: 'scout', role: 'gemini', prompt: 'second look', dependsOn: [] },
+  ]);
+  const second = scheduler.run(named, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(used.map(([, name]) => name), ['gemini']);   // the named step waits for gemini
+  releaseNamed();
+  await second;
+  assert.deepEqual(used.map(([, name]) => name), ['gemini', 'gemini']);
+});

@@ -135,7 +135,8 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
     ids.add(step.id);
     if (capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex') writers.set(step.id, role);
     return {
-      id: step.id, role, ...(capability !== undefined && { capability }), prompt: step.prompt, dependsOn: [...new Set(dependsOn)],
+      id: step.id, role, ...(capability !== undefined && { capability }), ...(step.role && step.role === role && { named: true }),
+      prompt: step.prompt, dependsOn: [...new Set(dependsOn)],
       write: capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex',
       state: 'queued', attempts: 0,
     };
@@ -473,7 +474,7 @@ event(task, state, detail) {
   eventData(detail) {
     let match;
     if ((match = /^executor_waiting:(\w+)$/.exec(detail))) return { capability: match[1] };
-    if ((match = /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail))) {
+    if ((match = /^([\w-]+):reassigned:(\w+)->(\w+):(quota|auth|busy)$/.exec(detail))) {
       return { stepId: match[1], from: match[2], to: match[3], reason: match[4] };
     }
     if ((match = /^review_verdict:([^:]+):([a-z_]+)$/.exec(detail))) return { stepId: match[1], verdict: match[2] };
@@ -884,6 +885,30 @@ event(task, state, detail) {
     return Number.isSafeInteger(limit) && limit >= 1 && limit <= 8 ? limit : 2;
   }
 
+  // Each CLI runs one process at a time, and most kinds of work prefer Antigravity, so parallel steps used to
+  // queue behind one member while others sat idle. When a step's member is busy, the step moves to the next
+  // member for its kind of work that is idle, available, within quota and allowed to write if the step writes.
+  // A member the person chose for the task, or the lead named for the step, is waited for instead; a review
+  // never moves to the author of the work it reviews.
+  spillOver(task, step, taken = new Set()) {
+    const role = step.role;
+    const limit = (r) => this.config.cliConcurrency?.[r] ?? 1;
+    const busy = (r) => taken.has(r) || (this.cliBusy.get(r) || 0) >= limit(r);
+    if (!busy(role) || !step.capability || step.named || task.provider || step.fixedReview || step.pinnedReadOnly ||
+        LEAD_CAPABILITIES.has(step.capability)) return;
+    const authors = step.capability === 'review'
+      ? (task.steps || []).filter((other) => step.dependsOn?.includes(other.id) && other.write).map((other) => other.role) : [];
+    const next = this.ordered(task, step.capability, this.router.candidates(step.capability, [role, ...authors]))
+      .find((candidate) => !busy(candidate) && this.ownerAllows(task, candidate).allowed &&
+        (!step.write || this.router.canWrite(candidate)));
+    if (!next) return;
+    this.save(task, task.state, `${step.id}:reassigned:${role}->${next}:busy`);
+    step.role = next;
+    delete step.session;
+    delete step.model;
+    delete step.effort;
+  }
+
   async acquireCli(task, step, signal) {
     const role = step.role;
     const limit = this.config.cliConcurrency?.[role] ?? 1;
@@ -1045,6 +1070,7 @@ event(task, state, detail) {
       }
       prompt += attachmentNote(files);
     }
+    this.spillOver(task, step);
     const release = await this.acquireCli(task, step, signal);
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
@@ -1156,7 +1182,16 @@ event(task, state, detail) {
         signal.throwIfAborted();
         const ready = task.steps.filter((step) => step.state === 'queued' && !this.isAcceptStep(step) &&
           step.dependsOn.every((id) => task.steps.find((dep) => dep.id === id).state === 'completed'));
-        const wave = ready.filter((step, i) => ready.findIndex((other) => other.role === step.role) === i);
+        // One step per member at a time; a further ready step for a member already in this wave moves to an idle
+        // member of its kind of work (spillOver) instead of waiting for the next wave.
+        const taken = new Set();
+        const wave = [];
+        for (const step of ready) {
+          if (taken.has(step.role)) this.spillOver(task, step, taken);
+          if (taken.has(step.role)) continue;
+          taken.add(step.role);
+          wave.push(step);
+        }
         if (!wave.length) throw new Error('dependency_failed');
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
         const failed = results.find((result) => result.status === 'rejected');
@@ -1235,7 +1270,7 @@ event(task, state, detail) {
       'When clear return only JSON {"summary":"outline the scope and validation in at most 1800 characters","steps":[{"id":"step","capability":"implement","prompt":"concrete work and checks","dependsOn":[]}]}. User-visible text should match the requester’s language.',
       CAPABILITY_GUIDE,
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
-      'Use each integration’s strengths and model-specific profile to choose the least costly capable model. These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice.',
+      'Use each integration’s strengths and model-specific profile to choose the least costly capable model. These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. Use the configured default when model is omitted. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
       'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',

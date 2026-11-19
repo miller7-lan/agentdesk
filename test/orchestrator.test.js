@@ -154,6 +154,9 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
     buckets: [{ id: 'shared', fiveHour: { usedPercent: 4 }, weekly: { usedPercent: 33, resetsAt: 1 } }],
   }));
   const service = start({
+    // Research only by Grok here, so Grok's two read-only steps queue for it (a member that can also research
+    // would take one of them over while Grok is busy).
+    routing: { research: ['grok'] },
     stateDir, adapters: bins, sshBridges: ['mac'], quotaBridges: ['mac'], acceptance: { mode: 'off' },
     workspaces: { project: { repository: mirror, sshBridge: 'mac' } },
   });
