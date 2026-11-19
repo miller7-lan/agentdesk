@@ -5,6 +5,9 @@ const path = require('node:path').win32;
 const nativePath = promisify(realpath.native);
 
 const LIMIT = 1024 * 1024;
+// One read returns at most this much; the model pages on with nextOffset. A 1 MiB page could put a quarter of a
+// million tokens into the conversation at once (pi reads in pages of about 50 KB for the same reason).
+const READ_PAGE = 64 * 1024;
 const systemNames = /^(?:windows|program files(?: \(x86\))?|programdata|recovery|boot|efi|system volume information|\$recycle\.bin|\$windows\.~[^\\]+|windows\.old|perfLogs|documents and settings|pagefile\.sys|hiberfil\.sys|swapfile\.sys|bootmgr|bootnxt|dumpstack\.log(?:\.tmp)?|winre\.wim)$/i;
 const volumeNames = /^(?:system volume information|\$recycle\.bin)$/i;
 const reserved = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)(?:\.|$)/i;
@@ -64,7 +67,7 @@ const operation = (name, description, required, optional = []) => ({
 
 const specs = [
   operation('list', 'List up to 250 entries in a local Windows directory. Available in AgentDesk Full Access mode.', ['path'], ['offset']),
-  operation('read', 'Read up to 1 MiB from a local Windows file as UTF-8 text or base64; use base64 for binary data. Available in AgentDesk Full Access mode.', ['path'], ['encoding', 'offset']),
+  operation('read', 'Read up to 64 KiB of a local Windows file as UTF-8 text or base64 (use base64 for binary data); continue from nextOffset for the rest. Available in AgentDesk Full Access mode.', ['path'], ['encoding', 'offset']),
   operation('write', 'Write UTF-8 or base64 data to a local Windows file. Can create a file or replace it with overwrite=true. Available in AgentDesk Full Access mode.', ['path', 'content'], ['encoding', 'overwrite']),
   operation('mkdir', 'Create one local Windows directory. Available in AgentDesk Full Access mode.', ['path']),
   operation('copy', 'Copy a local Windows file, including between C: and D:. Available in AgentDesk Full Access mode.', ['path', 'destination'], ['overwrite']),
@@ -112,10 +115,10 @@ async function call(tool, values, trash) {
         try {
           const info = await handle.stat();
           if (!info.isFile()) throw new Error('Use windows_file_list for directories');
-          const bytes = Buffer.alloc(Math.min(LIMIT + 4, Math.max(0, info.size - offset)));
+          const bytes = Buffer.alloc(Math.min(READ_PAGE + 4, Math.max(0, info.size - offset)));
           const { bytesRead } = await handle.read(bytes, 0, bytes.length, offset);
           const encoding = args.encoding || 'utf8';
-          let end = Math.min(bytesRead, LIMIT);
+          let end = Math.min(bytesRead, READ_PAGE);
           if (encoding === 'utf8' && end < bytesRead) {
             while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
           }
@@ -174,4 +177,4 @@ function result(success, output) {
   return { success, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
 }
 
-module.exports = { specs, call, result, allowedPath };
+module.exports = { specs, call, result, allowedPath, LIMIT, READ_PAGE };

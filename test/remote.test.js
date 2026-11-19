@@ -1,9 +1,13 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { PassThrough, Writable } = require('node:stream');
 const { test } = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
 const { Remote } = require('../remote');
+const { resetRoutes } = require('../orchestrator/ssh-route');
 
 async function until(predicate, label = 'condition') {
   const deadline = Date.now() + 1500;
@@ -19,6 +23,7 @@ function setup(t, options = {}) {
   const remote = new Remote({
     config: {
       host: 'vps.example.invalid', codexUser: 'codexdev', tunnelUser: 'windows-tunnel',
+      codexKey: '/tmp/codex_ed25519', tunnelKey: '/tmp/tunnel_ed25519', knownHosts: '/tmp/known_hosts',
       remoteForward: '', idleMinutes: 10, manageSshd: false, ...options.config,
     },
     timing: {
@@ -29,8 +34,10 @@ function setup(t, options = {}) {
       services.push(args);
       return { out: 'SERVICE_NAME: sshd STATE: 4 RUNNING' };
     },
-    spawnProcess: (_exe, args) => {
+    spawnProcess: (exe, args, spawnOptions) => {
       const child = new EventEmitter();
+      child.exe = exe;
+      child.spawnOptions = spawnOptions;
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       child.sent = [];
@@ -54,8 +61,21 @@ function setup(t, options = {}) {
       return child;
     },
   });
-  t.after(() => remote.stop());
+  t.after(() => { remote.stop(); resetRoutes(); });
   return { remote, spawned, services };
+}
+
+function jumpFixture(t, mode = 'auto') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-remote-jump-'));
+  const key = path.join(dir, 'jump_ed25519');
+  const knownHosts = path.join(dir, 'jump_known_hosts');
+  fs.writeFileSync(key, 'key');
+  fs.writeFileSync(knownHosts, 'host key');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return {
+    mode, host: 'relay.example.invalid', port: 22, user: 'agentdesk-jump',
+    key, knownHosts, probeMinutes: 10,
+  };
 }
 
 async function connect(remote, child) {
@@ -270,4 +290,103 @@ test('server settings bundled in the installer override a stale remote.json; key
   const rejected = loadConfig(local, bundledServer(bundle));
   assert.match(rejected.configError, /格式不对/);
   assert.equal(rejected.host, '198.51.100.1');
+});
+
+test('a direct transport failure makes the next Codex spawn use the jump', async (t) => {
+  const jump = jumpFixture(t);
+  const { remote, spawned } = setup(t, { config: { jump } });
+  await remote.start();
+  const first = spawned[0];
+  assert(!first.args.some((arg) => arg.startsWith('ProxyCommand=')));
+  first.stderr.write('ssh: connect to host vps.example.invalid port 22: Connection timed out\n');
+  first.emit('exit', 255);
+  await until(() => spawned.length === 2, 'jump retry');
+
+  const second = spawned[1];
+  assert(second.args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(second.args[second.args.indexOf('-p') + 1], '22');
+  const payload = JSON.parse(Buffer.from(second.spawnOptions.env.AGENTDESK_SSH_JUMP, 'base64url').toString('utf8'));
+  assert.deepEqual(payload.target, { host: 'vps.example.invalid', port: 22 });
+  assert.equal(payload.jump.host, 'relay.example.invalid');
+  assert.equal(remote.state.route.route, 'jump');
+  assert.equal(remote.state.route.jumpAvailable, true);
+});
+
+test('a host-key failure is surfaced and never switches to the jump', async (t) => {
+  const jump = jumpFixture(t);
+  const { remote, spawned } = setup(t, { config: { jump } });
+  await remote.start();
+  spawned[0].stderr.write('Host key verification failed.\n');
+  spawned[0].emit('exit', 255);
+  await until(() => spawned.length === 2, 'direct retry');
+  assert(!spawned[1].args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(remote.state.route.route, 'direct');
+  assert.equal(remote.state.route.lastFailure.kind, 'hostkey');
+});
+
+test('openBridge falls back to the remote jump and lets a session jump override it', async (t) => {
+  const jump = jumpFixture(t, 'jump');
+  const other = jumpFixture(t, 'jump');
+  other.host = 'relay2.example.invalid';
+  const { remote, spawned } = setup(t, { config: { jump } });
+  const bridge = {
+    host: 'vps.example.invalid', port: 22, user: 'agentdesk',
+    key: '/tmp/bridge_ed25519', knownHosts: '/tmp/known_hosts',
+  };
+  remote.openBridge(bridge);
+  const inherited = JSON.parse(Buffer.from(spawned[0].spawnOptions.env.AGENTDESK_SSH_JUMP, 'base64url').toString('utf8'));
+  assert.equal(inherited.jump.host, 'relay.example.invalid');
+
+  remote.openBridge({ ...bridge, jump: other });
+  const overridden = JSON.parse(Buffer.from(spawned[1].spawnOptions.env.AGENTDESK_SSH_JUMP, 'base64url').toString('utf8'));
+  assert.equal(overridden.jump.host, 'relay2.example.invalid');
+});
+
+test('the reverse tunnel still omits -p and follows the jump when forced', async (t) => {
+  const jump = jumpFixture(t, 'jump');
+  const { remote, spawned } = setup(t, {
+    config: { jump, remoteForward: '127.0.0.1:2222:127.0.0.1:22' },
+  });
+  await remote.start();
+  const tunnel = spawned[0];
+  const codex = spawned[1];
+  assert(tunnel.args.includes('-R'));
+  assert(!tunnel.args.includes('-p'));
+  assert(tunnel.args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(codex.args[codex.args.indexOf('-p') + 1], '22');
+  assert(codex.args.some((arg) => arg.startsWith('ProxyCommand=')));
+});
+
+test('bundled jump settings expose only the public endpoint and merge with local secrets', async (t) => {
+  const fsp = require('fs/promises');
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'agentdesk-jump-bundle-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const { loadConfig, bundledServer } = require('../remote');
+  const local = path.join(dir, 'remote.json');
+  await fsp.writeFile(local, JSON.stringify({
+    host: '198.51.100.1',
+    jump: { mode: 'direct', key: 'C:/keys/jump', knownHosts: 'C:/keys/jump_known_hosts', probeMinutes: 3 },
+  }));
+  const bundle = path.join(dir, 'agentdesk-server.json');
+  await fsp.writeFile(bundle, JSON.stringify({
+    host: '203.0.113.10',
+    jump: { host: 'relay.example.invalid', port: 2222, user: 'agentdesk-jump', mode: 'auto' },
+  }));
+  const config = loadConfig(local, bundledServer(bundle));
+  assert.equal(config.jump.host, 'relay.example.invalid');
+  assert.equal(config.jump.port, 2222);
+  assert.equal(config.jump.user, 'agentdesk-jump');
+  assert.equal(config.jump.mode, 'direct');            // the local switch wins for rollback
+  assert.equal(config.jump.key, 'C:/keys/jump');       // secrets never come from the installer
+  assert.equal(config.jump.knownHosts, 'C:/keys/jump_known_hosts');
+  assert.equal(config.jump.probeMinutes, 3);
+
+  await fsp.writeFile(bundle, JSON.stringify({
+    host: '203.0.113.10',
+    jump: { host: 'relay.example.invalid', key: 'C:/secret' },
+  }));
+  const rejected = loadConfig(local, bundledServer(bundle));
+  assert.match(rejected.configError, /只能包含/);
+  assert.equal(rejected.jump.mode, 'direct');
+  assert.equal(rejected.jump.key, 'C:/keys/jump');
 });

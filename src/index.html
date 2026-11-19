@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="task-graph.css" />
   <link rel="stylesheet" href="aqua.css" />
   <link rel="stylesheet" href="boot.css" />
+  <link rel="stylesheet" href="vendor/light-ui/running-border.css" />
   <script src="platform.js"></script>
   <script src="boot-init.js"></script>
 </head>
@@ -58,10 +59,6 @@
   </header>
 
   <div class="workbench">
-    <nav class="project-rail" aria-label="导航">
-      <button class="icon-btn" id="railProjects" type="button" title="项目列表" aria-label="项目列表"><svg viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v11H3z"/></svg></button>
-      <button class="icon-btn" id="railSearch" type="button" title="搜索对话" data-shortcut-title="搜索对话|K" aria-label="搜索对话"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></button>
-    </nav>
     <aside class="sidebar" id="sidebar" aria-label="项目与对话">
       <label class="side-search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
@@ -78,10 +75,10 @@
           <span>主控线路</span>
         </button>
         <button class="side-action" id="appearanceBtn" type="button" title="外观设置">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span>外观</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span class="visually-hidden">外观</span>
         </button>
         <button class="side-action" id="themeToggle" type="button" title="切换深浅色">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg><span>深色模式</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg><span class="visually-hidden">深色模式</span>
         </button>
       </div>
     </aside>
@@ -118,6 +115,8 @@
             <button type="button" class="btn" data-recover-provider-mode="chat">切换到对话与查看</button>
             <button type="button" class="btn" data-recover-provider-mode="local">切换到修改本机文件</button>
           </div>
+          <div class="stage-strip" id="stageStrip" hidden></div>
+          <div class="worktree-bar" id="worktreeBar" hidden></div>
           <div class="attach-list" id="attachList"></div>
           <textarea id="input" rows="2" aria-label="任务描述" placeholder="描述你想让助手做的事…"></textarea>
           <div class="composer-bar">
@@ -133,6 +132,7 @@
             <div class="select-wrap" id="directModelWrap" hidden>
               <select id="directModel" aria-label="单聊模型"></select>
             </div>
+            <button type="button" class="chip" id="stageBtn" title="会话流程：按阶段推进（调研 → 实现 → 自查等）" hidden><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 12h3M14 12h3"/></svg>流程</button>
             <button class="chip" id="attachBtn" title="附加任意类型的文件（按住 Shift 选择文件夹，打包成 .zip）；也可以拖入或粘贴"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
             <div class="select-wrap" id="permissionModeWrap">
               <select id="modeSelect" title="权限模式">
@@ -172,9 +172,10 @@
           </div>
           <div class="group-head-actions">
             <div class="group-roster" id="groupRoster" aria-label="群成员"></div>
-            <button type="button" class="btn group-clear" id="groupClearAll" title="清空所有群聊的消息记录；群聊本身保留">清空全部群聊记录</button>
+            <button type="button" class="icon-btn group-clear" id="groupClearAll" title="清空全部群聊记录（群聊本身保留）" aria-label="清空全部群聊记录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
           </div>
         </header>
+        <div class="group-pipeline" id="groupPipeline" aria-label="任务线成员链" hidden></div>
         <div class="group-filters" id="groupFilters" aria-label="消息筛选">
           <button type="button" data-group-filter="all" aria-pressed="true">全部</button>
           <button type="button" data-group-filter="mine" aria-pressed="false">与我相关</button>
@@ -232,6 +233,7 @@
         <button class="icon-btn" id="closePanel" type="button" title="收起面板" data-shortcut-title="收起面板|J" aria-label="收起工作区面板"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div class="panel-tabs">
+        <button class="ptab" data-panel="lanes" data-group-panel hidden>泳道</button>
         <button class="ptab" data-panel="members" data-group-panel hidden>成员</button>
         <button class="ptab" data-panel="tasks" data-group-panel hidden>任务<span class="badge" id="taskBadge"></span></button>
         <button class="ptab active" data-panel="diff" data-direct-panel><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4v16m8-16v16M4 8h8m0 8h8"/></svg>改动<span class="badge" id="diffBadge"></span></button>
@@ -376,6 +378,8 @@
   <script src="vendor/agent-hud/artwork.js"></script>
   <script src="vendor/agent-hud/agent-hud-bots.js"></script>
   <script src="avatars.js"></script>
+  <script src="vendor/light-ui/light-ui.js"></script>
+  <script src="light.js"></script>
   <script src="boot-feed.js"></script>
   <script src="boot.js"></script>
   <script src="appearance.js"></script>
@@ -384,7 +388,10 @@
   <script src="live.js"></script>
   <script src="activity-view.js"></script>
   <script src="provider-direct.js"></script>
+  <script src="worktree-ui.js"></script>
+  <script src="stages.js"></script>
   <script src="task-graph.js"></script>
+  <script src="lanes.js"></script>
   <script src="approvals.js"></script>
   <script src="orchestrator.js"></script>
   <script src="agent-threads.js"></script>

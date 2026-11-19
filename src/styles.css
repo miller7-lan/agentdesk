@@ -162,7 +162,7 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .starter-list svg { color: var(--accent); width: 14px; height: 14px; }
 .msg-user { align-self: flex-end; max-width: 82%; background: var(--user-bubble); border-radius: 14px 14px 4px 14px; padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg-assist { display: flex; gap: 10px; }
-.direct-avatar { display: grid; place-items: center; flex: none; border-radius: 9px; background: var(--accent-soft); }
+.direct-avatar { display: block; flex: none; align-self: flex-start; margin-top: 2px; background: none; }
 .msg-assist .msg-body { padding-top: 5px; }
 .msg-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .msg-body a { color: var(--accent); }
@@ -469,5 +469,74 @@ body.dragging iframe, body.dragging .timeline { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
-dialog.provider-picker { max-width: 520px; padding: 24px; border: 1px solid #cbd5e1; border-radius: 18px; background: var(--panel, #fff); color: var(--text, #18212f); box-shadow: 0 20px 60px #24334533; }
-dialog.provider-picker::backdrop { background: #18212f55; backdrop-filter: blur(4px); }
+dialog.provider-picker, dialog.stage-picker, dialog.stage-editor, dialog.worktree-diff { max-width: 520px; padding: 24px; border: 1px solid #cbd5e1; border-radius: 18px; background: var(--panel, #fff); color: var(--text, #18212f); box-shadow: 0 20px 60px #24334533; }
+dialog.provider-picker::backdrop, dialog.stage-picker::backdrop, dialog.stage-editor::backdrop, dialog.worktree-diff::backdrop { background: #18212f55; backdrop-filter: blur(4px); }
+
+/* 本轮改动本机文件 · 撤销 */
+.checkpoint-card { margin: 6px 0 10px; padding: 9px 12px; border: 1px solid var(--line, rgba(0,0,0,.08)); border-radius: 12px; background: var(--panel-2, rgba(255,255,255,.55)); font-size: 12.5px; }
+.checkpoint-card.undone { opacity: .7; }
+.checkpoint-card .cp-head { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.checkpoint-card .cp-head svg { width: 14px; height: 14px; opacity: .7; }
+.checkpoint-card .cp-files { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted, #667); }
+.checkpoint-card .cp-verb { color: var(--faint, #99a); margin-right: 4px; }
+.checkpoint-card .cp-undo { border: 1px solid var(--line, rgba(0,0,0,.12)); background: transparent; border-radius: 8px; padding: 2px 10px; font: inherit; cursor: pointer; }
+.checkpoint-card .cp-undo:hover { background: var(--hover, rgba(0,0,0,.05)); }
+.checkpoint-card .cp-state { color: var(--muted, #667); font-weight: 400; }
+
+/* 侧栏精简：项目行右侧的「新建单聊 / 新建群聊」小按钮，悬停或聚焦时出现 */
+.project-head-row { position: relative; display: flex; align-items: center; }
+.project-head-row .group-head { flex: 1; min-width: 0; }
+.project-quick { position: absolute; z-index: 2; right: 4px; top: 50%; transform: translateY(-50%); display: flex; gap: 2px; opacity: 0; pointer-events: none; transition: opacity .12s; }
+.project-head-row:hover .project-quick, .project-head-row:focus-within .project-quick { opacity: 1; pointer-events: auto; }
+.project-head-row:hover .count, .project-head-row:focus-within .count { visibility: hidden; }
+.project-quick button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; color: var(--muted); }
+.project-quick button:hover { background: var(--hover); color: var(--accent); }
+.project-quick svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sess-divider { height: 1px; margin: 6px 10px; background: var(--border); }
+/* 底部设置收成一行图标 */
+.side-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.side-footer .side-action { width: auto; flex: none; }
+.side-footer #appearanceBtn, .side-footer #themeToggle { padding: 6px; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.title-center { visibility: hidden; }
+.msg-body.thinking { position: relative; }
+
+/* 单聊独立工作树 */
+.worktree-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px 0; font-size: 12px; color: var(--muted); }
+.worktree-bar .wt-branch { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono, ui-monospace, monospace); color: var(--text); }
+.worktree-bar .wt-branch small { color: var(--faint); }
+.worktree-bar svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.worktree-bar .wt-btn { padding: 2px 9px; border: 1px solid var(--border); border-radius: 7px; font: inherit; color: var(--muted); }
+.worktree-bar .wt-btn:hover { background: var(--hover); color: var(--text); }
+.worktree-bar .wt-btn.danger:hover { color: var(--danger); }
+dialog.worktree-diff { width: min(900px, 92vw); max-width: none; max-height: 85vh; }
+.worktree-diff pre { max-height: 55vh; overflow: auto; font-size: 11.5px; background: var(--raised); padding: 10px; border-radius: 8px; }
+.picker-option { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 4px; font-size: 12.5px; color: var(--muted); text-align: left; }
+.picker-option strong { color: var(--text); }
+
+/* 会话流程（分阶段模板） */
+.stage-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 8px 12px 0; font-size: 12px; }
+.stage-strip .stage-name { color: var(--faint); margin-right: 4px; }
+.stage-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 3px; border: 1px solid var(--border); border-radius: 12px; color: var(--muted); font: inherit; }
+.stage-chip b { display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; font-size: 10px; background: var(--hover); }
+.stage-chip.current { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.stage-chip.current b { background: var(--accent); color: #fff; }
+.stage-chip.done b { background: color-mix(in srgb, var(--ok) 25%, transparent); color: var(--ok); }
+.stage-arrow { color: var(--faint); }
+.stage-close { color: var(--faint); padding: 0 4px; }
+dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: none; max-height: 86vh; overflow: auto; }
+.stage-template { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.stage-template small { flex: 1; color: var(--muted); }
+.stage-actions { display: flex; gap: 8px; margin-top: 12px; }
+.stage-editor label { display: grid; gap: 3px; margin: 6px 0; font-size: 12px; color: var(--muted); }
+.stage-editor input, .stage-editor select, .stage-editor textarea { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; }
+.stage-editor fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; padding: 4px 12px 8px; }
+.stage-editor legend { font-size: 12px; color: var(--text); }
+
+/* 额度页：自己调整分工顺序 */
+.qv-move { display: inline-flex; gap: 1px; margin-left: 4px; }
+.qv-move button { width: 16px; height: 16px; border-radius: 4px; font-size: 11px; line-height: 1; color: var(--muted); }
+.qv-move button:hover:not(:disabled) { background: var(--hover); color: var(--accent); }
+.qv-move button:disabled { opacity: .25; }
+.qv-custom { margin-left: 5px; padding: 0 5px; border-radius: 4px; font-style: normal; font-size: 10px; color: var(--accent); background: var(--accent-soft); }
+.qv-reset { margin-left: 8px; font-size: 11px; color: var(--accent); }

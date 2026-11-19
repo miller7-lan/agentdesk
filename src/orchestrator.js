@@ -68,6 +68,7 @@ window.__groupReady = (async () => {
     accepted_with_risk: '组长按风险接受本次结果，补丁仍可人工应用。',
     windows_test_started: '正在本机运行测试。',
     windows_test_failed: '本机测试失败。',
+    budget_exceeded: '这项任务的预算（步骤数或 token）已用完，已暂停；确认后可重新发起或调高主控的 taskBudget。',
   };
   const routeNames = { ssh: 'SSH 主用', relay: 'VPS 1 Relay 备用' };
   const timeline = $('#groupTimeline');
@@ -367,7 +368,8 @@ window.__groupReady = (async () => {
   const taskLabel = (task) => '#' + esc(task.id.slice(0, 8));
   const selectedRoute = () => routeState.route?.split(':')[0];
   const hasRoute = () => Boolean(routeState[selectedRoute()]);
-  const canUse = (id) => !optional.includes(id) || isExample(state.group) || routeState.providers?.includes(id);
+  // Gemini CLI is retired: it only appears when an orchestrator still has it configured, never in the example.
+  const canUse = (id) => !optional.includes(id) || (isExample(state.group) && id !== 'gemini') || routeState.providers?.includes(id);
   const canUseGemini = () => canUse('gemini');
   function availability(id) {
     if (canUse(id)) return isExample(state.group) ? '本地示例' : '可派活';
@@ -610,7 +612,8 @@ window.__groupReady = (async () => {
       const tried = (step.history || []).map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : ''));
       const note = step.state === 'replaced' ? '已由新步骤接替'
         : step.reassigns ? `重排 ${step.reassigns}/3 · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
-      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" ${attrs}>
+      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
+        ${step.state === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}<span class="step-node" aria-hidden="true"></span>
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
         <span class="step-row-what">${esc(what)}</span>
@@ -678,6 +681,8 @@ window.__groupReady = (async () => {
     loadLeadThinking(currentGroup(), details.dataset.leadThink);
   }, true);
 
+  const stepProgress = (records) => [...records.values()].flatMap((task) =>
+    (task.steps || []).map((step) => ({ key: task.id + ':' + step.id, state: step.state, role: step.role })));
   function renderTimeline() {
     const group = currentGroup();
     const { records } = group;
@@ -762,8 +767,12 @@ window.__groupReady = (async () => {
           if (summary && ['completed', 'failed'].includes(step.state)) {
             const link = !task.redacted && threadRoles.has(step.role)
               ? `<button type="button" class="task-text-link" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}">在单聊查看全文 ${svg('chev')}</button>` : '';
+            // A member's summary is its own report until the lead has accepted the task.
+            const verdict = task.acceptance?.verdict;
+            const checked = ['accept', 'pass'].includes(verdict) ? '已验收' : verdict === 'accept_with_risk' ? '已验收（带风险）' : '';
+            const trust = step.state === 'failed' ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
             messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : '完成总结', what].join(' · '),
-              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}"><p>${esc(summary)}</p>${link}</div>`, 'summary'));
+              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}">${trust}<p>${esc(summary)}</p>${link}</div>`, 'summary'));
           }
         }
         if (task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
@@ -781,22 +790,55 @@ window.__groupReady = (async () => {
       ${records.size ? '' : '<p>组长先确认需求和方案，确认后开始执行。</p>'}
     </div>`);
     if (atBottom && (records.size || group.approvals.size)) timeline.scrollTop = timeline.scrollHeight;
+    // A member that just finished sends a light from its summary to its row on the progress board (in the lanes
+    // view, from its row in the event list to its node on the lane tree; see renderLanesView).
+    if (!timeline.hidden) window.AgentDeskLight?.completed(timeline, stepProgress(records));
   }
+
+  // Conversation and lanes on one page (like Lancer): the member chains of the active task lines sit above the
+  // conversation, the lane tree is the right panel's first tab, and lights fly from the conversation to it.
+  function applyGroupView() {
+    const strip = document.querySelector('#groupPipeline');
+    const lanes = isExample(state.group) && !currentGroup()?.records.size ? [] : lanesModel(4).filter((lane) => lane.running || lane.waiting);
+    strip.hidden = !lanes.length;
+    if (lanes.length) setHtml(strip, window.AgentDeskLanes.pipeline(lanes, laneHelpers));
+  }
+  function laneClick(event) {
+    const node = event.target.closest('[data-lane-event]')?.dataset.laneEvent;
+    if (node) { laneSelect(node); return true; }
+    const head = event.target.closest('[data-lane-open]');
+    if (!head) return false;
+    const id = head.dataset.laneOpen;
+    if (head.dataset.laneKind === 'chat') { A.openSession(id); return true; }
+    const owner = groupsOf(projectIdOf(state.group)).find(({ id: group }) => groups.get(group)?.records.has(id));
+    if (owner && owner.id !== state.group) A.openGroup(owner.id);
+    selectTask(id, 'graph');
+    return true;
+  }
+  document.querySelector('#groupPipeline').addEventListener('click', (event) => {
+    const row = event.target.closest('[data-lane-pipeline]')?.dataset.lanePipeline;
+    if (!row) return;
+    laneFocus = laneFocus === row ? null : row;
+    A.showPanel('lanes');
+  });
+  document.querySelector('#panelBody').addEventListener('click', (event) => { if (state.group && state.panel === 'lanes') laneClick(event); });
 
   function render() {
     drawRoutes();
     if (!state.group) return;
+    applyGroupView();
     const count = taskCount();
     $('#groupSubtitle').textContent = shownMembers().filter((id) => id !== 'you' && id !== 'local').length + ' 位 AI 成员' + (count ? ' · ' + count + ' 项未结任务' : '');
     $('#taskBadge').textContent = count || '';
     for (const id of optional) {
       const option = provider.querySelector(`[value="${id}"]`);
       option.disabled = !canUse(id);
+      option.hidden = id === 'gemini' && !canUse(id);
       option.textContent = canUse(id) ? members[id].name : members[id].name + '（' + availability(id) + '）';
     }
     const recipientReady = canUse(provider.value);
     setHtml($('#groupRoster'), shownMembers().filter((id) => id !== 'you').map((id) =>
-      `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 34, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
+      `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 30, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
     setHtml($('#sbGroupMembers'), recipients.slice(1).flatMap((id) => {
       const { state: activity, task } = memberActivity(id);
       if (!activity) return [];
@@ -1159,6 +1201,51 @@ window.__groupReady = (async () => {
   // The group panel has three tabs: 成员, 任务, 文件. Inside 任务 a switch picks the task's details,
   // its dispatch graph, its changed files or its output, so related views share one tab.
   const TASK_VIEWS = [['tasks', '详情'], ['graph', '调度图'], ['diff', '改动'], ['terminal', '输出']];
+
+  // Project lanes after Lancer's "工作树 · 泳道" (src/lanes.js): each group task and each single chat of this
+  // project is a lane; events of every lane are interleaved by time. The right panel shows the tree; the
+  // group's "泳道" view shows the member chains, the interleaved event list and the tree side by side.
+  const laneRole = (role) => role === 'claude' ? 'lead' : role;
+  const laneHelpers = {
+    memberName: (role) => role === 'you' ? '你' : memberName(laneRole(role)),
+    colour: (role) => window.AgentDeskLight?.colour(laneRole(role)) || 'var(--accent)',
+    avatar: (role) => avatars.html(laneRole(role), { size: 16, still: true }),
+  };
+  function lanesModel(limit = 6) {
+    const project = projectIdOf(state.group);
+    const tasks = groupsOf(project).flatMap(({ id, name }) => [...(groups.get(id)?.records.values() || [])]
+      .filter((task) => !task.redacted).map((task) => ({ task, groupName: name })));
+    const sessions = A.D.sessions.filter((s) => projectIdOf(s.project) === project && !s.agentThread && (s.items || []).length);
+    return window.AgentDeskLanes.model({ tasks, sessions, ...laneHelpers, limit });
+  }
+  let laneFocus = null;     // the lane whose nodes are highlighted
+  function panelLanes() {
+    const width = document.querySelector('#panel')?.offsetWidth || 420;
+    const lanes = lanesModel(width >= 400 ? 4 : width >= 320 ? 3 : 2);
+    return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>工作树 · 泳道</h3><small>${lanes.length} 条任务线 · 点节点定位对话</small></div>
+      ${window.AgentDeskLanes.tree(lanes, { ...laneHelpers, focus: laneFocus })}</div>`;
+  }
+  // Clicking a node on the lane tree focuses its lane and finds the conversation it belongs to: a group task
+  // scrolls into view in the conversation and a light flies from the node to it; a single chat opens.
+  function laneSelect(key) {
+    const laneId = key.split(':')[0];
+    laneFocus = laneId;
+    A.renderPanel();
+    requestAnimationFrame(() => {
+      const node = document.querySelector(`[data-lane-event="${CSS.escape(key)}"]`);
+      const message = timeline.querySelector(`[data-message-id="${CSS.escape(laneId)}"]`);
+      window.AgentDeskLight?.arrive(node);
+      if (!message || !node) return;
+      message.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      message.classList.remove('lane-located');
+      void message.offsetWidth;
+      message.classList.add('lane-located');
+      setTimeout(() => window.AgentDeskLight?.fly(node, message, node.style.getPropertyValue('--lane').trim()), 350);
+    });
+  }
+  function renderLanesView() { if (state.panelOpen && state.panel === 'lanes') A.renderPanel(); }
+
+
   function renderPanel(panel, body) {
     const task = getSelected();
     const inTasks = TASK_VIEWS.some(([key]) => key === panel);
@@ -1168,6 +1255,7 @@ window.__groupReady = (async () => {
     else if (panel === 'members') put(panelMembers());
     else if (panel === 'tasks') put(panelTasks());
     else if (panel === 'graph') put(panelGraph());
+    else if (panel === 'lanes') put(panelLanes());
     else if (panel === 'diff') {
       const paths = pathsOf(task);
       put(task ? `<div class="project-panel-body"><h3>任务 ${taskLabel(task)} · 改动文件</h3>
@@ -1537,6 +1625,8 @@ window.__groupReady = (async () => {
         prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         provider: recipient || undefined,
+        // The person's member order from the quota page (only the kinds of work they reordered).
+        ...(!['broadcast', 'compact'].includes(kind) && personRouteOrder()),
         ...(files.length && { attachments: files }),
       },
     };
@@ -1639,6 +1729,19 @@ window.__groupReady = (async () => {
       timeline.scrollTop = timeline.scrollHeight;
     } else if (group.draft.trim() === draft) group.draft = '';
   });
+
+  // The saved order, kept to members the orchestrator routes each kind of work to right now (an order naming a
+  // member it no longer routes would be refused). Nothing is sent when nothing was reordered.
+  function personRouteOrder() {
+    const saved = store.get('routeOrder', {});
+    const routes = routeState.team?.routes;
+    const order = {};
+    for (const [capability, list] of Object.entries(saved)) {
+      const allowed = routes ? list.filter((role) => routes[capability]?.includes(role)) : list;
+      if (allowed.length) order[capability] = allowed;
+    }
+    return Object.keys(order).length ? { routeOrder: order } : {};
+  }
 
   function updateFilters() {
     $$('[data-group-filter]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.groupFilter === filter)));
@@ -1760,6 +1863,17 @@ window.__groupReady = (async () => {
       if (sheet) { A.showPanel(state.panel === 'avatars' ? 'members' : 'avatars'); return; }
       const preview = event.target.closest('[data-preview-member]');
       if (preview) { previewMember = preview.dataset.previewMember; A.renderPanel(); return; }
+      const laneTask = event.target.closest('[data-lane-task]');
+      if (laneTask) {
+        const target = laneTask.dataset.laneGroup;
+        if (target !== state.group) A.openGroup(target);
+        selectTask(laneTask.dataset.laneTask, 'graph');
+        return;
+      }
+      const laneGroup = event.target.closest('[data-lane-open-group]')?.dataset.laneOpenGroup;
+      if (laneGroup) { if (laneGroup !== state.group) A.openGroup(laneGroup); A.showPanel('lanes'); return; }
+      const laneChat = event.target.closest('[data-lane-open-chat]')?.dataset.laneOpenChat;
+      if (laneChat) { A.openSession(laneChat); return; }
       const task = event.target.closest('[data-task-id]');
       const action = event.target.closest('[data-task-operation]');
       if (task) selectTask(task.dataset.taskId, task.dataset.taskView);
@@ -1857,7 +1971,16 @@ window.__groupReady = (async () => {
     leadEffort.addEventListener('change', () => store.set('leadEffort', leadEffort.value));
   }
 
-  window.__group = { addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+  // Example groups only: change a task the way a status update would, to preview the board, lights and lanes.
+  function demoUpdate(id, patch) {
+    const group = currentGroup();
+    if (!group || !isExample(group.id) || !group.records.has(id)) return false;
+    updateTask(group, id, patch);
+    render();
+    if (state.panelOpen) A.renderPanel();
+    return true;
+  }
+  window.__group = { demoUpdate, addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {

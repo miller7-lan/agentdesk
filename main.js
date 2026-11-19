@@ -42,6 +42,18 @@ if (process.env.AGENTDESK_APPEARANCE) {
   } catch (_) {}
 }
 const fileTurns = new Map();
+// Per-turn file checkpoints, so a turn that changed files on this computer can be undone (checkpoints.js).
+const { Checkpoints } = require('./checkpoints');
+let checkpointStore;
+const checkpoints = () => checkpointStore ||= new Checkpoints(path.join(app.getPath('userData'), 'checkpoints'),
+  { trash: (target) => shell.trashItem(target), allowed: (target) => {
+    try { localFiles.allowedPath(target, true); } catch (error) { if (mac) throw error; windowsFiles.allowedPath(target, true); }
+  } });
+function finishCheckpoint(turnId) {
+  if (!turnId) return;
+  checkpoints().finish(turnId).then((summary) => { if (summary) toUi('checkpoint:ready', summary); })
+    .catch((error) => logger?.log('checkpoint_failed', { status: 'failed', error: error.message }));
+}
 const fullAccessThreads = new Set();
 // Claude / Grok / Antigravity 单聊：线程在 VPS 上，工具调用回到本机执行
 const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent })]));
@@ -403,10 +415,16 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
 // 远程 Codex：状态、事件、审批请求转发给界面
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
 let lastRemoteState;
+let lastRemoteRoute;
 remote.on('status', (s) => {
+  const route = s.route?.route;
+  if (route !== lastRemoteRoute) {
+    lastRemoteRoute = route;
+    logger?.log('ssh_route', { route });
+  }
   if (s.codex !== lastRemoteState) {
     lastRemoteState = s.codex;
-    logger?.log('remote_connection', { status: s.codex });
+    logger?.log('remote_connection', { status: s.codex, route });
   }
   toUi('remote:status', s);
 });
@@ -431,8 +449,10 @@ remote.on('server-request', (m) => {
     const task = winFile || macFile
       ? allowed
         ? winFile
-          ? windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
-          : localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
+          ? checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+            () => windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)))
+          : checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+            () => localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)))
         : Promise.resolve((winFile ? windowsFiles : localFiles).result(false, { error: '本机文件工具需要处于完全访问模式的活动轮次' }))
       : desktop.call(params);
     task.then((result) => {
@@ -454,6 +474,7 @@ remote.on('notification', ({ method, params }) => {
     desktop.active.delete(params.turn.id);
     desktopThreads.delete(params.threadId);
     fileTurns.delete(params.turn.id);
+    finishCheckpoint(params.turn.id);
     fullAccessThreads.delete(params.threadId);
   } else if (method === 'serverRequest/resolved') {
     remote.pendingReqs.delete(params.requestId);
@@ -519,8 +540,14 @@ ipcMain.handle('skills:upload', async (_e, skill) => {
     const pack = await ws.packSkill(approved.dir);
     const workspace = currentRemoteDirectory();
     if (!workspace) throw new Error('请配置远程工作区目录。');
-    const dest = path.posix.join(workspace, '.agentdesk-skills', skill.folder.replace(/[^\w.-]/g, '_'));
+    const root = path.posix.join(workspace, '.agentdesk-skills');
+    const dest = path.posix.join(root, skill.folder.replace(/[^\w.-]/g, '_'));
     if (skillCache.get(dest) !== pack.sig) { await remote.upload(dest, pack.files); skillCache.set(dest, pack.sig); }
+    // Codex 只从已注册的技能根目录装载技能；上传后注册该目录并刷新目录缓存。
+    await remote.request('skills/extraRoots/set', { extraRoots: [root] });
+    const listed = await remote.request('skills/list', { cwds: [workspace], forceReload: true });
+    const found = (listed?.data || []).some((entry) => (entry.skills || []).some((s) => s.enabled !== false && s.name === approved.name));
+    if (!found) throw new Error('技能已上传，但 Codex 没有识别；请升级 VPS 上的 Codex。');
     return { ok: true, path: path.posix.join(dest, 'SKILL.md') };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
@@ -588,6 +615,46 @@ ipcMain.handle('files:pasteChat', async (event, projectId, name, b64) => {
   try { return { files: [stageChat(projectId, name, Buffer.from(b64, 'base64'))], errors: [] }; }
   catch (error) { return { files: [], errors: [error.message] }; }
 });
+// Single chats in their own Git worktree (session-worktrees.js). The page names a session; the paths come
+// from the main process's own record.
+const { SessionWorktrees } = require('./session-worktrees');
+let worktreeStore;
+const worktrees = () => worktreeStore ||= new SessionWorktrees(path.join(app.getPath('userData'), 'worktrees.json'));
+const worktreeView = (record, key) => record && { key, path: record.path, branch: record.branch, baseBranch: record.baseBranch, mergedAt: record.mergedAt };
+ipcMain.handle('worktrees:create', async (event, projectId, sessionId) => {
+  if (!fromMainWindow(event) || typeof projectId !== 'string' || typeof sessionId !== 'string') return { ok: false, error: 'invalid_request' };
+  const root = localRootFor(projectId);
+  if (!root) return { ok: false, error: '请先为这个项目选择本机目录' };
+  try { return { ok: true, worktree: worktreeView(await worktrees().create(projectId, root, sessionId), sessionId) }; }
+  catch (error) { return { ok: false, error: error.message }; }
+});
+for (const action of ['diff', 'merge', 'discard']) {
+  ipcMain.handle('worktrees:' + action, async (event, sessionId) => {
+    if (!fromMainWindow(event) || typeof sessionId !== 'string') return { ok: false, error: 'invalid_request' };
+    try {
+      const value = await worktrees()[action](sessionId);
+      logger?.audit('session_worktree', { status: action, projectId: worktrees().get(sessionId)?.projectId });
+      return { ok: true, ...value, worktree: worktreeView(worktrees().get(sessionId), sessionId) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+}
+ipcMain.handle('worktrees:bind', (event, sessionId, threadId) => {
+  if (!fromMainWindow(event) || typeof sessionId !== 'string' || typeof threadId !== 'string') return false;
+  worktrees().bindThread(sessionId, threadId);
+  return true;
+});
+ipcMain.handle('worktrees:forThread', (event, threadId) => {
+  if (!fromMainWindow(event) || typeof threadId !== 'string') return null;
+  const record = worktrees().forThread(threadId);
+  return record ? worktreeView(record, record.key) : null;
+});
+ipcMain.handle('checkpoints:undo', async (event, turnId, force) => {
+  if (!fromMainWindow(event) || typeof turnId !== 'string') return { ok: false, error: 'invalid_request' };
+  try { return { ok: true, ...(await checkpoints().undo(turnId, { force: force === true })) }; }
+  catch (error) { return { ok: false, error: error.code === 'ENOENT' ? '找不到这一轮的存档（可能已被清理）' : error.message }; }
+});
+ipcMain.handle('checkpoints:list', (event, threadId) =>
+  fromMainWindow(event) && typeof threadId === 'string' ? checkpoints().list(threadId) : []);
 ipcMain.handle('files:forgetChat', (event, id) => fromMainWindow(event) && chatAttachments.delete(id));
 // 拖入的文件：测试目录内的文件/文件夹直接引用路径（Codex 能通过 ssh_exec 访问）；
 // 其他文件上传到 VPS；外部文件夹不上传（体积不可控），提示用户
@@ -666,13 +733,15 @@ function chatLink(agent) {
   if (typeof agent !== 'string' || !CHAT_AGENTS.has(agent)) throw new Error('unknown_chat_agent');
   const link = chatLinks.get(agent);
   for (const key of ['host', 'port', 'knownHosts', 'chatUser', 'chatScript',
-    'claudeKey', 'grokKey', 'antigravityKey', 'claudeUser', 'grokUser', 'antigravityUser']) {
+    'claudeKey', 'grokKey', 'antigravityKey', 'claudeUser', 'grokUser', 'antigravityUser', 'jump']) {
     if (remote.cfg[key] !== undefined) link.cfg[key] = remote.cfg[key];
   }
+  if (remote.cfg.jump === undefined) delete link.cfg.jump;
   if (remote.cfg.configError === undefined) delete link.cfg.configError;
   else link.cfg.configError = remote.cfg.configError;
   link.key = link.cfg[agent + 'Key'];
   link.user = link.cfg[agent + 'User'] || link.cfg.chatUser;
+  link.route = remote.route;
   return link;
 }
 
@@ -715,21 +784,25 @@ async function chatToolTask(agent, params) {
     return localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: mapping.localRoot });
   }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
-  return localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target));
+  return checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+    () => localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)));
 }
 
 for (const [agent, link] of chatLinks) {
   link.on('status', (status) => toUi('chat:status-event', status));
-  link.on('ready', () => logger?.log('chat_connection', { status: 'ready', projectId: appConfig?.active?.id, agent }));
+  link.on('ready', () => logger?.log('chat_connection', {
+    status: 'ready', projectId: appConfig?.active?.id, agent, route: link.status().route?.route,
+  }));
   link.on('down', (info) => {
     for (const [turnId, turn] of chatTurns) if (turn.agent === agent) chatTurns.delete(turnId);
-    logger?.log('chat_connection', { status: 'down', agent });
+    logger?.log('chat_connection', { status: 'down', agent, route: link.status().route?.route });
     toUi('chat:down', info);
   });
   link.on('sleep', () => toUi('chat:sleep', { agent }));
   link.on('event', (message) => {
     if (message.method === 'turn/completed') {
       chatTurns.delete(message.params?.turn?.id);
+      finishCheckpoint(message.params?.turn?.id);
       const status = message.params?.turn?.status;
       notifyIfAway(`${CHAT_LABEL[agent]} ${status === 'failed' ? '本轮失败' : '已完成'}`,
         status === 'interrupted' ? '本轮已停止' : '点击查看结果');
@@ -783,9 +856,15 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
 
     if (method === 'thread/start') {
-      const { projectId, ...rest } = request;
-      const localRoot = localRootFor(projectId);
+      const { projectId, worktreeSession, ...rest } = request;
+      let localRoot = localRootFor(projectId);
       if (!localRoot) throw new Error('请先为当前项目选择本机目录，再开始单聊');
+      if (worktreeSession !== undefined) {
+        // The conversation works in its own worktree instead of the project folder.
+        const record = typeof worktreeSession === 'string' && worktrees().get(worktreeSession);
+        if (!record || record.projectId !== projectId) throw new Error('找不到这个会话的独立工作树');
+        localRoot = record.path;
+      }
       request = {
         ...rest,
         projectId: projectId ?? appConfig?.active?.id ?? null,
@@ -795,6 +874,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       const result = await link.request(method, request);
       const threadId = result?.thread?.id;
       if (!threadId) throw new Error('单聊服务没有返回会话 ID');
+      if (worktreeSession !== undefined) worktrees().bindThread(worktreeSession, threadId);
       rememberChatThread(agent, threadId, {
         projectId: request.projectId,
         localRoot,
@@ -1082,6 +1162,12 @@ ipcMain.handle('enrollment:login', async (event, password) => {
     const knownHosts = skipOnboarding ? enrollment.knownHosts : trustedHost.records.get(appConfig.value.confirmedHost.fingerprint);
     session = await createSession({ ...enrollment, knownHosts }, password, ws.root || preferredRoot);
     Object.assign(remote.cfg, session.remote);
+    remote.resetRoute();
+    for (const link of chatLinks.values()) {
+      link.route = remote.route;
+      if (remote.cfg.jump === undefined) delete link.cfg.jump;
+      else link.cfg.jump = remote.cfg.jump;
+    }
     const { startBridge } = require('./orchestrator/service');
     stopBridge = startBridge({
       config: session.bridge, desktop, recycle: shell.trashItem,

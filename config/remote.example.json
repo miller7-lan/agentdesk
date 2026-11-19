@@ -6,5 +6,14 @@
   "remoteForward": "127.0.0.1:2222:127.0.0.1:22",
   "manageSshd": false,
   "stopSshdOnExit": false,
-  "idleMinutes": 10
+  "idleMinutes": 10,
+  "jump": {
+    "mode": "auto",
+    "host": "relay.example.invalid",
+    "port": 22,
+    "user": "agentdesk-jump",
+    "key": "C:/Users/YourName/.agentdesk/jump_ed25519",
+    "knownHosts": "C:/Users/YourName/.agentdesk/jump_known_hosts",
+    "probeMinutes": 10
+  }
 }

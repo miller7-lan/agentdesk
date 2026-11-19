@@ -414,3 +414,9 @@ test('a submitted task retains its selected provider and model', () => {
     store.close();
   }
 });
+
+test('the Mac Bridge module only starts when run directly', () => {
+  const bridge = require('../orchestrator/mac-bridge');
+  assert.equal(typeof bridge.main, 'function');
+  assert.equal(typeof bridge.createSpawnSsh, 'function');
+});

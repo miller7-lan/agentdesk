@@ -1,0 +1,8 @@
+[Unit]
+Description=AgentDesk journald retention (60 days)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/journalctl --vacuum-time=60d
+Nice=10
+IOSchedulingClass=idle

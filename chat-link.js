@@ -4,11 +4,12 @@ const { spawn } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const os = require('node:os');
 const path = require('node:path');
-const { loadConfig, sshBase } = require('./remote');
+const { loadConfig } = require('./remote');
+const { SSH, buildSshInvocation, classifySshFailure, normalizeJump } = require('./orchestrator/ssh-options');
+const { routeFor } = require('./orchestrator/ssh-route');
 
 const DIR = path.join(os.homedir(), '.agentdesk');
 const AGENTS = new Set(['claude', 'grok', 'antigravity']);
-const SSH = process.env.AGENTDESK_SSH || (process.platform === 'win32' ? 'ssh.exe' : '/usr/bin/ssh');
 const DEFAULTS = {
   chatUser: 'agentdesk',
   chatScript: '/opt/agentdesk-orchestrator/agent-chat.sh',
@@ -23,8 +24,10 @@ class ChatLink extends EventEmitter {
     if (!AGENTS.has(agent)) throw new Error('unknown_chat_agent');
     this.agent = agent;
     this.cfg = { ...DEFAULTS, ...loadConfig(), ...(config || {}) };
+    this.cfg.jump = normalizeJump(this.cfg.jump, { checkFiles: true });
     this.key = this.cfg[agent + 'Key'];
     this.user = this.cfg[agent + 'User'] || this.cfg.chatUser;
+    this.route = config?.route || routeFor(this.cfg.jump, { host: this.cfg.host, port: this.cfg.port || 22 });
     this.spawnProcess = spawnProcess;
     this.timing = {
       handshake: 30_000,
@@ -52,7 +55,7 @@ class ChatLink extends EventEmitter {
   }
 
   status() {
-    return { agent: this.agent, state: this.state, detail: this.detail };
+    return { agent: this.agent, state: this.state, detail: this.detail, route: this.route.snapshot() };
   }
 
   set(state, detail = '') {
@@ -67,9 +70,12 @@ class ChatLink extends EventEmitter {
     this.retryTimer = null;
   }
 
-  scheduleRetry(reason) {
+  scheduleRetry(reason, fast = false) {
     if (this.stopping || !this.auto || this.retryTimer) return;
-    const delay = this.timing.retry[Math.min(this.retryDelay, this.timing.retry.length - 1)];
+    const suspended = this.route?.retryDelay?.();
+    const delay = fast
+      ? 50 + Math.round(Math.random() * 200)
+      : suspended || this.timing.retry[Math.min(this.retryDelay, this.timing.retry.length - 1)];
     this.retryDelay += 1;
     this.set('retry', `${reason}，${Math.ceil(delay / 1000)} 秒后重连`);
     this.retryTimer = setTimeout(() => {
@@ -104,31 +110,61 @@ class ChatLink extends EventEmitter {
     this.set('connecting');
     this.detail = '';
     const command = `${this.cfg.chatScript} ${this.agent}`;
-    const args = [...sshBase(this.cfg, this.key), '-p', String(this.cfg.port || 22), `${this.user}@${this.cfg.host}`, command];
+    const choice = this.route.routeForAttempt();
+    let invocation;
+    try {
+      invocation = buildSshInvocation({
+        cfg: this.cfg, key: this.key, port: this.cfg.port || 22,
+        target: `${this.user}@${this.cfg.host}`, targetHost: this.cfg.host,
+        route: choice.route, afterTarget: [command], jump: this.cfg.jump,
+      });
+    } catch (error) {
+      this.stderr = error.message;
+      this.route.noteFailure(choice.route, classifySshFailure({ stderr: error.message, route: choice.route }));
+      this.drop(null, '无法准备 SSH：' + error.message);
+      return;
+    }
     let child;
     try {
-      child = this.spawnProcess(SSH, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = this.spawnProcess(SSH, invocation.args, {
+        windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, ...invocation.env },
+      });
     } catch (error) {
+      this.stderr = error.message;
+      this.route.noteFailure(choice.route, classifySshFailure({ stderr: error.message, route: choice.route }));
       this.drop(null, '无法启动 SSH：' + error.message);
       return;
     }
     this.child = child;
+    child.__route = choice.route;
+    child.__routeGeneration = choice.generation;
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     this.buffer = '';
     this.stderr = '';
+    child.stdout.once('data', () => this.route.noteSuccess(choice.route));
     child.stdout.on('data', (data) => this.onData(child, data));
     child.stderr.on('data', (data) => {
       if (this.child !== child) return;
       this.stderr = (this.stderr + data).slice(-8000);
     });
+    const routeFailure = (code) => this.noteRouteFailure(child, choice, code);
     child.stdin.on('error', (error) => this.drop(child, '单聊输入流已断开：' + error.message));
-    child.on('error', (error) => this.drop(child, 'SSH 启动失败：' + error.message));
-    child.on('close', (code) => this.drop(child, this.exitReason(code)));
+    child.on('error', (error) => {
+      this.stderr = (this.stderr + '\n' + error.message).slice(-8000);
+      routeFailure(null);
+      this.drop(child, 'SSH 启动失败：' + error.message);
+    });
+    child.on('close', (code) => {
+      routeFailure(code);
+      this.drop(child, this.exitReason(code));
+    });
     child.on('exit', (code) => {
       // close follows; keep the reason from stderr but do not wait for it indefinitely.
       if (this.child === child && !child.__exitSeen) {
         child.__exitSeen = true;
+        routeFailure(code);
         this.drop(child, this.exitReason(code));
       }
     });
@@ -159,12 +195,21 @@ class ChatLink extends EventEmitter {
     return detail || `单聊连接已断开（退出码 ${code ?? '—'}）`;
   }
 
+  noteRouteFailure(child, choice, code) {
+    if (!child || child.__routeNoted) return;
+    child.__routeNoted = true;
+    const info = classifySshFailure({ stderr: this.stderr, code, route: choice.route });
+    if (info.kind === 'unknown' && !String(this.stderr || '').trim()) return;
+    this.route.noteFailure(choice.route, info);
+  }
+
   drop(child, reason, { sleeping = false, retry = true } = {}) {
     if (child && this.child !== child) return;
     const current = this.child;
     if (!current && !sleeping && this.state !== 'connecting') {
       if (!this.ready) return;
     }
+    if (current && !retry) current.__routeNoted = true;
     this.child = null;
     this.ready = false;
     this.info = null;
@@ -203,7 +248,8 @@ class ChatLink extends EventEmitter {
     }
     this.set(retry && this.auto ? 'retry' : 'error', reason);
     this.emit('down', { agent: this.agent, message: reason });
-    if (retry && this.auto) this.scheduleRetry(reason);
+    const switched = current?.__routeGeneration !== undefined && current.__routeGeneration !== this.route.generation;
+    if (retry && this.auto) this.scheduleRetry(reason, switched);
   }
 
   wake(timeoutMs = 45_000) {
@@ -230,6 +276,7 @@ class ChatLink extends EventEmitter {
     this.stopping = false;
     this.clearRetry();
     this.retryDelay = 0;
+    this.route.manualReconnect();
     const child = this.child;
     if (child) this.drop(child, '正在重新连接', { retry: false });
     this.set('connecting', '正在重新连接');

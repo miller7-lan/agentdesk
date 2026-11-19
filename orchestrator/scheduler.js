@@ -11,7 +11,7 @@ const { validAttachments, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
 const { quotaStatus } = require('./quotas');
 const { teamAdapter } = require('./team');
-const { cleanup, retention } = require('./cleanup');
+const { cleanup, retention, historyCandidates } = require('./cleanup');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
 const { stepActivity } = require('./activity');
 const { hostResources } = require('./host-resources');
@@ -309,6 +309,28 @@ class Scheduler {
     this.store.saveTask(task, { ...this.event(task, task.state, 'quota_charged'), quota: charged });
   }
 
+  // Budget for one task tree (planning, every member call, reassignments, rework, acceptance), like Lancer's
+  // limits on branches and tokens. Tokens are input plus output; cached reads are not counted. Past the budget
+  // the next step does not start and the task waits for the person (needs_review, budget_exceeded:<kind>).
+  budget() {
+    const configured = this.config.taskBudget || {};
+    const value = (number, fallback) => Number.isSafeInteger(number) && number >= 0 ? number : fallback;   // 0 turns a limit off
+    return { steps: value(configured.steps, 24), tokens: value(configured.tokens, 3_000_000) };
+  }
+
+  spent(task) {
+    const steps = (task.steps || []).reduce((sum, step) => sum + (step.attempts || 0), 0);
+    const tokens = Object.values(task.usage || {}).reduce((sum, usage) => sum + (usage.input_tokens || 0) + (usage.output_tokens || 0), 0);
+    return { steps, tokens };
+  }
+
+  checkBudget(task) {
+    const limit = this.budget();
+    const used = this.spent(task);
+    const kind = limit.steps && used.steps >= limit.steps ? 'steps' : limit.tokens && used.tokens >= limit.tokens ? 'tokens' : null;
+    if (kind) throw Object.assign(new Error('budget_exceeded:' + kind), { budget: { limit, used } });
+  }
+
   recordUsage(task, step, usage) {
     if (!usage) return;
     step.usage = addUsage(step.usage, usage);
@@ -331,6 +353,26 @@ class Scheduler {
       tasks: [...this.tasks.values()], running: this.running, config: this.config, now: this.now(),
       onCleared: (task) => this.save(task, task.state, task.detail, false),   // marks cleanedAt without a new event
     }).then((result) => {
+      // Records are kept for the history window; files were already cleared 3/7 days after the task ended.
+      // A task referenced by a newer review/reply is kept for one more pass so its link does not dangle.
+      const keep = retention(this.config.retention);
+      const referenced = new Set();
+      for (const task of this.tasks.values()) {
+        for (const key of ['replyTo', 'reviewOf']) {
+          if (typeof task[key] === 'string') referenced.add(task[key]);
+        }
+      }
+      const expired = historyCandidates([...this.tasks.values()], this.running, this.now(), keep, { referenced });
+      if (expired.length) {
+        const ids = expired.map((task) => task.id);
+        result.historyRemoved = this.store.deleteTasks(ids);
+        for (const id of ids) this.tasks.delete(id);
+        try { this.store.vacuum(); result.vacuumed = true; }
+        catch (error) { console.error('cleanup vacuum:', error.message); result.vacuumed = false; }
+      } else {
+        result.historyRemoved = 0;
+        result.vacuumed = false;
+      }
       this.lastCleanup = result;
       if (result.lowDisk) console.error('cleanup: low disk', result.freePercent + '% free');
       return result;
@@ -469,6 +511,7 @@ event(task, state, detail) {
         (body.group !== undefined && (typeof body.group !== 'string' || !/^[A-Za-z0-9._~-]{1,96}$/.test(body.group))) ||
         // leadEffort: how hard the lead (Claude) thinks while planning, diagnosing and accepting; the person picks it.
         (body.leadEffort !== undefined && !EFFORTS.claude.includes(body.leadEffort)) ||
+        (body.routeOrder !== undefined && !this.validRouteOrder(body.routeOrder)) ||
         (body.broadcastId !== undefined && (typeof body.broadcastId !== 'string' || !taskIdPattern.test(body.broadcastId))) ||
         (body.reviewOf !== undefined && (mode !== 'review_only' || typeof body.reviewOf !== 'string' || !taskIdPattern.test(body.reviewOf))) ||
         (body.via !== undefined && !['desktop', 'wechat'].includes(body.via))) throw new Error('invalid_task');
@@ -539,6 +582,7 @@ event(task, state, detail) {
       ...(body.via && { via: body.via }),
       ...(body.group && { group: body.group }),
       ...(body.leadEffort && { leadEffort: body.leadEffort }),
+      ...(body.routeOrder && Object.keys(body.routeOrder).length && { routeOrder: body.routeOrder }),
       ...(body.broadcastId && { broadcastId: body.broadcastId }),
       ...(body.reviewOf && { reviewOf: body.reviewOf }),
       ...(mode === 'team' && { slotCost: 2 }),
@@ -719,8 +763,27 @@ event(task, state, detail) {
   }
 
   // The single place where a step's CLI is chosen. Owner caps are applied here in T1.9.
+  // The person may put the members of a capability in their own order (the quota page); the order only ranks
+  // members the orchestrator already routes that capability to, so it can never hand work to someone the
+  // configuration does not allow (Claude never implements).
+  static ORDERABLE = ['scout', 'implement', 'review', 'research'];
+
+  validRouteOrder(order) {
+    if (!order || typeof order !== 'object' || Array.isArray(order)) return false;
+    return Object.entries(order).every(([capability, list]) => Scheduler.ORDERABLE.includes(capability) &&
+      Array.isArray(list) && list.length <= 8 && new Set(list).size === list.length &&
+      list.every((role) => typeof role === 'string' && (this.router.routes[capability] || []).includes(role)));
+  }
+
+  ordered(task, capability, list) {
+    const preferred = task?.routeOrder?.[capability];
+    if (!preferred) return list;
+    const rank = (role) => { const i = preferred.indexOf(role); return i < 0 ? preferred.length + list.indexOf(role) : i; };
+    return [...list].sort((a, b) => rank(a) - rank(b));
+  }
+
   pickForTask(task, capability, exclude = []) {
-    const candidates = this.router.candidates(capability, exclude);
+    const candidates = this.ordered(task, capability, this.router.candidates(capability, exclude));
     if (!candidates.length) {
       delete task.ownerCapBlocked;
       return null;
@@ -894,6 +957,11 @@ event(task, state, detail) {
         return;
       }
       if (!controller.signal.aborted || task.state !== 'cancelled') {
+        if (error.message?.startsWith('budget_exceeded:')) {
+          task.budget = error.budget;
+          this.save(task, 'needs_review', error.message);
+          return;
+        }
         const unknown = task.pendingRequest && !error.remoteConfirmed;
         if (!unknown) {
           delete task.pendingRequest;
@@ -1107,7 +1175,8 @@ event(task, state, detail) {
       availableExecutors: this.availableRoles(),
       quotaUsedPercent: this.router.quota,
       capabilities: Object.fromEntries(Object.entries(this.router.routes)
-        .map(([name, list]) => [name, list.filter((role) => this.router.available(role))])),
+        .map(([name, list]) => [name, this.ordered(task, name, list.filter((role) => this.router.available(role)))])),
+      ...(task.routeOrder && { personPreferredOrder: task.routeOrder }),
       models: plannerProfiles(this.availableRoles(), this.config.adapters, task.provider, task.model),
       projectBrief: this.projectBrief(task),
       rounds: plan.rounds.slice(-8).map(({ questions, summary, reply }) => ({ questions, summary, reply })),
@@ -1121,6 +1190,7 @@ event(task, state, detail) {
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
       'Use each integration’s strengths and model-specific profile to choose the least costly capable model. These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice.',
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. Use the configured default when model is omitted. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
+      'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota.',
       'The group will review the plan before execution. Do not implement or claim approval. Task and replies follow as data.',
       JSON.stringify(context),
@@ -1369,6 +1439,7 @@ event(task, state, detail) {
           (!this.router.available(step.role) || !quotaAllowed || !this.ownerAllows(task, step.role).allowed)) {
         throw new Error('executor_waiting:' + step.capability);
       }
+      this.checkBudget(task);
       step.state = 'running';
       step.attempts += 1;
       this.save(task, savedState(), step.id + ':started');
@@ -1474,7 +1545,7 @@ event(task, state, detail) {
   // A planned step failed. Unless the task was cancelled, is waiting for an executor, or has used its
   // reassignments, the failure goes to the lead, who reassigns the step or replans it (MAX_REASSIGN times).
   requestReassign(task, error, signal) {
-    if (signal.aborted || !error || error.message?.startsWith('executor_waiting:')) return false;
+    if (signal.aborted || !error || error.message?.startsWith('executor_waiting:') || error.message?.startsWith('budget_exceeded:')) return false;
     const failed = task.steps.filter((step) => step.state === 'failed' && step.capability &&
       !['triage', 'accept', 'plan'].includes(step.capability));
     if (!failed.length || task.escalation?.active) return false;

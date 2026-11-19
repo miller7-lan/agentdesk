@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { cleanup, retention } = require('../orchestrator/cleanup');
+const { cleanup, retention, historyCandidates } = require('../orchestrator/cleanup');
 
 const DAY = 86400_000;
 const now = Date.parse('2026-11-20T12:00:00Z');
@@ -70,7 +70,56 @@ test('low on disk: the oldest finished tasks go early, but never one awaiting re
 });
 
 test('retention settings are checked', () => {
-  assert.deepEqual(retention({ completedDays: 1 }), { completedDays: 1, failedDays: 7, minFreePercent: 15 });
+  assert.deepEqual(retention({ completedDays: 1 }), {
+    completedDays: 1, failedDays: 7, minFreePercent: 15, historyDays: 60, uploadDays: 7,
+  });
   assert.throws(() => retention({ failedDays: -1 }), /invalid_retention:failedDays/);
   assert.throws(() => retention({ minFreePercent: 95 }), /invalid_retention:minFreePercent/);
+  assert.throws(() => retention({ historyDays: -1 }), /invalid_retention:historyDays/);
+  assert.throws(() => retention({ uploadDays: 'soon' }), /invalid_retention:uploadDays/);
+});
+
+test('history candidates exclude running, review and referenced tasks', () => {
+  const tasks = [
+    { id: 'old', state: 'completed', updatedAt: ago(61) },
+    { id: 'recent', state: 'completed', updatedAt: ago(59) },
+    { id: 'review', state: 'needs_review', updatedAt: ago(90) },
+    { id: 'running', state: 'completed', updatedAt: ago(90) },
+    { id: 'referenced', state: 'failed', updatedAt: ago(90) },
+  ];
+  const got = historyCandidates(tasks, new Set(['running']), now, retention({}), { referenced: new Set(['referenced']) });
+  assert.deepEqual(got.map((task) => task.id), ['old']);
+});
+
+test('old uploads and orphan worktree/log folders are removed after the history window', async (t) => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-gc-uploads-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const uploads = path.join(stateDir, 'desktop-workspace', '.agentdesk-uploads');
+  fs.mkdirSync(uploads, { recursive: true });
+  for (const [name, at] of [['old.txt', now - 61 * DAY], ['new.txt', now - DAY]]) {
+    const file = path.join(uploads, name);
+    fs.writeFileSync(file, 'x');
+    fs.utimesSync(file, at / 1000, at / 1000);
+  }
+  const knownId = '11111111-1111-4111-8111-111111111111';
+  const orphanId = '22222222-2222-4222-8222-222222222222';
+  for (const kind of ['worktrees', 'logs']) {
+    for (const [id, at] of [[knownId, now - 61 * DAY], [orphanId, now - 61 * DAY]]) {
+      const folder = path.join(stateDir, kind, id);
+      fs.mkdirSync(folder, { recursive: true });
+      fs.utimesSync(folder, at / 1000, at / 1000);
+    }
+  }
+  const tasks = [{ id: knownId, state: 'completed', workspace: 'p', updatedAt: new Date(now).toISOString() }];
+  const result = await cleanup({
+    tasks, running: new Set(), config: { stateDir, workspaces: {} }, now,
+    statfs: async () => ({ blocks: 100, bavail: 60 }),
+  });
+  assert.equal(result.uploadsRemoved, 1);
+  assert.equal(result.orphansRemoved, 2);
+  assert.ok(!fs.existsSync(path.join(uploads, 'old.txt')));
+  assert.ok(fs.existsSync(path.join(uploads, 'new.txt')));
+  assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', knownId)));
+  assert.ok(!fs.existsSync(path.join(stateDir, 'worktrees', orphanId)));
+  assert.ok(!fs.existsSync(path.join(stateDir, 'logs', orphanId)));
 });

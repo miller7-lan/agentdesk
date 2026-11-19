@@ -9,6 +9,9 @@ const path = require('node:path').posix;
 const os = require('node:os');
 
 const LIMIT = 1024 * 1024;
+// One read returns at most this much; the model pages on with nextOffset. A 1 MiB page could put a quarter of a
+// million tokens into the conversation at once (pi reads in pages of about 50 KB for the same reason).
+const READ_PAGE = 64 * 1024;
 const nativePath = promisify(realpath.native);
 const HOME = os.homedir();
 
@@ -105,7 +108,7 @@ const operation = (name, description, required, optional = []) => ({
 
 const specs = [
   operation('list', 'List up to 250 entries in a local macOS directory. Available in AgentDesk Full Access mode.', ['path'], ['offset']),
-  operation('read', 'Read up to 1 MiB from a local macOS file as UTF-8 text or base64; use base64 for binary data. Available in AgentDesk Full Access mode.', ['path'], ['encoding', 'offset']),
+  operation('read', 'Read up to 64 KiB of a local macOS file as UTF-8 text or base64 (use base64 for binary data); continue from nextOffset for the rest. Available in AgentDesk Full Access mode.', ['path'], ['encoding', 'offset']),
   operation('write', 'Write UTF-8 or base64 data to a local macOS file. Can create a file or replace it with overwrite=true. Available in AgentDesk Full Access mode.', ['path', 'content'], ['encoding', 'overwrite']),
   operation('mkdir', 'Create one local macOS directory. Available in AgentDesk Full Access mode.', ['path']),
   operation('copy', 'Copy a local macOS file. Available in AgentDesk Full Access mode.', ['path', 'destination'], ['overwrite']),
@@ -190,10 +193,10 @@ async function call(tool, values, trash) {
         try {
           const info = await handle.stat();
           if (!info.isFile()) throw new Error('Use agentdesk_file_list for directories');
-          const bytes = Buffer.alloc(Math.min(LIMIT + 4, Math.max(0, info.size - offset)));
+          const bytes = Buffer.alloc(Math.min(READ_PAGE + 4, Math.max(0, info.size - offset)));
           const { bytesRead } = await handle.read(bytes, 0, bytes.length, offset);
           const encoding = args.encoding || 'utf8';
-          let end = Math.min(bytesRead, LIMIT);
+          let end = Math.min(bytesRead, READ_PAGE);
           if (encoding === 'utf8' && end < bytesRead) {
             while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
           }
@@ -254,4 +257,4 @@ function result(success, output) {
   return { success, contentItems: [{ type: 'inputText', text: JSON.stringify(output) }] };
 }
 
-module.exports = { specs, call, result, allowedPath, isWriteTool, LIMIT, WRITE_TOOLS };
+module.exports = { specs, call, result, allowedPath, isWriteTool, LIMIT, READ_PAGE, WRITE_TOOLS };

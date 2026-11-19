@@ -1,6 +1,17 @@
 {
   "stateDir": "/var/lib/agentdesk-orchestrator",
+  "retention": {
+    "completedDays": 3,
+    "failedDays": 7,
+    "historyDays": 60,
+    "uploadDays": 7,
+    "minFreePercent": 15
+  },
   "cliTimeoutMs": 900000,
+  "taskBudget": {
+    "steps": 24,
+    "tokens": 3000000
+  },
   "quotaBridges": [],
   "maxConcurrentTasks": 2,
   "writeProviders": [

@@ -145,26 +145,28 @@
       const sleeping = cs.state === 'sleeping';
       const ok = cs.state === 'ready';
       const bad = cs.state === 'error' || cs.state === 'retry';
+      const via = cs.route?.route === 'jump' ? '（VPS1 跳板）' : '';
       label = sleeping ? `${agentName(agent)} 已休眠（输入时唤醒）`
-        : ok ? `${agentName(agent)} 已连接`
-        : cs.state === 'connecting' ? `正在连接 ${agentName(agent)}…`
+        : ok ? `${agentName(agent)} 已连接${via}`
+        : cs.state === 'connecting' ? `正在连接 ${agentName(agent)}…${via}`
         : cs.state === 'retry' ? (cs.detail || '连接已断开，正在自动重连')
         : bad ? (cs.detail || '连接失败，点击重新连接') : `${agentName(agent)} 未连接`;
       dot = ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait';
-      title = `单聊通道：${cs.state || 'idle'}${cs.detail ? '\n' + cs.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
+      title = `单聊通道：${cs.state || 'idle'}${cs.route?.route === 'jump' ? ' · VPS1 跳板' : ''}${cs.detail ? '\n' + cs.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
     } else {
       const s = conn;
       const sleeping = s.codex === 'sleeping';
       const ok = s.codex === 'ready' && ['up', 'external'].includes(s.tunnel) && ['running', 'external'].includes(s.sshd);
       const bad = /denied|missing|failed|error/.test((s.sshd || '') + (s.codex || ''));
       const retrying = s.codex === 'retry' || s.tunnel === 'retry';
+      const via = s.route?.route === 'jump' ? '（VPS1 跳板）' : '';
       label = sleeping ? 'Codex 已休眠（输入时唤醒）'
-        : ok ? (isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接')
-        : s.codex === 'ready' ? 'Codex 已连接 · 隧道重连中'
+        : ok ? `${isMac ? 'Codex SSH 已连接' : 'Windows 开发机已连接'}${via}`
+        : s.codex === 'ready' ? `Codex 已连接 · 隧道重连中${via}`
         : retrying ? (s.detail || '连接已断开，正在自动重连')
         : bad ? (s.detail || '连接失败，点击重新连接') : '正在连接…';
       dot = ok ? 'ok' : sleeping ? '' : bad ? 'err' : 'wait';
-      title = `sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
+      title = `${s.route?.route === 'jump' ? '线路：VPS1 跳板  ·  ' : ''}sshd：${s.sshd}  ·  隧道：${s.tunnel}  ·  Codex：${s.codex}${s.detail ? '\n' + s.detail : ''}\n点击${sleeping ? '立即唤醒' : '重新连接'}`;
     }
     key = agent + '|' + label + '|' + title;
     if (el.dataset.key === key) return;
@@ -189,6 +191,17 @@
         <div class="tool-head">${svg('chev').replace('<svg', '<svg class="chev"')}<span class="tool-ic">${svg('spark')}</span>
           <span class="tool-kind">${head}</span><span class="tool-arg">${esc(first.replace(/\*\*/g, '').slice(0, 90))}</span></div>
         <div class="tool-body reason-body">${md(it.text) || '<p class="sys-note">（没有思考摘要）</p>'}</div></div>`;
+    }
+    if (it.t === 'checkpoint') {
+      // What this turn changed on this computer, with a one-click undo (checkpoints.js in the main process).
+      const name = (f) => f.path.split(/[\\/]/).pop();
+      const verb = (f) => f.created ? '新建' : { write: '修改', mkdir: '新建', copy: '复制到', move: '移动', trash: '移到废纸篓' }[f.action] || '修改';
+      const list = it.files.slice(0, 6).map((f) => `<li title="${esc(f.path)}"><span class="cp-verb">${verb(f)}</span>${esc(name(f))}</li>`).join('');
+      const more = it.files.length > 6 ? `<li class="cp-more">另有 ${it.files.length - 6} 个</li>` : '';
+      const state = it.state === 'undone' ? `<span class="cp-state">已撤销${it.skipped ? ` · ${it.skipped} 个跳过` : ''}</span>`
+        : it.state === 'busy' ? '<span class="cp-state">正在撤销…</span>'
+        : `<button type="button" class="cp-undo" data-checkpoint-undo="${esc(it.turnId)}" title="把这些文件恢复到本轮开始前的样子；之后又被改过的文件会跳过">撤销本轮</button>`;
+      return `<div class="checkpoint-card${it.state === 'undone' ? ' undone' : ''}"><div class="cp-head">${svg('file')}<span>本轮改动本机 ${it.files.length} 个文件</span><span class="grow"></span>${state}</div><ul class="cp-files">${list}${more}</ul></div>`;
     }
     if (it.t === 'plan') {
       const done = it.steps.filter((x) => x.status === 'completed').length;
@@ -508,6 +521,7 @@
     A.renderAll(); pet(s, 'thinking', 'UserPromptSubmit');
     if (sandbox === 'danger-full-access') {
       if (isMac) input[0].text += '\n\n[AgentDesk：完全访问本机（macOS）]\n你可以用 agentdesk_file_* 工具读写这台 Mac 的文件，路径必须是绝对 POSIX 路径，修改会立即生效。覆盖已有文件时需 overwrite:true；写之前先读取确认。不要使用 VPS 上的文件工具。';
+      if (s.worktree) input[0].text += `\n[独立工作树] 这个会话只在 ${s.worktree.path}（分支 ${s.worktree.branch}）里改文件，不要改原项目目录；用户会在确认后合回 ${s.worktree.baseBranch}。`;
       else if (!chat) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
     const sel = $('#modelSelect');
@@ -518,13 +532,14 @@
     }
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
-      s.localRoot = A.proj(s.project)?.localRoot || localRoot;
+      s.localRoot = s.worktree?.path || A.proj(s.project)?.localRoot || localRoot;
       const params = chat
-        ? { projectId, approvalPolicy, sandboxPolicy, model }
+        ? { projectId, approvalPolicy, sandboxPolicy, model, ...(s.worktree && { worktreeSession: s.worktree.key || s.id }) }
         : { projectId, approvalPolicy, sandbox, approvalsReviewer: 'user', model };
       const r = await api.request('thread/start', params);
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
+      if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const turnParams = chat
       ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort: s.effort,
@@ -606,7 +621,8 @@
     const agent = agentOf(s);
     if (agent !== 'codex') {
       const cs = chatStatus[agent] || {};
-      sysNote(s, `连接：${agentName(agent)} 单聊 · ${cs.state || 'idle'}${cs.detail ? '（' + cs.detail + '）' : ''}`);
+      const via = cs.route?.route === 'jump' ? ' · VPS1 跳板' : '';
+      sysNote(s, `连接：${agentName(agent)} 单聊 · ${cs.state || 'idle'}${via}${cs.detail ? '（' + cs.detail + '）' : ''}`);
       const modelText = $('#modelSelect').selectedOptions[0]?.text || '默认';
       const effortText = $('#effortWrap').hidden ? '默认' : ($('#effortSelect').selectedOptions[0]?.text || '默认').replace('推理：', '');
       sysNote(s, `工作区：${rootOf(s) || '未绑定'} · 模型：${modelText} · 推理：${effortText}`);
@@ -617,7 +633,7 @@
     }
     const m = $('#modelSelect');
     const u = usage ? usageText(usage) : '未知';
-    sysNote(s, `连接：sshd ${conn.sshd} · 隧道 ${conn.tunnel} · Codex ${conn.codex}${conn.detail ? '（' + conn.detail + '）' : ''}`);
+    sysNote(s, `连接：sshd ${conn.sshd} · 隧道 ${conn.tunnel} · Codex ${conn.codex}${conn.route?.route === 'jump' ? ' · VPS1 跳板' : ''}${conn.detail ? '（' + conn.detail + '）' : ''}`);
     sysNote(s, `模型：${m.selectedOptions[0]?.text || '默认'} · 推理 ${$('#effortSelect').selectedOptions[0]?.text?.replace('推理：', '') || '默认'} · ${$('#tierSelect').selectedOptions[0]?.text || '标准速度'}`);
     sysNote(s, `用量：${u}`);
     sysNote(s, 'Codex 空闲后会自动断开，再次输入时会重新连接。');
@@ -1330,6 +1346,28 @@
     if ([limits?.primary, limits?.secondary].some((limit) => limit?.usedPercent >= 100)) return 'limited';
     return 'idle';
   }
+
+  // A finished turn that changed files on this computer: show what changed and offer to undo it.
+  window.desk?.checkpoints?.onReady((summary) => {
+    const s = summary && byThread.get(summary.threadId);
+    if (!s || s.items.some((x) => x.t === 'checkpoint' && x.turnId === summary.turnId)) return;
+    s.items.push({ t: 'checkpoint', turnId: summary.turnId, files: summary.files, state: 'ready' });
+    render();
+  });
+  document.addEventListener('click', async (e) => {
+    const button = e.target.closest?.('[data-checkpoint-undo]');
+    if (!button) return;
+    const s = sess(state.active);
+    const it = s?.items.find((x) => x.t === 'checkpoint' && x.turnId === button.dataset.checkpointUndo);
+    if (!it || it.state !== 'ready') return;
+    if (!window.confirm(`把本轮改动的 ${it.files.length} 个文件恢复到本轮开始前？\n本轮新建的文件会移到废纸篓；之后又被改过的文件会跳过，不会覆盖。`)) return;
+    it.state = 'busy'; render();
+    const r = await window.desk.checkpoints.undo(it.turnId);
+    if (!r.ok) { it.state = 'ready'; render(); toast('撤销失败：' + r.error); return; }
+    it.state = 'undone'; it.skipped = r.skipped.length; render();
+    toast(r.skipped.length ? `已恢复 ${r.restored.length} 个，跳过 ${r.skipped.length} 个：${r.skipped.slice(0, 3).map((x) => x.path.split(/[\\/]/).pop() + '（' + x.reason + '）').join('、')}` : `已恢复 ${r.restored.length} 个文件`);
+    refreshChanges();
+  });
 
   window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
   async function workspaceChanged() {

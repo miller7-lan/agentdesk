@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily AgentDesk journald retention
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=agentdesk-journal-retention.service
+
+[Install]
+WantedBy=timers.target

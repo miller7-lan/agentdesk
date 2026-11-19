@@ -336,7 +336,7 @@ test('Claude tool roundtrip through the capability socket', async (t) => {
   const { id, completed } = await runTurn(client, threadId, 'TOOL_READ');
   assert.equal(completed.turn.status, 'completed');
   const report = reportOf(agentText(client, id));
-  assert.deepEqual(report.tools.sort(), ['agentdesk_file_read', 'agentdesk_file_write']);
+  assert.deepEqual(report.tools.sort(), ['agentdesk_attachment_read', 'agentdesk_file_read', 'agentdesk_file_write']);
   assert.match(report.call.value.content[0].text, /hello from mac/);
   assert.equal(report.unknown, 'invalid_capability');
   assert.equal(state.calls.length, 1);
@@ -356,7 +356,7 @@ test('read-only turn only exposes read tools and rejects writes without approval
   });
   assert.equal(completed.turn.status, 'completed');
   const report = reportOf(agentText(client, id));
-  assert.deepEqual(report.tools, ['agentdesk_file_read']);
+  assert.deepEqual(report.tools, ['agentdesk_file_read', 'agentdesk_attachment_read']);
   assert.match(report.call.error, /tool_not_available/);
   assert.equal(state.approvals.length, 0);
   assert.equal(state.calls.length, 0);
@@ -483,7 +483,7 @@ test('Grok and Antigravity use their own event formats and session flags', async
   // also proves the user-level config written by chat-server is the one it reads.
   const antigravityTool = await runTurn(antigravity, antigravityThread, 'TOOL_READ');
   const antigravityToolReport = reportOf(agentText(antigravity, antigravityTool.id));
-  assert.deepEqual(antigravityToolReport.tools.sort(), ['agentdesk_file_read', 'agentdesk_file_write']);
+  assert.deepEqual(antigravityToolReport.tools.sort(), ['agentdesk_attachment_read', 'agentdesk_file_read', 'agentdesk_file_write']);
   assert.match(antigravityToolReport.call.value.content[0].text, /hello from mac/);
   assert.equal(antigravityToolReport.unknown, 'invalid_capability');
   assert.equal(antigravityState.calls.length, 1);
@@ -534,4 +534,29 @@ test('every chat reads attachments of any type through its own tool, without the
     assert.match(report.reads['data.bin'].value.content[0].text, /二进制文件，4 字节/);
     assert.equal(report.reads['missing.txt'].value.isError, true);
   }
+});
+
+test('the prompt cache stays valid: one tool server name per conversation, instructions sent once to Antigravity', async (t) => {
+  const claude = await new ChatClient(t, 'claude', temporary(t)).start();
+  const claudeThread = await thread(claude);
+  const names = [];
+  for (let i = 0; i < 2; i += 1) {
+    const { id } = await runTurn(claude, claudeThread, 'TEXT');
+    const args = reportOf(agentText(claude, id)).args;
+    names.push(args[args.indexOf('--allowedTools') + 1].split(',')[0]);
+    assert.doesNotMatch(args[args.indexOf('--append-system-prompt') + 1], /本轮是只读规划模式/);   // per-turn notes stay out of the system prompt
+  }
+  assert.equal(names[0], names[1]);
+
+  const antigravity = await new ChatClient(t, 'antigravity', temporary(t)).start();
+  const agThread = await thread(antigravity);
+  const prompts = [];
+  for (let i = 0; i < 2; i += 1) {
+    const { id } = await runTurn(antigravity, agThread, 'TEXT');
+    const args = reportOf(agentText(antigravity, id)).args;
+    prompts.push(args[args.indexOf('-p') + 1]);
+  }
+  assert.match(prompts[0], /AgentDesk 单聊/);
+  assert.doesNotMatch(prompts[1], /AgentDesk 单聊/);
+  assert.match(prompts[1], /SCENARIO:TEXT/);
 });

@@ -149,9 +149,12 @@
       const point = positions.get(node.key);
       const state = Object.hasOwn(states, node.state) ? node.state : 'unknown';
       const role = node.step?.role || node.member;
+      // A step node is also a light target: a member that finishes sends a light here (src/light.js).
+      const flight = node.step ? ` data-flight-to="${esc(task.id + ':' + node.step.id)}"` : '';
       return `<button class="flow-node" type="button" data-flow-node="${esc(node.key)}" aria-pressed="${node.key === choice.key}" data-flow-role="${esc(role || '')}"
-        data-flow-state="${state}" style="left:${point.x}px;top:${point.y}px;width:${nodeWidth}px;height:${nodeHeight}px"
+        data-flow-state="${state}"${flight} style="left:${point.x}px;top:${point.y}px;width:${nodeWidth}px;height:${nodeHeight}px;--node-color:${window.AgentDeskLight?.colour(role) || 'var(--accent)'}"
         title="${esc(labels.get(node.key) + ' · ' + status(state))}">
+        ${node.step && state === 'running' ? window.AgentDeskLight?.border(role) || '' : ''}<span class="flow-node-dot" aria-hidden="true"></span>
         <span class="flow-node-title">${role ? avatar?.(role) || '' : ''}<strong>${esc(node.title)}</strong></span>
         <span>${esc(node.subtitle)}</span><small>${status(state)}</small>
       </button>`;

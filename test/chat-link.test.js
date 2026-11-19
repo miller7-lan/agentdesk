@@ -1,9 +1,13 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { PassThrough, Writable } = require('node:stream');
 const { test } = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ChatLink } = require('../chat-link');
+const { resetRoutes } = require('../orchestrator/ssh-route');
 
 async function until(predicate, label = 'condition') {
   const deadline = Date.now() + 1500;
@@ -19,15 +23,17 @@ function setup(t, options = {}) {
     agent: options.agent || 'claude',
     config: {
       configError: undefined,
-      host: 'vps.example.invalid', port: 22, knownHosts: '/tmp/known_hosts',
+      host: 'vps.example.invalid', port: 22, knownHosts: '/tmp/known_hosts', jump: undefined,
       claudeKey: '/tmp/claude_ed25519', grokKey: '/tmp/grok_ed25519', antigravityKey: '/tmp/antigravity_ed25519',
       chatUser: 'agentdesk', chatScript: '/opt/agentdesk-orchestrator/agent-chat.sh',
       idleMinutes: options.idleMinutes ?? 0,
       ...options.config,
     },
     timing: { handshake: 200, request: 200, retry: [5], ...options.timing },
-    spawnProcess: (_exe, args) => {
+    spawnProcess: (exe, args, spawnOptions) => {
       const child = new EventEmitter();
+      child.exe = exe;
+      child.spawnOptions = spawnOptions;
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       child.sent = [];
@@ -52,8 +58,21 @@ function setup(t, options = {}) {
       return child;
     },
   });
-  t.after(() => link.stop());
+  t.after(() => { link.stop(); resetRoutes(); });
   return { link, spawned };
+}
+
+function jumpFixture(t, mode = 'auto') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-chat-jump-'));
+  const key = path.join(dir, 'jump_ed25519');
+  const knownHosts = path.join(dir, 'jump_known_hosts');
+  fs.writeFileSync(key, 'key');
+  fs.writeFileSync(knownHosts, 'host key');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return {
+    mode, host: 'relay.example.invalid', port: 22, user: 'agentdesk-jump',
+    key, knownHosts, probeMinutes: 10,
+  };
 }
 
 async function connect(link, child) {
@@ -167,4 +186,54 @@ test('a missing key is reported without spawning SSH', async (t) => {
   assert.equal(spawned.length, 0);
   assert.equal(link.state, 'error');
   assert.match(link.detail, /密钥/);
+});
+test('status exposes the shared route state', (t) => {
+  const { link } = setup(t);
+  const status = link.status();
+  assert.equal(status.route.route, 'direct');
+  assert.equal(status.route.mode, 'direct');
+  assert.equal(status.route.jumpAvailable, false);
+});
+
+test('a transport failure moves a single chat to the jump on the next retry', async (t) => {
+  const jump = jumpFixture(t);
+  const { link, spawned } = setup(t, { config: { jump } });
+  link.wake();
+  await until(() => spawned.length === 1, 'first spawn');
+  assert(!spawned[0].args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(link.status().route.route, 'direct');
+
+  spawned[0].stderr.write('ssh: connect to host vps.example.invalid port 22: Connection timed out\n');
+  spawned[0].emit('exit', 255);
+  await until(() => spawned.length === 2, 'jump retry');
+
+  assert(spawned[1].args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(spawned[1].args.at(-1), '/opt/agentdesk-orchestrator/agent-chat.sh claude');
+  assert(spawned[1].spawnOptions.env.AGENTDESK_SSH_JUMP);
+  assert.equal(link.status().route.route, 'jump');
+});
+
+test('a host-key failure in a single chat never switches to the jump', async (t) => {
+  const jump = jumpFixture(t);
+  const { link, spawned } = setup(t, { config: { jump } });
+  link.wake();
+  await until(() => spawned.length === 1, 'first spawn');
+  spawned[0].stderr.write('Host key verification failed.\n');
+  spawned[0].emit('exit', 255);
+  await until(() => spawned.length === 2, 'direct retry');
+  assert(!spawned[1].args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(link.status().route.route, 'direct');
+  assert.equal(link.status().route.lastFailure.kind, 'hostkey');
+});
+
+test('forcing the jump leaves the chat command as the last argument', async (t) => {
+  const jump = jumpFixture(t, 'jump');
+  const { link, spawned } = setup(t, { config: { jump } });
+  link.wake();
+  await until(() => spawned.length === 1, 'first spawn');
+  assert(spawned[0].args.some((arg) => arg.startsWith('ProxyCommand=')));
+  assert.equal(spawned[0].args.at(-1), '/opt/agentdesk-orchestrator/agent-chat.sh claude');
+  assert.equal(link.status().route.route, 'jump');
+  const payload = JSON.parse(Buffer.from(spawned[0].spawnOptions.env.AGENTDESK_SSH_JUMP, 'base64url').toString('utf8'));
+  assert.deepEqual(payload.target, { host: 'vps.example.invalid', port: 22 });
 });

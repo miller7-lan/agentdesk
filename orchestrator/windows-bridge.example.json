@@ -51,7 +51,17 @@
     "host": "orchestrator.example.invalid",
     "port": 22,
     "user": "agentdesk",
-    "key": "C:/Users/YourName/.agentdesk/bridge_ed25519"
+    "key": "C:/Users/YourName/.agentdesk/bridge_ed25519",
+    "knownHosts": "C:/Users/YourName/.agentdesk/bridge_known_hosts",
+    "jump": {
+      "mode": "auto",
+      "host": "relay.example.invalid",
+      "port": 22,
+      "user": "agentdesk-jump",
+      "key": "C:/Users/YourName/.agentdesk/jump_ed25519",
+      "knownHosts": "C:/Users/YourName/.agentdesk/jump_known_hosts",
+      "probeMinutes": 10
+    }
   },
   "relay": {
     "host": "relay.example.invalid",
