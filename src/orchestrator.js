@@ -1670,8 +1670,8 @@ window.__groupReady = (async () => {
     if (operation === 'draft') {
       if (group.planReply) { A.toast('请先结束当前规划回复'); return; }
       if (input.value.trim()) { A.toast('请先处理当前草稿'); return; }
-      input.value = task.prompt;
-      provider.value = task.provider || '';
+      input.value = (task.provider && mentions[task.provider] ? '@' + mentions[task.provider] + ' ' : '') + task.prompt;
+      provider.value = '';
       model.value = task.model || '';
       setRecipient();
       input.focus();
@@ -1703,7 +1703,7 @@ window.__groupReady = (async () => {
     model.hidden = model.disabled = true;
     renderModelOptions();
     input.maxLength = reply ? 2000 : 12000;
-    input.placeholder = reply ? '回复组长…' : '向组长描述任务…';
+    input.placeholder = reply ? '回复组长…' : '向组长描述任务…（@成员 可指定这一条给谁做）';
     $('#groupPlanReply').hidden = !reply;
     const reference = group?.reference;
     $('#groupReference').hidden = !reference || Boolean(reply);
@@ -1750,12 +1750,17 @@ window.__groupReady = (async () => {
       input.focus();
       return;
     }
-    if (token.kind === '@') {
-      provider.value = item === 'lead' ? '' : item;
-      model.value = '';
-      setRecipient();
+    if (token.kind === '@' && token.index > 0) {
+      // A mention typed in the middle goes to the front, where it names who does this message's work.
+      input.setRangeText('', token.index, input.selectionStart, 'end');
+      const rest = input.value.replace(/^@\S+\s+/, '');
+      input.value = '@' + mentions[item] + ' ' + rest;
+      input.setSelectionRange(input.value.length, input.value.length);
+      hideSuggestions();
+      input.focus();
+      return;
     }
-    const value = token.kind === '@' && token.index > 0 ? '' : token.kind + (token.kind === '@' ? mentions[item] : item) + ' ';
+    const value = token.kind + (token.kind === '@' ? mentions[item] : item) + ' ';
     input.setRangeText(value, token.index, input.selectionStart, 'end');
     hideSuggestions();
     input.focus();
@@ -1811,7 +1816,8 @@ window.__groupReady = (async () => {
     }
     const aliases = { '组长': '', codex: 'codex', claude: '', 'claude code': '', grok: 'grok', 'grok build': 'grok', gemini: 'gemini', antigravity: 'antigravity' };
     const mention = /^@(组长|codex|claude(?: code)?|grok(?: build)?|gemini|antigravity)(?:\s+|$)/i.exec(prompt);
-    let recipient = mention ? aliases[mention[1].toLowerCase()] : provider.value;
+    // A member is named with @ in the message itself and only for that message; nothing stays selected.
+    let recipient = mention ? aliases[mention[1].toLowerCase()] : '';
     if (kind === 'edit' && mention && /^claude/i.test(mention[1])) recipient = 'claude';
     if (kind === 'edit' && !recipient) throw new Error('请用 /edit @成员 任务内容 指定修改者。');
     if (['duo', 'team', 'review', 'broadcast', 'compact'].includes(kind)) recipient = '';
