@@ -156,6 +156,7 @@
     awaiting_acceptance: '待验收', needs_review: '待处理', triaging: '诊断中', waiting: '等待',
     stopped: '已中止', skipped: '未执行',
   };
+  STEP_STATE.proposed = '待你确认';
   const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
   // A step still running or queued when the task itself ended was cut off; never draw it as live beside
   // the task's end state.

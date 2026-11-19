@@ -48,6 +48,11 @@ window.__groupReady = (async () => {
     team_timeout: '任务超时。',
     plan_reply_received: '组长正在根据你的回复调整方案。',
     plan_revise_requested: '你改了方向：组长保留已完成的部分，按你的话重新规划剩下的，新方案出来后请确认。',
+    revise_deciding: '组长正在判断你的话影响哪些步骤：不受影响的继续，需要的补一句指导接着做，方向变了的才停下。',
+    revise_decided: '组长已按你的话调整了正在做的步骤。',
+    revise_needs_approval: '组长按你的话新增了步骤，请确认后开始。',
+    revise_approved: '你确认了新增的步骤。',
+    revise_fallback: '组长暂时没法判断，已把你的话作为指导发给正在做的成员，做到一半的内容不会丢。',
     plan_proposed: '确认方案后开始执行。',
     plan_approved: '方案已确认，等待分派。',
     plan_auto_approved: '方案较小，已自动开始执行；改动应用到本机前仍要你审核。',
@@ -482,6 +487,7 @@ window.__groupReady = (async () => {
     if (stalled) return `${memberName(stalled[2])} 超过 ${stalled[3]} 分钟没有任何输出，已自动停止；先换模型重试，再不行交给组长。`;
     if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
     if (/:steered$/.test(detail || '')) return '你在成员的单聊里给了指导，它正按你的话继续。';
+    if (/:revised_out$/.test(detail || '')) return '有一步按你的新方向停下了。';
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
@@ -736,7 +742,7 @@ window.__groupReady = (async () => {
   const threadRoles = new Set(['codex', 'grok', 'gemini', 'antigravity']);   // members only; the lead works in the group itself
   const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败',
-    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止' };
+    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止', proposed: '待你确认' };
   const terminalTask = new Set(['completed', 'failed', 'cancelled']);
   // A step still marked running or queued under a task that has already ended was cut off; show that
   // instead of a live state that contradicts the task.
@@ -925,6 +931,25 @@ window.__groupReady = (async () => {
       const board = stepBoard(task, steps);
       if (board && filter !== 'mine' && (!filterSelect.value || steps.some((step) => step.role === filterSelect.value))) {
         messages.push(messageRow('lead', '分工进度', board, 'board'));
+      }
+      // What the person said while the work was under way, and how the lead applied it to each step.
+      for (const revision of task.revisions || []) {
+        if (!filterSelect.value) messages.push(messageRow('you', '改方向', `<p class="group-user-text">${esc(revision.text)}</p>`));
+        if (revision.state === 'deciding') { messages.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>')); continue; }
+        const names = (ids) => (ids || []).map((stepId) => {
+          const step = (task.steps || []).find((item) => item.id === stepId);
+          return step ? memberName(step.role) + '（' + (capabilityLabels[step.capability] || stepId) + '）' : stepId;
+        }).join('、');
+        const lines = revision.state === 'fallback'
+          ? [`暂时没法逐步判断，已把你的话作为指导发给正在做的成员：${names(revision.guided) || '无'}。`]
+          : [revision.summary,
+            revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
+            revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
+            revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
+            revision.added?.length ? '新增：' + names(revision.added) : ''].filter(Boolean);
+        const waiting = (task.steps || []).some((step) => step.state === 'proposed') && revision === task.revisions.at(-1);
+        messages.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + (waiting
+          ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '')));
       }
       // Forwarded from each member's own conversation: that it took the work, and its closing summary.
       if (filter !== 'mine') {
@@ -1133,7 +1158,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
@@ -1916,7 +1941,7 @@ window.__groupReady = (async () => {
         }, group);
         if (sent) {
           if (group === currentGroup() && input.value.trim() === draft) input.value = '';
-          A.toast('已交给组长：保留已完成的部分，按你的话重新规划剩下的');
+          A.toast('已交给组长：它会判断哪些步骤继续、补一句指导接着做，或者停下');
         }
         return;
       }
@@ -2022,6 +2047,16 @@ window.__groupReady = (async () => {
       A.toast('已停止这一步，交给组长重新安排');
       render();
     } catch (error) { A.toast('停止失败：' + error.message); }
+  });
+  timeline.addEventListener('click', async (event) => {
+    const id = event.target.closest('[data-approve-addition]')?.dataset.approveAddition;
+    const group = currentGroup();
+    if (!id || !group || busy) return;
+    await run(async () => {
+      const answer = await control('approve_addition', { taskId: id });
+      updateTask(group, id, answer, true);
+    }, group);
+    render();
   });
   timeline.addEventListener('click', (event) => {
     const id = event.target.closest('[data-retry-task]')?.dataset.retryTask;

@@ -1,4 +1,4 @@
-const { mkdir, writeFile, readFile } = require('node:fs/promises');
+const { mkdir, writeFile, readFile, stat } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { randomBytes, randomUUID, createHash } = require('node:crypto');
@@ -830,6 +830,17 @@ event(task, state, detail) {
     if (['awaiting_details', 'awaiting_approval'].includes(task.state) && round) {
       return this.updatePlan(task, { operation: 'plan_reply', revision: round.revision, reply: text });
     }
+    // While members are at work, the lead first decides what the message means for each step, so a remark that
+    // only adds something does not throw away half-done work (decideRevision). With nothing at work, or while
+    // the task is between stages, the rest is planned again.
+    const active = (task.steps || []).filter((step) => ['running', 'queued'].includes(step.state) && !this.isAcceptStep(step));
+    if (active.length && task.state === 'running' && this.running.has(task.id)) {
+      (task.revisions ||= []).push({ text: text.trim(), at: new Date(this.now()).toISOString(), state: 'deciding' });
+      task.revisions = task.revisions.slice(-10);
+      this.save(task, task.state, 'revise_deciding');
+      this.decideRevision(task, text.trim()).catch((error) => this.reviseFallback(task, text.trim(), error));
+      return this.status(task.id);
+    }
     const done = (task.steps || []).filter((step) => step.state === 'completed');
     task.keptSteps = done.map((step) => ({ ...step }));
     for (const step of task.steps || []) {
@@ -845,6 +856,114 @@ event(task, state, detail) {
     this.save(task, 'queued', 'plan_revise_requested');
     this.running.get(task.id)?.abort(new Error('revised'));
     this.pump();
+    return this.status(task.id);
+  }
+
+  // The lead reads the person's new words against the steps in hand and answers, for each step still to do or
+  // at work: continue (unaffected), guide (it carries on in the same session with a note) or stop (the direction
+  // changed); and it may add steps. Added steps follow the group's plan approval setting.
+  async decideRevision(task, text) {
+    const lead = this.pickForTask(task, 'triage');
+    if (!lead) throw new Error('lead_unavailable');
+    const steps = (task.steps || []).filter((step) => !this.isAcceptStep(step));
+    const context = {
+      request: clip(task.prompt, 4000), planSummary: task.groupPlan?.rounds?.at(-1)?.summary, newMessage: text,
+      steps: steps.map(({ id, role, capability, state, prompt, output, dependsOn }) => ({ id, role, capability, state,
+        prompt: clip(prompt, 600), ...(output && { output: clip(output, 600) }), dependsOn })),
+      capabilities: Object.fromEntries(Object.entries(this.router.routes)
+        .map(([name, list]) => [name, this.ordered(task, name, list.filter((role) => this.router.available(role)))])),
+    };
+    const prompt = [
+      'You are 组长, the group lead. While the members were working, the person sent a new message about this task (newMessage).',
+      'Decide for every step that is queued or running: "continue" when the message does not affect it, "guide" when it should take the message into account and carry on with the work it has done (give a short instruction in the person’s language), "stop" only when the step is now pointless or wrong. Prefer guide over stop: stopping throws away half-done work.',
+      'If the message needs work no step covers, add steps in "add" with the same fields as a plan step (id, capability, prompt, optional role, model, effort, dependsOn); dependsOn may name existing steps.',
+      'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"..."}},"add":[]}.',
+      JSON.stringify(context),
+    ].join('\n');
+    const step = { id: 'revise-' + ((task.revisions || []).length), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task) };
+    const folder = path.join(this.config.stateDir, 'worktrees', task.id, 'group-planner');
+    const cwd = await stat(folder).then(() => folder, () => path.join(this.config.stateDir, 'worktrees', task.id));
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
+    const controller = this.running.get(task.id);
+    const { output } = await this.execute(task, step, cwd, controller?.signal || new AbortController().signal, prompt);
+    const decision = parseJson(output);
+    if (!decision || typeof decision !== 'object') throw new Error('invalid_revision');
+    if (terminal.has(task.state)) return;
+    const record = task.revisions?.at(-1);
+    const actions = decision.steps && typeof decision.steps === 'object' ? decision.steps : {};
+    const outcome = { continued: [], guided: [], stopped: [], added: [] };
+    for (const item of steps) {
+      if (!['running', 'queued'].includes(item.state)) continue;
+      const choice = actions[item.id] || {};
+      if (choice.action === 'stop') {
+        item.revisedOut = true;
+        if (item.state === 'queued') { item.state = 'skipped'; this.save(task, task.state, item.id + ':revised_out'); }
+        else this.stepControllers?.get(task.id + ':' + item.id)?.abort(new Error('revised_out'));
+        outcome.stopped.push(item.id);
+      } else if (choice.action === 'guide') {
+        const note = typeof choice.guidance === 'string' && choice.guidance.trim() ? choice.guidance.trim().slice(0, 2000) : text;
+        try { this.steerStep(task, item.id, note); outcome.guided.push(item.id); } catch { /* it finished meanwhile */ }
+      } else outcome.continued.push(item.id);
+    }
+    if (Array.isArray(decision.add) && decision.add.length) {
+      const existing = new Set(task.steps.map((item) => item.id));
+      const raw = decision.add.slice(0, 6);
+      const outside = raw.map((item) => (Array.isArray(item?.dependsOn) ? item.dependsOn : []).filter((id) => existing.has(id)));
+      const added = validateSteps(raw.map((item) => ({ ...item, dependsOn: (Array.isArray(item?.dependsOn) ? item.dependsOn : []).filter((id) => !existing.has(id)) })),
+        this.availableRoles(), this.router, (capability, exclude) => this.pickForTask(task, capability, exclude),
+        (role) => this.ownerAllows(task, role).allowed);
+      const renamed = new Map();
+      for (const item of added) {
+        let next = item.id;
+        for (let n = 2; existing.has(next); n += 1) next = item.id + '-' + n;
+        existing.add(next);
+        renamed.set(item.id, next);
+      }
+      const ask = !this.autoApproves(task, added);
+      added.forEach((item, index) => {
+        const models = this.config.adapters[item.role]?.profiles?.models || {};
+        const model = raw[index]?.model;
+        item.model = typeof model === 'string' && Object.hasOwn(models, model) ? model : this.config.adapters[item.role]?.profiles?.defaultModel;
+        const effort = raw[index]?.effort;
+        if (typeof effort === 'string' && effortsFor(item.role, this.config.adapters[item.role], item.model).includes(effort)) item.effort = effort;
+        item.dependsOn = [...outside[index], ...item.dependsOn.map((id) => renamed.get(id) || id)];
+        item.id = renamed.get(item.id);
+        if (ask) item.state = 'proposed';
+        item.addedBy = 'revision';
+        task.steps.push(item);
+        outcome.added.push(item.id);
+      });
+    }
+    if (record) Object.assign(record, { state: 'decided', summary: clip(String(decision.summary || ''), 600), ...outcome });
+    const proposed = task.steps.some((item) => item.state === 'proposed');
+    // The run may have ended while the lead was deciding: start it again for the work that is left.
+    if (!this.running.has(task.id) && !terminal.has(task.state)) {
+      this.save(task, proposed && !task.steps.some((item) => item.state === 'queued') ? 'awaiting_approval' : 'queued',
+        proposed ? 'revise_needs_approval' : 'revise_decided');
+      this.pump();
+    } else this.save(task, task.state, proposed ? 'revise_needs_approval' : 'revise_decided');
+  }
+
+  // The lead could not decide (unavailable or an unusable reply): every member at work gets the message as
+  // guidance, so nothing done so far is lost.
+  reviseFallback(task, text, error) {
+    const record = task.revisions?.at(-1);
+    const guided = [];
+    for (const step of task.steps || []) {
+      if (!['running', 'queued'].includes(step.state) || this.isAcceptStep(step)) continue;
+      try { this.steerStep(task, step.id, text); guided.push(step.id); } catch { /* finished meanwhile */ }
+    }
+    if (record) Object.assign(record, { state: 'fallback', reason: String(error?.message || error), guided });
+    if (!terminal.has(task.state)) this.save(task, task.state, 'revise_fallback');
+  }
+
+  // The person confirms the steps the lead added after a change of direction.
+  approveAddition(task) {
+    const proposed = (task.steps || []).filter((step) => step.state === 'proposed');
+    if (!proposed.length) throw new Error('plan_changed');
+    for (const step of proposed) step.state = 'queued';
+    if (this.running.has(task.id)) this.save(task, task.state, 'revise_approved');
+    else { this.save(task, 'queued', 'revise_approved'); this.pump(); }
     return this.status(task.id);
   }
 
@@ -1335,7 +1454,7 @@ event(task, state, detail) {
       while (task.steps.some((step) => !this.isAcceptStep(step) && step.state === 'queued')) {
         signal.throwIfAborted();
         const ready = task.steps.filter((step) => step.state === 'queued' && !this.isAcceptStep(step) &&
-          step.dependsOn.every((id) => task.steps.find((dep) => dep.id === id).state === 'completed'));
+          step.dependsOn.every((id) => ['completed', 'skipped'].includes(task.steps.find((dep) => dep.id === id).state)));
         // One step per member at a time; a further ready step for a member already in this wave moves to an idle
         // member of its kind of work (spillOver) instead of waiting for the next wave.
         const taken = new Set();
@@ -1363,6 +1482,11 @@ event(task, state, detail) {
         }
       }
       signal.throwIfAborted();
+      // Steps the lead added after a change of direction and the person has not confirmed yet: the task waits.
+      if (task.steps.some((step) => step.state === 'proposed')) {
+        this.save(task, 'awaiting_approval', 'revise_needs_approval');
+        return;
+      }
       // Competing review verdicts are escalated before acceptance; the triage may add fix steps.
       if (task.pendingTriage) {
         await this.consumePendingTriage(task, repo, root, signal);
@@ -1810,6 +1934,12 @@ event(task, state, detail) {
         // A stalled step first tries another model of the same member (at most twice) before it goes to the lead.
         // The person steered the step: it continues in the same session with their guidance.
         if (error.message === 'steered') continue;
+        // The lead took this step out after the person changed direction.
+        if (step.revisedOut) {
+          step.state = 'skipped';
+          this.save(task, task.state, step.id + ':revised_out');
+          return;
+        }
         if (error.message.startsWith('cli_stalled') && this.switchModel(task, step)) continue;
         step.state = 'failed';
         step.error = error.message;
@@ -2374,6 +2504,10 @@ event(task, state, detail) {
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');
       return this.updatePlan(task, body);
+    }
+    if (body.operation === 'approve_addition') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.approveAddition(task);
     }
     if (body.operation === 'revise_plan') {
       if (!owner) throw new Error('task_access_denied');

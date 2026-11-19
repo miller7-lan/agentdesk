@@ -102,18 +102,18 @@ test('a message while the lead\'s task is under way changes that task\'s plan, k
   const saved = [];
   const self = {
     stepControllers: new Map([['t1:edit', { abort: (reason) => aborted.push('edit:' + reason.message) }]]),
-    running: new Map([['t1', { abort: (reason) => aborted.push('task:' + reason.message) }]]),
+    running: new Map(),   // nothing of this task is at work right now (e.g. between stages): the rest is planned again
     save(task, state, detail) { task.state = state; saved.push(detail); },
-    pump() {}, status: (id) => ({ id }),
+    pump() {}, status: (id) => ({ id }), isAcceptStep: () => false,
   };
   self.updatePlan = Scheduler.prototype.updatePlan.bind(self);
   self.approveRound = Scheduler.prototype.approveRound.bind(self);
-  const task = { id: 't1', state: 'running', groupPlan: { approved: 1, rounds: [{ revision: 1, steps: [] }] },
+  const task = { id: 't1', state: 'queued', groupPlan: { approved: 1, rounds: [{ revision: 1, steps: [] }] },
     steps: [{ id: 'scout', state: 'completed', output: 'found it' }, { id: 'edit', state: 'running' }, { id: 'review', state: 'queued' }] };
   Scheduler.prototype.revisePlan.call(self, task, '别改数据库，只改接口');
   assert.equal(task.state, 'queued');
   assert.deepEqual(saved, ['plan_revise_requested']);
-  assert.deepEqual(aborted, ['edit:revised', 'task:revised']);
+  assert.deepEqual(aborted, ['edit:revised']);
   assert.equal(task.groupPlan.approved, undefined);
   assert.deepEqual(task.steps.map((step) => step.id), ['scout']);
   assert.equal(task.groupPlan.rounds[0].reply, '别改数据库，只改接口');
@@ -138,4 +138,48 @@ test('a small plan starts by itself when the group allows it; bigger ones wait f
   assert.equal(auto('small', write(3)), true);              // at most three steps
   assert.equal(auto('small', [...write(2), ...read(2)]), false);
   assert.equal(auto('auto', write(9)), true);
+});
+
+test('while members work, the lead decides per step: continue, guide with the work kept, stop, or add steps', async () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  const events = [];
+  const aborted = [];
+  const reply = { summary: '只改接口', steps: { edit: { action: 'guide', guidance: '只改 client.js' }, docs: { action: 'continue' }, review: { action: 'stop' } },
+    add: [{ id: 'api', capability: 'implement', prompt: '改接口签名', dependsOn: ['edit'] }] };
+  const routes = { implement: ['codex'], triage: ['claude'], review: ['grok'], research: ['grok'] };
+  const self = {
+    config: { stateDir: require('node:os').tmpdir(), adapters: { claude: { profiles: { models: { 'claude-opus-5-5': {} } } }, codex: { profiles: { defaultModel: 'gpt-5.5', models: { 'gpt-5.5': {} } } }, grok: {} } },
+    router: { routes, quotaAllows: () => true, canWrite: () => true, available: () => true, pick: () => 'codex' },
+    running: new Map([['t2', new AbortController()]]),
+    stepControllers: new Map([['t2:edit', { abort: (r) => aborted.push('edit:' + r.message) }], ['t2:review', { abort: (r) => aborted.push('review:' + r.message) }]]),
+    now: () => Date.now(), save(task, state, detail) { task.state = state; events.push(detail); }, status: (id) => ({ id }), pump() {},
+    pickForTask: (task, capability) => routes[capability]?.[0], availableRoles: () => ['claude', 'codex', 'grok'], ordered: (t, n, list) => list,
+    ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
+    execute: async () => ({ output: JSON.stringify(reply) }),
+  };
+  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan']) self[name] = S[name].bind(self);
+  const task = { id: 't2', state: 'running', approval: 'always', prompt: '修登录', groupPlan: { approved: 1, rounds: [{ revision: 1, summary: 's', steps: [] }] },
+    steps: [{ id: 'scout', role: 'grok', state: 'completed', dependsOn: [] }, { id: 'edit', role: 'codex', state: 'running', dependsOn: ['scout'] },
+      { id: 'docs', role: 'grok', state: 'running', dependsOn: ['scout'] }, { id: 'review', role: 'grok', state: 'queued', dependsOn: ['edit'] }] };
+  self.revisePlan(task, '别改数据库，只改接口');
+  assert.equal(task.revisions[0].state, 'deciding');
+  for (let i = 0; i < 50 && task.revisions[0].state === 'deciding'; i += 1) await new Promise((r) => setTimeout(r, 5));
+  const step = (id) => task.steps.find((s) => s.id === id);
+  assert.deepEqual(aborted, ['edit:steered']);                         // guided: same session, work kept
+  assert.equal(step('edit').guidance.at(-1).text, '只改 client.js');
+  assert.equal(step('docs').state, 'running');                         // unaffected
+  assert.equal(step('review').state, 'skipped');                       // stopped before it started
+  assert.equal(step('api').state, 'proposed');                         // added; this group confirms every plan
+  assert.deepEqual(step('api').dependsOn, ['edit']);
+  assert.equal(step('api').model, 'gpt-5.5');
+  assert.deepEqual([task.revisions[0].guided, task.revisions[0].stopped, task.revisions[0].added], [['edit'], ['review'], ['api']]);
+  self.approveAddition(task);
+  assert.equal(step('api').state, 'queued');
+  // An unusable reply from the lead: every member at work gets the message as guidance instead.
+  self.execute = async () => ({ output: 'not json' });
+  self.revisePlan(task, '再加个日志');
+  for (let i = 0; i < 50 && task.revisions.at(-1).state === 'deciding'; i += 1) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(task.revisions.at(-1).state, 'fallback');
+  assert.equal(step('docs').guidance.at(-1).text, '再加个日志');
 });
