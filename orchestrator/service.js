@@ -157,6 +157,15 @@ function start(config) {
     if (error.code !== 'EEXIST') throw error;
   }
   const scheduler = new Scheduler({ config, store, files });
+  // Model catalogs change only when the CLI or its sign-in changes, so once a day is enough. It runs in the
+  // background: a slow or signed-out CLI must not delay the service or hide another CLI's catalog.
+  const modelCatalogTimer = config.discoverModels && setInterval(() => {
+    scheduler.refreshModelCatalog().catch((error) => console.error('model catalog:', error.message));
+  }, 24 * 3600_000);
+  modelCatalogTimer?.unref();
+  if (config.discoverModels) {
+    scheduler.refreshModelCatalog().catch((error) => console.error('model catalog:', error.message));
+  }
   const sockets = new Set();
   const names = config.sshBridges ||= [];
   config.relayBridges ||= {};
@@ -331,6 +340,7 @@ function start(config) {
   function close() {
     clearInterval(maintenance);
     clearInterval(enrollmentTimer);
+    clearInterval(modelCatalogTimer);
     scheduler.stopped = true;
     for (const controller of scheduler.running.values()) controller.abort(new Error('service_stopping'));
     for (const relay of relays.values()) relay.stop();

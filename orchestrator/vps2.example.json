@@ -8,6 +8,7 @@
     "minFreePercent": 15
   },
   "cliTimeoutMs": 900000,
+  "discoverModels": true,
   "taskBudget": {
     "steps": 24,
     "tokens": 3000000

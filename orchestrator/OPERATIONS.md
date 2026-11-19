@@ -68,7 +68,7 @@ Claude 只做 `plan` / `triage` / `accept`，配置无法让它承担其他能�
 
 ### 用模板接入 Antigravity
 
-已在 Linux `agy 1.5.10` 核验样例中的参数：`--mode plan` 用于只读，`--mode accept-edits` 用于生成补丁，`--output-format stream-json` 的最终 `result` 提供回复、会话 ID、用量与错误。样例不指定虚构的 `default` 模型；登录后用 `agy models` 查看当前账号可用的真实模型，再填 `models` 和 `defaultModel`。
+已在 Linux `agy 1.5.10` 核验样例中的参数：`--mode plan` 用于只读，`--mode accept-edits` 用于生成补丁，`--output-format stream-json` 的最终 `result` 提供回复、会话 ID、用量与错误。样例不指定虚构的 `default` 模型；打开 `discoverModels` 后，主控会用当前账号的 `agy models` 自动刷新 `models` 和失效的 `defaultModel`，登录新账号后无需改配置。
 
 官方安装入口为 `https://antigravity.google/cli/install.sh`。安装后，以主控服务账户和专用 HOME 启动一次 `agy` 完成 Google 登录。旧 Gemini OAuth 文件不等于已登录 Antigravity；应实际验证 `agy -p` 返回成功。远程 SSH 登录会提供浏览器授权 URL 和粘贴授权码的入口。参考 [官方认证说明](https://antigravity.google/docs/install?tab=cli) 和 [无交互模式](https://antigravity.google/docs/cli/headless/)。登录资料只保留在 VPS，不进入 Git 仓库。
 
@@ -188,7 +188,7 @@ ad gc          # 立即清理一次，返回清理了哪些任务、释放了多
 
 组长自动分工时，改代码按 Antigravity → Codex → Grok Build 的顺序降级，永不派给 Claude；困难、跨模块或高风险的改动由组长直接点名 Codex。审查交给与改代码不同的成员。Gemini 在群聊分工里只读。
 
-Antigravity 使用 Google AI Ultra 20x 订阅，`agy models` 提供 `gemini-3.8-flash-low`、`gemini-3.8-flash-medium`、`gemini-3.8-flash-high`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`。AgentDesk 配置三个 Gemini 档位：`gemini-3.8-flash-low`（最快，列目录、短搜索）、`gemini-3.8-flash-medium`（默认，侦察、查资料、小改动、初审）、`gemini-3.8-flash-high`（多文件实现、疑难调试、架构和安全审查，较慢）。档位已写在模型 ID 里，CLI 不接受与 ID 冲突的 `--effort`，所以 Antigravity 模板不要配置 `efforts`/`effortArgs`。组长按 `adapters.antigravity.models` 里写的擅长说明为每一步选模型。新增或更换模型前先用 `agy models` 核对，`gemini-4-*` 只是早期占位名，CLI 会报 `invalid model selection`。
+Antigravity 使用 Google AI Ultra 20x 订阅。当前账号的 `agy models` 提供 `gemini-3.8-flash-low`、`gemini-3.8-flash-medium`、`gemini-3.8-flash-high`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`；Gemini 4 是否出现取决于登录账号和 CLI 版本。配置打开 `"discoverModels": true` 后，主控启动时和每 24 小时按各 CLI 的当前登录刷新模型档案：新增的 Gemini 模型自动加入，下架的自动移除，手写说明保留；不再需要为换账号或新模型改配置。自动发现只采纳 Antigravity 的 Gemini 组，因为路由额度按 Gemini 窗口计算；其 Claude/GPT 模型如需使用要手工加入并另行核对额度分组。档位已写在模型 ID 里，CLI 不接受与 ID 冲突的 `--effort`，所以 Antigravity 模板不要配置 `efforts`/`effortArgs`。组长按 `adapters.antigravity.models` 里写的擅长说明为每一步选模型。手工新增模型前先用 `agy models` 核对真实 ID；不要写占位名，否则 CLI 会报 `invalid model selection`。
 
 ### 各 AI 单聊修改
 
@@ -267,6 +267,7 @@ Claude Code 订阅账户的额度快照默认由无头轮次里的 `rate_limit_e
 
 ```sh
 ad() { sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock "$@"; }
+ad catalog   # 立即按各 CLI 的当前登录刷新模型档案（登录新账号后无需重启）
 ad submit project '修复并审核项目中的问题' python-test
 ad status "$TASK_ID"
 ad apply "$TASK_ID"

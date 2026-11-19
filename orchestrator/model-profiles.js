@@ -9,7 +9,7 @@ const abilities = {
   claude: 'Independent design and code review, reasoning about edge cases, and synthesizing findings.',
   grok: 'Code review from a different vendor, research with web search, quick second opinions. Runs shell commands and tests when the server sandboxes it.',
   gemini: 'Read-only repository investigation, comparison, and synthesis in group collaboration.',
-  antigravity: 'Google Gemini 3.8 Flash on an Ultra 20x subscription: the most quota by far. Routine and multi-file implementation, reading large codebases, logs and documents, research with Google search, and review. The effort level is part of the model ID (low/medium/high), so choose the model per step from its profiles; do not add step.effort for this executor.',
+  antigravity: 'Google Gemini on an Ultra subscription: the most quota by far. Routine and multi-file implementation, reading large codebases, logs and documents, research with Google search, and review. The model list follows the signed-in account, so choose from the profiles offered here; the effort level is part of the model ID (low/medium/high), and step.effort must be left out for this executor.',
 };
 
 function modelProfiles(settings) {

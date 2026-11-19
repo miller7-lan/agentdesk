@@ -7,6 +7,7 @@ const { runAdapter, addUsage, EFFORTS, effortsFor } = require('./adapters');
 const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles } = require('./model-profiles');
+const { refreshModelCatalog } = require('./model-catalog');
 const { validAttachments, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
 const { quotaStatus } = require('./quotas');
@@ -185,6 +186,8 @@ class Scheduler {
     retention(config.retention);   // fail at start-up on a bad retention setting, not at the first clean-up
     this.now = now;
     this.router = new Router(config, now);
+    this.modelCatalog = null;      // last result of asking each CLI which models its login can use
+    this.modelCatalogReading = null;
     this.acceptance = validateAcceptance(config.acceptance);
     this.ownerCaps = validateOwnerCaps(config.ownerCaps);
     this.running = new Map();
@@ -254,6 +257,17 @@ class Scheduler {
       return status;
     }).catch(() => this.quotaSnapshot || []).finally(() => { this.quotaReading = null; });
     return this.quotaReading;
+  }
+
+  // Ask every catalog-capable CLI which models its current sign-in offers. Model profiles are runtime state:
+  // the configuration keeps hand-written descriptions, and a new login can add a model family (Gemini 4) or a
+  // retired model can disappear without editing the configuration or restarting the service.
+  refreshModelCatalog() {
+    this.modelCatalogReading ||= refreshModelCatalog(this.config).then((providers) => {
+      this.modelCatalog = { at: new Date(this.now()).toISOString(), providers };
+      return this.modelCatalog;
+    }).finally(() => { this.modelCatalogReading = null; });
+    return this.modelCatalogReading;
   }
 
   // Every CLI call is remembered for a week, so a CLI that reports no quota can still be judged by how often
@@ -365,7 +379,9 @@ class Scheduler {
         ? { role, ok: false, error: error.code === 'ENOENT' ? 'not_installed' : (stderr || error.message).trim().slice(0, 200) }
         : { role, ok: true, version: (stdout || stderr).trim().split('\n')[0].slice(0, 120) }));
     });
-    return Promise.all(this.router.roles().map(version)).then((clis) => ({ clis, ...this.router.status(), cleanup: this.lastCleanup || null }));
+    return Promise.all(this.router.roles().map(version)).then((clis) => ({
+      clis, ...this.router.status(), cleanup: this.lastCleanup || null, modelCatalog: this.modelCatalog,
+    }));
   }
 
   // One clean-up pass at a time; the hourly tick and `ad gc` share it.
@@ -2044,6 +2060,7 @@ event(task, state, detail) {
     if (frame.kind !== 'task.status') throw new Error('unsupported_operation');
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
+    if (body.operation === 'model_catalog' && route === 'admin') return this.refreshModelCatalog();
     if (body.operation === 'cleanup' && route === 'admin') return this.cleanupNow();
     if (body.operation === 'diagnostics' && (route === 'admin' || named)) return this.diagnosticStatus({ named, admin: route === 'admin' });
     if (body.operation === 'onboarding_check' && (route === 'admin' || named)) {

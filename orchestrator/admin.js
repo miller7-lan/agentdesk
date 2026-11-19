@@ -31,6 +31,9 @@ async function main([socketPath, command, id, argument, ...rest]) {
   if (command === 'quotas') {
     return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'quota_status' } });
   }
+  if (command === 'catalog') {
+    return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'model_catalog' } });
+  }
   if (command === 'ls' || command === 'doctor' || command === 'gc') {
     return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: { ls: 'list', doctor: 'doctor', gc: 'cleanup' }[command] } });
   }
