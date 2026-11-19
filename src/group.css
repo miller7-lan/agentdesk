@@ -696,3 +696,18 @@ button.lane-node { cursor: pointer; }
 .sg-node::before { content: ''; position: absolute; left: -11px; top: 46px; width: 11px; height: 2px; background: var(--lane); opacity: .6; }
 .sg-node { overflow: visible; }
 @media (prefers-reduced-motion: reduce) { .sg-spine.tail, .sg-edge.handoff.live, .sg-dot[data-state="running"] { animation: none; } }
+
+/* 派遣单聊：和普通单聊一样的排版——组长的派活和你的指导在右边，成员的过程在左边，不折叠 */
+.dispatch-step.chat { display: flex; flex-direction: column; gap: 15px; margin: 4px 0 22px; padding: 0; border: 0; background: none; min-width: 0; }
+.timeline[data-member] .dispatch-step.chat { background: none; }
+.dispatch-step.chat > * { min-width: 0; }
+.dispatch-step.chat .tool, .dispatch-step.chat .plan-card, .dispatch-step.chat .msg-assist { max-width: 100%; }
+.dispatch-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; color: var(--faint); font-size: 11.5px; }
+.dispatch-meta::before, .dispatch-meta::after { content: ''; flex: 1; height: 1px; background: var(--border); min-width: 24px; }
+.dispatch-meta .dispatch-state { margin-left: 0; }
+.dispatch-ask .steer-tag.lead { color: var(--member-lead, var(--accent)); border-color: currentColor; }
+.dispatch-back { align-self: center; padding: 4px 12px; border-radius: 12px; background: var(--hover); color: var(--muted); font-size: 12px; }
+.dispatch-back[data-state="completed"] { background: color-mix(in srgb, var(--ok, #16835e) 12%, transparent); color: var(--ok, #16835e); }
+.dispatch-back[data-state="failed"] { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.dispatch-actions { justify-content: flex-start; padding-left: 42px; }
+.dispatch-actions .btn { font-size: 11.5px; padding: 2px 9px; }

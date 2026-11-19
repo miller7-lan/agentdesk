@@ -248,12 +248,22 @@ window.__agentThreadsReady = (async () => {
   async function open(project, role, taskId, stepId) {
     if (!ROLES.has(role)) return;
     // Where this exact step lives: its own conversation when it is a parallel branch, otherwise the task's.
-    let s = taskId && stepId
+    const find = () => (taskId && stepId
       ? D.sessions.find((session) => session.agentThread && session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId && it.stepId === stepId))
-      : null;
+      : null) || (taskId ? D.sessions.find((session) => session.agentThread && session.provider === role && (session.group || session.project) === project &&
+        session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId)) : null);
+    let s = find();
+    // Not synced yet: read the task first, so the step opens in the conversation it really belongs to (a guess
+    // made before reading would open an empty conversation next to the real one).
+    let fresh = false;
     if (!s && taskId) {
-      s = D.sessions.find((session) => session.agentThread && session.provider === role && (session.group || session.project) === project &&
-        session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId));
+      try {
+        const task = await control(project, 'status', { taskId });
+        if (apply(project, task)) persist();
+        G.merge(project, task);
+        fresh = true;
+      } catch { /* fall back to an empty conversation that fills in on the next sync */ }
+      s = find();
     }
     if (!s && taskId) s = ensureThread(project, role, { id: taskId, createdAt: new Date().toISOString() },
       { id: stepId || '任务' }, Boolean(stepId));
@@ -262,7 +272,7 @@ window.__agentThreadsReady = (async () => {
     persist();
     A.openSession(s.id);
     if (!taskId) { await sync(); return; }
-    try {
+    if (!fresh) try {
       const task = await control(project, 'status', { taskId });
       if (apply(project, task)) persist();
       G.merge(project, task);
@@ -339,29 +349,29 @@ window.__agentThreadsReady = (async () => {
     const running = snap.state === 'running';
     const work = chatWork(it.activity, it.taskId + ':' + it.stepId, s, running);
     const guidance = (snap.guidance || []).map((item) => `<div class="msg-user"><span class="steer-tag">你的指导</span>${esc(item.text)}</div>`).join('');
-    // The lead's assignment and the person's guidance stay visible; the long details (the member's work in the
-    // look of a single chat, output, verdict, files, logs) fold behind one button. Every member's conversation
-    // uses this same renderer, so the fold behaves the same for Codex, Grok, Antigravity and the rest.
-    const details = [work,
+    // Laid out like the person's own single chats: the lead's assignment and the person's guidance are messages on
+    // the right, the member's thinking, commands, files and replies flow below on the left, nothing folded. When
+    // the step ends, a note says its result went back to the group.
+    const extra = [
       snap.error ? `<p class="err-note">${esc(P.errors[snap.error] || snap.error)}</p>` : '',
-      snap.output && !window.__activity?.hasReply(it.activity) ? `<pre class="dispatch-output">${esc(snap.output)}</pre>` : '',
+      snap.output && !window.__activity?.hasReply(it.activity) ? `<div class="msg-assist"><span class="direct-avatar">${avatars.html(s?.provider || 'codex', { size: 32, still: true })}</span><div class="msg-body">${md(snap.output)}</div></div>` : '',
       snap.verdict ? `<p class="dispatch-verdict">结论：${esc(snap.verdict)}</p>` : '',
       snap.files ? `<p class="dispatch-files">涉及 ${snap.files} 个文件</p>` : '',
       it.applied ? '<p class="dispatch-files">已写入本机。</p>' : '',
       it.preview !== undefined ? `<pre class="dispatch-output">${esc(it.preview || '没有改动')}</pre>` : '',
       it.log !== undefined ? `<pre class="dispatch-output">${esc(it.log || '暂无日志')}</pre>` : ''].join('');
-    // A running step shows its live log by default, like the person's own conversations; the button folds it.
-    const open = it.open === true || (it.open !== false && running);
-    const hasDetails = Boolean(details);
-    return `<div class="dispatch-step${open ? ' open' : ''}" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
-      <header><span class="dispatch-from">组长派遣</span><span class="mono">#${esc(snap.label || it.taskId.slice(0, 8))}</span>
-        ${what ? `<span>${esc(what)}</span>` : ''}<span class="dispatch-state">${esc(state)}</span>
-        ${hasDetails ? `<button class="btn dispatch-toggle" type="button" data-dispatch-toggle="${index}" aria-expanded="${open}">${open ? '收起详情' : '展开详情'}</button>` : ''}</header>
-      ${snap.brief ? `<div class="dispatch-brief"><strong>组长派给 ${esc(name)} 的任务</strong><p>${esc(snap.brief)}</p></div>` : ''}
+    const handedBack = snap.state === 'completed' ? `${esc(name)} 完成了这一步，结果已交回群聊，组长接着安排。`
+      : snap.state === 'failed' ? `这一步没有完成，已交回组长重新安排。`
+      : snap.state === 'cancelled' ? '这一步已停止。' : '';
+    return `<div class="dispatch-step chat" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
+      <div class="dispatch-meta"><span class="dispatch-from">组长派遣</span><span class="mono">#${esc(snap.label || it.taskId.slice(0, 8))}</span>
+        ${what ? `<span>${esc(what)}</span>` : ''}<span class="dispatch-state">${esc(state)}</span></div>
+      ${snap.brief ? `<div class="msg-user dispatch-ask"><span class="steer-tag lead">组长</span>${esc(snap.brief)}</div>` : ''}
       ${guidance}
-      ${!open && running ? `<p class="dispatch-wait">${esc(name)} 正在处理…</p>` : ''}
-      ${open ? `<div class="dispatch-detail">${details}</div>` : ''}
-      <div class="task-actions">
+      ${work}
+      ${extra}
+      ${handedBack ? `<div class="dispatch-back" data-state="${esc(snap.state)}">${esc(handedBack)}</div>` : ''}
+      <div class="task-actions dispatch-actions">
         <button class="btn" type="button" data-dispatch-action="log" data-dispatch-index="${index}">原始日志</button>
         ${patches ? `<button class="btn" type="button" data-dispatch-action="diff" data-dispatch-index="${index}">查看补丁</button>` : ''}
         ${patches && it.preview !== undefined ? `<button class="btn primary" type="button" data-dispatch-action="apply" data-dispatch-index="${index}">确认并应用到本机</button>` : ''}
