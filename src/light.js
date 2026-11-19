@@ -61,7 +61,7 @@
   // and drawn only while both ends are in view inside their scrolling panes.
   const LINKS_KEY = 'agentdesk.lightLinks';
   const links = new Map(Object.entries((() => { try { return JSON.parse(localStorage.getItem(LINKS_KEY) || '{}'); } catch { return {}; } })()));
-  const saveLinks = () => { try { localStorage.setItem(LINKS_KEY, JSON.stringify(Object.fromEntries([...links].slice(-60)))); } catch { /* storage may be unavailable */ } };
+  const saveLinks = () => { try { localStorage.setItem(LINKS_KEY, JSON.stringify(Object.fromEntries(links))); } catch { /* storage may be unavailable */ } };
   let overlay;
   let drawing = false;
   function visibleRect(element) {
