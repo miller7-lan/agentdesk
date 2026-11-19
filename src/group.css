@@ -226,6 +226,10 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .step-row[data-state="running"] .step-row-state { background: var(--accent-soft); color: var(--accent); }
 .step-row[data-state="completed"] .step-row-state { color: var(--ok); }
 .step-row[data-state="failed"] .step-row-state { background: var(--danger-soft); color: var(--danger); }
+.step-row.failed-record { background: color-mix(in srgb, var(--danger) 6%, transparent); }
+.step-row.failed-record .step-row-state { background: var(--danger-soft); color: var(--danger); }
+.step-row.failed-record .step-row-note { color: var(--danger); }
+.step-row.failed-record .step-node { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 25%, transparent); }
 .step-row-note { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .step-row-open { color: var(--accent); font-size: 11.5px; white-space: nowrap; }
 @media (max-width: 760px) { .step-row { grid-template-columns: 22px auto minmax(0, 1fr) auto; } .step-row-what, .step-row-note { display: none; } }
@@ -606,7 +610,9 @@ button.lane-node { cursor: pointer; }
 .sg-edge-dot { fill: var(--lane); opacity: .8; }
 .sg-node { position: absolute; display: grid; gap: 2px; align-content: start; height: 94px; padding: 5px 6px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--panel, #fff); color: var(--text); text-align: left; font: inherit; cursor: pointer; z-index: 2; overflow: hidden; }
 .sg-node:hover { border-color: var(--lane); box-shadow: 0 2px 8px color-mix(in srgb, var(--lane) 18%, transparent); }
-.sg-node.fail { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.sg-node.fail { border-color: color-mix(in srgb, var(--danger) 60%, var(--border)); background: color-mix(in srgb, var(--danger) 6%, var(--panel, #fff)); }
+.sg-node.fail .sg-node-top b, .sg-node.fail .sg-node-note { color: var(--danger); }
+.sg-node.fail .sg-state { background: var(--danger); border-color: var(--danger); }
 .sg-node.focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--lane) 35%, transparent); }
 .sg-node[data-state="running"] { border-color: var(--lane); }
 .sg-node[data-state="queued"], .sg-node[data-state="proposed"] { opacity: .68; }
@@ -658,9 +664,31 @@ button.lane-node { cursor: pointer; }
 .light-links .ll-dash { stroke-width: 1.6; stroke-opacity: .85; stroke-dasharray: 7 6; animation: link-flow .9s linear infinite; }
 .light-links .ll-end { fill: var(--link); }
 .light-links .ll-spark { fill: var(--link); filter: drop-shadow(0 0 4px var(--link)); offset-rotate: 0deg; animation: link-spark 2.2s cubic-bezier(.45, 0, .55, 1) infinite; }
+/* 点击节点后的引导线：先从起点画到终点，画满后再变成持续流动的虚线，并一直留到再次点击这个节点。 */
+.light-links .ll-reveal { display: none; }
+.light-links g.guide .ll-reveal { display: inline; stroke-width: 2.4; stroke-opacity: .92; stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 1; animation: guide-draw .72s cubic-bezier(.35, .7, .35, 1) forwards, guide-fade .18s .72s forwards; }
+.light-links g.guide .ll-glow { opacity: 0; animation: guide-in .18s .72s forwards; }
+.light-links g.guide .ll-dash { opacity: 0; animation: guide-in .18s .72s forwards, link-flow .9s linear infinite; }
+.light-links g.guide .ll-end { opacity: 0; animation: guide-in .18s .72s forwards; }
+.light-links g.guide .ll-spark { opacity: 0; animation: guide-spark 1.4s cubic-bezier(.4, 0, .3, 1) .72s forwards; }
 @keyframes link-flow { to { stroke-dashoffset: -13; } }
 @keyframes link-spark { 0% { offset-distance: 0%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .light-links .ll-dash { animation: none; } .light-links .ll-spark { display: none; } }
+@keyframes guide-draw { to { stroke-dashoffset: 0; } }
+@keyframes guide-fade { to { opacity: 0; } }
+@keyframes guide-in { to { opacity: 1; } }
+/* 引导线上的光点只走一遍：从节点出发，落在目标的点上后停住，不再回到起点。 */
+@keyframes guide-spark {
+  0% { offset-distance: 0%; opacity: 0; }
+  10% { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .light-links .ll-dash { animation: none; }
+  .light-links .ll-spark { display: none; }
+  .light-links g.guide .ll-reveal { display: none; }
+  .light-links g.guide :is(.ll-glow, .ll-dash, .ll-end) { opacity: 1; animation: none; }
+  .light-links g.guide .ll-dash { animation: link-flow .9s linear infinite; }
+}
 
 /* 进行中任务：在做什么、在等什么、多久没动静 */
 .task-live { list-style: none; margin: 6px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--raised); font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
@@ -680,6 +708,7 @@ button.lane-node { cursor: pointer; }
 /* 泳道卡片 + 分支线：每条泳道左侧一根竖线，节点圆点在线上，成员之间的交接是弯曲连线（参考 Lancer 泳道树） */
 .sg-edges { z-index: 1; }
 .sg-spine { stroke: var(--lane); stroke-width: 2.2; stroke-linecap: round; }
+.sg-spine.later { stroke-width: 1.6; stroke-dasharray: 4 5; opacity: .55; }
 .sg-spine.tail { stroke-width: 1.6; stroke-dasharray: 4 4; opacity: .55; animation: link-flow 1.4s linear infinite; }
 .sg-edge { fill: none; stroke: var(--lane); stroke-width: 1.8; opacity: .8; }
 .sg-edge.handoff { stroke-dasharray: none; }
@@ -687,7 +716,7 @@ button.lane-node { cursor: pointer; }
 .sg-edge.handoff.later { stroke-dasharray: 3 4; opacity: .45; }
 .sg-dot { fill: var(--panel, #fff); stroke: var(--lane); stroke-width: 2; }
 .sg-dot[data-state="completed"], .sg-dot[data-state="accepted"] { fill: var(--lane); }
-.sg-dot[data-state="failed"] { fill: var(--danger); stroke: var(--danger); }
+.sg-dot[data-state="failed"], .sg-dot[data-fail="true"] { fill: var(--danger); stroke: var(--danger); }
 .sg-dot[data-state="running"] { fill: var(--panel, #fff); animation: sg-dot-pulse 1.6s ease-in-out infinite; }
 .sg-dot[data-state="queued"], .sg-dot[data-state="proposed"] { stroke-dasharray: 2 2; }
 @keyframes sg-dot-pulse { 50% { stroke-width: 4.5; stroke-opacity: .55; } }
@@ -709,6 +738,9 @@ button.lane-node { cursor: pointer; }
 .dispatch-back { align-self: center; padding: 4px 12px; border-radius: 12px; background: var(--hover); color: var(--muted); font-size: 12px; }
 .dispatch-back[data-state="completed"] { background: color-mix(in srgb, var(--ok, #16835e) 12%, transparent); color: var(--ok, #16835e); }
 .dispatch-back[data-state="failed"] { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.dispatch-step.chat.failed-record .dispatch-state { background: var(--danger-soft); color: var(--danger); }
+.dispatch-step.chat.failed-record .dispatch-back { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.dispatch-step.chat.failed-record .dispatch-meta { color: color-mix(in srgb, var(--danger) 70%, var(--muted)); }
 .dispatch-actions { justify-content: flex-start; padding-left: 42px; }
 .dispatch-actions .btn { font-size: 11.5px; padding: 2px 9px; }
 /* 改方向后组长新增的步骤，等你确认 */

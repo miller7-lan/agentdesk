@@ -81,6 +81,8 @@
           title: memberName(step.role),
           subtitle: [step.id, step.model, progress(step)].filter(Boolean).join(' · '),
           state: proposedOnly ? 'proposed' : shownState(task, step.state || 'pending'),
+          // A replaced step that failed keeps its red record instead of reading as a neutral reassignment.
+          fail: step.state === 'failed' || (step.state === 'replaced' && Boolean(step.error || step.history?.length)),
           description: [step.prompt || step.brief, (step.history || []).length
             ? '之前尝试：' + step.history.map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : '')).join('、') : '']
             .filter(Boolean).join('\n'),
@@ -168,11 +170,11 @@
       // A step node is also a light target: a member that finishes sends a light here (src/light.js).
       const flight = node.step ? ` data-flight-to="${esc(task.id + ':' + node.step.id)}"` : '';
       return `<button class="flow-node" type="button" data-flow-node="${esc(node.key)}" aria-pressed="${node.key === choice.key}" data-flow-role="${esc(role || '')}"
-        data-flow-state="${state}"${flight} style="left:${point.x}px;top:${point.y}px;width:${nodeWidth}px;height:${nodeHeight}px;--node-color:${window.AgentDeskLight?.colour(role) || 'var(--accent)'}"
+        data-flow-state="${state}" data-flow-fail="${node.fail ? 'true' : 'false'}"${flight} style="left:${point.x}px;top:${point.y}px;width:${nodeWidth}px;height:${nodeHeight}px;--node-color:${window.AgentDeskLight?.colour(role) || 'var(--accent)'}"
         title="${esc(labels.get(node.key) + ' · ' + status(state))}">
         ${node.step && state === 'running' ? window.AgentDeskLight?.border(role) || '' : ''}<span class="flow-node-dot" aria-hidden="true"></span>
         <span class="flow-node-title">${role ? avatar?.(role) || '' : ''}<strong>${esc(node.title)}</strong></span>
-        <span>${esc(node.subtitle)}</span><small>${status(state)}</small>
+        <span>${esc(node.subtitle)}</span><small>${status(state)}${node.fail && state === 'replaced' ? ' · 失败记录' : ''}</small>
       </button>`;
     }).join('');
     const step = choice.step;

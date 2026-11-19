@@ -159,6 +159,9 @@
   };
   STEP_STATE.proposed = '待你确认';
   const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+  // A failed step stays on the graph even after the lead handed it to someone else: its error is the record of
+  // what went wrong, and the node must stay red instead of fading into a neutral "已改派".
+  const failedRecord = (step, state) => state === 'failed' || (state === 'replaced' && Boolean(step.error || step.history?.length));
   // A step still running or queued when the task itself ended was cut off; never draw it as live beside
   // the task's end state.
   const endedState = (taskState, state) => {
@@ -231,13 +234,14 @@
       const files = Array.isArray(step.paths) ? step.paths.length : 0;
       const tries = step.history?.length || step.reassigns || 0;
       const verdict = step.verdict?.verdict ? VERDICT[step.verdict.verdict] : '';
-      const meta = [took, files ? files + ' 个文件' : '', tries ? '第 ' + (tries + 1) + ' 次' : '', verdict].filter(Boolean).join(' · ');
+      const failed = failedRecord(step, state);
+      const meta = [state === 'replaced' && failed ? '失败记录' : '', took, files ? files + ' 个文件' : '', tries ? '第 ' + (tries + 1) + ' 次' : '', verdict].filter(Boolean).join(' · ');
       const summary = String(step.error || step.output || step.brief || '').replace(/\s+/g, ' ').trim();
       add({ role: step.role || 'claude', label: cap, stepId: step.id, state, model: step.model || '',
         dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn : [],
-        kind: state === 'failed' ? 'error' : step.capability === 'review' || step.capability === 'accept' ? 'review'
+        kind: failed ? 'error' : step.capability === 'review' || step.capability === 'accept' ? 'review'
           : step.capability === 'triage' ? 'retry' : state === 'completed' ? 'commit' : 'start',
-        meta, summary: summary.slice(0, 220), at: started || ended || 0, fail: state === 'failed',
+        meta, summary: summary.slice(0, 220), at: started || ended || 0, fail: failed,
         flight: ['completed', 'accepted'].includes(state) });
     }
 
@@ -272,7 +276,7 @@
       const mine = nodes.filter((node) => node.role === role);
       const models = [...new Set(mine.map((node) => node.model).filter(Boolean))];
       const done = mine.filter((node) => ['completed', 'accepted'].includes(node.state)).length;
-      const failed = mine.some((node) => node.state === 'failed');
+      const failed = mine.some((node) => node.fail);
       const running = mine.some((node) => node.state === 'running' || node.state === 'waiting');
       return {
         id: role, role, name: memberName?.(role) || role, colour: colour?.(role) || 'var(--accent)',
@@ -351,15 +355,22 @@
       `<i class="sg-band" style="left:${index * col}px;width:${col}px;--lane:${lane.colour}"></i>`).join('');
     const active = (node) => ['running', 'waiting'].includes(node.state);
     const pending = (node) => ['queued', 'proposed', 'running', 'waiting'].includes(node.state);
-    // Spines: from a lane's first node to its last, solid; while it still has work to do, a dashed tail runs on.
+    // Spines: a solid segment joins the steps that have already started; a segment leading to a step that has
+    // not started yet (queued/proposed) stays dashed, like the planned part of a lane. While the lane still has
+    // work to do, a dashed tail runs on past its last node.
+    const notStarted = (node) => ['queued', 'proposed', 'pending'].includes(node.state);
     const spines = lanes.map((lane) => {
       const mine = nodes.map((node, index) => ({ node, index })).filter(({ node }) => laneOf(node.role) === lane);
       if (!mine.length) return '';
       const x = spine(mine[0].node.role);
-      const top = middle(mine[0].index), bottom = middle(mine.at(-1).index);
+      let out = '';
+      for (let i = 0; i < mine.length - 1; i += 1) {
+        const top = middle(mine[i].index), bottom = middle(mine[i + 1].index);
+        out += `<line class="sg-spine${notStarted(mine[i + 1].node) ? ' later' : ''}" x1="${x}" y1="${top}" x2="${x}" y2="${bottom}" style="--lane:${lane.colour}"/>`;
+      }
+      const bottom = middle(mine.at(-1).index);
       const tail = mine.some(({ node }) => pending(node));
-      return `<line class="sg-spine" x1="${x}" y1="${top}" x2="${x}" y2="${bottom}" style="--lane:${lane.colour}"/>` +
-        (tail ? `<line class="sg-spine tail" x1="${x}" y1="${bottom}" x2="${x}" y2="${height - 4}" style="--lane:${lane.colour}"/>` : '');
+      return out + (tail ? `<line class="sg-spine tail" x1="${x}" y1="${bottom}" x2="${x}" y2="${height - 4}" style="--lane:${lane.colour}"/>` : '');
     }).join('');
     // Handoffs between members: a curve from the previous node's dot to the next one's; it flows while the
     // receiving step is at work, and is solid once that step has finished.
@@ -387,7 +398,7 @@
     // The node dots on the spines.
     const dots = nodes.map((node, index) => {
       const lane = laneOf(node.role);
-      return `<circle class="sg-dot" data-state="${esc(node.state || '')}" cx="${spine(node.role)}" cy="${middle(index)}" r="5" style="--lane:${lane.colour}"/>`;
+      return `<circle class="sg-dot" data-state="${esc(node.state || '')}" data-fail="${node.fail ? 'true' : 'false'}" cx="${spine(node.role)}" cy="${middle(index)}" r="5" style="--lane:${lane.colour}"/>`;
     }).join('');
     const heads = lanes.map((lane, index) => {
       const modelText = lane.models.length > 1 ? lane.models.length + ' 个模型' : modelShort(lane.model) || '—';

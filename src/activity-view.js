@@ -95,7 +95,7 @@
         const log = await api.control({ operation: 'task_log', ...scope });
         if (log?.ok && /"step_update"\s*:/.test(log.value?.text || '')) {
           const parsed = parseAntigravity(log.value.text);
-          if (parsed.items.length) return { ...parsed, truncated: Boolean(log.value.truncated), state: result.value.state };
+          if (parsed.items.length) return { ...parsed, truncated: Boolean(log.value.truncated), state: result.value.state, fallback: true };
         }
       } catch { /* keep the activity record */ }
     }

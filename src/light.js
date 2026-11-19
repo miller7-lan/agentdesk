@@ -61,7 +61,9 @@
   // and drawn only while both ends are in view inside their scrolling panes.
   const LINKS_KEY = 'agentdesk.lightLinks';
   const links = new Map(Object.entries((() => { try { return JSON.parse(localStorage.getItem(LINKS_KEY) || '{}'); } catch { return {}; } })()));
-  const saveLinks = () => { try { localStorage.setItem(LINKS_KEY, JSON.stringify(Object.fromEntries(links))); } catch { /* storage may be unavailable */ } };
+  // A guide line is drawn when the person clicks a node; it stays until that node is clicked again or another
+  // node replaces it, and is never saved for the next start.
+  const saveLinks = () => { try { localStorage.setItem(LINKS_KEY, JSON.stringify(Object.fromEntries([...links].filter(([, link]) => !link.guide)))); } catch { /* storage may be unavailable */ } };
   let overlay;
   let drawing = false;
   function visibleRect(element) {
@@ -93,21 +95,28 @@
       const from = visibleRect(document.querySelector(link.from));
       const to = visibleRect(document.querySelector(link.to));
       if (!from || !to) continue;
-      const rightward = to.left > from.right;
-      const x1 = rightward ? from.right : from.left + from.width / 2;
-      const y1 = rightward ? from.top + from.height / 2 : from.top;
-      const x2 = rightward ? to.left + 6 : to.left + to.width / 2;
-      const y2 = to.top + to.height / 2;
+      // A guide line joins the clicked node to the message it located edge to edge, at the same height on both
+      // ends, so its draw ends exactly on the target instead of somewhere inside it.
+      const midY = (rect) => rect.top + rect.height / 2;
+      const guide = Boolean(link.guide);
+      const rightward = guide ? to.left >= from.right : to.left > from.right;
+      const x1 = guide ? (rightward ? from.right : from.left) : (rightward ? from.right : from.left + from.width / 2);
+      const y1 = guide ? midY(from) : (rightward ? from.top + from.height / 2 : from.top);
+      const x2 = guide ? (rightward ? to.left : to.right) : (rightward ? to.left + 6 : to.left + to.width / 2);
+      const y2 = guide ? midY(to) : to.top + to.height / 2;
       const bend = Math.max(40, Math.abs(x2 - x1) * 0.45);
-      const d = rightward ? `M${x1} ${y1} C${x1 + bend} ${y1},${x2 - bend} ${y2},${x2} ${y2}` : `M${x1} ${y1} C${x1} ${y1 - bend},${x2} ${y2 + bend},${x2} ${y2}`;
+      const d = guide
+        ? `M${x1} ${y1} C${x1 + (rightward ? bend : -bend)} ${y1},${x2 + (rightward ? -bend : bend)} ${y2},${x2} ${y2}`
+        : rightward ? `M${x1} ${y1} C${x1 + bend} ${y1},${x2 - bend} ${y2},${x2} ${y2}` : `M${x1} ${y1} C${x1} ${y1 - bend},${x2} ${y2 + bend},${x2} ${y2}`;
       let group = overlay.querySelector(`[data-link="${CSS.escape(id)}"]`);
       if (!group) {
         group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         group.dataset.link = id;
         group.style.setProperty('--link', link.color);
-        group.innerHTML = '<path class="ll-glow"/><path class="ll-dash"/><circle class="ll-end" r="2.8"/><circle class="ll-spark" r="3"/>';
+        group.innerHTML = '<path class="ll-glow"/><path class="ll-reveal" pathLength="1"/><path class="ll-dash"/><circle class="ll-end" r="2.8"/><circle class="ll-spark" r="3"/>';
         overlay.appendChild(group);
       }
+      group.classList.toggle('guide', Boolean(link.guide));
       for (const path of group.querySelectorAll('path')) if (path.getAttribute('d') !== d) path.setAttribute('d', d);
       const end = group.querySelector('.ll-end');
       end.setAttribute('cx', x2); end.setAttribute('cy', y2);
@@ -122,15 +131,39 @@
     }
   }
   function schedule() { if (!drawing) { drawing = true; requestAnimationFrame(draw); } }
-  function keep(from, to, color) {
-    links.set(from + '→' + to, { from, to, color });
-    saveLinks();
+  function keep(from, to, color, { guide = false } = {}) {
+    const id = from + '→' + to;
+    links.set(id, { from, to, color, ...(guide ? { guide: true } : {}) });
+    if (!guide) saveLinks();
     schedule();
+    return id;
   }
-  // Clicking the node a line ends at clears that line.
+  // A click on a node draws a guide line from that node to what it located. The line is drawn from its start
+  // point to its end, then stays on screen until the node is clicked again (or another node replaces it), so the
+  // connection does not vanish while the person reads the target.
+  function guide(from, to, color) {
+    if (!from || !to) return '';
+    clearGuides();
+    return keep(from, to, color, { guide: true });
+  }
+  function clearGuides() {
+    let changed = false;
+    for (const [id, link] of links) {
+      if (!link.guide) continue;
+      links.delete(id);
+      changed = true;
+    }
+    if (changed) schedule();
+  }
+  function hasGuide(from, to) {
+    for (const link of links.values()) if (link.guide && link.from === from && link.to === to) return true;
+    return false;
+  }
+  // Clicking the node a lasting line ends at clears that line. Guide lines follow the node's own click instead.
   document.addEventListener('click', (event) => {
     let changed = false;
     for (const [id, link] of links) {
+      if (link.guide) continue;
       if (event.target.closest?.(link.to)) { links.delete(id); changed = true; }
     }
     if (changed) { saveLinks(); schedule(); }
@@ -165,5 +198,5 @@
     } catch { arrive(target); }
   }
 
-  window.AgentDeskLight = { border, completed, colour, arrive, fly };
+  window.AgentDeskLight = { border, completed, colour, arrive, fly, guide, clearGuides, hasGuide };
 })();
