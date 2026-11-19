@@ -469,5 +469,5 @@
       ${lane.chain.map((link) => `<span class="lp-chip ${link.state === 'running' ? 'current' : link.state === 'completed' ? 'done' : ''}">${avatar ? avatar(link.role) : ''}${esc(link.role === 'you' ? '你' : memberName?.(link.role) || link.role)}${link.state === 'completed' ? '<em>✓</em>' : ''}</span>`).join('<span class="lp-arrow">→</span>')}</div>`).join('')}</div>`;
   }
 
-  window.AgentDeskLanes = { model, groupModel, tree, groupTree, list, pipeline, KINDS };
+  window.AgentDeskLanes = { model, groupModel, tree, groupTree, list, pipeline, KINDS, modelShort };
 })();

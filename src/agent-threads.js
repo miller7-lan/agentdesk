@@ -17,34 +17,38 @@ window.__agentThreadsReady = (async () => {
   // of its own under the group.
   const ROLES = new Set(['codex', 'grok', 'gemini', 'antigravity']);
   const capabilities = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
-  const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
+  const stepStates = { switched: '已换模型', queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
   const taskTerminal = new Set(['completed', 'failed', 'cancelled']);
-  const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped']);
+  const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped', 'switched']);
   const MAX_THREADS = 40;
 
   // A record belongs to one group chat (s.group) and is listed under that group's project (s.project).
   // One conversation per task and member, so two tasks the same AI works on in parallel stay apart; when one
   // task splits into parallel steps for the same member, each of those steps gets its own conversation too.
-  const threadId = (group, role) => 'A:' + group + ':' + role;
-  const taskThreadId = (group, role, taskId) => threadId(group, role) + ':' + taskId;
-  const stepThreadId = (group, role, taskId, stepId) => taskThreadId(group, role, taskId) + ':' + stepId;
+  // The same member on a different model is a different conversation (Codex on GPT-5.5 and on GPT-5.4 are two
+  // chats), so the model is part of the id.
+  const modelKey = (model) => model ? '@' + String(model).replace(/[^\w.-]/g, '_') : '';
+  const threadId = (group, role, model) => 'A:' + group + ':' + role + modelKey(model);
+  const taskThreadId = (group, role, taskId, model) => threadId(group, role, model) + ':' + taskId;
+  const stepThreadId = (group, role, taskId, stepId, model) => taskThreadId(group, role, taskId, model) + ':' + stepId;
+  const modelName = (model) => model ? (window.AgentDeskLanes?.modelShort?.(model) || model) : '';
   const projectOf = (group) => G.projectOf ? G.projectOf(group) : group;
   const threads = () => D.sessions.filter((s) => s.agentThread);
   const short = (text, n = 18) => {
     const line = String(text || '').replace(/\s+/g, ' ').trim();
     return line.length > n ? line.slice(0, n) + '…' : line;
   };
-  function titleOf(role, task, step) {
-    const name = P.names[role] || role;
+  function titleOf(role, task, step, model) {
+    const name = [P.names[role] || role, modelName(model)].filter(Boolean).join(' ');
     // Put the step first: two parallel branches of the same AI must stay distinguishable in the sidebar.
     if (step) return `${step.id} · ${name}`;
     const prompt = short(task?.prompt);
     return prompt ? `${name} · ${prompt}` : `${name} · 组长派遣`;
   }
-  function newThread(id, group, role, task, step, items = []) {
+  function newThread(id, group, role, task, step, items = [], model) {
     const at = Date.parse(task?.createdAt || '') || items.reduce((last, it) => Math.max(last, it.at || 0), 0) || Date.now();
-    const s = { id, project: projectOf(group), group, provider: role, agentThread: true, title: titleOf(role, task, step),
-      shortTitle: titleOf(role, task, step), status: 'idle', time: '刚刚', order: at, items, live: true, diffs: [], term: [] };
+    const s = { id, project: projectOf(group), group, provider: role, ...(model && { model }), agentThread: true, title: titleOf(role, task, step, model),
+      shortTitle: titleOf(role, task, step, model), status: 'idle', time: '刚刚', order: at, items, live: true, diffs: [], term: [] };
     // Newer assignments sit above older ones under the group.
     const index = D.sessions.findIndex((other) => other.agentThread && (other.order || 0) < at);
     if (index === -1) D.sessions.push(s); else D.sessions.splice(index, 0, s);
@@ -82,8 +86,8 @@ window.__agentThreadsReady = (async () => {
   }
 
   function persist() {
-    store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, group, provider, title, shortTitle, order, items, taskId, status, time }) =>
-      ({ id, project, group, provider, title, shortTitle, order, taskId, status, time,
+    store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, group, provider, model, title, shortTitle, order, items, taskId, status, time }) =>
+      ({ id, project, group, provider, model, title, shortTitle, order, taskId, status, time,
         items: items.slice(-80).map(({ preview, log, activity, ...item }) => item) })));
   }
   if (migrated) persist();
@@ -111,7 +115,7 @@ window.__agentThreadsReady = (async () => {
     for (let i = 0; i < steps.length; i += 1) {
       for (let j = i + 1; j < steps.length; j += 1) {
         const a = steps[i], b = steps[j];
-        if (a.role !== b.role || ancestors(a).has(b.id) || ancestors(b).has(a.id)) continue;
+        if (a.role !== b.role || (a.model || '') !== (b.model || '') || ancestors(a).has(b.id) || ancestors(b).has(a.id)) continue;
         parallel.add(a.id); parallel.add(b.id);
       }
     }
@@ -119,15 +123,11 @@ window.__agentThreadsReady = (async () => {
   }
 
   function ensureThread(group, role, task, step, parallel) {
-    const id = parallel ? stepThreadId(group, role, task.id, step.id) : taskThreadId(group, role, task.id);
+    const model = step?.model;
+    const id = parallel ? stepThreadId(group, role, task.id, step.id, model) : taskThreadId(group, role, task.id, model);
     let s = D.sessions.find((session) => session.id === id);
-    // A record saved before this split stays the task's conversation, but a parallel branch must never attach
-    // to another branch's conversation just because both carry the same task id.
-    if (!s && !parallel) s = D.sessions.find((session) => session.agentThread && /^A:[^:]+:[^:]+$/.test(session.id) &&
-      session.provider === role && (session.group || session.project) === group &&
-      session.items.some((it) => it.t === 'dispatch-step' && it.taskId === task.id));
-    if (!s) s = newThread(id, group, role, task, parallel ? step : null);
-    const title = titleOf(role, task, parallel ? step : null);
+    if (!s) s = newThread(id, group, role, task, parallel ? step : null, [], model);
+    const title = titleOf(role, task, parallel ? step : null, model);
     if (s.title !== title) { s.title = title; s.shortTitle = title; }
     s.order = Date.parse(task.createdAt || '') || s.order || Date.now();
     return s;
@@ -155,6 +155,26 @@ window.__agentThreadsReady = (async () => {
     for (const step of task.steps || []) {
       if (!ROLES.has(step.role)) continue;
       const s = ensureThread(project, step.role, task, step, parallel.has(step.id));
+      // The same step in another conversation: an earlier model of this member (it was switched, e.g. when stuck)
+      // keeps its record with a note; a record from before conversations were split by model moves here.
+      for (const other of threads()) {
+        if (other === s) continue;
+        const index = other.items.findIndex((it) => it.t === 'dispatch-step' && it.taskId === task.id && it.stepId === step.id);
+        if (index < 0) continue;
+        const old = other.items[index];
+        if (other.model && other.model !== step.model) {
+          if (old.snap?.state !== 'switched') {
+            old.snap = { ...(old.snap || {}), state: 'switched', switchedTo: step.model ? modelName(step.model) : '默认模型', switchedRole: step.role };
+            other.status = threadStatus(other);
+            touched.add(other);
+          }
+        } else {
+          // the same model under another id (a branch that stopped being parallel, or a record from before the split)
+          other.items.splice(index, 1);
+          if (!other.items.length) D.sessions.splice(D.sessions.indexOf(other), 1);
+          touched.add(s);
+        }
+      }
       let item = s.items.find((it) => it.t === 'dispatch-step' && it.taskId === task.id && it.stepId === step.id);
       if (!item) {
         item = { t: 'dispatch-step', taskId: task.id, stepId: step.id, at: Date.parse(task.createdAt || '') || Date.now() };
@@ -226,7 +246,8 @@ window.__agentThreadsReady = (async () => {
     loadingActivity = true;
     let changed = false;
     try {
-      const steps = s.items.filter((it) => it.t === 'dispatch-step' && it.snap && it.snap.state !== 'queued');
+      // A step moved to another model is followed in that model's conversation.
+      const steps = s.items.filter((it) => it.t === 'dispatch-step' && it.snap && !['queued', 'switched'].includes(it.snap.state));
       // Every step in this conversation shows its own execution log, like a conversation the person started
       // themselves: running steps refresh, finished steps are loaded once if they have no record yet.
       const wanted = [...steps.filter((it) => it.snap.state === 'running' || it.activityState === 'running'),
@@ -249,7 +270,8 @@ window.__agentThreadsReady = (async () => {
     if (!ROLES.has(role)) return;
     // Where this exact step lives: its own conversation when it is a parallel branch, otherwise the task's.
     const find = () => (taskId && stepId
-      ? D.sessions.find((session) => session.agentThread && session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId && it.stepId === stepId))
+      ? D.sessions.find((session) => session.agentThread && session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId && it.stepId === stepId && it.snap?.state !== 'switched'))
+        || D.sessions.find((session) => session.agentThread && session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId && it.stepId === stepId))
       : null) || (taskId ? D.sessions.find((session) => session.agentThread && session.provider === role && (session.group || session.project) === project &&
         session.items.some((it) => it.t === 'dispatch-step' && it.taskId === taskId)) : null);
     let s = find();
@@ -362,7 +384,8 @@ window.__agentThreadsReady = (async () => {
       it.log !== undefined ? `<pre class="dispatch-output">${esc(it.log || '暂无日志')}</pre>` : ''].join('');
     const handedBack = snap.state === 'completed' ? `${esc(name)} 完成了这一步，结果已交回群聊，组长接着安排。`
       : snap.state === 'failed' ? `这一步没有完成，已交回组长重新安排。`
-      : snap.state === 'cancelled' ? '这一步已停止。' : '';
+      : snap.state === 'cancelled' ? '这一步已停止。'
+      : snap.state === 'switched' ? `这一步在这个模型上卡住，已换成 ${snap.switchedTo} 继续，在那个模型的单聊里接着看。` : '';
     return `<div class="dispatch-step chat" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
       <div class="dispatch-meta"><span class="dispatch-from">组长派遣</span><span class="mono">#${esc(snap.label || it.taskId.slice(0, 8))}</span>
         ${what ? `<span>${esc(what)}</span>` : ''}<span class="dispatch-state">${esc(state)}</span></div>
