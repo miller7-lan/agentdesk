@@ -34,6 +34,9 @@ const readOnlyMode = (mode) => mode === 'chat' || mode === 'review_only';
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const projectIdPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const teamTimeout = 40 * 60_000;
+// A single CLI turn may run this long before the session is continued. The stall watchdog still stops a CLI
+// that writes nothing for 10 minutes, so a longer turn limit does not leave a hung process running forever.
+const defaultCliTimeoutMs = 45 * 60_000;
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -1356,7 +1359,7 @@ event(task, state, detail) {
   // One time budget produces both deadlines. The CLI's print deadline ends first, leaving the controller
   // enough room to save the session and reap the child instead of killing it as cli_timeout.
   cliBudget(task) {
-    const outer = task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000;
+    const outer = task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || defaultCliTimeoutMs;
     const grace = Math.min(60000, Math.max(5000, Math.floor(outer * 0.05)));
     const configured = Number.isFinite(this.config.printTimeoutMs) ? this.config.printTimeoutMs : outer - grace;
     return { outer, print: Math.max(1000, Math.min(configured, outer - 5000)) };

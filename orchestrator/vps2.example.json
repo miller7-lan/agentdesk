@@ -7,7 +7,7 @@
     "uploadDays": 7,
     "minFreePercent": 15
   },
-  "cliTimeoutMs": 900000,
+  "cliTimeoutMs": 2700000,
   "discoverModels": true,
   "taskBudget": {
     "steps": 24,

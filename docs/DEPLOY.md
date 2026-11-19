@@ -59,6 +59,8 @@ sudo systemctl restart agentdesk-orchestrator
 
 配置项的含义以 `orchestrator/vps2.example.json` 和 `orchestrator/OPERATIONS.md` 为准。路由、额度阈值、`writeProviders` 有校验，写错时服务启动就会失败，日志里写明是哪一项（如 `invalid_routing:implement`）。
 
+单步 CLI 时限是顶层 `cliTimeoutMs`（毫秒，默认 2700000，即 45 分钟），改完重启服务生效。CLI 自己的 print 时限会提前 5%（最多 60 秒）结束，留出保存会话和续跑的时间；`printTimeoutMs` 可单独指定，但会被限制在总时限内。长时间没有输出的步骤仍由 `stallTimeoutMs`（默认 10 分钟）先停掉。
+
 ### 60 天保留与系统日志
 
 `retention` 的默认值已经包含 `historyDays: 60` 和 `uploadDays: 7`；需要显式写进配置时，在 `/etc/agentdesk-orchestrator/config.json` 顶层加：

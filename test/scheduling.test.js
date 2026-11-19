@@ -352,8 +352,15 @@ test('a CLI print timeout continues the same session and records the continuatio
   assert.match(prompts[1], /continuation 1\/1/);
   assert.ok(scheduler.store.events(id).some((event) => event.detail === 'edit:continuing:1/1'));
   const budget = scheduler.cliBudget({ mode: 'normal' });
-  assert.equal(budget.outer, 900000);
-  assert.ok(budget.print < budget.outer);
+  assert.equal(budget.outer, 2700000);
+  assert.equal(budget.print, 2640000);
+  // A configured limit wins over the default, and an explicit print deadline stays inside the outer one.
+  scheduler.config.cliTimeoutMs = 1800000;
+  assert.deepEqual(scheduler.cliBudget({ mode: 'normal' }), { outer: 1800000, print: 1740000 });
+  scheduler.config.printTimeoutMs = 2000000;
+  assert.deepEqual(scheduler.cliBudget({ mode: 'normal' }), { outer: 1800000, print: 1795000 });
+  delete scheduler.config.printTimeoutMs;
+  delete scheduler.config.cliTimeoutMs;
 });
 
 test('an unresolved bridge write failure keeps the step from claiming completion', async (t) => {
