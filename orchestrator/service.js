@@ -272,10 +272,16 @@ function start(config) {
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
         if (['locations', 'read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+          const anyFolder = frame.root === 'computer';
+          if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: only the lead may read the whole computer');
           value = await files.call(route, scope.taskId, 'file.read', {
             operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
+            ...(anyFolder && { anyFolder: true }),
           });
+          if (frame.operation === 'locations' && Array.isArray(value?.locations)) {
+            value = { ...value, locations: value.locations.filter((location) => location?.id !== 'computer' || scope.readAnyFolder === true) };
+          }
         } else if (frame.operation === 'commands' || frame.operation === 'run') {
           // Commands run in the person's real project, so only scout and code-changing steps may use them,
           // and only the commands that workspace lists in agentCommands.

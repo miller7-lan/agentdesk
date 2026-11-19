@@ -34,7 +34,10 @@ function setup(t, replies) {
     files: { endpoint: {} },
     adapter: async ({ name, prompt, mcp }) => {
       prompts.push(prompt);
-      if (mcp) mcps.push({ name, runCommands: capabilities.get(mcp.capability)?.runCommands });
+      if (mcp) {
+        const scope = capabilities.get(mcp.capability);
+        mcps.push({ name, runCommands: scope?.runCommands, readAnyFolder: scope?.readAnyFolder });
+      }
       const reply = replies.shift();
       if (reply instanceof Error) throw reply;
       return { output: reply ?? '' };
@@ -59,7 +62,7 @@ test('a lead reply with text around fenced JSON and long questions still becomes
   assert.ok(round.questions[0].length <= 1200);
   // The lead can read the person's computer while planning, but never run commands there.
   assert.match(prompts[0], /windows_list_locations/);
-  assert.deepEqual(mcps, [{ name: 'claude', runCommands: false }]);
+  assert.deepEqual(mcps, [{ name: 'claude', runCommands: false, readAnyFolder: true }]);
 });
 
 test('a reply that cannot be used is sent back once, then becomes a question the person can answer', async (t) => {

@@ -68,6 +68,8 @@ test('direct chat reads live files without a clean local Git baseline and cannot
       const scope = mcp.capabilities.get(options.mcp.capability);
       assert.equal(scope.workspace, 'project');
       assert.equal(scope.runCommands, false);
+      // Claude is the lead, so a direct Claude chat may read the whole computer; other members may not.
+      assert.equal(scope.readAnyFolder, options.name === 'claude');
       assert.match(options.prompt, /windows_list_locations/);
       return { output: 'Read-only reply' };
     },

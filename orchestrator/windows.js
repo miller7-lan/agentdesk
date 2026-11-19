@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { tmpdir } = require('node:os');
+const { homedir, tmpdir } = require('node:os');
 const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
 const { attachmentRoot, idPattern } = require('./attachments');
@@ -16,7 +16,7 @@ const validDigest = (value) => /^[a-f0-9]{64}$/.test(value);
 // Skips symlinks, version-control and dependency folders, binary files and files over 1 MB; capped in
 // files visited, matches and response size like the name search.
 const GREP_SKIP = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.next', '.cache']);
-async function grep(start, body) {
+async function grep(start, body, skip = () => false) {
   if (typeof body.query !== 'string' || !body.query || body.query.length > 200) throw new Error('invalid_query');
   const sensitive = body.caseSensitive === true;
   const needle = sensitive ? body.query : body.query.toLowerCase();
@@ -42,7 +42,7 @@ async function grep(start, body) {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
       if (truncated) return;
       if (++visited > 5000) { truncated = true; return; }
-      if (entry.isSymbolicLink() || GREP_SKIP.has(entry.name.toLowerCase())) continue;
+      if (entry.isSymbolicLink() || GREP_SKIP.has(entry.name.toLowerCase()) || skip(path.join(dir, entry.name))) continue;
       const rel = prefix + entry.name;
       if (entry.isDirectory()) await walk(path.join(dir, entry.name), rel + '/');
       else if (entry.isFile()) await scan(path.join(dir, entry.name), rel);
@@ -51,6 +51,80 @@ async function grep(start, body) {
   if ((await fs.stat(start)).isDirectory()) await walk(start, body.path ? body.path + '/' : '');
   else await scan(start, body.path);
   return { matches, truncated };
+}
+
+// The lead may ask for the read-only "computer" location: the person's home folder, mounted volumes and
+// temporary folders. Writes and commands never use it. System locations and credential stores stay out,
+// including everything under ~/Library on macOS and the Windows credential folders.
+const HOME = homedir();
+const REAL_HOME = realSync(HOME);
+const TEMP_ROOTS = [...new Set([tmpdir(), realSync(tmpdir()), '/tmp', '/private/tmp'])];
+const ALLOWED_ROOTS = [...new Set([HOME, REAL_HOME, '/Volumes', ...TEMP_ROOTS])];
+const SYSTEM_ROOTS = process.platform === 'win32'
+  ? [process.env.SystemRoot, 'C:\\Program Files', 'C:\\Program Files (x86)', 'C:\\ProgramData', 'C:\\$Recycle.Bin',
+    'C:\\Recovery', 'C:\\System Volume Information', 'C:\\PerfLogs', 'C:\\Windows.old']
+  : ['/System', '/Library', '/usr', '/bin', '/sbin', '/etc', '/private/etc', '/var', '/private/var', '/opt',
+    '/Applications', '/dev', '/cores', '/private/cores', '/private/auditd', '/private/db', '/private/log',
+    '/private/root', '/private/Network', '/lib', '/lib64', '/boot', '/proc', '/sys', '/root', '/run', '/snap'];
+const HOME_DENY = [
+  '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.agentdesk', '.password-store',
+  '.codex', '.claude', '.gemini', '.grok', '.config/grok', '.config/gh', '.config/gcloud',
+  '.local/share/keyrings', 'Library',
+  'AppData/Roaming/Microsoft/Credentials', 'AppData/Local/Microsoft/Credentials', 'AppData/Roaming/gcloud',
+  'AppData/Roaming/AgentDesk', 'AppData/Local/AgentDesk',
+  'AppData/Local/Google/Chrome/User Data', 'AppData/Local/Microsoft/Edge/User Data',
+  'AppData/Roaming/Mozilla/Firefox/Profiles',
+].flatMap((name) => [path.join(HOME, name), path.join(REAL_HOME, name)]);
+const DENY_FILES = new Set(['.netrc', '.npmrc', '.git-credentials', '.pgpass', 'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa']);
+const fold = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+const under = (value, root) => value === root || value.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+
+function realSync(value) {
+  try { return require('node:fs').realpathSync.native(value); } catch { return value; }
+}
+
+function allowedAnywhere(candidate) {
+  const value = fold(candidate);
+  const temp = TEMP_ROOTS.some((root) => under(value, fold(root)));
+  const allowed = process.platform === 'win32'
+    ? /^[a-z]:\\/i.test(candidate) && !candidate.startsWith('\\\\')
+    : ALLOWED_ROOTS.some((root) => under(value, fold(root)));
+  if (!allowed) throw new Error('path_not_allowed');
+  if (!temp && SYSTEM_ROOTS.filter(Boolean).some((root) => under(value, fold(path.resolve(root))))) {
+    throw new Error('path_not_allowed');
+  }
+  if (process.platform === 'win32') {
+    const drive = path.parse(candidate).root;
+    if (/^(?:\$recycle\.bin|system volume information|recovery|perflogs)$/i.test(candidate.slice(drive.length).split(path.sep)[0])) {
+      throw new Error('path_not_allowed');
+    }
+  }
+  if (HOME_DENY.some((root) => under(value, fold(root)))) throw new Error('credential_path_denied');
+  if (DENY_FILES.has(path.basename(candidate).toLowerCase())) throw new Error('credential_path_denied');
+  if (candidate.split(path.sep).some((part) => part.toLowerCase() === '.git')) throw new Error('git_path_denied');
+  if (process.platform !== 'win32' && candidate === path.sep) throw new Error('path_not_allowed');
+}
+
+const allowedAnywherePath = (value) => { try { allowedAnywhere(value); return true; } catch { return false; } };
+
+// Absolute paths for the computer location: "" or "~" means the home folder, "~/..." is expanded, and
+// symbolic links are resolved before the allow/deny checks so they cannot reach a forbidden location.
+async function anyPath(value) {
+  if (typeof value !== 'string' || value.length > 1024 || /[\x00-\x1f]/.test(value)) throw new Error('invalid_path');
+  let requested = value;
+  if (requested === '' || requested === '~') requested = HOME;
+  else if (/^~[\\/]/.test(requested)) requested = path.join(HOME, requested.slice(2));
+  if (!path.isAbsolute(requested)) throw new Error('invalid_path');
+  const normalized = path.resolve(requested);
+  allowedAnywhere(normalized);
+  let actual;
+  try { actual = await fs.realpath(normalized); }
+  catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new Error('invalid_path');
+    throw error;
+  }
+  allowedAnywhere(actual);
+  return actual;
 }
 
 async function within(root, relative, { missing = false, directory = false } = {}) {
@@ -184,10 +258,18 @@ class WindowsOperations {
     if (!workspace) throw new Error('workspace_not_authorized');
     if (kind === 'file.read') {
       const roots = workspace.readRoots || {};
+      const anyFolder = this.config.readAnyFolder === true || workspace.readAnyFolder === true;
       if (body.operation === 'locations') return { locations: [
-        { id: 'project', label: '项目' }, ...Object.keys(roots).filter(id => id !== 'project').map(id => ({ id, label: id === 'desktop' ? '桌面' : id })),
+        { id: 'project', label: '项目' },
+        ...(anyFolder ? [{ id: 'computer', label: '本机（只读）' }] : []),
+        ...Object.keys(roots).filter((id) => id !== 'project' && id !== 'computer').map((id) => ({ id, label: id === 'desktop' ? '桌面' : id })),
       ] };
       const selected = body.root ?? 'project';
+      if (selected === 'computer') {
+        // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it.
+        if (!anyFolder || body.anyFolder !== true) throw new Error('read_root_not_authorized');
+        return this.readTarget(await anyPath(body.path), body);
+      }
       if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
       const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
       return this.read(readRoot, body);
@@ -328,7 +410,10 @@ class WindowsOperations {
   }
 
   async read(root, body) {
-    const filename = await within(root, body.path, { directory: true });
+    return this.readTarget(await within(root, body.path, { directory: true }), body, root);
+  }
+
+  async readTarget(filename, body, root) {
     if (body.operation === 'stat') return version(filename);
     if (body.operation === 'list' || body.operation === 'search') {
       const items = [];
@@ -345,13 +430,17 @@ class WindowsOperations {
             responseSize += rel.length + 35;
             items.push({ path: rel, directory: entry.isDirectory() });
           }
-          if (search && entry.isDirectory()) await walk(await within(root, rel, { directory: true }), rel + '/');
+          if (search && entry.isDirectory()) {
+            await walk(root === undefined ? path.join(dir, entry.name) : await within(root, rel, { directory: true }), rel + '/');
+          }
         }
       }
       await walk(filename, body.path ? body.path + '/' : '');
       return { items, truncated: visited > 10000 || items.length >= 500 || responseSize >= 12000 };
     }
-    if (body.operation === 'grep') return grep(filename, body);
+    if (body.operation === 'grep') {
+      return grep(filename, body, root === undefined ? (entry) => !allowedAnywherePath(entry) : undefined);
+    }
     if (body.operation !== 'read') throw new Error('unsupported_file_operation');
     const metadata = await version(filename);
     if (metadata.type !== 'file' || (body.version && metadata.version !== body.version)) throw new Error('version_conflict');

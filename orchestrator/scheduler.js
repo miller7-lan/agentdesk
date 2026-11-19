@@ -1001,7 +1001,8 @@ event(task, state, detail) {
     if (!config) throw new Error(step.role + '_not_configured');
     const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
     // Every step, the lead's planning included, may read the person's project and authorized folders on their
-    // computer through the Bridge tools; running commands stays off for planning and other read-only steps.
+    // computer through the Bridge tools; only the lead may also use the read-only computer location. Running
+    // commands stays off for planning and other read-only steps.
     const mcp = bridgeTools ? this.config.mcp : undefined;
     let attachmentDirectory;
     if (task.attachments?.length) {
@@ -1030,7 +1031,9 @@ event(task, state, detail) {
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace,
-      runCommands: step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout') });
+      runCommands: step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
+      // Only the lead may read the whole computer, and only on a bridge that opted in (readAnyFolder).
+      readAnyFolder: step.role === LEAD_ROLE });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
@@ -1204,7 +1207,7 @@ event(task, state, detail) {
     };
     const prompt = [
       'You are 组长, the group lead. Stay in read-only planning mode. Inspect the checked-out code when useful.',
-      'The checkout here is a copy on the server. The person\u2019s real project and the folders they authorized (for example their Desktop) are on their computer: call windows_list_locations, then list, search, grep and read files there with the windows_* tools (pass the location id as root). Read what you need before asking; do not ask the person to paste files you can read.',
+      'The checkout here is a copy on the server. The person\u2019s real project and the folders they authorized (for example their Desktop) are on their computer: call windows_list_locations, then list, search, grep and read files there with the windows_* tools (pass the location id as root). When the computer location is listed, use it read-only to inspect any folder in the person\u2019s home, mounted volumes or temporary folders; system and credential folders are blocked. Read what you need before asking; do not ask the person to paste files you can read.',
       'Reply with the JSON object alone, with no text before or after it and no code fence.',
       'Ask the requester every material question you cannot resolve from the repository or the discussion. Ask specific questions and offer options when helpful. Do not re-ask answered questions or ask about details you can determine.',
       'If clarification is needed return only JSON {"questions":["question 1","question 2"]}, at most 6 questions, each at most 600 characters. You can ask more in a later round.',

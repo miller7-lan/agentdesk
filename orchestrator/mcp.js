@@ -14,12 +14,12 @@ const operations = {
 };
 
 const descriptions = {
-  locations: 'List the named local directories authorized by this computer, including the project and any additional read-only locations. Use the returned id as root in file tools.',
-  list: 'List a directory in the authorized project on the person\'s machine.',
-  stat: 'Get a file\'s size and SHA-256 version on the person\'s machine.',
-  search: 'Search file and folder names in the authorized project on the person\'s machine.',
-  grep: 'Search file contents in the authorized project on the person\'s machine, including files not in Git such as local config and logs. Returns path, line and text for each match.',
-  read: 'Read one file chunk as Base64 from the person\'s machine. Pass version and offset to continue reading.',
+  locations: 'List the local locations this computer authorized, including the project and any additional read-only folders. The computer location (when enabled) covers the person\'s home, mounted volumes and temporary folders read-only, and is available to the lead only. Use the returned id as root in file tools.',
+  list: 'List a directory in an authorized local location on the person\'s machine.',
+  stat: 'Get a file\'s size and SHA-256 version in an authorized local location on the person\'s machine.',
+  search: 'Search file and folder names in an authorized local location on the person\'s machine.',
+  grep: 'Search file contents in an authorized local location on the person\'s machine, including files not in Git such as local config and logs. Returns path, line and text for each match.',
+  read: 'Read one file chunk as Base64 from an authorized local location on the person\'s machine. Pass version and offset to continue reading.',
   commands: 'List the commands the person allows agents to run in their project.',
   run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
 };
@@ -31,8 +31,8 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
   inputSchema: {
     type: 'object',
     properties: {
-      ...(required.includes('path') ? { path: { type: 'string', description: 'Slash-separated path relative to the project. Empty string means project root.' } } : {}),
-      ...(required.includes('path') ? { root: { type: 'string', description: 'A location id returned by windows_list_locations. Defaults to project. Additional locations are read-only.' } } : {}),
+      ...(required.includes('path') ? { path: { type: 'string', description: 'Slash-separated path relative to the selected root. Empty string means the root. For the computer root, use an absolute path (or ~ for the home folder), for example /Users/name/Documents or C:/Users/name/Documents.' } } : {}),
+      ...(required.includes('path') ? { root: { type: 'string', description: 'A location id returned by windows_list_locations. Defaults to project. Additional locations are read-only; computer is read-only and lead-only.' } } : {}),
       ...(required.includes('query') ? { query: { type: 'string' } } : {}),
       ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
