@@ -159,7 +159,7 @@ test('while members work, the lead decides per step: continue, guide with the wo
     ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
     execute: async () => ({ output: JSON.stringify(reply) }),
   };
-  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan', 'orderModels', 'orderEntries']) self[name] = S[name].bind(self);
+  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan', 'orderModels', 'orderEntries', 'defaultModelFor']) self[name] = S[name].bind(self);
   const task = { id: 't2', state: 'running', approval: 'always', prompt: '修登录', groupPlan: { approved: 1, rounds: [{ revision: 1, summary: 's', steps: [] }] },
     steps: [{ id: 'scout', role: 'grok', state: 'completed', dependsOn: [] }, { id: 'edit', role: 'codex', state: 'running', dependsOn: ['scout'] },
       { id: 'docs', role: 'grok', state: 'running', dependsOn: ['scout'] }, { id: 'review', role: 'grok', state: 'queued', dependsOn: ['edit'] }] };
@@ -207,7 +207,7 @@ test('the person fills each kind of work with more members and models; the lead 
       candidates: (capability, exclude) => ({ scout: ['codex'], implement: ['codex'] }[capability] || []).filter((role) => !exclude.includes(role)),
       available: () => true, quotaAllows: () => true, roles: () => ['claude', 'codex', 'grok', 'gemini'] },
   };
-  for (const name of ['validRouteOrder', 'orderEntries', 'orderModels', 'ordered', 'candidatesFor']) self[name] = S[name].bind(self);
+  for (const name of ['validRouteOrder', 'orderEntries', 'orderModels', 'ordered', 'candidatesFor', 'balanced']) self[name] = S[name].bind(self);
   // Nobody in the chain can take the work: every other member that can do it is filled in (never Claude; a
   // read-only member never for changing code). A chain that has someone is left alone.
   assert.deepEqual(self.candidatesFor({}, 'research', [], true), ['codex', 'grok', 'gemini']);
@@ -223,4 +223,21 @@ test('the person fills each kind of work with more members and models; the lead 
   const task = { routeOrder: { scout: ['grok', 'codex@gpt-5.4'], implement: ['codex@gpt-5.4', 'codex@gpt-5.5'] } };
   assert.deepEqual(self.candidatesFor(task, 'scout'), ['grok', 'codex']);          // grok added by the person, first
   assert.deepEqual(self.orderModels(task, 'implement', 'codex'), ['gpt-5.4', 'gpt-5.5']);
+});
+
+test('work is spread by quota left; Antigravity keeps its flash default for routine steps', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  const self = { router: { quota: { antigravity: 72, codex: 18, grok: 65 } }, orderEntries: () => [],
+    config: { adapters: { antigravity: { profiles: { defaultModel: 'gemini-3.8-flash-medium', models: { 'gemini-3.8-flash-high': {}, 'gemini-3.8-flash-medium': {}, 'gemini-4-pro': {} } } },
+      codex: { profiles: { defaultModel: 'gpt-5.4', models: { 'gpt-5.4': {}, 'gpt-5.5': {} } } } } } };
+  const balanced = (list, task = {}) => S.balanced.call(self, task, 'implement', list);
+  assert.deepEqual(balanced(['antigravity', 'codex', 'grok']), ['codex', 'antigravity', 'grok']);   // 18% goes first; 72 and 65 share a band
+  self.router.quota = { antigravity: 30, codex: 22 };
+  assert.deepEqual(balanced(['antigravity', 'codex']), ['antigravity', 'codex']);                  // close: the configured order stays
+  self.router.quota = { codex: 10 };
+  assert.deepEqual(balanced(['antigravity', 'codex', 'grok']), ['antigravity', 'codex', 'grok']);  // unknown quota keeps its place
+  assert.deepEqual(S.balanced.call({ ...self, orderEntries: () => [{ role: 'antigravity' }] }, {}, 'implement', ['antigravity', 'codex']), ['antigravity', 'codex']);   // the person's order wins
+  assert.equal(S.defaultModelFor.call(self, 'antigravity'), 'gemini-3.8-flash-medium');
+  assert.equal(S.defaultModelFor.call(self, 'codex'), 'gpt-5.5');
 });

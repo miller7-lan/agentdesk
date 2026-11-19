@@ -46,7 +46,7 @@ const CAPABILITY_GUIDE = [
   'You may add an optional role to suggest a specific CLI; it is used only when that CLI is a candidate for the capability and available.',
 ].join(' ');
 const PLANNER_PROMPT = 'Plan this development task. Return only a JSON array of steps {id, capability, prompt, dependsOn (earlier step IDs)} with at most 12 steps. ' +
-  CAPABILITY_GUIDE + ' The CLIs run on subscriptions, so quota is what runs out; Claude and Codex quota is the scarcest. Task: ';
+  CAPABILITY_GUIDE + ' The CLIs run on subscriptions, so quota is what runs out; spread work so that no member\u2019s quota runs out while another\u2019s sits unused. Task: ';
 const terminal = new Set(['completed', 'failed', 'cancelled', 'needs_review']);
 
 function validateAcceptance(value = {}) {
@@ -944,7 +944,7 @@ event(task, state, detail) {
         const models = this.config.adapters[item.role]?.profiles?.models || {};
         const model = raw[index]?.model;
         item.model = typeof model === 'string' && Object.hasOwn(models, model) ? model
-          : this.orderModels(task, item.capability, item.role)[0] || preferredModel(this.config.adapters[item.role]?.profiles);
+          : this.orderModels(task, item.capability, item.role)[0] || this.defaultModelFor(item.role);
         const effort = raw[index]?.effort;
         if (typeof effort === 'string' && effortsFor(item.role, this.config.adapters[item.role], item.model).includes(effort)) item.effort = effort;
         item.dependsOn = [...outside[index], ...item.dependsOn.map((id) => renamed.get(id) || id)];
@@ -1053,9 +1053,31 @@ event(task, state, detail) {
     return [...list].sort((a, b) => rank(a) - rank(b));
   }
 
+  // The model a member uses when nobody named one: its newest full model; Antigravity keeps its configured
+  // default (a flash level) for routine work, because a heavier model there spends the shared Gemini quota
+  // much faster and the lead names one for hard steps anyway.
+  defaultModelFor(role) {
+    const profiles = this.config.adapters[role]?.profiles;
+    if (role === 'antigravity' && profiles?.defaultModel && Object.hasOwn(profiles.models || {}, profiles.defaultModel)) return profiles.defaultModel;
+    return preferredModel(profiles);
+  }
+
+  // Members able to take the same work are used evenly: unless the person set an order for this kind of work, a
+  // member with clearly more quota left (a band of 20 points lower) moves ahead of one that has used more.
+  // Members whose quota is unknown keep their place.
+  balanced(task, capability, list) {
+    if (this.orderEntries(task, capability).length || LEAD_CAPABILITIES.has(capability) || list.length < 2) return list;
+    const band = (role) => Number.isFinite(this.router.quota?.[role]) ? Math.floor(this.router.quota[role] / 20) : null;
+    const known = list.map((role, index) => ({ role, index, band: band(role) })).filter((item) => item.band !== null);
+    const sorted = [...known].sort((a, b) => a.band - b.band || a.index - b.index);
+    const result = [...list];
+    known.forEach((item, i) => { result[item.index] = sorted[i].role; });
+    return result;
+  }
+
   // Who can take this kind of work now: the configured route plus the members the person added to it.
   candidatesFor(task, capability, exclude = [], fill = false) {
-    const base = this.router.candidates(capability, exclude);
+    const base = this.balanced(task, capability, this.router.candidates(capability, exclude));
     const added = [...new Set(this.orderEntries(task, capability).map((entry) => entry.role))].filter((role) =>
       !base.includes(role) && !exclude.includes(role) && role !== LEAD_ROLE && this.router.configured(role) &&
       this.router.available(role) && this.router.quotaAllows(role, capability) &&
@@ -1134,7 +1156,7 @@ event(task, state, detail) {
   switchModel(task, step) {
     const profiles = this.config.adapters[step.role]?.profiles;
     // no model set means the member's default model ran
-    const tried = step.stalledModels = [...new Set([...(step.stalledModels || []), step.model || preferredModel(profiles) || '(default)'])];
+    const tried = step.stalledModels = [...new Set([...(step.stalledModels || []), step.model || this.defaultModelFor(step.role) || '(default)'])];
     if (tried.length > 2) return false;
     const models = Object.keys(profiles?.models || this.config.adapters[step.role]?.models || {});
     const choices = [...this.orderModels(task, step.capability, step.role), ...newestFirst(models)].filter((model) => model && !tried.includes(model));
@@ -1220,7 +1242,7 @@ event(task, state, detail) {
     delete step.effort;
     // The new member's own default model, passed explicitly, so it never falls back to whatever its CLI sign-in
     // defaults to.
-    const fallback = this.orderModels(task, step.capability, next)[0] || preferredModel(this.config.adapters[next]?.profiles);
+    const fallback = this.orderModels(task, step.capability, next)[0] || this.defaultModelFor(next);
     if (fallback) step.model = fallback; else delete step.model;
   }
 
@@ -1708,8 +1730,8 @@ event(task, state, detail) {
       'When clear return only JSON {"summary":"outline the scope and validation in at most 1800 characters","steps":[{"id":"step","capability":"implement","prompt":"concrete work and checks","dependsOn":[]}]}. User-visible text should match the requester’s language.',
       CAPABILITY_GUIDE,
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
-      'Use each integration’s strengths and model-specific profile to choose who does each step (the model itself: newest generation first, see below). These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
-      'Prefer new models: each executor\u2019s newestFirst lists its models from the newest generation down. Give steps to the newest generation by default; use an older model only when the newer ones are unavailable or plainly unsuited, and a small or fast variant of the newest generation for trivial reading. Match the model to how hard the step is; do not put every step on the same model out of habit. ' +
+      'Use each integration’s strengths and model-specific profile to choose who does each step (the model itself: newest generation first, see below). These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Spread the work by quota left: among the members that can do a step equally well, prefer the one with the lower quotaUsedPercent, so no member\u2019s quota runs out while another\u2019s sits unused (Codex takes routine implementation and review too when it has more left). Name codex for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
+      'Prefer new models: each executor\u2019s newestFirst lists its models from the newest generation down. Give steps to the newest generation by default; use an older model only when the newer ones are unavailable or plainly unsuited, and a small or fast variant of the newest generation for trivial reading. For Antigravity, leave model out on routine steps (it then uses its configured flash level) and name a heavier model only for hard steps. Match the model to how hard the step is; do not put every step on the same model out of habit. ' +
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. When model is omitted the executor\u2019s newest full model is used. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
       'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate. An entry of personPreferredOrder may name a model as executor@model: when you give that kind of step to that executor, use that model, and the later entries are the requester\u2019s fallbacks.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',
@@ -1793,7 +1815,7 @@ event(task, state, detail) {
       const selected = (index === 0 ? task.model : undefined) || result.steps[index]?.model;
       const { models } = context.models[step.role];
       if (selected !== undefined && (typeof selected !== 'string' || !Object.hasOwn(models, selected))) throw new Error('invalid_plan');
-      step.model = selected || this.orderModels(task, step.capability, step.role)[0] || preferredModel(this.config.adapters[step.role]?.profiles);
+      step.model = selected || this.orderModels(task, step.capability, step.role)[0] || this.defaultModelFor(step.role);
       // The lead picks each member's reasoning effort too; an unknown level is dropped, not an error.
       const effort = result.steps[index]?.effort;
       if (typeof effort === 'string' && effortsFor(step.role, this.config.adapters[step.role], step.model).includes(effort)) step.effort = effort;
@@ -2229,7 +2251,7 @@ event(task, state, detail) {
       if (!step || typeof step !== 'object') return;
       const profiles = this.config.adapters[step.role]?.profiles;
       if (step.model && !Object.hasOwn(profiles?.models || {}, step.model)) {
-        const fallback = preferredModel(profiles);
+        const fallback = this.defaultModelFor(step.role);
         if (fallback) step.model = fallback;
         else delete step.model;
         delete step.session;
@@ -2248,7 +2270,7 @@ event(task, state, detail) {
       step.model = choice.model;
     }
     if (!step.model) {
-      const fallback = preferredModel(config?.profiles);
+      const fallback = this.defaultModelFor(step.role);
       if (fallback) step.model = fallback;
     }
     if (typeof choice.effort === 'string' && effortsFor(step.role, config, step.model).includes(choice.effort)) step.effort = choice.effort;

@@ -5,11 +5,11 @@ const modelId = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$/;
 const EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const abilities = {
-  codex: 'Strongest implementer for hard, cross-cutting or risky changes; repository navigation, debugging and verification in a sandbox that can run tests. Scarce quota.',
+  codex: 'Strongest implementer for hard, cross-cutting or risky changes; repository navigation, debugging and verification in a sandbox that can run tests; also routine implementation and review when it has more quota left.',
   claude: 'Independent design and code review, reasoning about edge cases, and synthesizing findings.',
   grok: 'Code review from a different vendor, research with web search, quick second opinions. Runs shell commands and tests when the server sandboxes it.',
   gemini: 'Read-only repository investigation, comparison, and synthesis in group collaboration.',
-  antigravity: 'Google Gemini on an Ultra subscription: the most quota by far. Routine and multi-file implementation, reading large codebases, logs and documents, research with Google search, and review. The model list follows the signed-in account, so choose from the profiles offered here; the effort level is part of the model ID (low/medium/high), and step.effort must be left out for this executor.',
+  antigravity: 'Google Gemini on an Ultra subscription. Routine and multi-file implementation, reading large codebases, logs and documents, research with Google search, and review. The model list follows the signed-in account, so choose from the profiles offered here; the effort level is part of the model ID (low/medium/high), and step.effort must be left out for this executor.',
 };
 
 function modelProfiles(settings) {
