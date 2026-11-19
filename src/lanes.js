@@ -202,9 +202,12 @@
     const startOf = (step) => time(step.startedAt) || eventTime(step.id + ':started');
     const endOf = (step) => time(step.endedAt) || eventTime(step.id + ':completed') || eventTime(step.id + ':failed');
     const plan = task.plan?.rounds?.at(-1);
-    const runtime = task.steps || [];
+    // A step stopped by a direction change never ran. It stays in the task record, but the lane shows only the
+    // work that is actually part of the plan; otherwise the replacement steps look duplicated beside it.
+    const allSteps = task.steps || [];
+    const runtime = allSteps.filter((step) => step.state !== 'skipped');
     const planned = plan?.steps || [];
-    const steps = runtime.length ? runtime : planned.map((step) => ({ ...step, state: step.state || 'proposed' }));
+    const steps = allSteps.length ? runtime : planned.map((step) => ({ ...step, state: step.state || 'proposed' }));
     const nodes = [];
     const checks = [];
     const add = (node) => nodes.push({ model: '', meta: '', summary: '', fail: false, ...node });

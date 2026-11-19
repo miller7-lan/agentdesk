@@ -939,42 +939,54 @@ window.__groupReady = (async () => {
       }
       // One progress board per task: who does what, on which model, how far, and a one-line result.
       // The full work of each member lives in that member's own conversation, so the group stays short.
-      const board = stepBoard(task, steps);
-      if (board && filter !== 'mine' && (!filterSelect.value || steps.some((step) => step.role === filterSelect.value))) {
+      // Steps the lead stopped after a direction change never ran: they stay in the record but not on the board,
+      // where they would otherwise sit beside the replacement steps as if the work were duplicated.
+      const boardSteps = steps.filter((step) => step.state !== 'skipped');
+      const board = stepBoard(task, boardSteps);
+      if (board && filter !== 'mine' && (!filterSelect.value || boardSteps.some((step) => step.role === filterSelect.value))) {
         messages.push(messageRow('lead', '分工进度', board, 'board'));
       }
-      // What the person said while the work was under way, and how the lead applied it. The lead's reply is shown
-      // once per task: later changes already show on the board and in the events, and repeating the summary
-      // after every mid-work message buried the conversation.
+      // What the person said while the work was under way, how the lead applied it, and each member's closing
+      // report. Merge them in the order they happened: an old report must not appear below a newer message and
+      // read as a fresh reply. The lead's "调整" reply is shown once per task; later changes already show on
+      // the board and in the events, and repeating the summary after every mid-work message buried the chat.
+      const late = [];
+      const lateAt = (value) => {
+        const at = Date.parse(value || '');
+        return Number.isFinite(at) ? at : Number.MAX_SAFE_INTEGER;
+      };
+      const addLate = (value, html) => { if (html) late.push({ at: lateAt(value), order: late.length, html }); };
       let adjustmentShown = false;
       for (const revision of task.revisions || []) {
-        if (!filterSelect.value) messages.push(messageRow('you', '改方向', `<p class="group-user-text">${esc(revision.text)}</p>`));
+        const parts = [];
+        if (!filterSelect.value) parts.push(messageRow('you', '改方向', `<p class="group-user-text">${esc(revision.text)}</p>`));
         if (revision.state === 'deciding') {
-          if (!adjustmentShown) messages.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>'));
-          continue;
+          if (!adjustmentShown) parts.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>'));
+        } else {
+          const names = (ids) => (ids || []).map((stepId) => {
+            const step = (task.steps || []).find((item) => item.id === stepId);
+            return step ? memberName(step.role) + '（' + (capabilityLabels[step.capability] || stepId) + '）' : stepId;
+          }).join('、');
+          const lines = revision.state === 'fallback'
+            ? [`暂时没法逐步判断，已把你的话作为指导发给正在做的成员：${names(revision.guided) || '无'}。`]
+            : [revision.summary,
+              revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
+              revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
+              revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
+              revision.added?.length ? '新增：' + names(revision.added) : '',
+              revision.modelFallbacks?.length ? '模型名无效，已改用默认：' + revision.modelFallbacks.map((item) => `${item.step}「${item.requested}」→ ${item.used}`).join('、') : ''].filter(Boolean);
+          const waiting = (task.steps || []).some((step) => step.state === 'proposed') && revision === task.revisions.at(-1);
+          const addition = waiting
+            ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '';
+          if (adjustmentShown) {
+            // Only a pending approval still needs the person; the repeated summary stays out of the chat.
+            if (waiting) parts.push(messageRow('lead', '待确认', addition));
+          } else {
+            adjustmentShown = true;
+            parts.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + addition));
+          }
         }
-        const names = (ids) => (ids || []).map((stepId) => {
-          const step = (task.steps || []).find((item) => item.id === stepId);
-          return step ? memberName(step.role) + '（' + (capabilityLabels[step.capability] || stepId) + '）' : stepId;
-        }).join('、');
-        const lines = revision.state === 'fallback'
-          ? [`暂时没法逐步判断，已把你的话作为指导发给正在做的成员：${names(revision.guided) || '无'}。`]
-          : [revision.summary,
-            revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
-            revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
-            revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
-            revision.added?.length ? '新增：' + names(revision.added) : '',
-            revision.modelFallbacks?.length ? '模型名无效，已改用默认：' + revision.modelFallbacks.map((item) => `${item.step}「${item.requested}」→ ${item.used}`).join('、') : ''].filter(Boolean);
-        const waiting = (task.steps || []).some((step) => step.state === 'proposed') && revision === task.revisions.at(-1);
-        const addition = waiting
-          ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '';
-        if (adjustmentShown) {
-          // Only a pending approval still needs the person; the repeated summary stays out of the chat.
-          if (waiting) messages.push(messageRow('lead', '待确认', addition));
-          continue;
-        }
-        adjustmentShown = true;
-        messages.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + addition));
+        addLate(revision.at, parts.join(''));
       }
       // Forwarded from each member's own conversation: that it took the work, and its closing summary.
       if (filter !== 'mine') {
@@ -997,17 +1009,19 @@ window.__groupReady = (async () => {
             const trust = failedRecord ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
             // Every member's closing summary folds the same way: the first lines stay, the long detail opens
             // on demand, and the full text remains one click away in that member's own conversation.
-            messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : step.state === 'replaced' ? '失败记录' : '完成总结', what].join(' · '),
+            addLate(step.finishedAt || step.startedAt, messageRow(step.role, [step.state === 'failed' ? '未完成' : step.state === 'replaced' ? '失败记录' : '完成总结', what].join(' · '),
               `<div class="step-summary${failedRecord ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}" data-step-summary="${esc(task.id + ':' + step.id)}">${trust}
                 <p class="step-summary-text${collapsible && !expanded ? ' clamped' : ''}">${esc(summary)}</p>
                 ${collapsible ? `<button type="button" class="task-text-link" data-summary-toggle="${esc(summaryKey)}" aria-expanded="${expanded}">${expanded ? '收起详情' : '展开详情'}</button>` : ''}
                 ${link}</div>`, 'summary'));
           }
         }
-        if (task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
-          messages.push(messageRow('lead', '验收总结 · ' + acceptanceLabel(task),
-            `<div class="step-summary"><p>${esc(task.acceptance.summary || acceptanceLabel(task))}</p></div>`, 'summary'));
-        }
+      }
+      late.sort((a, b) => a.at - b.at || a.order - b.order);
+      for (const entry of late) messages.push(entry.html);
+      if (filter !== 'mine' && task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
+        messages.push(messageRow('lead', '验收总结 · ' + acceptanceLabel(task),
+          `<div class="step-summary"><p>${esc(task.acceptance.summary || acceptanceLabel(task))}</p></div>`, 'summary'));
       }
       const reply = `<button class="task-text-link group-reference" type="button" data-reference="${esc(task.id)}">引用</button>`;
       return messages.length ? `<div class="dispatch-thread" data-message-id="${esc(task.id)}">${messages.join('')}${reply}</div>` : '';
