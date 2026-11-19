@@ -363,7 +363,8 @@ window.__groupReady = (async () => {
   const taskLabel = (task) => '#' + esc(task.id.slice(0, 8));
   const selectedRoute = () => routeState.route?.split(':')[0];
   const hasRoute = () => Boolean(routeState[selectedRoute()]);
-  const canUse = (id) => !optional.includes(id) || isExample(state.group) || routeState.providers?.includes(id);
+  // Gemini CLI is retired: it only appears when an orchestrator still has it configured, never in the example.
+  const canUse = (id) => !optional.includes(id) || (isExample(state.group) && id !== 'gemini') || routeState.providers?.includes(id);
   const canUseGemini = () => canUse('gemini');
   function availability(id) {
     if (canUse(id)) return isExample(state.group) ? '本地示例' : '可派活';
@@ -606,7 +607,8 @@ window.__groupReady = (async () => {
       const tried = (step.history || []).map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : ''));
       const note = step.state === 'replaced' ? '已由新步骤接替'
         : step.reassigns ? `重排 ${step.reassigns}/3 · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
-      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" ${attrs}>
+      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" ${attrs}>
+        ${step.state === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
         <span class="step-row-what">${esc(what)}</span>
@@ -758,8 +760,12 @@ window.__groupReady = (async () => {
           if (summary && ['completed', 'failed'].includes(step.state)) {
             const link = !task.redacted && threadRoles.has(step.role)
               ? `<button type="button" class="task-text-link" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}">在单聊查看全文 ${svg('chev')}</button>` : '';
+            // A member's summary is its own report until the lead has accepted the task.
+            const verdict = task.acceptance?.verdict;
+            const checked = ['accept', 'pass'].includes(verdict) ? '已验收' : verdict === 'accept_with_risk' ? '已验收（带风险）' : '';
+            const trust = step.state === 'failed' ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
             messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : '完成总结', what].join(' · '),
-              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}"><p>${esc(summary)}</p>${link}</div>`, 'summary'));
+              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}">${trust}<p>${esc(summary)}</p>${link}</div>`, 'summary'));
           }
         }
         if (task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
@@ -777,6 +783,9 @@ window.__groupReady = (async () => {
       ${records.size ? '' : '<p>组长先确认需求和方案，确认后开始执行。</p>'}
     </div>`);
     if (atBottom && (records.size || group.approvals.size)) timeline.scrollTop = timeline.scrollHeight;
+    // A member that just finished sends a light from its summary to its row on the progress board.
+    window.AgentDeskLight?.completed(timeline, [...records.values()].flatMap((task) =>
+      (task.steps || []).map((step) => ({ key: task.id + ':' + step.id, state: step.state, role: step.role }))));
   }
 
   function render() {
@@ -788,11 +797,12 @@ window.__groupReady = (async () => {
     for (const id of optional) {
       const option = provider.querySelector(`[value="${id}"]`);
       option.disabled = !canUse(id);
+      option.hidden = id === 'gemini' && !canUse(id);
       option.textContent = canUse(id) ? members[id].name : members[id].name + '（' + availability(id) + '）';
     }
     const recipientReady = canUse(provider.value);
     setHtml($('#groupRoster'), shownMembers().filter((id) => id !== 'you').map((id) =>
-      `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 34, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
+      `<button type="button" data-roster="${id}" title="${memberName(id)} · ${members[id].role}">${memberAvatar(id, 30, 'roster')}<span>${memberName(id)}</span></button>`).join(''));
     setHtml($('#sbGroupMembers'), recipients.slice(1).flatMap((id) => {
       const { state: activity, task } = memberActivity(id);
       if (!activity) return [];

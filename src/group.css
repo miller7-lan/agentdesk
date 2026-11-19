@@ -43,7 +43,6 @@
 .group-roster button:hover { background: var(--hover); }
 .group-clear:hover { background: var(--danger-soft); color: var(--danger); }
 .group-roster button > span:last-child { font-size: 9.5px; color: var(--muted); max-width: 100%; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
-.group-roster .member-avatar { width: 26px; height: 26px; border-radius: 9px; }
 .group-filters { display: flex; flex-wrap: wrap; gap: 5px; padding: 11px clamp(16px, 3vw, 31px) 0; }
 .group-filters button, .group-filters select { height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 11.5px; background: var(--main); color: var(--muted); }
 .group-filters button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); }
@@ -133,7 +132,13 @@
 
 /* Canvas avatars retain their logos in the timeline. Interactive surfaces show activity. */
 .member-avatar { display: block; flex: none; border: 0; background: transparent; }
-.group-roster .member-avatar { border-radius: 0; }
+/* One tile for every member: same size, same corner radius, a faint wash of the member's colour. */
+.av-tile { position: relative; display: inline-grid; place-items: center; flex: none; width: var(--av-size); height: var(--av-size);
+  border-radius: calc(var(--av-size) * .3); overflow: hidden;
+  background: color-mix(in srgb, var(--av-tint, var(--muted)) 13%, var(--panel, #fff));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--av-tint, var(--muted)) 22%, transparent); }
+.av-tile .av-place { display: block; line-height: 0; }
+.av-tile .av-art { display: block; flex: none; }
 .member-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
 .member-focused { border-radius: 8px; background: var(--accent-soft); }
 .member-caption { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
@@ -443,3 +448,7 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .step-row[data-state="replaced"] { opacity: .6; }
 .step-row[data-state="replaced"] .step-row-name { text-decoration: line-through; }
 .group-attach-list { padding: 6px 10px 0; }
+
+.step-row { position: relative; }
+.trust-tag { display: inline-block; margin-bottom: 4px; padding: 1px 7px; border-radius: 9px; font-size: 10.5px; color: var(--warn, #a66b00); background: color-mix(in srgb, var(--warn, #a66b00) 12%, transparent); }
+.trust-tag.checked { color: var(--ok, #2f8a57); background: color-mix(in srgb, var(--ok, #2f8a57) 12%, transparent); }

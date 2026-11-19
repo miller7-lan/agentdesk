@@ -42,6 +42,18 @@ if (process.env.AGENTDESK_APPEARANCE) {
   } catch (_) {}
 }
 const fileTurns = new Map();
+// Per-turn file checkpoints, so a turn that changed files on this computer can be undone (checkpoints.js).
+const { Checkpoints } = require('./checkpoints');
+let checkpointStore;
+const checkpoints = () => checkpointStore ||= new Checkpoints(path.join(app.getPath('userData'), 'checkpoints'),
+  { trash: (target) => shell.trashItem(target), allowed: (target) => {
+    try { localFiles.allowedPath(target, true); } catch (error) { if (mac) throw error; windowsFiles.allowedPath(target, true); }
+  } });
+function finishCheckpoint(turnId) {
+  if (!turnId) return;
+  checkpoints().finish(turnId).then((summary) => { if (summary) toUi('checkpoint:ready', summary); })
+    .catch((error) => logger?.log('checkpoint_failed', { status: 'failed', error: error.message }));
+}
 const fullAccessThreads = new Set();
 // Claude / Grok / Antigravity 单聊：线程在 VPS 上，工具调用回到本机执行
 const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent })]));
@@ -437,8 +449,10 @@ remote.on('server-request', (m) => {
     const task = winFile || macFile
       ? allowed
         ? winFile
-          ? windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
-          : localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target))
+          ? checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+            () => windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)))
+          : checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+            () => localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)))
         : Promise.resolve((winFile ? windowsFiles : localFiles).result(false, { error: '本机文件工具需要处于完全访问模式的活动轮次' }))
       : desktop.call(params);
     task.then((result) => {
@@ -460,6 +474,7 @@ remote.on('notification', ({ method, params }) => {
     desktop.active.delete(params.turn.id);
     desktopThreads.delete(params.threadId);
     fileTurns.delete(params.turn.id);
+    finishCheckpoint(params.turn.id);
     fullAccessThreads.delete(params.threadId);
   } else if (method === 'serverRequest/resolved') {
     remote.pendingReqs.delete(params.requestId);
@@ -600,6 +615,13 @@ ipcMain.handle('files:pasteChat', async (event, projectId, name, b64) => {
   try { return { files: [stageChat(projectId, name, Buffer.from(b64, 'base64'))], errors: [] }; }
   catch (error) { return { files: [], errors: [error.message] }; }
 });
+ipcMain.handle('checkpoints:undo', async (event, turnId, force) => {
+  if (!fromMainWindow(event) || typeof turnId !== 'string') return { ok: false, error: 'invalid_request' };
+  try { return { ok: true, ...(await checkpoints().undo(turnId, { force: force === true })) }; }
+  catch (error) { return { ok: false, error: error.code === 'ENOENT' ? '找不到这一轮的存档（可能已被清理）' : error.message }; }
+});
+ipcMain.handle('checkpoints:list', (event, threadId) =>
+  fromMainWindow(event) && typeof threadId === 'string' ? checkpoints().list(threadId) : []);
 ipcMain.handle('files:forgetChat', (event, id) => fromMainWindow(event) && chatAttachments.delete(id));
 // 拖入的文件：测试目录内的文件/文件夹直接引用路径（Codex 能通过 ssh_exec 访问）；
 // 其他文件上传到 VPS；外部文件夹不上传（体积不可控），提示用户
@@ -729,7 +751,8 @@ async function chatToolTask(agent, params) {
     return localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: mapping.localRoot });
   }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
-  return localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target));
+  return checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+    () => localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)));
 }
 
 for (const [agent, link] of chatLinks) {
@@ -746,6 +769,7 @@ for (const [agent, link] of chatLinks) {
   link.on('event', (message) => {
     if (message.method === 'turn/completed') {
       chatTurns.delete(message.params?.turn?.id);
+      finishCheckpoint(message.params?.turn?.id);
       const status = message.params?.turn?.status;
       notifyIfAway(`${CHAT_LABEL[agent]} ${status === 'failed' ? '本轮失败' : '已完成'}`,
         status === 'interrupted' ? '本轮已停止' : '点击查看结果');

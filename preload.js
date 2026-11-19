@@ -107,6 +107,12 @@ contextBridge.exposeInMainWorld('desk', {
     // 从资源管理器拖进来的文件：在预加载脚本里取真实路径，交给主进程处理
     drop: (files) => ipcRenderer.invoke('files:drop', [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),
   },
+  // Undo the files a turn changed on this computer (checkpoints.js).
+  checkpoints: {
+    undo: (turnId, force = false) => ipcRenderer.invoke('checkpoints:undo', turnId, force),
+    list: (threadId) => ipcRenderer.invoke('checkpoints:list', threadId),
+    onReady: on('checkpoint:ready'),
+  },
   codex: {
     request: (method, params) => ipcRenderer.invoke('codex:request', method, params),
     respond: (id, result, error) => ipcRenderer.invoke('codex:respond', id, result, error),

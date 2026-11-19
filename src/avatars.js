@@ -115,14 +115,32 @@ function remountHud() {
   for (const [host, handle] of [...hudBots]) { handle.dispose(); hudBots.delete(host); if (host.isConnected) mountHud(host); }
 }
 
-function html(id, { state = 'idle', size = 34, still = false, preview = false, balls = [], key = '' } = {}) {
+// Every avatar sits in the same tile: a rounded square tinted with the member's low-saturation colour, with
+// the artwork scaled to the same optical size. The HUD bots fill their box; this file's own drawings leave a
+// margin (OPTICAL is the share of the box they fill), so each is drawn larger to match. bare: the artwork alone
+// (the boot animation peeks the logos out from behind the app icon without tiles).
+const OPTICAL = { you: 0.56, lead: 0.62, gemini: 0.6, local: 0.6 };
+const ART = 0.68;
+function html(id, options = {}) {
   if (!M[id]) return '';
+  const size = options.size ?? 34;
+  if (options.bare) return art(id, options);
+  const hud = HUD[id] && window.AgentHudBots;
+  const fill = hud ? 0.96 : OPTICAL[id] || 0.6;
+  const inner = Math.max(8, Math.round(size * ART / fill));
+  // This file's drawings put the mark's centre at (0.44, 0.57) of the canvas, leaving room for props;
+  // the canvas is shifted so the mark itself sits in the middle of the tile.
+  const place = hud ? '' : ` style="position:absolute;left:${(size / 2 - inner * 0.44).toFixed(1)}px;top:${(size / 2 - inner * 0.57).toFixed(1)}px"`;
+  return `<span class="member-avatar av-tile" data-av="${id}" style="--av-size:${size}px;--av-tint:var(--member-${id})"><span class="av-place"${place}>${art(id, { ...options, size: inner })}</span></span>`;
+}
+
+function art(id, { state = 'idle', size = 34, still = false, preview = false, balls = [], key = '' } = {}) {
   const label = M[id].name + ' · ' + STATES[state].label;
   if (HUD[id] && window.AgentHudBots) {
-    return `<span class="member-avatar hud-bot" data-hud-bot data-member="${id}" data-avatar-state="${state}" data-size="${size}"
+    return `<span class="av-art hud-bot" data-hud-bot data-member="${id}" data-avatar-state="${state}" data-size="${size}"
       ${still ? 'data-still' : ''} role="img" aria-label="${label}" style="display:inline-block;position:relative;flex:none;width:${size}px;height:${size}px;overflow:visible"></span>`;
   }
-  return `<canvas class="member-avatar" data-member="${id}" data-avatar-state="${state}" data-size="${size}"
+  return `<canvas class="av-art" data-member="${id}" data-avatar-state="${state}" data-size="${size}"
     data-avatar-key="${key.replace(/[&<>"]/g, '')}" data-balls="${balls.filter((member) => Object.hasOwn(M, member)).join(',')}"
     ${still ? 'data-still' : ''} ${preview ? 'data-preview' : ''} role="img" aria-label="${label}" width="${size}" height="${size}" style="width:${size}px;height:${size}px"></canvas>`;
 }
@@ -225,6 +243,14 @@ function drawBot(a, now) {
     ctx.globalAlpha = st === 'asleep' && !yawning ? 0.55 : st === 'limited' ? 0.4 : 1;
     ctx.drawImage(img, -L / 2, -L / 2, L, L);
     ctx.globalAlpha = 1;
+  } else if (id === 'you') {
+    // The person: a flat head-and-shoulders mark in their colour, drawn like the members' logos.
+    ctx.fillStyle = colors[id];
+    ctx.beginPath(); ctx.arc(0, -L * 0.17, L * 0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-L * 0.4, L * 0.46);
+    ctx.bezierCurveTo(-L * 0.4, L * 0.12, -L * 0.22, L * 0.07, 0, L * 0.07);
+    ctx.bezierCurveTo(L * 0.22, L * 0.07, L * 0.4, L * 0.12, L * 0.4, L * 0.46);
+    ctx.quadraticCurveTo(0, L * 0.5, -L * 0.4, L * 0.46); ctx.fill();
   } else {
     ctx.fillStyle = colors[id]; ctx.beginPath(); ctx.arc(0, 0, L * 0.46, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = colors.ink; ctx.font = `600 ${L * 0.42}px ${font}`;

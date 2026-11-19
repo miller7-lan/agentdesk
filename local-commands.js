@@ -18,7 +18,7 @@ const specs = [
   },
   {
     type: 'function', name: 'agentdesk_command_run',
-    description: 'Run one authorized command, by its name from agentdesk_command_list, in the project folder on the person’s computer, for example to run the tests. The person approves each run; output is cut to the last 8000 characters; the time limit is 5 minutes.',
+    description: 'Run one authorized command, by its name from agentdesk_command_list, in the project folder on the person’s computer, for example to run the tests. The person approves each run; output over 8000 characters keeps its first 2000 and last 6000; the time limit is 5 minutes.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['name'],
       properties: { name: { type: 'string', description: 'Command name from agentdesk_command_list' } } },
   },
@@ -43,7 +43,8 @@ function catalogue(configFile, localRoot) {
     .map((name) => ({ name, argv: workspace.commands[name], cwd: workspace.root }));
 }
 
-const tail = (text) => (text.length > OUTPUT ? '…' + text.slice(-OUTPUT) : text);
+// Long output keeps its start (the command and the first error) and its end (the summary), like pi does.
+const tail = (text) => (text.length > OUTPUT ? text.slice(0, 2000) + `\n…（中间省略 ${text.length - OUTPUT} 个字符）…\n` + text.slice(-(OUTPUT - 2000)) : text);
 
 function call(tool, values, { configFile, localRoot }) {
   const commands = catalogue(configFile, localRoot);

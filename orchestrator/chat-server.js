@@ -328,6 +328,7 @@ function setSession(turn, id) {
 function resetSession(thread) {
   thread.sessionId = freshSession();
   thread.started = false;
+  delete thread.instructionsSent;
   thread.updatedAt = Date.now();
   persist();
 }
@@ -610,7 +611,7 @@ function instructions(turn) {
   const computer = windows ? 'Windows' : 'Mac';
   const workspace = workspaceFor(turn.threadId);
   const vps = SANDBOX
-    ? `- 你可以在 VPS 上的会话工作目录 ${workspace} 里使用 shell 和自带的读写工具（运行命令、跑测试、下载依赖），它在沙盒里，${turn.readOnly ? '本轮只读' : '可以写'}；这里不是用户电脑。`
+    ? `- 你可以在 VPS 上的会话工作目录 ${workspace} 里使用 shell 和自带的读写工具（运行命令、跑测试、下载依赖），它在沙盒里（只读轮次不能写）；这里不是用户电脑。`
     : '- VPS 上的 shell 和自带文件工具未开启。';
   return `${turn.thread.systemPrompt ? turn.thread.systemPrompt + '\n\n' : ''}[AgentDesk 单聊｜本机文件]
 - 需要最新信息时可以联网搜索和读取网页。
@@ -622,7 +623,13 @@ ${vps}
 - 写文件前先读目标；创建文件后把结果路径告诉用户。覆盖已有文件必须显式传 overwrite:true。
 - 系统目录、凭据目录（如 ~/.ssh、~/.agentdesk）和 .git 内部会被拒绝，不要尝试绕过。
 - 工具返回 JSON 文本；失败时如实告诉用户，不要假装成功。
-${turn.readOnly ? '- 本轮是只读规划模式，只能使用 list/read；写工具会被拒绝。' : ''}`;
+- 大文件分页读取（用返回的 nextOffset 继续），只读需要的部分，不要整份反复读。`;
+}
+
+// Everything that varies from turn to turn goes into the user message, not the system prompt or the tool
+// list, so the CLI's prompt cache stays valid across the conversation (the way pi keeps declarations stable).
+function turnText(turn) {
+  return (turn.readOnly ? '[本轮是只读规划模式：只能使用 list/read，写工具会被拒绝。]\n\n' : '') + turn.text;
 }
 
 function providerArgs(turn, workspace) {
@@ -670,7 +677,7 @@ function providerArgs(turn, workspace) {
 if (turn.effort) args.push('--effort', turn.effort);
     if (session && first) args.push('--session-id', session);
     else if (session) { args.push('--resume', session); turn.resumeAttempt = true; }
-    args.push('-p', turn.text);
+    args.push('-p', turnText(turn));
     turn.promptViaStdin = false;
     return args;
   }
@@ -692,7 +699,13 @@ if (turn.effort) args.push('--effort', turn.effort);
   if (turn.model) args.push('--model', turn.model);
   if (turn.effort) args.push('--effort', turn.effort);
   if (session) { args.push('--conversation', session); turn.resumeAttempt = true; }
-  args.push('-p', `${instructions(turn)}\n\n${turn.text}`);
+  // Antigravity keeps the conversation, so the instructions are sent once per conversation (again only when
+  // they change), not repeated in every message.
+  const text = instructions(turn);
+  const digest = createHash('sha256').update(text).digest('hex').slice(0, 16);
+  const repeat = session && turn.thread.instructionsSent === digest;
+  turn.thread.instructionsSent = digest;
+  args.push('-p', repeat ? turnText(turn) : `${text}\n\n${turnText(turn)}`);
   turn.promptViaStdin = false;
   return args;
 }
@@ -816,7 +829,7 @@ function startTurn(turn) {
   }, TURN_TIMEOUT);
   turn.timer.unref?.();
 
-  if (turn.promptViaStdin) child.stdin.end(turn.text);
+  if (turn.promptViaStdin) child.stdin.end(turnText(turn));
   else child.stdin.end();
 }
 
@@ -1157,11 +1170,13 @@ async function dispatch(method, params) {
         text,
         approvalPolicy,
         readOnly,
-        tools: [...thread.dynamicTools.filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)),
-          ...(attachments ? [ATTACHMENT_TOOL] : [])],
+        // The attachment tool is always declared, with or without attachments, so the tool list stays the same.
+        tools: [...thread.dynamicTools.filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)), ATTACHMENT_TOOL],
         attachments,
         capability: randomBytes(24).toString('hex'),
-        serverName: 'agentdesk_' + randomBytes(4).toString('hex'),
+        // One name per conversation: a new name every turn changed the tool names and the system prompt, so
+        // Claude and Grok re-read the whole history at full price on each turn.
+        serverName: 'agentdesk_' + createHash('sha256').update(thread.id).digest('hex').slice(0, 8),
         model: typeof params.model === 'string' ? params.model.slice(0, 128) : '',
 effort,
         agentText: '',

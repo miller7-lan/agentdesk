@@ -192,6 +192,17 @@
           <span class="tool-kind">${head}</span><span class="tool-arg">${esc(first.replace(/\*\*/g, '').slice(0, 90))}</span></div>
         <div class="tool-body reason-body">${md(it.text) || '<p class="sys-note">（没有思考摘要）</p>'}</div></div>`;
     }
+    if (it.t === 'checkpoint') {
+      // What this turn changed on this computer, with a one-click undo (checkpoints.js in the main process).
+      const name = (f) => f.path.split(/[\\/]/).pop();
+      const verb = (f) => f.created ? '新建' : { write: '修改', mkdir: '新建', copy: '复制到', move: '移动', trash: '移到废纸篓' }[f.action] || '修改';
+      const list = it.files.slice(0, 6).map((f) => `<li title="${esc(f.path)}"><span class="cp-verb">${verb(f)}</span>${esc(name(f))}</li>`).join('');
+      const more = it.files.length > 6 ? `<li class="cp-more">另有 ${it.files.length - 6} 个</li>` : '';
+      const state = it.state === 'undone' ? `<span class="cp-state">已撤销${it.skipped ? ` · ${it.skipped} 个跳过` : ''}</span>`
+        : it.state === 'busy' ? '<span class="cp-state">正在撤销…</span>'
+        : `<button type="button" class="cp-undo" data-checkpoint-undo="${esc(it.turnId)}" title="把这些文件恢复到本轮开始前的样子；之后又被改过的文件会跳过">撤销本轮</button>`;
+      return `<div class="checkpoint-card${it.state === 'undone' ? ' undone' : ''}"><div class="cp-head">${svg('file')}<span>本轮改动本机 ${it.files.length} 个文件</span><span class="grow"></span>${state}</div><ul class="cp-files">${list}${more}</ul></div>`;
+    }
     if (it.t === 'plan') {
       const done = it.steps.filter((x) => x.status === 'completed').length;
       return `<div class="plan-card"><div class="plan-title">${svg('term')}<span>计划</span><span class="grow"></span><span class="plan-count">${done}/${it.steps.length}</span></div>
@@ -1333,6 +1344,28 @@
     if ([limits?.primary, limits?.secondary].some((limit) => limit?.usedPercent >= 100)) return 'limited';
     return 'idle';
   }
+
+  // A finished turn that changed files on this computer: show what changed and offer to undo it.
+  window.desk?.checkpoints?.onReady((summary) => {
+    const s = summary && byThread.get(summary.threadId);
+    if (!s || s.items.some((x) => x.t === 'checkpoint' && x.turnId === summary.turnId)) return;
+    s.items.push({ t: 'checkpoint', turnId: summary.turnId, files: summary.files, state: 'ready' });
+    render();
+  });
+  document.addEventListener('click', async (e) => {
+    const button = e.target.closest?.('[data-checkpoint-undo]');
+    if (!button) return;
+    const s = sess(state.active);
+    const it = s?.items.find((x) => x.t === 'checkpoint' && x.turnId === button.dataset.checkpointUndo);
+    if (!it || it.state !== 'ready') return;
+    if (!window.confirm(`把本轮改动的 ${it.files.length} 个文件恢复到本轮开始前？\n本轮新建的文件会移到废纸篓；之后又被改过的文件会跳过，不会覆盖。`)) return;
+    it.state = 'busy'; render();
+    const r = await window.desk.checkpoints.undo(it.turnId);
+    if (!r.ok) { it.state = 'ready'; render(); toast('撤销失败：' + r.error); return; }
+    it.state = 'undone'; it.skipped = r.skipped.length; render();
+    toast(r.skipped.length ? `已恢复 ${r.restored.length} 个，跳过 ${r.skipped.length} 个：${r.skipped.slice(0, 3).map((x) => x.path.split(/[\\/]/).pop() + '（' + x.reason + '）').join('、')}` : `已恢复 ${r.restored.length} 个文件`);
+    refreshChanges();
+  });
 
   window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
   async function workspaceChanged() {

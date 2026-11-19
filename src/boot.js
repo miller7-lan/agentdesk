@@ -198,7 +198,7 @@
     // Agent HUD draws its mark edge to edge, our own drawing fills about 65% of its square: match them.
     const slot = ($('bootMark')?.getBoundingClientRect().width || 160) * 0.4;
     const size = Math.round(window.AgentDeskAvatars.engine?.(id) === 'hud' ? slot * 0.65 : slot);
-    return window.AgentDeskAvatars.html(id, { state, size, key: 'boot-peek:' + id, still });
+    return window.AgentDeskAvatars.html(id, { state, size, key: 'boot-peek:' + id, still, bare: true });
   }
 
   function placePeekers(still) {

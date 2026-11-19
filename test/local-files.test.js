@@ -137,8 +137,8 @@ test('read and write enforce the 1 MiB per-call limit', async (t) => {
   const big = path.join(root, 'big.bin');
   fs.writeFileSync(big, Buffer.alloc(files.LIMIT + 10, 0x61));
   const read = output(await call('agentdesk_file_read', { path: big }));
-  assert.equal(Buffer.byteLength(read.content), files.LIMIT);
-  assert.equal(read.nextOffset, files.LIMIT);
+  assert.equal(Buffer.byteLength(read.content), files.READ_PAGE);
+  assert.equal(read.nextOffset, files.READ_PAGE);
   const tooBig = await call('agentdesk_file_write', { path: path.join(root, 'too-big.bin'), content: 'x'.repeat(files.LIMIT + 1) });
   assert.equal(tooBig.success, false);
   assert.match(output(tooBig).error, /1 MiB/);

@@ -185,12 +185,14 @@
           </div>`;
       const col = state.collapsed.has(p.id) && !q;
       html += `<div class="group ${col ? 'collapsed' : ''}" data-proj="${p.id}">
-        <button class="group-head" type="button" aria-expanded="${!col}">${svg('chevDown').replace('<svg', '<svg class="chev"')}${svg('folder')}<span class="group-name">${esc(p.name)}</span><span class="count">${hasGroup ? projectGroups.reduce((sum, g) => sum + G().taskCount(g.id), 0) || '' : items.length}</span></button>
+        <div class="project-head-row">
+          <button class="group-head" type="button" aria-expanded="${!col}">${svg('chevDown').replace('<svg', '<svg class="chev"')}${svg('folder')}<span class="group-name">${esc(p.name)}</span><span class="count">${hasGroup ? projectGroups.reduce((sum, g) => sum + G().taskCount(g.id), 0) || '' : items.length}</span></button>
+          <span class="project-quick" role="group" aria-label="${esc(p.name)}：新建">
+            <button type="button" data-new-direct="${esc(p.id)}" title="新建单聊" aria-label="${esc(p.name)}：新建单聊"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H9l-4 4z"/><path d="M12 8v4M10 10h4"/></svg></button>
+            ${G() ? `<button type="button" data-new-group="${esc(p.id)}" title="新建群聊" aria-label="${esc(p.name)}：新建群聊"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16"/></svg></button>` : ''}
+          </span>
+        </div>
         <div class="group-items">
-          <div class="project-conversation-actions">
-            <button type="button" data-new-direct="${esc(p.id)}" aria-label="${esc(p.name)}：新建单聊">＋ 新建单聊</button>
-            ${G() ? `<button type="button" data-new-group="${esc(p.id)}" aria-label="${esc(p.name)}：新建群聊">＋ 新建群聊</button>` : ''}
-          </div>
           ${showGroup ? projectGroups.map((g) => {
             // Each group chat, with the records of work its lead handed out right under it.
             const records = dispatched.filter((s) => (s.group || s.project) === g.id);
@@ -198,8 +200,7 @@
             <span class="channel-mark">#</span><span class="s-title">${esc(g.name)}</span>${G().unreadCount(g.id) ? `<span class="group-unread">${G().unreadCount(g.id)}</span>` : ''}
           </button><button type="button" class="group-delete" data-delete-group="${esc(g.id)}" title="删除「${esc(g.name)}」" aria-label="删除群聊 ${esc(g.name)}">×</button></div>
           ${records.length ? `<div class="sess-section dispatched" aria-label="${esc(g.name)} 的派遣记录">${records.map(row).join('')}</div>` : ''}`;
-          }).join('') : ''}${
-          own.length ? '<div class="sess-label">我的单聊 · 直接对话</div>' : ''}${own.map(row).join('')}
+          }).join('') : ''}${own.length && showGroup ? '<div class="sess-divider" role="separator"></div>' : ''}${own.map(row).join('')}
         </div></div>`;
     }
     list.innerHTML = html || '<div class="empty-note">没有匹配的会话</div>';
@@ -296,7 +297,7 @@
       const thinking = it.t === 'thinking';
       const content = thinking ? `<i></i><i></i><i></i>${esc(it.text || '思考中')}` : it.html;
       return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(sess(state.active)?.provider || agent || 'codex', { size: 32, still: true })}</span>
-        <div class="msg-body${thinking ? ' thinking' : ''}">${content}</div></div>`;
+        <div class="msg-body${thinking ? ' thinking' : ''}">${thinking ? window.AgentDeskLight?.border(sess(state.active)?.provider || agent || 'codex') || '' : ''}${content}</div></div>`;
     }
     if (it.t === 'tool') return `<div class="tool ${it.open ? 'open' : ''} ${it.err ? 'err' : ''}" data-idx="${idx}">
         <div class="tool-head">${svg('chev').replace('<svg', '<svg class="chev"')}<span class="tool-ic">${svg(it.icon)}</span>
@@ -674,13 +675,13 @@
 
   function toggleSidebar() { state.sideOpen = !state.sideOpen; applyLayout(); }
   $('#toggleSidebar').addEventListener('click', toggleSidebar);
-  $('#railProjects').addEventListener('click', toggleSidebar);
+  $('#railProjects')?.addEventListener('click', toggleSidebar);
   function focusSearch() {
     state.sideOpen = true;
     applyLayout();
     $('#sessionSearch').focus();
   }
-  $('#railSearch').addEventListener('click', focusSearch);
+  $('#railSearch')?.addEventListener('click', focusSearch);
   $('#themeToggle').addEventListener('click', toggleTheme);
 
   window.addEventListener('keydown', (e) => {
