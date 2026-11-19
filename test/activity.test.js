@@ -51,9 +51,34 @@ test('gemini deltas join into one reply; unknown CLIs and plain text still show 
   )).items;
   assert.deepEqual(gemini.map((item) => item.kind), ['command', 'message']);
   assert.equal(gemini[1].text, 'Hello');
-  const generic = parseActivity('antigravity', log({ type: 'thought', text: 'Checking.' }, { type: 'result', result: { response: 'All good.' } })).items;
+  const generic = parseActivity('unrecognised-cli', log({ type: 'thought', text: 'Checking.' }, { type: 'result', result: { response: 'All good.' } })).items;
   assert.deepEqual(generic.map((item) => [item.kind, item.text]), [['thinking', 'Checking.'], ['message', 'All good.']]);
   const plain = parseActivity('grok', log('Reading files…', 'Found the bug.')).items;
   assert.deepEqual(plain.map((item) => item.kind), ['message']);
   assert.match(plain[0].text, /Found the bug/);
+});
+
+test('antigravity step updates show commands with output, file edits and the streamed reply', () => {
+  const { items } = parseActivity('antigravity', log(
+    { event: 'init', conversation_id: 'c1', init: { tools: ['run_command'] } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 0, state: 'DONE', step_type: 'user_input' } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 1, state: 'DONE', step_type: 'agent_response', usage: { thinking_tokens: 12 } } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command',
+      tool_info: { name: 'run_command', parameters: { CommandLine: 'ls -1A' } } } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'run_command',
+      tool_info: { name: 'run_command', parameters: { CommandLine: 'ls -1A' }, output: 'Command exited with code 0.\n\nCommand output:\nREADME.md\n' } } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 3, state: 'DONE', step_type: 'tool', tool_name: 'replace_file_content',
+      tool_info: { name: 'replace_file_content', parameters: { TargetFile: '/tmp/project/README.md' }, output: 'Saved.' } } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 4, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'Top-level ' } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 4, state: 'ACTIVE', step_type: 'agent_response', text_delta: 'entries.' } },
+    { event: 'step_update', step_update: { conversation_id: 'c1', step_index: 4, state: 'DONE', step_type: 'agent_response', text_delta: '' } },
+    { event: 'result', result: { status: 'SUCCESS', response: 'Top-level entries.' } },
+  ));
+  assert.deepEqual(items.map((item) => item.kind), ['command', 'edit', 'message']);
+  assert.equal(items[0].command, 'ls -1A');
+  assert.equal(items[0].status, 'completed');
+  assert.equal(items[0].exitCode, 0);
+  assert.match(items[0].output, /README/);
+  assert.equal(items[1].files[0].path, '/tmp/project/README.md');
+  assert.equal(items[2].text, 'Top-level entries.');
 });
