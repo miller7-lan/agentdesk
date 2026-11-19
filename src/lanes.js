@@ -207,7 +207,7 @@
 
     // Plan milestones stay in the lead's lane and always start the graph.
     if (plan || ['planning', 'awaiting_details', 'awaiting_approval'].includes(task.state)) {
-      add({ role: 'claude', kind: 'checkpoint', label: '组长规划', at: planAt,
+      add({ role: 'claude', kind: 'checkpoint', label: '组长规划', at: planAt, model: task.leadModel || '最新 Opus',
         detail: plan ? '第 ' + (plan.revision || task.plan?.approved || 1) + ' 版方案' : '制定方案',
         meta: [plan?.steps?.length ? plan.steps.length + ' 步' : '', task.leadEffort ? '思考 ' + task.leadEffort : ''].filter(Boolean).join(' · '),
         state: task.state === 'planning' ? 'running' : 'completed', summary: String(plan?.summary || '').replace(/\s+/g, ' ') });
@@ -338,18 +338,42 @@
     const height = PAD * 2 + nodes.length * ROW - (ROW - NODE_H);
     const laneIndex = new Map(lanes.map((lane, index) => [lane.id, index]));
     const laneOf = (role) => lanes[laneIndex.get(role) ?? 0];
-    const center = (role) => (laneIndex.get(role) ?? 0) * col + col / 2;
+    // Each lane has a spine near its left edge, like a branch line in Lancer's lane tree; a node's dot sits on
+    // the spine at the card's middle, and the card hangs to the right of it.
+    const SPINE = 13, CARD = 24;
+    const spine = (role) => (laneIndex.get(role) ?? 0) * col + SPINE;
+    const middle = (index) => PAD + index * ROW + NODE_H / 2;
 
     const bands = lanes.map((lane, index) =>
       `<i class="sg-band" style="left:${index * col}px;width:${col}px;--lane:${lane.colour}"></i>`).join('');
+    const active = (node) => ['running', 'waiting'].includes(node.state);
+    const pending = (node) => ['queued', 'proposed', 'running', 'waiting'].includes(node.state);
+    // Spines: from a lane's first node to its last, solid; while it still has work to do, a dashed tail runs on.
+    const spines = lanes.map((lane) => {
+      const mine = nodes.map((node, index) => ({ node, index })).filter(({ node }) => laneOf(node.role) === lane);
+      if (!mine.length) return '';
+      const x = spine(mine[0].node.role);
+      const top = middle(mine[0].index), bottom = middle(mine.at(-1).index);
+      const tail = mine.some(({ node }) => pending(node));
+      return `<line class="sg-spine" x1="${x}" y1="${top}" x2="${x}" y2="${bottom}" style="--lane:${lane.colour}"/>` +
+        (tail ? `<line class="sg-spine tail" x1="${x}" y1="${bottom}" x2="${x}" y2="${height - 4}" style="--lane:${lane.colour}"/>` : '');
+    }).join('');
+    // Handoffs between members: a curve from the previous node's dot to the next one's; it flows while the
+    // receiving step is at work, and is solid once that step has finished.
     const edges = nodes.slice(1).map((node, index) => {
       const previous = nodes[index];
-      const x1 = center(previous.role), y1 = PAD + index * ROW + NODE_H;
-      const x2 = center(node.role), y2 = PAD + (index + 1) * ROW;
+      if (laneOf(previous.role) === laneOf(node.role)) return '';
+      const x1 = spine(previous.role), y1 = middle(index);
+      const x2 = spine(node.role), y2 = middle(index + 1);
       const lane = laneOf(node.role);
-      const handoff = previous.role !== node.role ? ' handoff' : '';
-      return `<path class="sg-edge${handoff}" d="M${x1} ${y1} C${x1} ${(y1 + y2) / 2},${x2} ${(y1 + y2) / 2},${x2} ${y2}" style="--lane:${lane.colour}"/>` +
-        `<circle class="sg-edge-dot" cx="${x2}" cy="${y2}" r="2.4" style="--lane:${lane.colour}"/>`;
+      const bend = Math.max(30, Math.abs(y2 - y1) * 0.55);
+      return `<path class="sg-edge handoff${active(node) ? ' live' : ''}${pending(node) && !active(node) ? ' later' : ''}"
+        d="M${x1} ${y1} C${x1} ${y1 + bend},${x2} ${y2 - bend},${x2} ${y2}" style="--lane:${lane.colour}"/>`;
+    }).join('');
+    // The node dots on the spines.
+    const dots = nodes.map((node, index) => {
+      const lane = laneOf(node.role);
+      return `<circle class="sg-dot" data-state="${esc(node.state || '')}" cx="${spine(node.role)}" cy="${middle(index)}" r="5" style="--lane:${lane.colour}"/>`;
     }).join('');
     const heads = lanes.map((lane, index) => {
       const modelText = lane.models.length > 1 ? lane.models.length + ' 个模型' : modelShort(lane.model) || '—';
@@ -378,7 +402,7 @@
       const stepKey = node.stepId ? ` data-lane-step="${esc(task.id + ':' + node.stepId)}"` : '';
       return `<button type="button" class="sg-node${node.fail ? ' fail' : ''}${focus === task.id ? ' focus' : ''}"
         data-lane-event="${esc(task.id + ':' + index)}"${stepKey} data-state="${esc(node.state || '')}"${flight}
-        style="left:${(laneIndex.get(node.role) ?? 0) * col + 5}px;top:${PAD + index * ROW}px;width:${col - 10}px;--lane:${lane.colour}"
+        style="left:${(laneIndex.get(node.role) ?? 0) * col + CARD}px;top:${PAD + index * ROW}px;width:${col - CARD - 5}px;--lane:${lane.colour}"
         title="${esc(title)}">
         <span class="sg-node-top">${glyph({ kind: node.kind, fail: node.fail, done: node.state === 'completed' })}
           <b>${esc(node.stepId || node.label)}</b><i class="sg-state"></i></span>
@@ -400,13 +424,13 @@
       <span><i class="sg-state" data-state="running"></i>运行中</span>
       <span><i class="sg-state" data-state="failed"></i>失败</span>
       <span><i class="sg-state" data-state="queued"></i>排队</span>
-      <span><i class="sg-edge-sample"></i>交接</span></div>`;
+      <span><i class="sg-edge-sample"></i>交接</span><span><i class="sg-edge-sample live"></i>正在交接</span></div>`;
     return `<div class="sg">${taskHead}
       <div class="sg-scroll"><div class="sg-canvas" style="width:${content}px">
         <div class="sg-heads" style="width:${content}px;height:64px">${heads}</div>
         <div class="sg-body" style="width:${content}px;height:${height}px">
           ${bands}
-          <svg class="sg-edges" width="${content}" height="${height}" viewBox="0 0 ${content} ${height}" aria-hidden="true">${edges}</svg>
+          <svg class="sg-edges" width="${content}" height="${height}" style="width:${content}px;height:${height}px" viewBox="0 0 ${content} ${height}" aria-hidden="true">${spines}${edges}${dots}</svg>
           ${cards}
         </div>
       </div></div>${checkRow}${legend}</div>`;

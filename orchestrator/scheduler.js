@@ -549,6 +549,9 @@ event(task, state, detail) {
         (body.group !== undefined && (typeof body.group !== 'string' || !/^[A-Za-z0-9._~-]{1,96}$/.test(body.group))) ||
         // leadEffort: how hard the lead (Claude) thinks while planning, diagnosing and accepting; the person picks it.
         (body.leadEffort !== undefined && !EFFORTS.claude.includes(body.leadEffort)) ||
+        // leadModel: which of the lead's models plans, diagnoses and accepts; the person may pick any of them.
+        (body.leadModel !== undefined && (typeof body.leadModel !== 'string' ||
+          !Object.hasOwn(this.config.adapters[LEAD_ROLE]?.profiles?.models || {}, body.leadModel))) ||
         (body.routeOrder !== undefined && !this.validRouteOrder(body.routeOrder)) ||
         (body.broadcastId !== undefined && (typeof body.broadcastId !== 'string' || !taskIdPattern.test(body.broadcastId))) ||
         (body.reviewOf !== undefined && (mode !== 'review_only' || typeof body.reviewOf !== 'string' || !taskIdPattern.test(body.reviewOf))) ||
@@ -620,6 +623,7 @@ event(task, state, detail) {
       ...(body.via && { via: body.via }),
       ...(body.group && { group: body.group }),
       ...(body.leadEffort && { leadEffort: body.leadEffort }),
+      ...(body.leadModel && { leadModel: body.leadModel }),
       ...(body.routeOrder && Object.keys(body.routeOrder).length && { routeOrder: body.routeOrder }),
       ...(body.broadcastId && { broadcastId: body.broadcastId }),
       ...(body.reviewOf && { reviewOf: body.reviewOf }),
@@ -805,9 +809,50 @@ event(task, state, detail) {
       if (plan.approved === revision) return this.status(task.id);
       if (round.revision !== revision || task.state !== 'awaiting_approval' || !round.steps?.length) throw new Error('plan_changed');
       plan.approved = revision;
-      task.steps = round.steps.map((step) => ({ ...step }));
+      // After a change of direction the steps already done stay; the new plan's steps follow them.
+      const kept = (task.keptSteps || []).map((step) => ({ ...step }));
+      const taken = new Set(kept.map((step) => step.id));
+      const renamed = new Map();
+      for (const step of round.steps) {
+        let next = step.id;
+        for (let n = 2; taken.has(next); n += 1) next = step.id + '-' + n;
+        taken.add(next);
+        renamed.set(step.id, next);
+      }
+      task.steps = [...kept, ...round.steps.map((step) => ({ ...step, id: renamed.get(step.id),
+        dependsOn: (step.dependsOn || []).map((id) => renamed.get(id) || id) }))];
       this.save(task, 'queued', 'plan_approved');
     }
+    this.pump();
+    return this.status(task.id);
+  }
+
+  // In a group the person talks to the lead of the task in hand. A message while that task is still going changes
+  // its plan instead of starting another task: the lead stops the work not yet finished, keeps what is done and
+  // plans the rest again with the person's words; the person confirms the new plan as usual.
+  revisePlan(task, text) {
+    if (typeof text !== 'string' || !text.trim() || text.length > 2000) throw new Error('invalid_plan_reply');
+    if (!task.groupPlan) throw new Error('not_group_task');
+    if (terminal.has(task.state)) throw new Error('task_finished');
+    const plan = task.groupPlan;
+    const round = plan.rounds.at(-1);
+    if (['awaiting_details', 'awaiting_approval'].includes(task.state) && round) {
+      return this.updatePlan(task, { operation: 'plan_reply', revision: round.revision, reply: text });
+    }
+    const done = (task.steps || []).filter((step) => step.state === 'completed');
+    task.keptSteps = done.map((step) => ({ ...step }));
+    for (const step of task.steps || []) {
+      if (step.state === 'running') this.stepControllers?.get(task.id + ':' + step.id)?.abort(new Error('revised'));
+    }
+    task.steps = done;
+    delete plan.approved;
+    delete plan.pending;
+    delete task.escalation;
+    delete task.pendingTriage;
+    if (round) round.reply = round.reply ? round.reply + '\n' + text.trim() : text.trim();
+    else plan.rounds.push({ revision: 0, reply: text.trim() });
+    this.save(task, 'queued', 'plan_revise_requested');
+    this.running.get(task.id)?.abort(new Error('revised'));
     this.pump();
     return this.status(task.id);
   }
@@ -1113,6 +1158,8 @@ event(task, state, detail) {
     this.running.set(task.id, controller);
     const timer = task.mode === 'team' ? setTimeout(() => controller.abort(new Error('team_timeout')), teamTimeout) : undefined;
     this.run(task, controller.signal).catch((error) => {
+      // The person changed direction: the task went back to its lead to plan again (revisePlan).
+      if (controller.signal.reason?.message === 'revised' && task.state === 'queued') return;
       if (error.message?.startsWith('executor_waiting:')) {
         this.waitForExecutor(task, error.message.slice('executor_waiting:'.length));
         return;
@@ -1197,7 +1244,8 @@ event(task, state, detail) {
         timeout: task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000, signal: stepSignal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
         session: step.session, model: step.model,
-        effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort) || undefined,
+        effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort &&
+          effortsFor(step.role, this.config.adapters[step.role], step.model).includes(task.leadEffort) ? task.leadEffort : undefined),
         mcp: mcp && { socket: mcp.socket, capability },
         attachmentDirectory,
         onSession: (id) => {
@@ -1379,17 +1427,21 @@ event(task, state, detail) {
       models: plannerProfiles(this.availableRoles(), this.config.adapters, task.provider, task.model),
       projectBrief: this.projectBrief(task),
       rounds: plan.rounds.slice(-8).map(({ questions, summary, reply }) => ({ questions, summary, reply })),
+      ...(task.keptSteps?.length && { completedWork: task.keptSteps.map(({ id, role, capability, output, paths }) => ({
+        id, role, capability, output: String(output || '').slice(0, 1200), ...(paths?.length && { paths: paths.slice(0, 40) }) })) }),
     };
     const prompt = [
       'You are 组长, the group lead. Stay in read-only planning mode. Inspect the checked-out code when useful.',
       'The checkout here is a copy on the server. The person\u2019s real project and the folders they authorized (for example their Desktop) are on their computer: call windows_list_locations, then list, search, grep and read files there with the windows_* tools (pass the location id as root). When the computer location is listed, use it read-only to inspect any folder in the person\u2019s home, mounted volumes or temporary folders; system and credential folders are blocked. Members can read there too, and members whose steps change files can create, change, move and delete files there (windows_write_file, windows_make_directory, windows_move_path, windows_delete_path); plan such work as implement steps and name the folder in the step prompt. Project files are still changed in the task workspace and applied as a reviewed patch. Read what you need before asking; do not ask the person to paste files you can read.',
       'Reply with the JSON object alone, with no text before or after it and no code fence.',
+      'When completedWork is present the person changed direction while the work was under way: that work is done and kept. Plan only what remains under the newest reply, build on the finished work instead of redoing it, and do not depend on its step ids.',
       'Ask the requester every material question you cannot resolve from the repository or the discussion. Ask specific questions and offer options when helpful. Do not re-ask answered questions or ask about details you can determine.',
       'If clarification is needed return only JSON {"questions":["question 1","question 2"]}, at most 6 questions, each at most 600 characters. You can ask more in a later round.',
       'When clear return only JSON {"summary":"outline the scope and validation in at most 1800 characters","steps":[{"id":"step","capability":"implement","prompt":"concrete work and checks","dependsOn":[]}]}. User-visible text should match the requester’s language.',
       CAPABILITY_GUIDE,
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
       'Use each integration’s strengths and model-specific profile to choose the least costly capable model. These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
+      'Choose a model for every step from the whole list of that executor\u2019s models, matched to how hard the step is; do not put every step on the same model out of habit. ' +
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. Use the configured default when model is omitted. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
       'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',
@@ -1406,7 +1458,7 @@ event(task, state, detail) {
         this.waitForExecutor(task, 'plan');
         return;
       }
-      const step = { id: 'group-planner', role: lead, capability: 'plan', write: false, model: this.config.adapters[lead]?.profiles?.defaultModel };
+      const step = { id: 'group-planner', role: lead, capability: 'plan', write: false, model: this.leadModelFor(task) };
       const folder = path.join(root, step.id);
       await this.ensureWorktree(repo, folder, { ...task, base: plan.base }, step, signal);
       revision = (plan.rounds.at(-1)?.revision || 0) + 1;
@@ -1527,7 +1579,7 @@ event(task, state, detail) {
     }
     const round = acceptSteps.length + 1;
     const step = {
-      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true,
+      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true, model: this.leadModelFor(task),
       state: 'queued', attempts: 0,
       dependsOn: task.steps.filter((item) => !this.isAcceptStep(item) && item.state === 'completed').map((item) => item.id),
       prompt: 'You are the lead accepting this task. Decide whether the work satisfies the request and the plan.',
@@ -1918,6 +1970,21 @@ event(task, state, detail) {
     return true;
   }
 
+  // The lead's model: the one the person picked for this group, else the configured leadModel, else the newest
+  // Opus, else the lead's default. It is always passed to the CLI, so the lead never falls back to whatever model
+  // the CLI's own sign-in defaults to (which can be a small one).
+  leadModelFor(task) {
+    const profiles = this.config.adapters[LEAD_ROLE]?.profiles;
+    const models = Object.keys(profiles?.models || {});
+    if (task?.leadModel && models.includes(task.leadModel)) return task.leadModel;
+    const configured = this.config.adapters[LEAD_ROLE]?.leadModel;
+    if (configured && models.includes(configured)) return configured;
+    const version = (id) => (/(\d+)[-.](\d+)/.exec(id) || [0, 0, 0]).slice(1).map(Number);
+    const opus = models.filter((id) => /opus/i.test(id))
+      .sort((a, b) => { const [x1, y1] = version(a), [x2, y2] = version(b); return x2 - x1 || y2 - y1; })[0];
+    return opus || profiles?.defaultModel || undefined;
+  }
+
   async runTriage(task, repo, root, signal) {
     const escalation = task.escalation;
     if (!escalation?.active) return;
@@ -1952,7 +2019,7 @@ event(task, state, detail) {
       const reassign = escalation.reason === 'step_failed';
       const round = reassign ? task.reassignRounds + '-' + (task.lastStepFailure?.[0]?.step || 'step') : (task.triageRounds || 0) + 1;
       step = {
-        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true,
+        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true, model: this.leadModelFor(task),
         state: 'queued', attempts: 0, dependsOn: [], reason: escalation.reason,
         prompt: 'Diagnose this escalation and choose exactly one next action.',
         brief: buildTriageBrief(task, escalation.reason),
@@ -2283,6 +2350,10 @@ event(task, state, detail) {
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');
       return this.updatePlan(task, body);
+    }
+    if (body.operation === 'revise_plan') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.revisePlan(task, body.reply);
     }
     if (body.operation === 'steer_step') {
       if (!owner) throw new Error('task_access_denied');

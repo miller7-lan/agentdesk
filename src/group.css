@@ -676,3 +676,23 @@ button.lane-node { cursor: pointer; }
 .group-stop { display: grid; place-items: center; width: 34px; height: 34px; margin-right: 6px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); background: var(--panel, #fff); }
 .group-stop:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .group-stop svg { width: 14px; height: 14px; fill: currentColor; }
+
+/* 泳道卡片 + 分支线：每条泳道左侧一根竖线，节点圆点在线上，成员之间的交接是弯曲连线（参考 Lancer 泳道树） */
+.sg-edges { z-index: 1; }
+.sg-spine { stroke: var(--lane); stroke-width: 2.2; stroke-linecap: round; }
+.sg-spine.tail { stroke-width: 1.6; stroke-dasharray: 4 4; opacity: .55; animation: link-flow 1.4s linear infinite; }
+.sg-edge { fill: none; stroke: var(--lane); stroke-width: 1.8; opacity: .8; }
+.sg-edge.handoff { stroke-dasharray: none; }
+.sg-edge.handoff.live { stroke-dasharray: 7 6; animation: link-flow .9s linear infinite; opacity: 1; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--lane) 55%, transparent)); }
+.sg-edge.handoff.later { stroke-dasharray: 3 4; opacity: .45; }
+.sg-dot { fill: var(--panel, #fff); stroke: var(--lane); stroke-width: 2; }
+.sg-dot[data-state="completed"], .sg-dot[data-state="accepted"] { fill: var(--lane); }
+.sg-dot[data-state="failed"] { fill: var(--danger); stroke: var(--danger); }
+.sg-dot[data-state="running"] { fill: var(--panel, #fff); animation: sg-dot-pulse 1.6s ease-in-out infinite; }
+.sg-dot[data-state="queued"], .sg-dot[data-state="proposed"] { stroke-dasharray: 2 2; }
+@keyframes sg-dot-pulse { 50% { stroke-width: 4.5; stroke-opacity: .55; } }
+.sg-edge-sample { border-top-style: solid; border-top-color: var(--muted); }
+.sg-edge-sample.live { border-top-style: dashed; border-top-color: var(--accent); }
+.sg-node::before { content: ''; position: absolute; left: -11px; top: 46px; width: 11px; height: 2px; background: var(--lane); opacity: .6; }
+.sg-node { overflow: visible; }
+@media (prefers-reduced-motion: reduce) { .sg-spine.tail, .sg-edge.handoff.live, .sg-dot[data-state="running"] { animation: none; } }

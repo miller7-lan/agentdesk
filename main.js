@@ -1015,7 +1015,7 @@ function startMacDesktop() {
 }
 
 const orchestrationOperations = new Set([
-  'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step',
+  'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan',
   'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
   'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'onboarding_check', 'diagnostics',
 ]);

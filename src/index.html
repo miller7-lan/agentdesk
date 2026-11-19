@@ -202,7 +202,12 @@
                   <option value="antigravity">Antigravity</option>
                 </select>
               </label>
-              <label class="group-recipient" title="组长（最新 Opus）规划、诊断和验收时的思考程度。派给成员用什么模型、什么思考程度由组长决定。">组长思考
+              <label class="group-recipient" title="组长规划、诊断和验收用的模型。默认用最新的 Opus；可以换成任何一个 Claude 模型。派给成员用什么模型由组长按每一步的难度挑。">组长模型
+                <select id="groupLeadModel" aria-label="组长模型">
+                  <option value="">最新 Opus（默认）</option>
+                </select>
+              </label>
+              <label class="group-recipient" title="组长规划、诊断和验收时的思考程度。派给成员用什么模型、什么思考程度由组长决定。">组长思考
                 <select id="groupLeadEffort" aria-label="组长思考程度">
                   <option value="low">低</option>
                   <option value="medium">中</option>

@@ -47,6 +47,7 @@ window.__groupReady = (async () => {
     bridge_offline: '本机 Bridge 没有在线。',
     team_timeout: '任务超时。',
     plan_reply_received: '组长正在根据你的回复调整方案。',
+    plan_revise_requested: '你改了方向：组长保留已完成的部分，按你的话重新规划剩下的，新方案出来后请确认。',
     plan_proposed: '确认方案后开始执行。',
     plan_approved: '方案已确认，等待分派。',
     plan_workspace_changed: '工作区版本已变化，请基于当前版本重新规划。',
@@ -87,6 +88,17 @@ window.__groupReady = (async () => {
   function renderModelOptions() {
     const profiles = routeState.modelProfiles?.[provider.value];
     $('#groupModelOptions').replaceChildren(...Object.keys(profiles?.models || {}).map(id => new Option(id, id)));
+    renderLeadModels();
+  }
+  // Every Claude model the server offers, for the lead; the group's own choice is kept.
+  function renderLeadModels() {
+    const select = document.querySelector('#groupLeadModel');
+    if (!select) return;
+    const models = routeState.modelProfiles?.claude?.models || {};
+    const wanted = currentGroup?.()?.leadModel ?? select.value;
+    select.replaceChildren(new Option('最新 Opus（默认）', ''),
+      ...Object.entries(models).map(([id, profile]) => new Option(profile?.label || id, id)));
+    select.value = Object.hasOwn(models, wanted) ? wanted : '';
   }
   const entry = $('#sbOrchestrator');
   const routeStatus = $('#sbGroupRoute');
@@ -338,7 +350,7 @@ window.__groupReady = (async () => {
   const workbench = temporary ? {} : store.get('groupWorkbench', {});
   function saveWorkbench(group) {
     if (!group || temporary || isExample(group.id)) return;
-    workbench[group.id] = { panel: group.panel, leadEffort: group.leadEffort };
+    workbench[group.id] = { panel: group.panel, leadEffort: group.leadEffort, leadModel: group.leadModel };
     store.set('groupWorkbench', workbench);
   }
   const leadEffortSelect = () => document.querySelector('#groupLeadEffort');
@@ -351,6 +363,7 @@ window.__groupReady = (async () => {
       previous.provider = provider.value;
       previous.model = model.value;
       previous.leadEffort = leadEffortSelect()?.value;
+      previous.leadModel = document.querySelector('#groupLeadModel')?.value || '';
       previous.panel = state.panel;
       previous.scroll = timeline.scrollTop;
       previous.atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
@@ -364,6 +377,12 @@ window.__groupReady = (async () => {
     model.value = next?.model || '';
     const effort = next?.leadEffort || workbench[id]?.leadEffort || 'high';   // a new group starts at the default
     if (leadEffortSelect() && [...leadEffortSelect().options].some((option) => option.value === effort)) leadEffortSelect().value = effort;
+    const leadModelSelect = document.querySelector('#groupLeadModel');
+    if (leadModelSelect) {
+      const wanted = next?.leadModel ?? workbench[id]?.leadModel ?? '';
+      leadModelSelect.value = [...leadModelSelect.options].some((option) => option.value === wanted) ? wanted : '';
+      if (next) next.leadModel = leadModelSelect.value;
+    }
     laneFocus = next?.laneFocus || null;
     filter = 'all';
     filterSelect.value = '';
@@ -1799,6 +1818,7 @@ window.__groupReady = (async () => {
       request: {
         prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || latestTask(group)?.id || undefined, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
+        leadModel: $('#groupLeadModel')?.value || undefined,
         provider: recipient || undefined,
         // The person's member order from the quota page (only the kinds of work they reordered).
         ...(!['broadcast', 'compact'].includes(kind) && personRouteOrder()),
@@ -1855,6 +1875,29 @@ window.__groupReady = (async () => {
       if (round && (isExample(group.id) || connected)) {
         if (await sendPlanAction(group, waiting.id, round.revision, 'plan_reply', draft)) {
           if (group === currentGroup() && input.value.trim() === draft) input.value = '';
+        }
+        return;
+      }
+    }
+    // ...and while the lead's task is still under way, the message changes that task's plan (same task, same
+    // workbench): the lead keeps what is done and plans the rest again. Only a finished task starts a new one.
+    if (waiting && !waiting.redacted && waiting.state && !terminal.has(waiting.state) && !waitingForPlan(waiting) && waiting.plan) {
+      if (isExample(group.id)) {
+        updateTask(group, waiting.id, { state: 'planning', detail: 'plan_revise_requested' });
+        input.value = '';
+        A.toast('已交给组长：保留已完成的部分，按你的话重新规划剩下的');
+        render();
+        return;
+      }
+      if (connected) {
+        const current = generation;
+        const sent = await run(async () => {
+          const answer = await control('revise_plan', { taskId: waiting.id, reply: draft });
+          if (current === generation) updateTask(group, waiting.id, answer, true);
+        }, group);
+        if (sent) {
+          if (group === currentGroup() && input.value.trim() === draft) input.value = '';
+          A.toast('已交给组长：保留已完成的部分，按你的话重新规划剩下的');
         }
         return;
       }
@@ -2208,6 +2251,13 @@ window.__groupReady = (async () => {
     leadEffort.addEventListener('change', () => {
       const group = currentGroup();
       if (group) { group.leadEffort = leadEffort.value; saveWorkbench(group); }
+    });
+  }
+  const leadModelPick = $('#groupLeadModel');
+  if (leadModelPick) {
+    leadModelPick.addEventListener('change', () => {
+      const group = currentGroup();
+      if (group) { group.leadModel = leadModelPick.value; saveWorkbench(group); }
     });
   }
 

@@ -83,3 +83,45 @@ process.exit(1);
     return true;
   });
 });
+
+test('the lead runs on the model the person picked, else the newest Opus, never the CLI default', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const models = { 'claude-haiku-5-5': {}, 'claude-opus-4-8': {}, 'claude-opus-5-5': {}, 'claude-sonnet-5-5': {} };
+  const self = (extra = {}) => ({ config: { adapters: { claude: { profiles: { defaultModel: 'claude-haiku-5-5', models }, ...extra } } } });
+  const pick = (context, task) => Scheduler.prototype.leadModelFor.call(context, task);
+  assert.equal(pick(self(), {}), 'claude-opus-5-5');                                       // newest Opus beats a small default
+  assert.equal(pick(self(), { leadModel: 'claude-sonnet-5-5' }), 'claude-sonnet-5-5');     // the person may pick any model
+  assert.equal(pick(self(), { leadModel: 'claude-haiku-5-5' }), 'claude-haiku-5-5');
+  assert.equal(pick(self({ leadModel: 'claude-sonnet-5-5' }), {}), 'claude-sonnet-5-5');   // configured lead model
+  assert.equal(pick(self(), { leadModel: 'gone' }), 'claude-opus-5-5');                    // a retired choice falls back
+});
+
+test('a message while the lead\'s task is under way changes that task\'s plan, keeping the finished steps', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const aborted = [];
+  const saved = [];
+  const self = {
+    stepControllers: new Map([['t1:edit', { abort: (reason) => aborted.push('edit:' + reason.message) }]]),
+    running: new Map([['t1', { abort: (reason) => aborted.push('task:' + reason.message) }]]),
+    save(task, state, detail) { task.state = state; saved.push(detail); },
+    pump() {}, status: (id) => ({ id }),
+  };
+  self.updatePlan = Scheduler.prototype.updatePlan.bind(self);
+  const task = { id: 't1', state: 'running', groupPlan: { approved: 1, rounds: [{ revision: 1, steps: [] }] },
+    steps: [{ id: 'scout', state: 'completed', output: 'found it' }, { id: 'edit', state: 'running' }, { id: 'review', state: 'queued' }] };
+  Scheduler.prototype.revisePlan.call(self, task, '别改数据库，只改接口');
+  assert.equal(task.state, 'queued');
+  assert.deepEqual(saved, ['plan_revise_requested']);
+  assert.deepEqual(aborted, ['edit:revised', 'task:revised']);
+  assert.equal(task.groupPlan.approved, undefined);
+  assert.deepEqual(task.steps.map((step) => step.id), ['scout']);
+  assert.equal(task.groupPlan.rounds[0].reply, '别改数据库，只改接口');
+  // The lead's new plan reuses an id; approval keeps the finished step and renames the new one.
+  task.groupPlan.rounds.push({ revision: 2, steps: [{ id: 'scout', state: 'queued', dependsOn: [] }, { id: 'api', state: 'queued', dependsOn: ['scout'] }] });
+  task.state = 'awaiting_approval';
+  Scheduler.prototype.updatePlan.call(self, task, { operation: 'plan_approve', revision: 2 });
+  assert.deepEqual(task.steps.map((step) => [step.id, step.dependsOn || []]), [['scout', []], ['scout-2', []], ['api', ['scout-2']]]);
+  // A finished task is not revised; a new message starts new work instead.
+  task.state = 'completed';
+  assert.throws(() => Scheduler.prototype.revisePlan.call(self, task, 'x'), /task_finished/);
+});
