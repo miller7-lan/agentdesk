@@ -1044,8 +1044,11 @@ event(task, state, detail) {
     this.save(task, task.state, `${step.id}:reassigned:${role}->${next}:busy`);
     step.role = next;
     delete step.session;
-    delete step.model;
     delete step.effort;
+    // The new member's own default model, passed explicitly, so it never falls back to whatever its CLI sign-in
+    // defaults to.
+    const fallback = this.config.adapters[next]?.profiles?.defaultModel;
+    if (fallback) step.model = fallback; else delete step.model;
   }
 
   async acquireCli(task, step, signal) {
