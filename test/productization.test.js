@@ -108,19 +108,23 @@ test('logs rotate, audit logs are private, and diagnostics exclude credentials a
   if (process.platform !== 'win32') assert.equal((await stat(path.join(folder, 'audit-20261117.jsonl'))).mode & 0o777, 0o600);
   const diagnostic = await collectDiagnostics({
     version: '1.2.3', config: { projects: [{ id: 'live', kind: 'local', localRoot: '/private/workspace', token: 'token-secret' }] },
-    remote: { codex: 'ready', detail: 'private raw output', key: 'private key' }, logger,
+    remote: {
+      codex: 'ready', detail: 'private raw output', key: 'private key',
+      route: { route: 'jump', host: 'relay.example.invalid', key: 'jump-private-key', suspended: false },
+    }, logger,
     request: async (operation) => ({ ok: true, value: operation === 'diagnostics'
       ? { clis: [{ provider: 'codex', state: 'ready', version: 'Codex 4.5.6', error: 'internal host' }] } : {} }),
   });
   assert.equal(diagnostic.report.orchestrator.cli[0].version, '4.5.6');
   assert.equal(diagnostic.report.config.projects[0].localConfigured, true);
+  assert.equal(diagnostic.report.remote.route, 'jump');
   assert.equal(diagnostic.audit.length, 1);
   const archive = path.join(folder, 'bundle.tar.gz');
   await exportDiagnostics(archive, diagnostic);
   const tar = gunzipSync(await readFile(archive)).toString();
   assert.match(tar, /diagnostics\.json/);
   assert.match(tar, /audit\.jsonl/);
-  assert.doesNotMatch(tar, /not-for-log|token-secret|private raw output|private key|private\/workspace|must-not-appear|internal host/);
+  assert.doesNotMatch(tar, /not-for-log|token-secret|private raw output|private key|private\/workspace|must-not-appear|internal host|relay\.example|jump-private-key/);
 });
 
 test('updater checks only enabled packaged apps and never downloads or installs automatically', async () => {

@@ -26,7 +26,16 @@
     "port": 22,
     "user": "agentdesk",
     "key": "/Users/yourname/.agentdesk/mac_bridge_ed25519",
-    "knownHosts": "/Users/yourname/.ssh/known_hosts"
+    "knownHosts": "/Users/yourname/.ssh/known_hosts",
+    "jump": {
+      "mode": "auto",
+      "host": "relay.example.invalid",
+      "port": 22,
+      "user": "agentdesk-jump",
+      "key": "/Users/yourname/.agentdesk/jump_ed25519",
+      "knownHosts": "/Users/yourname/.agentdesk/jump_known_hosts",
+      "probeMinutes": 10
+    }
   },
   "relay": {
     "host": "relay.example.invalid",

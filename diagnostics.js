@@ -64,7 +64,11 @@ async function collectDiagnostics({ version, config, remote, logger, request = a
           localConfigured: Boolean(localRoot), remoteConfigured: Boolean(remoteCwd), bridgeConfigured: Boolean(orchestratorWorkspace),
         })),
       },
-      remote: Object.fromEntries(['sshd', 'tunnel', 'codex'].map((key) => [key, remoteStates.has(remote[key]) ? remote[key] : 'unknown'])),
+      remote: {
+        ...Object.fromEntries(['sshd', 'tunnel', 'codex'].map((key) => [key, remoteStates.has(remote[key]) ? remote[key] : 'unknown'])),
+        route: remote.route?.suspended ? 'suspended'
+          : ['direct', 'jump'].includes(remote.route?.route) ? remote.route.route : 'unknown',
+      },
       orchestrator: { ssh: route?.ssh === true, relay: route?.relay === true, cli, quotas: cleanQuota(quotas),
         resources: cleanResources(resources ?? daemon?.resources), imageDigests: images },
     },
