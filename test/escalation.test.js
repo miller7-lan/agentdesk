@@ -616,3 +616,30 @@ test('a step with no output for its stall time is stopped and goes to the lead, 
   assert.equal(task.state, 'completed');
   assert.equal(task.steps.find((step) => step.id === 'look').role, 'grok');
 });
+
+test('a stalled step tries another model of the same member before going to the lead', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const config = adapters('codex', 'claude', 'grok', 'gemini');
+  config.gemini.profiles = { defaultModel: 'g-high', models: { 'g-high': {}, 'g-low': {} } };
+  const runs = [];
+  const scheduler = schedulerFor(dir, mirror, async ({ name, model, signal }) => {
+    runs.push([name, model]);
+    if (name === 'gemini' && model !== 'g-low') {
+      await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+    return { output: 'looked' };
+  }, { acceptance: { mode: 'off' }, stallTimeoutMs: 50, adapters: config });
+  t.after(() => scheduler.store.close());
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'look' });
+  task.base = head;
+  task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
+  const run = scheduler.run(task, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  scheduler.watchStalls();
+  await run;
+  assert.equal(task.state, 'completed');
+  assert.equal(task.steps[0].role, 'gemini');        // same member
+  assert.equal(task.steps[0].model, 'g-low');        // another model
+  assert.ok(!runs.some(([name]) => name === 'claude'));   // the lead was not needed
+  assert.ok(scheduler.store.events(task.id).some((event) => /^look:model_switch:gemini:/.test(event.detail)));
+});

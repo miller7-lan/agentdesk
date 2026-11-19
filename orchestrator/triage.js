@@ -10,6 +10,7 @@ const TRIAGE_INSTRUCTION = 'You are the lead diagnosing a task that got stuck. C
   '{"decision":"retry|rework|accept_with_risk|fail","reason":"what went wrong",' +
   '"instructions":"what the next step must do","executor":"optional member for a retry","model":"optional model ID","effort":"optional",' +
   '"steps":[{"capability":"implement","prompt":"concrete work","executor":"optional member","model":"optional","effort":"optional"}]}. ' +
+  'When the failure is cli_stalled (the CLI wrote nothing for a long time), prefer retry with another model of the same member (set model) over another member. ' +
   'When the reason is step_failed, a member\u2019s step failed (failures.steps lists who and which model already tried, and how many ' +
   'of the 3 reassignments that step has used): retry hands the same step to another member or another model ' +
   '(set executor and/or model from reassignOptions; a model alone keeps the member), rework replaces the step with new steps, ' +

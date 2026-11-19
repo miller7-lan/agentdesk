@@ -911,6 +911,24 @@ event(task, state, detail) {
     }
   }
 
+  // After a stall: the same member with one of its other models, the default first, never one that already
+  // stalled on this step. Returns false when there is none left or the step has switched twice already.
+  switchModel(task, step) {
+    const profiles = this.config.adapters[step.role]?.profiles;
+    // no model set means the member's default model ran
+    const tried = step.stalledModels = [...new Set([...(step.stalledModels || []), step.model || profiles?.defaultModel || '(default)'])];
+    if (tried.length > 2) return false;
+    const models = Object.keys(profiles?.models || this.config.adapters[step.role]?.models || {});
+    const choices = [profiles?.defaultModel, ...models].filter((model) => model && !tried.includes(model));
+    const next = choices[0];
+    if (!next) return false;
+    this.save(task, task.state, `${step.id}:model_switch:${step.role}:${step.model || 'default'}->${next}:stalled`);
+    step.model = next;
+    delete step.session;
+    delete step.error;
+    return true;
+  }
+
   // The person stops one step (it looks stuck or wrong); the lead then reassigns it.
   stopStep(task, stepId) {
     const controller = this.stepControllers?.get(task.id + ':' + stepId);
@@ -1684,6 +1702,8 @@ event(task, state, detail) {
           throw error;
         }
         if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
+        // A stalled step first tries another model of the same member (at most twice) before it goes to the lead.
+        if (error.message.startsWith('cli_stalled') && this.switchModel(task, step)) continue;
         step.state = 'failed';
         step.error = error.message;
         this.save(task, savedState(), step.id + ':failed');

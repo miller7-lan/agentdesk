@@ -425,8 +425,10 @@ window.__groupReady = (async () => {
     if (executor) return `等待 ${memberName(executor[1])} 可用：额度或登录状态恢复后自动继续，不会改派给其他成员。`;
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth|busy)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${{ quota: '额度用尽', auth: '需要重新登录', busy: '正忙' }[moved[3]]}，改由 ${memberName(moved[2])} 接手。`;
+    const switched = /^([\w-]+):model_switch:(\w+):([^>]+)->(.+):stalled$/.exec(detail || '');
+    if (switched) return `${memberName(switched[2])} 卡住了，先换模型重试：${switched[3] === 'default' ? '默认模型' : switched[3]} → ${switched[4]}。`;
     const stalled = /^([\w-]+):stalled:(\w+):(\d+)$/.exec(detail || '');
-    if (stalled) return `${memberName(stalled[2])} 超过 ${stalled[3]} 分钟没有任何输出，已自动停止，交给组长重新安排。`;
+    if (stalled) return `${memberName(stalled[2])} 超过 ${stalled[3]} 分钟没有任何输出，已自动停止；先换模型重试，再不行交给组长。`;
     if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
@@ -483,7 +485,7 @@ window.__groupReady = (async () => {
       if (step.state === 'running') {
         const quiet = step.lastOutputAt ? (Date.now() - Date.parse(step.lastOutputAt)) / 60000 : null;
         const stalled = quiet !== null ? quiet >= STALL_MINUTES : step.startedAt && (Date.now() - Date.parse(step.startedAt)) / 60000 >= STALL_MINUTES;
-        lines.push(`<li class="${stalled ? 'stalled' : ''}"><b>${esc(who)}</b> 正在执行${step.startedAt ? '，已 ' + ago(step.startedAt) : ''}；${step.lastOutputAt ? '最后一次输出在 ' + ago(step.lastOutputAt) + '前' : '还没有任何输出'}${stalled ? '。<em>超过 ' + STALL_MINUTES + ' 分钟没有动静，可能卡住了</em>；10 分钟没有任何输出时主控会自动停掉它，交给组长重新安排' : ''}
+        lines.push(`<li class="${stalled ? 'stalled' : ''}"><b>${esc(who)}</b> 正在执行${step.startedAt ? '，已 ' + ago(step.startedAt) : ''}；${step.lastOutputAt ? '最后一次输出在 ' + ago(step.lastOutputAt) + '前' : '还没有任何输出'}${stalled ? '。<em>超过 ' + STALL_MINUTES + ' 分钟没有动静，可能卡住了</em>；10 分钟没有任何输出时主控会自动停掉它，先换模型重试，再不行交给组长' : ''}
           <button type="button" class="task-text-link" data-stop-step="${esc(task.id)}" data-step="${esc(step.id)}" title="停掉这一步，交给组长换成员或换模型重新安排；任务本身继续">停止这一步</button></li>`);
       } else if (step.state === 'waiting_member') {
         const holder = step.holder;
@@ -820,7 +822,7 @@ window.__groupReady = (async () => {
         ].filter(Boolean).join(' · '))}</span>
         ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
-      </button>${liveLine(task)}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
+      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
         <p><b>为什么失败：</b>${esc(failureReason(task))}</p>
         <div class="task-actions"><button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>
         <button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="terminal">看输出 ${svg('chev')}</button></div></div>` : ''}`;
@@ -959,6 +961,9 @@ window.__groupReady = (async () => {
       `<button type="button" class="sb-item clickable sb-resource${warning ? ' resource-warning' : ''}">${esc(label)}</button>`).join(''));
     const canSend = isExample(state.group) || (supported && (currentGroup().planReply ? connected : hasRoute()));
     $('#groupSend').disabled = busy || !canSend || !recipientReady;
+    const active = activeTasks(currentGroup());
+    $('#groupStop').hidden = !active.length;
+    $('#groupStop').title = active.length > 1 ? `停止这个群聊里正在进行的 ${active.length} 个任务中最新的一个` : '停止这个群聊里正在进行的任务';
     renderGroupAttachments();
     $('#groupPlanReplyCancel').disabled = busy;
     const connectionHint = !recipientReady ? `当前主控尚未启用 ${members[provider.value].name}。` : isExample(state.group) ? '本地示例'
@@ -1073,7 +1078,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:stopped_by_person$/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
@@ -1876,6 +1881,25 @@ window.__groupReady = (async () => {
     }
     return Object.keys(order).length ? { routeOrder: order } : {};
   }
+
+  // Stopping a whole task: from its card, or the composer's stop button (the group's newest unfinished task).
+  const activeTasks = (group) => [...(group?.records.values() || [])].filter((task) => belongs(group, task) && !task.redacted &&
+    task.state && !terminal.has(task.state) && task.state !== 'needs_review')
+    .sort((a, b) => (Date.parse(b.createdAt || '') || b.time || 0) - (Date.parse(a.createdAt || '') || a.time || 0));
+  async function stopTask(id) {
+    const group = currentGroup();
+    const task = group?.records.get(id);
+    if (!task || busy) return;
+    if (!window.confirm(`停止任务「${String(task.prompt || '').slice(0, 40)}」？\n正在运行的成员会被停下；已经生成、还没应用的补丁不会应用。`)) return;
+    group.selected = id;
+    await taskAction('cancel');
+    A.toast('已停止任务');
+  }
+  timeline.addEventListener('click', (event) => {
+    const id = event.target.closest('[data-stop-task]')?.dataset.stopTask;
+    if (id) stopTask(id);
+  });
+  $('#groupStop').addEventListener('click', () => { const task = activeTasks(currentGroup())[0]; if (task) stopTask(task.id); });
 
   // Stop one running step: the lead reassigns it; the task carries on.
   timeline.addEventListener('click', async (event) => {
