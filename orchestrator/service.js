@@ -92,13 +92,19 @@ function providerSettings(settings, name, home) {
     try { existing = JSON.parse(fs.readFileSync(filename, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     existing.mcpServers ||= {};
-    if (!Object.hasOwn(existing.mcpServers, 'agentdesk_windows')) {
-      existing.mcpServers.agentdesk_windows = {
-        command: process.execPath,
-        args: [path.join(__dirname, 'mcp.js')],
-        enabledTools: ['windows_list_locations', 'windows_list_directory', 'windows_stat_file',
-          'windows_search_files', 'windows_grep_files', 'windows_read_file_chunk'],
-      };
+    // The MCP server enforces per-step write permission; the client list must include the write tools or a
+    // member can see the Desktop but never change it. Existing installs are migrated, not only fresh ones.
+    const tools = ['windows_list_locations', 'windows_list_directory', 'windows_stat_file',
+      'windows_search_files', 'windows_grep_files', 'windows_read_file_chunk',
+      'windows_write_file', 'windows_make_directory', 'windows_move_path', 'windows_delete_path'];
+    const server = existing.mcpServers.agentdesk_windows;
+    const before = JSON.stringify(server?.enabledTools);
+    if (!server) {
+      existing.mcpServers.agentdesk_windows = { command: process.execPath, args: [path.join(__dirname, 'mcp.js')], enabledTools: tools };
+    } else {
+      server.enabledTools = [...new Set([...(Array.isArray(server.enabledTools) ? server.enabledTools : []), ...tools])];
+    }
+    if (!server || JSON.stringify(existing.mcpServers.agentdesk_windows.enabledTools) !== before) {
       const temporary = filename + '.' + randomUUID();
       try {
         fs.writeFileSync(temporary, JSON.stringify(existing, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
