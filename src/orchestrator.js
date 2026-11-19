@@ -514,6 +514,8 @@ window.__groupReady = (async () => {
     if (verdict) return `验收结论：${acceptanceNames[verdict[1]] || verdict[1]}。`;
     const fix = /^(fix-\d+):(started|completed|failed)$/.exec(detail || '');
     if (fix) return fix[2] === 'started' ? '返工步骤开始执行。' : fix[2] === 'completed' ? '返工步骤完成，等待重新验收。' : '返工步骤失败。';
+    const continuing = /^([\w-]+):continuing:(\d+)\/(\d+)$/.exec(detail || '');
+    if (continuing) return `${continuing[1]} 的 CLI 到达单次输出时限，正在同一会话续跑（第 ${continuing[2]}/${continuing[3]} 次），不会重复已确认的写入。`;
     return detail;
   }
   // A CLI's exit message in words a person can act on; the original sentence stays after the colon.
@@ -523,6 +525,8 @@ window.__groupReady = (async () => {
     if (model) return `模型 ${model[1]} 不可用或与推理强度不匹配（CLI 拒绝执行）：${raw}`;
     if (/^cli_auth_required/i.test(raw)) return `成员的登录已过期，需要重新登录：${raw}`;
     if (/^cli_quota_exhausted/i.test(raw)) return `成员的额度已用完：${raw}`;
+    if (/^cli_print_timeout/i.test(raw)) return `成员的 CLI 到达单次输出时限，会话已保留，将尝试有限续跑：${raw}`;
+    if (/^write_failed:/i.test(raw)) return `本机文件写入未得到确认，步骤不能算完成：${raw}`;
     if (/^cli_exit_\d+/i.test(raw)) return `成员的命令行异常退出：${raw}`;
     return raw;
   }
@@ -783,10 +787,13 @@ window.__groupReady = (async () => {
       const waiting = triaging && String(task.detail || '').startsWith('triage_unavailable');
       const progress = !step.reassigns ? ''
         : triaging ? `${waiting ? '等待' : ''}组长诊断 ${step.reassigns}/3` : `重排 ${step.reassigns}/3`;
-      const note = step.state === 'replaced' ? '已由新步骤接替'
+      // A step the lead replaced after it failed keeps its failure on the progress board, in red, with the error.
+      const failedRecord = step.state === 'failed' || (step.state === 'replaced' && Boolean(step.error || step.history?.length));
+      const note = step.state === 'replaced'
+        ? (failedRecord ? `失败记录 · ${milestone(step) || '已由新步骤接替'}` : '已由新步骤接替')
         : step.reassigns ? `${progress} · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
       const shown = stepDisplay(task, step.state || 'queued');
-      return `<${tag} class="step-row" data-state="${esc(shown)}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" data-step-anchor="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
+      return `<${tag} class="step-row${failedRecord ? ' failed-record' : ''}" data-state="${esc(shown)}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" data-step-anchor="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
         ${shown === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}<span class="step-node" aria-hidden="true"></span>
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
@@ -857,11 +864,15 @@ window.__groupReady = (async () => {
 
   const stepProgress = (records) => [...records.values()].flatMap((task) =>
     (task.steps || []).map((step) => ({ key: task.id + ':' + step.id, state: step.state, role: step.role })));
+  // The step a node click is locating, so a live re-render keeps the conversation on it instead of jumping away.
+  let laneLocateTarget = '';
+  let laneLocateAt = 0;
   function renderTimeline() {
     const group = currentGroup();
     const { records } = group;
     const broadcasts = new Set();
     const atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
+    const scrollTop = timeline.scrollTop;
     const ordered = [...records.values()].sort((a, b) => (Date.parse(a.createdAt || '') || a.time || 0) - (Date.parse(b.createdAt || '') || b.time || 0)).filter((task) => filter !== 'attention' || task.state === 'needs_review' || waitingForPlan(task));
     // Finished tasks beyond the most recent few fold into one line each, so the group does not grow without end.
     const folded = new Set(ordered.slice(0, -RECENT_TASKS).filter((task) => ['completed', 'failed', 'cancelled'].includes(task.state) && !group.expanded?.has(task.id)).map((task) => task.id));
@@ -960,18 +971,20 @@ window.__groupReady = (async () => {
           const expanded = Boolean(group.summaryOpen?.has(summaryKey));
           const fullSummary = closingSummary(step, 4000);
           const summary = closingSummary(step, expanded ? 900 : 160);
-          if (summary && ['completed', 'failed'].includes(step.state)) {
+          // A failed step that the lead replaced keeps its closing report in the group as a red failure record.
+          const failedRecord = step.state === 'failed' || (step.state === 'replaced' && Boolean(step.error || step.history?.length));
+          if (summary && (['completed', 'failed'].includes(step.state) || failedRecord)) {
             const collapsible = fullSummary.length > 160;
             const link = !task.redacted && threadRoles.has(step.role)
               ? `<button type="button" class="task-text-link" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" data-agent-step="${esc(step.id)}">在单聊查看全文 ${svg('chev')}</button>` : '';
             // A member's summary is its own report until the lead has accepted the task.
             const verdict = task.acceptance?.verdict;
             const checked = ['accept', 'pass'].includes(verdict) ? '已验收' : verdict === 'accept_with_risk' ? '已验收（带风险）' : '';
-            const trust = step.state === 'failed' ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
+            const trust = failedRecord ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
             // Every member's closing summary folds the same way: the first lines stay, the long detail opens
             // on demand, and the full text remains one click away in that member's own conversation.
-            messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : '完成总结', what].join(' · '),
-              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}" data-step-summary="${esc(task.id + ':' + step.id)}">${trust}
+            messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : step.state === 'replaced' ? '失败记录' : '完成总结', what].join(' · '),
+              `<div class="step-summary${failedRecord ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}" data-step-summary="${esc(task.id + ':' + step.id)}">${trust}
                 <p class="step-summary-text${collapsible && !expanded ? ' clamped' : ''}">${esc(summary)}</p>
                 ${collapsible ? `<button type="button" class="task-text-link" data-summary-toggle="${esc(summaryKey)}" aria-expanded="${expanded}">${expanded ? '收起详情' : '展开详情'}</button>` : ''}
                 ${link}</div>`, 'summary'));
@@ -991,7 +1004,15 @@ window.__groupReady = (async () => {
       <h2>${records.size ? '没有符合筛选条件的消息' : '项目群聊'}</h2>
       ${records.size ? '' : '<p>组长先确认需求和方案，确认后开始执行。</p>'}
     </div>`);
-    if (atBottom && (records.size || group.approvals.size)) timeline.scrollTop = timeline.scrollHeight;
+    // A re-render replaces the conversation's HTML, which would otherwise throw away the reader's position.
+    // Stay on the located step while the person is reading it, at the bottom when they were following it live,
+    // and otherwise exactly where they were.
+    const pinned = laneLocateTarget && Date.now() - laneLocateAt < 10000 ? timeline.querySelector(laneLocateTarget) : null;
+    if (pinned) {
+      laneLocateAt = Date.now();
+      timeline.scrollTop = messageTop(pinned);
+    } else if (atBottom && (records.size || group.approvals.size)) timeline.scrollTop = timeline.scrollHeight;
+    else timeline.scrollTop = scrollTop;
     // A member that just finished sends a light from its summary to its row on the progress board (in the lanes
     // view, from its row in the event list to its node on the lane tree; see renderLanesView).
     if (!timeline.hidden) window.AgentDeskLight?.completed(timeline, stepProgress(records));
@@ -1445,7 +1466,47 @@ window.__groupReady = (async () => {
       ${picker}${window.AgentDeskLanes.groupTree(model, { ...laneHelpers, focus: laneFocus, width })}</div>`;
   }
   // Clicking a node on the lane tree focuses its lane and finds the conversation it belongs to: a group task
-  // scrolls into view in the conversation and a light flies from the node to it; a single chat opens.
+  // scrolls into view in the conversation and a guide line stays until the node is clicked again; a single chat opens.
+  const selectorOfMessage = (element) => {
+    if (!element) return '';
+    if (element.dataset.stepSummary) return `[data-step-summary="${CSS.escape(element.dataset.stepSummary)}"]`;
+    if (element.dataset.stepAnchor) return `[data-step-anchor="${CSS.escape(element.dataset.stepAnchor)}"]`;
+    if (element.dataset.messageId) return `[data-message-id="${CSS.escape(element.dataset.messageId)}"]`;
+    return '';
+  };
+  const messageTop = (element) => {
+    const view = timeline.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    const margin = Math.min(120, Math.max(12, (timeline.clientHeight - Math.min(box.height, timeline.clientHeight)) / 2));
+    return Math.max(0, timeline.scrollTop + box.top - view.top - margin);
+  };
+  let laneLocateRun = 0;
+  // Scroll only the conversation, not every scrollable ancestor. Re-assert the position once a live refresh
+  // has had time to re-render the message, so a click no longer finds the place and then springs back.
+  function locateInTimeline(selector, run) {
+    const scroll = () => {
+      const element = selector ? timeline.querySelector(selector) : null;
+      if (!element) return false;
+      laneLocateAt = Date.now();
+      timeline.scrollTo({ top: messageTop(element), behavior: 'auto' });
+      return true;
+    };
+    if (!scroll()) return;
+    for (const delay of [450, 1400]) {
+      setTimeout(() => {
+        if (run !== laneLocateRun) return;
+        const element = selector ? timeline.querySelector(selector) : null;
+        if (!element) return;
+        const view = timeline.getBoundingClientRect();
+        const box = element.getBoundingClientRect();
+        if (box.top < view.top + 8 || box.bottom > view.bottom - 8) scroll();
+      }, delay);
+    }
+  }
+  // A person scrolling away ends the pin, so a later live refresh never pulls the conversation back.
+  timeline.addEventListener('scroll', () => {
+    if (laneLocateTarget && Date.now() - laneLocateAt > 300) laneLocateTarget = '';
+  }, { passive: true });
   function laneSelect(key, stepKey) {
     const laneId = key.split(':')[0];
     laneFocus = laneId;
@@ -1457,21 +1518,35 @@ window.__groupReady = (async () => {
       renderTimeline();
     }
     A.renderPanel();
+    const run = ++laneLocateRun;
     requestAnimationFrame(() => {
-      const node = document.querySelector(`[data-lane-event="${CSS.escape(key)}"]`);
+      const nodeSelector = `[data-lane-event="${CSS.escape(key)}"]`;
+      const node = document.querySelector(nodeSelector);
       // A node that names a step lands on that step's closing summary, else on its row in the progress
       // board; only the task as a whole when neither is shown (e.g. a filter hides it).
       const stepTarget = stepKey
         ? timeline.querySelector(`[data-step-summary="${CSS.escape(stepKey)}"]`) || timeline.querySelector(`[data-step-anchor="${CSS.escape(stepKey)}"]`)
         : null;
       const message = stepTarget || timeline.querySelector(`[data-message-id="${CSS.escape(laneId)}"]`);
-      window.AgentDeskLight?.arrive(node);
-      if (!message || !node) return;
-      message.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      const messageSelector = selectorOfMessage(message);
+      if (!message || !node) { window.AgentDeskLight?.arrive(node); return; }
+      laneLocateTarget = messageSelector;
+      laneLocateAt = Date.now();
+      // The first click leaves the guide line on screen; clicking the same node again clears it.
+      const already = window.AgentDeskLight?.hasGuide?.(nodeSelector, messageSelector);
+      locateInTimeline(messageSelector, run);
       message.classList.remove('lane-located');
       void message.offsetWidth;
       message.classList.add('lane-located');
-      setTimeout(() => window.AgentDeskLight?.fly(node, message, node.style.getPropertyValue('--lane').trim()), 350);
+      setTimeout(() => {
+        if (run !== laneLocateRun) return;
+        if (already) { window.AgentDeskLight?.clearGuides?.(); return; }
+        const current = document.querySelector(nodeSelector) || node;
+        const colour = current.style.getPropertyValue('--lane').trim() || window.AgentDeskLight?.colour('lead');
+        window.AgentDeskLight?.arrive(current);
+        // A lasting animated line drawn from the node to what it located; it stays until the node is clicked again.
+        window.AgentDeskLight?.guide?.(nodeSelector, messageSelector, colour);
+      }, 380);
     });
   }
   function renderLanesView() { if (state.panelOpen && state.panel === 'lanes') A.renderPanel(); }

@@ -132,9 +132,21 @@ function resetDelay(text) {
 }
 
 function classifyFailure(text) {
+  // The CLI's own print-mode deadline fired while the turn was still running. This is distinct from the
+  // controller's outer deadline (cli_timeout) and from a network or quota failure: the session is still
+  // valid, so the controller may continue the same conversation instead of starting the step over.
+  if (/print[ -]?timeout|turn (?:is )?still in progress/i.test(text)) return 'cli_print_timeout';
   if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired|IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported/i.test(text)) return 'cli_auth_required';
   if (/usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|hit your \d+[ -]hour limit|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
   return null;
+}
+
+// Go-style duration (`14m30s`) for CLIs whose print timeout takes one.
+function formatDuration(ms) {
+  const seconds = Math.max(1, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return (minutes ? minutes + 'm' : '') + (rest || !minutes ? rest + 's' : '');
 }
 
 // The line that explains an exit code. A CLI often writes a useful line ("invalid model selection ...")
@@ -146,7 +158,7 @@ function errorDetail(text) {
     || '').replace(/\s+/g, ' ').slice(0, 300);
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, effort, mcp, attachmentDirectory }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory }) {
   if (effort !== undefined && !effortsFor(name, config, model).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
@@ -156,6 +168,17 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     onSession(session);
   }
   const args = provider.args(prompt, readonly, session, model);
+  // The CLI's own print deadline must end before the controller's outer timeout, so the child can exit
+  // cleanly and its session can be resumed instead of being killed as cli_timeout.
+  if (printTimeoutMs) {
+    const text = formatDuration(printTimeoutMs);
+    const equals = args.findIndex((arg) => String(arg).startsWith('--print-timeout='));
+    if (equals >= 0) args[equals] = '--print-timeout=' + text;
+    const at = args.indexOf('--print-timeout');
+    if (at >= 0 && at + 1 < args.length && !String(args[at + 1]).startsWith('--')) args[at + 1] = text;
+    else if (at >= 0) args.splice(at + 1, 0, text);
+    for (let index = 0; index < args.length; index += 1) if (args[index] === '{printTimeout}') args[index] = text;
+  }
   // In the sandbox these CLIs may run shell commands, as Codex does in its own sandbox.
   const sandboxed = Boolean(config.sandbox) && name !== 'codex';
   if (sandboxed && name === 'grok' && !provider.template) {
@@ -175,6 +198,8 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     }
   }
   const env = { ...config.env };
+  // The MCP server runs as a child of the CLI, so this path reaches it through the environment.
+  if (mcp?.receipts) env.AGENTDESK_MCP_RECEIPTS = mcp.receipts;
   if (effort) {
     if (provider.template) args.unshift(...fill(config.template.effortArgs, {}).map((arg) => arg.replace('{effort}', effort)));
     else if (name === 'codex') args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model_reasoning_effort=' + JSON.stringify(effort));
@@ -305,4 +330,4 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
   }
 }
 
-module.exports = { claudeMcpAllow, EFFORTS, effortsFor, providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay };
+module.exports = { claudeMcpAllow, EFFORTS, effortsFor, providers, runAdapter, templateProvider, normalizeUsage, addUsage, classifyFailure, resetDelay, formatDuration };

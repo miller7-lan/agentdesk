@@ -390,7 +390,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, attachments, after, group, leadEffort, leadModel, approval, routeOrder, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, attachments, after, group, leadEffort, leadModel, approval, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
       try {
         if (operation === 'attachment_state') {
           wire.send({ ok: true, value: config.stateDir });
@@ -410,7 +410,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'approve_addition', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'onboarding_check', 'diagnostics'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'approve_addition', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'onboarding_check', 'diagnostics', 'maintenance'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -419,7 +419,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         const channel = value[selected] ? selected : value.ssh ? 'ssh' : value.relay ? 'relay' : null;
         if (!channel || (['submit', 'start_plan', 'broadcast'].includes(operation) && !value[active])) throw new Error('bridge_offline');
         const kind = operation === 'submit' ? 'task.request' : 'task.status';
-        const body = { operation, route, revision, reply, project, after, stepId, artifact };
+        const body = { operation, route, revision, reply, project, after, stepId, artifact, action, reason, source };
         if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
           body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
           const workspaces = config.controlWorkspaces || {};

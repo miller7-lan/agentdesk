@@ -17,9 +17,9 @@ window.__agentThreadsReady = (async () => {
   // of its own under the group.
   const ROLES = new Set(['codex', 'grok', 'gemini', 'antigravity']);
   const capabilities = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
-  const stepStates = { switched: '已换模型', queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
+  const stepStates = { switched: '已换模型', replaced: '已改派', queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
   const taskTerminal = new Set(['completed', 'failed', 'cancelled']);
-  const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped', 'switched']);
+  const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped', 'switched', 'replaced']);
   const MAX_THREADS = 400;   // a safety net; the real limit is ten per group chat (prune)
 
   // A record belongs to one group chat (s.group) and is listed under that group's project (s.project).
@@ -215,10 +215,14 @@ window.__agentThreadsReady = (async () => {
         const after = s.items.findIndex((it) => it.t === 'dispatch-step' && it.at > item.at);
         if (after === -1) s.items.push(item); else s.items.splice(after, 0, item);
       }
+      // A step the lead retired after a failure: point its record at the step that took over, so the old
+      // conversation says where the work continued instead of only showing the raw "replaced" state.
+      const replacement = (task.steps || []).find((other) => other.id !== step.id && (other.replaces || []).includes(step.id) && other.state !== 'replaced');
       const snap = {
         label: task.id.slice(0, 8), state: step.state, capability: step.capability, model: step.model, write: Boolean(step.write),
         brief: step.brief, output: step.output, error: step.error, files: step.paths?.length || 0,
         verdict: step.verdict?.summary, taskState: task.state, detail: String(task.detail || '').split(':')[0],
+        replacedByStep: replacement?.id, replacedByModel: replacement ? modelName(replacement.model) : '',
         guidance: step.guidance || [],
       };
       if (JSON.stringify(snap) !== JSON.stringify(item.snap)) {
@@ -283,9 +287,11 @@ window.__agentThreadsReady = (async () => {
       // A step moved to another model is followed in that model's conversation.
       const steps = s.items.filter((it) => it.t === 'dispatch-step' && it.snap && !['queued', 'switched'].includes(it.snap.state));
       // Every step in this conversation shows its own execution log, like a conversation the person started
-      // themselves: running steps refresh, finished steps are loaded once if they have no record yet.
+      // themselves: running steps refresh, finished steps are loaded once if they have no record yet. A record
+      // built from the old 12 KB log fallback is replaced by the server's full one after an orchestrator upgrade.
       const wanted = [...steps.filter((it) => it.snap.state === 'running' || it.activityState === 'running'),
-        ...steps.filter((it) => !it.activity)];
+        ...steps.filter((it) => !it.activity || (it.activity.fallback && Date.now() - (it.fallbackChecked || 0) > 30000))];
+      for (const it of wanted) if (it.activity?.fallback) it.fallbackChecked = Date.now();
       for (const it of new Set(wanted)) {
         try {
           const activity = await window.__activity.load(s.project, it.taskId, it.stepId, { configuredOnly: true });
@@ -399,8 +405,10 @@ window.__agentThreadsReady = (async () => {
     const s = D.sessions.find((session) => session.id === A.state.active);
     const snap = it.snap || {};
     const name = P.names[s?.provider] || '';
-    const what = [capabilities[snap.capability] || (snap.write ? '修改' : ''), snap.model].filter(Boolean).join(' · ');
+    const what = [capabilities[snap.capability] || (snap.write ? '修改' : ''), modelName(snap.model)].filter(Boolean).join(' · ');
     const state = stepStates[snap.state] || snap.state || '排队';
+    // A failed step that was handed to another model keeps its failure visible in the old conversation too.
+    const failedRecord = snap.state === 'failed' || (snap.state === 'replaced' && Boolean(snap.error || snap.output));
     const patches = snap.write && snap.detail === 'patches_ready' && !it.applied;
     const running = snap.state === 'running';
     const work = chatWork(it.activity, it.taskId + ':' + it.stepId, s, running);
@@ -419,8 +427,9 @@ window.__agentThreadsReady = (async () => {
     const handedBack = snap.state === 'completed' ? `${esc(name)} 完成了这一步，结果已交回群聊，组长接着安排。`
       : snap.state === 'failed' ? `这一步没有完成，已交回组长重新安排。`
       : snap.state === 'cancelled' ? '这一步已停止。'
-      : snap.state === 'switched' ? `这一步在这个模型上卡住，已换成 ${snap.switchedTo} 继续，在那个模型的单聊里接着看。` : '';
-    return `<div class="dispatch-step chat" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
+      : snap.state === 'switched' ? `这一步在这个模型上卡住，已换成 ${esc(snap.switchedTo)} 继续，在那个模型的单聊里接着看。`
+      : snap.state === 'replaced' ? `这一步没有完成，已改派给 ${esc(snap.replacedByModel || '新的模型')} 接替，在新的单聊里接着看。` : '';
+    return `<div class="dispatch-step chat${failedRecord ? ' failed-record' : ''}" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
       <div class="dispatch-meta"><span class="dispatch-from">组长派遣</span><span class="mono">#${esc(snap.label || it.taskId.slice(0, 8))}</span>
         ${what ? `<span>${esc(what)}</span>` : ''}<span class="dispatch-state">${esc(state)}</span></div>
       ${snap.brief ? `<div class="msg-user dispatch-ask"><span class="steer-tag lead">组长</span>${esc(snap.brief)}</div>` : ''}

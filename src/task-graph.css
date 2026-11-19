@@ -19,6 +19,9 @@
 .flow-node:is([data-flow-state="running"], [data-flow-state="planning"], [data-flow-state="applying"], [data-flow-state="testing"]) > small { color: var(--accent); }
 .flow-node[data-flow-state="completed"] > small { color: var(--ok); }
 .flow-node[data-flow-state="failed"] > small { color: var(--danger); }
+.flow-node[data-flow-fail="true"] { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); background: color-mix(in srgb, var(--danger) 6%, var(--raised)); }
+.flow-node[data-flow-fail="true"] > small { color: var(--danger); }
+.flow-node[data-flow-fail="true"] .flow-node-dot { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 25%, transparent); }
 .flow-node:is([data-flow-state="awaiting_approval"], [data-flow-state="awaiting_details"], [data-flow-state="needs_review"]) > small { color: var(--warn); }
 .flow-details { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); overflow-wrap: anywhere; }
 .flow-details h3 { color: var(--text); }

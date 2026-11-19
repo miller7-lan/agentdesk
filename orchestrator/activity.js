@@ -21,16 +21,28 @@ const tailClip = (value, limit = MAX_OUTPUT) => {
 };
 const brief = (input) => {
   if (!input || typeof input !== 'object') return clip(input, 300);
-  const pick = input.command ?? input.cmd ?? input.file_path ?? input.path ?? input.absolute_path ?? input.pattern ?? input.query ?? input.url;
+  const pick = input.command ?? input.cmd ?? input.CommandLine ?? input.commandLine ?? input.file_path ?? input.path ??
+    input.absolute_path ?? input.TargetFile ?? input.targetFile ?? input.DirectoryPath ?? input.directoryPath ??
+    input.pattern ?? input.query ?? input.url;
   return clip(typeof pick === 'string' ? pick : JSON.stringify(input), 300);
 };
 const textOf = (content) => Array.isArray(content)
   ? content.map((part) => typeof part === 'string' ? part : part?.text ?? '').join('')
   : typeof content === 'string' ? content : content === undefined ? '' : JSON.stringify(content);
+// Antigravity reaches the person's computer through one MCP gateway. Show the real tool it called and its
+// arguments rather than the gateway's name.
+const unwrapTool = (name, input) => {
+  if (name !== 'call_mcp_tool' || !input || typeof input !== 'object') return { name, input };
+  let args = input.Arguments;
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { /* keep the text */ }
+  }
+  return { name: input.ToolName || name, input: args ?? input };
+};
 
 // Names CLIs use for tools that run a shell command or change a file.
-const SHELL = /^(bash|shell|run_shell_command|exec(_command)?|terminal)$/i;
-const EDIT = /^(edit|write|multiedit|notebookedit|write_file|replace|edit_file|apply_patch|str_replace\w*)$/i;
+const SHELL = /^(bash|shell|run_shell_command|run_command|windows_run_command|windows_run_shell_command|exec(_command)?|terminal)$/i;
+const EDIT = /^(edit|write|multiedit|notebookedit|write_file|write_to_file|windows_write_file|replace|replace_file_content|multi_replace_file_content|windows_replace_file_content|edit_file|sed_file|apply_patch|windows_apply_patch|str_replace\w*)$/i;
 
 class Record {
   constructor() {
@@ -41,7 +53,17 @@ class Record {
 
   add(item, id) {
     if (id !== undefined && this.byId.has(id)) return Object.assign(this.byId.get(id), item);
-    if (this.items.length >= MAX_ITEMS) { this.dropped += 1; return item; }
+    // Keep the newest work visible: evict the oldest entry instead of refusing new ones. Dropping new
+    // events made a long step look frozen at its first 300 items even while it was still progressing.
+    if (this.items.length >= MAX_ITEMS) {
+      const oldest = this.items.shift();
+      if (oldest) {
+        for (const [key, value] of this.byId) {
+          if (value === oldest) { this.byId.delete(key); break; }
+        }
+      }
+      this.dropped += 1;
+    }
     this.items.push(item);
     if (id !== undefined) this.byId.set(id, item);
     return item;
@@ -55,12 +77,13 @@ class Record {
     return this.add({ kind: 'tool', name: clip(name, 80), input: brief(input), status: 'running' }, id);
   }
 
-  result(id, output, failed) {
+  result(id, output, failed, exitCode) {
     const item = this.byId.get(id);
     if (!item) return;
     if (item.kind === 'command' || item.kind === 'tool') {
       item.output = tailClip(output);
       item.status = failed ? 'failed' : 'completed';
+      if (Number.isFinite(exitCode)) item.exitCode = exitCode;
     } else if (failed) item.error = clip(output, 600);
   }
 
@@ -131,6 +154,36 @@ const readers = {
     else if (event.type === 'tool_use') record.tool('gemini:' + event.tool_id, event.tool_name || 'tool', event.parameters);
     else if (event.type === 'tool_result') record.result('gemini:' + event.tool_id, event.output ?? event.error?.message, event.status === 'error');
     else if (event.type === 'error') record.add({ kind: 'error', text: clip(event.message || textOf(event.error), 600) });
+  },
+
+  // Antigravity CLI (agy) --output-format stream-json: an init line, then step_update entries. Tool steps name
+  // the tool and its parameters while ACTIVE and carry the output when DONE; the reply streams as text_delta on
+  // an agent_response step, and result.response repeats the complete reply once at the end.
+  antigravity(event, record) {
+    if (event.event === 'result') {
+      const text = event.result?.response;
+      const spoken = record.items.filter((item) => item.kind === 'message').map((item) => item.text).join('').trim();
+      if (typeof text === 'string' && text.trim() && spoken !== text.trim()) record.message(text);
+      if (event.result?.status && /fail|error/i.test(event.result.status)) {
+        record.add({ kind: 'error', text: clip(event.result.status, 600) });
+      }
+      return;
+    }
+    const step = event.step_update;
+    if (!step) return;
+    if (step.step_type === 'tool') {
+      const id = 'antigravity:' + step.step_index;
+      const tool = unwrapTool(step.tool_name || 'tool', step.tool_info?.parameters);
+      record.tool(id, tool.name, tool.input);
+      if (step.state !== 'ACTIVE') {
+        const output = step.tool_info?.output ?? '';
+        const match = /Command exited with code (\d+)/i.exec(output);
+        const exitCode = match ? Number(match[1]) : undefined;
+        record.result(id, output, /fail|error|cancel/i.test(step.state || '') || (exitCode !== undefined && exitCode !== 0), exitCode);
+      }
+    } else if (step.step_type === 'agent_response' && typeof step.text_delta === 'string' && step.text_delta) {
+      record.message(step.text_delta, true);
+    }
   },
 };
 

@@ -236,6 +236,8 @@ Gemini 负责只读分析和审查。要在 VPS 2 启用它，请参照 `vps2.ex
 
 组长从各 `adapters.<provider>.models` 读取能力和计费信息。示例配置的标准 API 文本单价只用于演示，部署时请保留账户实际可用的模型，并按账户计费方式配置。API 模型填写 `inputUsdPerMillion` 和 `outputUsdPerMillion`，订阅模型使用 `billing: "subscription"`，价格未知时使用 `billing: "unknown"`。可用 `defaultModel` 指定模型 ID；未配置时可由组长在已登记模型中挑选，或保留 CLI 默认模型。
 
+单个步骤的 CLI 总时限由顶层 `cliTimeoutMs` 控制（毫秒，默认 2700000，即 45 分钟）。CLI 自己的 print 时限会自动提前 5%（最多 60 秒）结束，留出保存会话和续跑的时间；也可以用 `printTimeoutMs` 单独指定，但不会超过总时限。卡住的步骤仍由看门狗先处理：`adapters.<cli>.stallTimeoutMs` 或 `stallTimeoutMs` 控制多久没有输出就停掉，默认 10 分钟。
+
 - 单价来源见 [OpenAI GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)、[Claude 计费](https://platform.claude.com/docs/en/about-claude/pricing)、[Grok API 计费](https://docs.x.ai/developers/pricing) 和 [Gemini Developer API 计费](https://ai.google.dev/gemini-api/docs/pricing)。
 
 管理端可获取各执行者的额度数据。
@@ -272,7 +274,12 @@ ad submit project '修复并审核项目中的问题' python-test
 ad status "$TASK_ID"
 ad apply "$TASK_ID"
 ad cancel "$TASK_ID"
+ad maintenance                      # 查看维护/排空状态：running、queued、ready
+ad maintenance on "deploy 2026-11"  # 停止领取新任务；正在执行的步骤跑完后 ready=true
+ad maintenance off                  # 部署并确认服务正常后恢复领取任务
 ```
+
+维护状态保存在数据库的 `settings` 桶里，重启后仍有效；排空期间只影响尚未开始的任务，不会终止正在执行的 CLI，也不会把运行中的步骤重新排队。
 
 `apply` 只接受状态为 `needs_review`、原因是 `patches_ready` 的任务。它会应用已审核的补丁，并在提供测试命令时运行测试。查看补丁时使用 `/var/lib/agentdesk-orchestrator/worktrees/<task-id>/<step-id>.patch`。子 Agent 的保留工件应在确认无需恢复后清理。
 

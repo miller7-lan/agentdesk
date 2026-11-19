@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Router, validateRoutes } = require('../orchestrator/routing');
 const { parsePlan, Scheduler } = require('../orchestrator/scheduler');
-const { runAdapter, normalizeUsage, classifyFailure } = require('../orchestrator/adapters');
+const { runAdapter, normalizeUsage, classifyFailure, formatDuration } = require('../orchestrator/adapters');
 const Store = require('../orchestrator/store');
 
 const adapters = (...names) => Object.fromEntries(names.map((name) => [name, { bin: name, env: {} }]));
@@ -87,7 +87,10 @@ test('failure text is classified as a login or quota problem, and usage shapes a
   assert.equal(classifyFailure('You have hit your usage limit. Resets at 18:00'), 'cli_quota_exhausted');
   assert.equal(classifyFailure('429 Too Many Requests'), 'cli_quota_exhausted');
   assert.equal(classifyFailure("You've hit your 5-hour limit · resets 7:20pm (UTC)"), 'cli_quota_exhausted');
+  assert.equal(classifyFailure('print timeout after 10m0s with the turn still in progress; the response is partial'), 'cli_print_timeout');
   assert.equal(classifyFailure('TypeError: cannot read properties'), null);
+  assert.equal(formatDuration(870000), '14m30s');
+  assert.equal(formatDuration(60000), '1m');
   assert.deepEqual(normalizeUsage({ input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 1, cost_usd: 0.5 }),
     { input: 5, cachedInput: 7, output: 1, costUsd: 0.5 });
   assert.equal(normalizeUsage({ unrelated: 1 }), null);
@@ -128,13 +131,13 @@ test('a CLI described by template runs with its flags, and an exhausted quota is
     "if (args.includes('quota-test')) { console.error('Error: usage limit reached for your plan'); process.exit(3); }",
     "console.log(JSON.stringify({ sessionId: 's-1', reply: { text: 'brief: ' + args.join(' ') }, stats: { input_tokens: 9, output_tokens: 4 } }));",
   ].join('\n'), { mode: 0o700 });
-  const template = { prompt: 'arg', output: 'jsonl', session: 'field', args: ['-p', '{prompt}'], readonlyArgs: ['--read-only'],
-    modelArgs: ['--model', '{model}'], outputField: 'reply.text', sessionField: 'sessionId', usageField: 'stats' };
+  const template = { prompt: 'arg', output: 'jsonl', session: 'field', args: ['--print-timeout', '10m', '-p', '{prompt}'],
+    readonlyArgs: ['--read-only'], modelArgs: ['--model', '{model}'], outputField: 'reply.text', sessionField: 'sessionId', usageField: 'stats' };
   const base = { name: 'antigravity', config: { bin, env: { PATH: process.env.PATH }, template }, cwd: dir, readonly: true,
-    timeout: 10000, signal: new AbortController().signal, log: path.join(dir, 'log'), model: 'fast' };
+    timeout: 10000, printTimeoutMs: 870000, signal: new AbortController().signal, log: path.join(dir, 'log'), model: 'fast' };
   let session;
   const result = await runAdapter({ ...base, prompt: 'scan repo', onSession: (id) => { session = id; } });
-  assert.equal(result.output, 'brief: --read-only --model fast -p scan repo');
+  assert.equal(result.output, 'brief: --read-only --model fast --print-timeout 14m30s -p scan repo');
   assert.deepEqual(result.usage, { input: 9, output: 4 });
   assert.equal(session, 's-1');
   await assert.rejects(runAdapter({ ...base, prompt: 'quota-test', onSession() {} }), /cli_quota_exhausted/);

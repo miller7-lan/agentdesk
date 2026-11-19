@@ -318,3 +318,105 @@ test('a review with two writer dependencies is ambiguous', async (t) => {
   await assert.rejects(scheduler.run(task, new AbortController().signal), /ambiguous_review_target/);
   assert.equal(task.steps.find((step) => step.id === 'review').state, 'queued');
 });
+
+test('a CLI print timeout continues the same session and records the continuation', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const prompts = [];
+  const adapter = async ({ onSession, prompt, cwd }) => {
+    prompts.push(prompt);
+    onSession('session-1');
+    if (prompts.length === 1) {
+      throw new Error('cli_print_timeout: print timeout after 10m0s with the turn still in progress; the response is partial');
+    }
+    await fs.writeFile(path.join(cwd, 'README.md'), 'changed\n');
+    return { output: 'done' };
+  };
+  const config = {
+    stateDir: dir, quota: false, acceptance: { mode: 'off' },
+    adapters: adapters('codex', 'claude', 'grok'),
+    workspaces: { mac: { repository: mirror } },
+  };
+  const scheduler = new Scheduler({ config, store, files: { endpoint: {} }, adapter });
+  const id = randomUUID();
+  await fs.mkdir(path.join(dir, 'logs', id), { recursive: true });
+  const step = { id: 'edit', role: 'codex', capability: 'implement', write: true, state: 'queued', attempts: 0, dependsOn: [], prompt: 'edit the fixture' };
+  const task = { id, workspace: 'mac', owner: 'local', mode: 'normal', base: head, steps: [step] };
+  scheduler.tasks.set(id, task);
+
+  await scheduler.runStep(task, step, mirror, path.join(dir, 'worktrees', id), new AbortController().signal);
+  assert.equal(step.state, 'completed');
+  assert.equal(step.continuations, 1);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /continuation 1\/1/);
+  assert.ok(scheduler.store.events(id).some((event) => event.detail === 'edit:continuing:1/1'));
+  const budget = scheduler.cliBudget({ mode: 'normal' });
+  assert.equal(budget.outer, 2700000);
+  assert.equal(budget.print, 2640000);
+  // A configured limit wins over the default, and an explicit print deadline stays inside the outer one.
+  scheduler.config.cliTimeoutMs = 1800000;
+  assert.deepEqual(scheduler.cliBudget({ mode: 'normal' }), { outer: 1800000, print: 1740000 });
+  scheduler.config.printTimeoutMs = 2000000;
+  assert.deepEqual(scheduler.cliBudget({ mode: 'normal' }), { outer: 1800000, print: 1795000 });
+  delete scheduler.config.printTimeoutMs;
+  delete scheduler.config.cliTimeoutMs;
+});
+
+test('an unresolved bridge write failure keeps the step from claiming completion', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const id = randomUUID();
+  const adapter = async ({ cwd }) => {
+    await fs.appendFile(path.join(dir, 'logs', id, 'edit.receipts.jsonl'), JSON.stringify({
+      operation: 'write', root: 'computer', path: '/tmp/report.md', expectedVersion: 'old', ok: false, error: 'version_conflict',
+    }) + '\n');
+    await fs.writeFile(path.join(cwd, 'README.md'), 'changed\n');
+    return { output: 'done' };
+  };
+  const config = {
+    stateDir: dir, quota: false, acceptance: { mode: 'off' },
+    adapters: adapters('codex', 'claude', 'grok'),
+    workspaces: { mac: { repository: mirror } },
+  };
+  const scheduler = new Scheduler({ config, store, files: { endpoint: {} }, adapter });
+  await fs.mkdir(path.join(dir, 'logs', id), { recursive: true });
+  const step = { id: 'edit', role: 'codex', capability: 'implement', write: true, state: 'queued', attempts: 0, dependsOn: [], prompt: 'edit the fixture' };
+  const task = { id, workspace: 'mac', owner: 'local', mode: 'normal', base: head, steps: [step] };
+  scheduler.tasks.set(id, task);
+
+  await assert.rejects(scheduler.runStep(task, step, mirror, path.join(dir, 'worktrees', id), new AbortController().signal),
+    /write_failed:\/tmp\/report\.md/);
+  assert.equal(step.state, 'failed');
+  assert.equal(step.deliveries[0].ok, false);
+  assert.equal(step.deliveries[0].expectedVersion, 'old');
+});
+
+test('maintenance drains queued work and survives a restart', async (t) => {
+  const { dir, mirror } = await repository(t);
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const config = {
+    stateDir: dir, quota: false, acceptance: { mode: 'off' },
+    adapters: adapters('codex', 'claude', 'grok'),
+    workspaces: { mac: { repository: mirror } },
+  };
+  const scheduler = new Scheduler({ config, store, files: {}, adapter: async () => ({ output: 'x' }) });
+  const id = randomUUID();
+  const task = { id, workspace: 'mac', state: 'queued', steps: [], createdAt: new Date().toISOString() };
+  scheduler.tasks.set(id, task);
+  assert.equal(scheduler.nextTask()?.id, id);
+
+  const status = scheduler.setMaintenance('on', 'deploy', 'test');
+  assert.equal(status.enabled, true);
+  assert.equal(status.queued, 1);
+  assert.equal(status.ready, true);
+  assert.equal(scheduler.nextTask(), undefined);
+
+  const restarted = new Scheduler({ config, store, files: {}, adapter: async () => ({ output: 'x' }) });
+  assert.equal(restarted.maintenance.reason, 'deploy');
+  restarted.setMaintenance('off');
+  restarted.tasks.set(id, task);
+  assert.equal(restarted.nextTask()?.id, id);
+});

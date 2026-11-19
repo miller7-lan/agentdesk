@@ -34,6 +34,9 @@ const readOnlyMode = (mode) => mode === 'chat' || mode === 'review_only';
 const taskIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const projectIdPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const teamTimeout = 40 * 60_000;
+// A single CLI turn may run this long before the session is continued. The stall watchdog still stops a CLI
+// that writes nothing for 10 minutes, so a longer turn limit does not leave a hung process running forever.
+const defaultCliTimeoutMs = 45 * 60_000;
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -81,6 +84,20 @@ function parseJson(output) {
     try { return JSON.parse(candidate.trim()); } catch { /* next */ }
   }
   throw new Error('invalid_plan');
+}
+
+// Receipts are one JSON object per line, written by the MCP server for every mutation it forwarded.
+async function readReceipts(filename) {
+  let text;
+  try {
+    text = await readFile(filename, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  return text.split('\n').filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter((receipt) => receipt && typeof receipt === 'object');
 }
 
 // What is wrong with a lead's planning reply, in words the lead can act on; '' when it can be used.
@@ -164,6 +181,8 @@ function publicTask(task) {
     steps: (task.steps || []).map((step) => ({
       id: step.id, role: step.role, capability: step.capability, state: step.state,
       attempts: step.attempts, dependsOn: step.dependsOn,
+      ...(step.continuations && { continuations: step.continuations }),
+      ...(step.deliveries?.length && { deliveryCount: step.deliveries.length }),
       ...(step.verdict && { verdict: { verdict: step.verdict.verdict, summary: step.verdict.summary } }),
     })),
     ...(acceptance && { acceptance: {
@@ -198,6 +217,7 @@ class Scheduler {
     this.cliWaiters = new Map();  // role -> queue of { resolve } waiting for that CLI
     this.tasks = new Map(store.all('tasks').map((task) => [task.id, task]));
     this.route = store.get('settings', 'route')?.value || 'ssh';
+    this.maintenance = store.get('settings', 'maintenance')?.value || null;
     for (const task of this.tasks.values()) {
       if (task.state === 'applying' || task.state === 'testing') {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
@@ -1278,6 +1298,9 @@ event(task, state, detail) {
   }
 
   nextTask() {
+    // Maintenance stops new work. Tasks already executing keep their current step so a service update
+    // never turns a half-finished write into a restarted step.
+    if (this.maintenance) return undefined;
     const runningBy = new Map();
     for (const id of this.running.keys()) {
       const running = this.tasks.get(id);
@@ -1300,6 +1323,41 @@ event(task, state, detail) {
       if (!best || load < best.load) best = { task: candidate, load };
     }
     return best?.task.slotCost === 2 && this.running.size ? undefined : best?.task;
+  }
+
+  // Maintenance drains rather than kills: no queued task starts, every already-running task keeps its
+  // current step, and "ready" becomes true only when no task is executing. Deployment waits for that.
+  maintenanceStatus() {
+    const running = [...this.running.keys()].map((id) => {
+      const task = this.tasks.get(id);
+      const step = task?.steps?.find((candidate) => candidate.state === 'running');
+      return { id, state: task?.state, detail: task?.detail, step: step?.id, role: step?.role, startedAt: step?.startedAt };
+    });
+    return {
+      enabled: Boolean(this.maintenance),
+      ...(this.maintenance || {}),
+      running,
+      queued: [...this.tasks.values()].filter((task) => task.state === 'queued').length,
+      ready: running.length === 0,
+      at: new Date(this.now()).toISOString(),
+    };
+  }
+
+  setMaintenance(action = 'status', reason, source) {
+    if (!['status', 'on', 'off'].includes(action)) throw new Error('invalid_maintenance_action');
+    if (action === 'on') {
+      this.maintenance = {
+        since: this.maintenance?.since || new Date(this.now()).toISOString(),
+        reason: clip(reason || 'deployment', 300),
+        source: clip(source || 'admin', 120),
+      };
+      this.store.put('settings', 'maintenance', { value: this.maintenance });
+    } else if (action === 'off') {
+      this.maintenance = null;
+      this.store.delete('settings', 'maintenance');
+      this.pump();
+    }
+    return this.maintenanceStatus();
   }
 
   start(task) {
@@ -1332,6 +1390,50 @@ event(task, state, detail) {
       this.pump();
       this.chargeQuota(task).catch(() => {});   // after releasing the task, so review and apply are not held up
     });
+  }
+
+  // One time budget produces both deadlines. The CLI's print deadline ends first, leaving the controller
+  // enough room to save the session and reap the child instead of killing it as cli_timeout.
+  cliBudget(task) {
+    const outer = task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || defaultCliTimeoutMs;
+    const grace = Math.min(60000, Math.max(5000, Math.floor(outer * 0.05)));
+    const configured = Number.isFinite(this.config.printTimeoutMs) ? this.config.printTimeoutMs : outer - grace;
+    return { outer, print: Math.max(1000, Math.min(configured, outer - 5000)) };
+  }
+
+  // Reads the bridge receipts for this attempt and keeps a compact delivery list on the step. A failed
+  // write with no later success for the same target is unresolved: the step must not claim completion.
+  async collectDeliveries(task, step) {
+    const receipts = await readReceipts(path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl'));
+    if (!receipts.length) {
+      delete step.deliveries;
+      delete step.writeFailure;
+      return;
+    }
+    step.deliveries = receipts.slice(-50).map((receipt) => ({
+      operation: receipt.operation,
+      ...(receipt.root && { root: receipt.root }),
+      ...(receipt.path && { path: receipt.path }),
+      ...(receipt.destination && { destination: receipt.destination }),
+      ...(receipt.expectedVersion && { expectedVersion: receipt.expectedVersion }),
+      ok: receipt.ok === true,
+      ...(receipt.version && { version: receipt.version }),
+      ...(Number.isFinite(receipt.size) && { size: receipt.size }),
+      ...(receipt.error && { error: String(receipt.error).slice(0, 200) }),
+      ...(receipt.at && { at: receipt.at }),
+    }));
+    const latest = new Map();
+    for (const receipt of receipts) {
+      if (receipt.operation !== 'write') continue;
+      latest.set(String(receipt.root || '') + '\0' + String(receipt.path || ''), receipt);
+    }
+    const failed = [...latest.values()].find((receipt) => receipt.ok !== true);
+    if (failed) {
+      step.writeFailure = 'write_failed:' + (failed.path || 'unknown') +
+        (failed.error ? ': ' + String(failed.error).slice(0, 200) : '');
+    } else {
+      delete step.writeFailure;
+    }
   }
 
   async invoke(task, step, folder, signal, prompt = step.prompt) {
@@ -1384,18 +1486,20 @@ event(task, state, detail) {
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
+      const budget = this.cliBudget(task);
       const result = await run({
         ...(useTeam && {
           taskId: task.id, stepId: step.id, owner: task.owner, project: task.project,
           repository: this.config.workspaces[task.workspace].repository,
         }),
         name: step.role, config, cwd: folder, prompt, readonly: !step.write,
-        timeout: task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000, signal: stepSignal,
+        timeout: budget.outer, printTimeoutMs: budget.print, signal: stepSignal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
         session: step.session, model: step.model,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort &&
           effortsFor(step.role, this.config.adapters[step.role], step.model).includes(task.leadEffort) ? task.leadEffort : undefined),
-        mcp: mcp && { socket: mcp.socket, capability },
+        mcp: mcp && { socket: mcp.socket, capability,
+          receipts: path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl') },
         attachmentDirectory,
         onSession: (id) => {
           if (step.session === id) return;
@@ -1414,6 +1518,9 @@ event(task, state, detail) {
 
   async run(task, signal) {
     const status = await this.refreshQuota();
+    // A task that starts while the start-up model discovery is still running would otherwise pick the
+    // configured default before discovery has replaced a retired model. Waiting avoids that race.
+    if (this.modelCatalogReading) await this.modelCatalogReading.catch(() => {});
     task.quotaStart ||= Scheduler.quotaWindows(status);
     this.refreshModels(task);
     delete task.notBefore;
@@ -1735,6 +1842,11 @@ event(task, state, detail) {
     if (task.acceptance?.verdict === 'rework' && !task.acceptance.reworkDone) {
       return this.appendRework(task, task.acceptance);
     }
+    // A plan may already contain an accept step. Its verdict is the acceptance; adding accept-1 after it
+    // would ask the lead the same question over the same tree for no new evidence.
+    const planned = [...task.steps].reverse().find((step) => step.capability === 'accept' &&
+      !this.isAcceptStep(step) && step.state === 'completed' && step.verdict);
+    if (planned && task.acceptance?.stepId !== planned.id) return this.handleAcceptance(task, planned);
     const acceptSteps = task.steps.filter((step) => this.isAcceptStep(step));
     const pending = acceptSteps.find((step) => ['queued', 'running'].includes(step.state));
     if (pending) {
@@ -1793,7 +1905,8 @@ event(task, state, detail) {
       issue: clip(finding.issue, 400),
       ...(finding.suggestion && { suggestion: clip(finding.suggestion, 400) }),
     }));
-    const round = task.steps.filter((item) => this.isAcceptStep(item)).indexOf(step) + 1;
+    const acceptanceSteps = task.steps.filter((item) => this.isAcceptStep(item) || item.capability === 'accept');
+    const round = acceptanceSteps.indexOf(step) + 1;
     task.acceptance = {
       verdict: verdict.verdict, round, stepId: step.id, summary: clip(verdict.summary, 600), findings,
       at: new Date(this.now()).toISOString(), reworkDone: false,
@@ -1896,6 +2009,10 @@ event(task, state, detail) {
     }
     const before = readonlyStep ? await worktreeState(folder, signal) : undefined;
     const savedState = () => ['awaiting_acceptance', 'triaging'].includes(task.state) ? task.state : 'running';
+    const receiptsFile = path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl');
+    if (!step.attempts) await writeFile(receiptsFile, '', { mode: 0o600 });
+    delete step.writeFailure;
+    let continuationNote = '';
     for (;;) {
       const quotaAllowed = step.pinnedReadOnly && task.mode === 'chat' && task.tags?.includes('direct')
         ? this.router.quotaAllowsDirect(step.role) : this.router.quotaAllows(step.role, step.capability);
@@ -1933,8 +2050,11 @@ event(task, state, detail) {
         if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
         else if (step.capability === 'accept') prompt += '\n\n' + ACCEPTANCE_INSTRUCTION;
         else if (step.capability === 'triage') prompt += '\n\n' + TRIAGE_INSTRUCTION;
+        if (continuationNote) prompt += continuationNote;
         const { output } = await this.execute(task, step, folder, signal, prompt);
         signal.throwIfAborted();
+        await this.collectDeliveries(task, step);
+        if (step.writeFailure) throw new Error(step.writeFailure);
         step.output = output;
         const verdict = ['review', 'accept'].includes(step.capability) ? parseReviewVerdict(output) : null;
         if (verdict) step.verdict = verdict;
@@ -1965,6 +2085,23 @@ event(task, state, detail) {
         if (error.message.startsWith('executor_waiting:')) {
           step.state = 'queued';
           throw error;
+        }
+        await this.collectDeliveries(task, step).catch(() => {});
+        // The CLI stopped at its own print deadline: the conversation is intact, so continue it instead
+        // of paying for the step again. The limit keeps a model that never finishes from running forever.
+        if (error.message.startsWith('cli_print_timeout') && step.session) {
+          const limit = Math.max(0, Math.min(3, this.config.maxContinuations ?? 1));
+          const used = step.continuations || 0;
+          if (used < limit) {
+            step.continuations = used + 1;
+            delete step.error;
+            continuationNote = '\n\nYour previous turn was cut off by the CLI print deadline (continuation ' +
+              step.continuations + '/' + limit + '). Continue the same session. Do not repeat changes that already ' +
+              'succeeded; re-check each file version before writing. Finish the remaining work and report exactly ' +
+              'which files you changed and which checks passed.';
+            this.save(task, savedState(), step.id + ':continuing:' + step.continuations + '/' + limit);
+            continue;
+          }
         }
         if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
         // A stalled step first tries another model of the same member (at most twice) before it goes to the lead.
@@ -2491,6 +2628,7 @@ event(task, state, detail) {
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
     if (body.operation === 'model_catalog' && route === 'admin') return this.refreshModelCatalog();
     if (body.operation === 'cleanup' && route === 'admin') return this.cleanupNow();
+    if (body.operation === 'maintenance' && route === 'admin') return this.setMaintenance(body.action || 'status', body.reason, body.source);
     if (body.operation === 'diagnostics' && (route === 'admin' || named)) return this.diagnosticStatus({ named, admin: route === 'admin' });
     if (body.operation === 'onboarding_check' && (route === 'admin' || named)) {
       return this.diagnosticStatus({ named, admin: route === 'admin' }).then(({ clis }) => clis);
