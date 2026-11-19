@@ -39,6 +39,13 @@ window.__groupReady = (async () => {
     patches_ready: '补丁已准备好，等待应用到本机工作区。',
     planning_started: '开始制定计划',
     plan_questions: '组长正在等待你的回答。',
+    plan_failed: '组长规划没成功，已说明原因；直接回复就会重新规划。',
+    plan_failed_repeatedly: '组长连续多次没能规划出来，请换个说法重新描述任务。',
+    invalid_plan: '组长给出的方案格式不对。',
+    invalid_workspace_baseline: '读不到本机项目的 Git 版本（项目目录不是 Git 仓库，或 Bridge 没连上）。',
+    windows_workspace_dirty: '本机项目有未提交的改动，主控不能在它上面开始。请先提交或暂存。',
+    bridge_offline: '本机 Bridge 没有在线。',
+    team_timeout: '任务超时。',
     plan_reply_received: '组长正在根据你的回复调整方案。',
     plan_proposed: '确认方案后开始执行。',
     plan_approved: '方案已确认，等待分派。',
@@ -405,6 +412,9 @@ window.__groupReady = (async () => {
   const memberName = (id) => members[id]?.name || id || members.lead.name;
   const owner = (task) => task.provider || 'lead';
   const waitingForPlan = (task) => ['awaiting_details', 'awaiting_approval'].includes(task.state);
+  // The group's most recent task (its conversation with the lead continues from there).
+  const latestTask = (group) => [...(group?.records.values() || [])].filter((task) => belongs(group, task))
+    .sort((a, b) => (Date.parse(b.createdAt || '') || b.time || 0) - (Date.parse(a.createdAt || '') || a.time || 0))[0];
   const statusName = (status) => statuses[status] || '待同步';
   const pill = (status) => `<span class="group-pill" data-status="${statuses[status] ? status : 'unknown'}">${statusName(status)}</span>`;
   function textOf(detail) {
@@ -435,6 +445,14 @@ window.__groupReady = (async () => {
     const fix = /^(fix-\d+):(started|completed|failed)$/.exec(detail || '');
     if (fix) return fix[2] === 'started' ? '返工步骤开始执行。' : fix[2] === 'completed' ? '返工步骤完成，等待重新验收。' : '返工步骤失败。';
     return detail;
+  }
+  // Why a task failed, in words: the failing step and its error when there is one, else the task's detail.
+  function failureReason(task) {
+    const step = (task.steps || []).findLast((item) => item.state === 'failed');
+    const detail = String(task.detail || '');
+    const known = details[detail] || details[detail.split(':')[0]];
+    if (step) return `${memberName(step.role === 'claude' ? 'lead' : step.role)} 的${capabilityLabels[step.capability] || '步骤'}失败：${String(step.error || detail || '未知错误').slice(0, 300)}`;
+    return known || (detail ? detail.slice(0, 300) : '主控没有说明原因。');
   }
   const pathsOf = (task) => [...new Set((task?.steps || []).flatMap((step) => step.paths || []))];
   function elapsed(task) {
@@ -744,7 +762,10 @@ window.__groupReady = (async () => {
         ].filter(Boolean).join(' · '))}</span>
         ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
-      </button>`;
+      </button>${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
+        <p><b>为什么失败：</b>${esc(failureReason(task))}</p>
+        <div class="task-actions"><button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>
+        <button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="terminal">看输出 ${svg('chev')}</button></div></div>` : ''}`;
       const messages = [];
       const requiresReview = task.detail === 'patches_ready' || task.pendingRequest;
       if (task.prompt && !task.redacted && (!task.broadcastId || !broadcasts.has(task.broadcastId)) &&
@@ -1651,7 +1672,7 @@ window.__groupReady = (async () => {
     return {
       operation,
       request: {
-        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined, group: group.id,
+        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || latestTask(group)?.id || undefined, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         provider: recipient || undefined,
         // The person's member order from the quota page (only the kinds of work they reordered).
@@ -1700,6 +1721,18 @@ window.__groupReady = (async () => {
         }
       }
       return;
+    }
+    // In a group the person talks to the lead: while the lead is waiting for answers or for a decision on its
+    // plan, a plain message is that answer (no new task). Commands and @mentions still start their own work.
+    const waiting = !/^[/@]/.test(draft) && !group.reference ? latestTask(group) : null;
+    if (waiting && waitingForPlan(waiting) && !waiting.redacted) {
+      const round = waiting.plan?.rounds?.at(-1);
+      if (round && (isExample(group.id) || connected)) {
+        if (await sendPlanAction(group, waiting.id, round.revision, 'plan_reply', draft)) {
+          if (group === currentGroup() && input.value.trim() === draft) input.value = '';
+        }
+        return;
+      }
     }
     if (handleCommand(draft) || (!isExample(group.id) && (!supported || !hasRoute()))) return;
     hideSuggestions();
@@ -1771,6 +1804,16 @@ window.__groupReady = (async () => {
     }
     return Object.keys(order).length ? { routeOrder: order } : {};
   }
+
+  timeline.addEventListener('click', (event) => {
+    const id = event.target.closest('[data-retry-task]')?.dataset.retryTask;
+    const group = currentGroup();
+    const task = id && group?.records.get(id);
+    if (!task || busy) return;
+    group.reference = task.id;
+    input.value = `${task.prompt || ''}\n\n（上一次没完成：${failureReason(task)}。请组长换个办法重新安排。）`;
+    form.requestSubmit();
+  });
 
   function updateFilters() {
     $$('[data-group-filter]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.groupFilter === filter)));

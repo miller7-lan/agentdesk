@@ -66,11 +66,30 @@ const FIVE_HOURS = 5 * 3600_000;
 const WEEK = 7 * 24 * 3600_000;
 
 function parseJson(output) {
+  const text = String(output ?? '').trim();
   try {
-    return JSON.parse(output.trim().replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/g, ''));
-  } catch {
-    throw new Error('invalid_plan');
+    return JSON.parse(text.replace(/^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$/g, ''));
+  } catch { /* not a bare JSON reply */ }
+  // A model often writes a sentence before its JSON, or puts it in a fenced block: take the last block that
+  // parses, then the outermost {...} or [...] of the reply.
+  const candidates = [...text.matchAll(/\x60\x60\x60(?:json)?\s*([\s\S]*?)\x60\x60\x60/gi)].map((m) => m[1]).reverse();
+  const object = text.indexOf('{'), array = text.indexOf('[');
+  if (object >= 0) candidates.push(text.slice(object, text.lastIndexOf('}') + 1));
+  if (array >= 0) candidates.push(text.slice(array, text.lastIndexOf(']') + 1));
+  for (const candidate of candidates) {
+    try { return JSON.parse(candidate.trim()); } catch { /* next */ }
   }
+  throw new Error('invalid_plan');
+}
+
+// What is wrong with a lead's planning reply, in words the lead can act on; '' when it can be used.
+function planProblem(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'it was not one JSON object';
+  if (Array.isArray(value.questions)) return value.questions.some((q) => typeof q === 'string' && q.trim()) ? '' : 'questions was empty';
+  if (typeof value.summary !== 'string' || !value.summary.trim()) return 'it had neither questions nor a summary';
+  if (!Array.isArray(value.steps) || !value.steps.length) return 'it had a summary but no steps';
+  if (value.steps.some((step) => typeof step?.prompt !== 'string' || step.prompt.length > 1000)) return 'a step prompt was missing or over 1000 characters';
+  return '';
 }
 
 function parsePlan(output, availableRoles = roles, router, pick, allowedRole) {
@@ -981,7 +1000,9 @@ event(task, state, detail) {
     const config = this.config.adapters[step.role];
     if (!config) throw new Error(step.role + '_not_configured');
     const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
-    const mcp = step.id !== 'group-planner' && bridgeTools ? this.config.mcp : undefined;
+    // Every step, the lead's planning included, may read the person's project and authorized folders on their
+    // computer through the Bridge tools; running commands stays off for planning and other read-only steps.
+    const mcp = bridgeTools ? this.config.mcp : undefined;
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
@@ -1009,7 +1030,7 @@ event(task, state, detail) {
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace,
-      runCommands: step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout') });
+      runCommands: step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout') });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
@@ -1183,8 +1204,10 @@ event(task, state, detail) {
     };
     const prompt = [
       'You are 组长, the group lead. Stay in read-only planning mode. Inspect the checked-out code when useful.',
+      'The checkout here is a copy on the server. The person\u2019s real project and the folders they authorized (for example their Desktop) are on their computer: call windows_list_locations, then list, search, grep and read files there with the windows_* tools (pass the location id as root). Read what you need before asking; do not ask the person to paste files you can read.',
+      'Reply with the JSON object alone, with no text before or after it and no code fence.',
       'Ask the requester every material question you cannot resolve from the repository or the discussion. Ask specific questions and offer options when helpful. Do not re-ask answered questions or ask about details you can determine.',
-      'If clarification is needed return only JSON {"questions":["question 1","question 2"]}, at most 6 questions, each at most 400 characters. You can ask more in a later round.',
+      'If clarification is needed return only JSON {"questions":["question 1","question 2"]}, at most 6 questions, each at most 600 characters. You can ask more in a later round.',
       'When clear return only JSON {"summary":"outline the scope and validation in at most 1800 characters","steps":[{"id":"step","capability":"implement","prompt":"concrete work and checks","dependsOn":[]}]}. User-visible text should match the requester’s language.',
       CAPABILITY_GUIDE,
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
@@ -1208,19 +1231,46 @@ event(task, state, detail) {
       const step = { id: 'group-planner', role: lead, capability: 'plan', write: false, model: this.config.adapters[lead]?.profiles?.defaultModel };
       const folder = path.join(root, step.id);
       await this.ensureWorktree(repo, folder, { ...task, base: plan.base }, step, signal);
-      const { output } = await this.execute(task, step, folder, signal, prompt);
-      signal.throwIfAborted();
-      result = parseJson(output);
       revision = (plan.rounds.at(-1)?.revision || 0) + 1;
+      // The lead's reply must become questions or a plan. A reply in the wrong shape is sent back once with the
+      // reason; if planning still fails (or the CLI errors), the person is told why and can answer in the same
+      // conversation, which starts planning again, instead of the task simply failing.
+      let output = '';
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          ({ output } = await this.execute(task, step, folder, signal, attempt ? prompt + '\n\nYour previous reply could not be used: ' + (result?.problem || 'it was not one JSON object') + '. Reply again with the JSON object alone.' : prompt));
+          signal.throwIfAborted();
+          const parsed = parseJson(output);
+          const problem = planProblem(parsed);
+          if (!problem) { result = parsed; break; }
+          result = { problem };
+        } catch (error) {
+          if (signal.aborted || error.message.startsWith('executor_waiting:')) throw error;
+          result = { problem: error.message === 'invalid_plan' ? 'it was not valid JSON' : error.message, failed: error.message !== 'invalid_plan' };
+          if (result.failed) break;
+        }
+      }
+      if (result?.problem) {
+        plan.failures = (plan.failures || 0) + 1;
+        if (plan.failures > 3) throw new Error('plan_failed_repeatedly');
+        const said = clip(String(output || '').replace(/\x60{3}[\s\S]*?\x60{3}/g, '').trim(), 600);
+        plan.rounds.push({ revision, failed: true, questions: [
+          result.failed ? `组长这次规划出错了：${clip(result.problem, 300)}。直接回复就会重新规划（可以补充信息或说「重试」）。`
+            : `组长的回复没能整理成问题或方案（${result.problem}）。${said ? '它说：' + said + '。' : ''}直接回复就会重新规划。`] });
+        this.save(task, 'awaiting_details', 'plan_failed', true, { revision });
+        return;
+      }
+      plan.failures = 0;
     }
-    if (Array.isArray(result?.questions) && result.questions.length >= 1 && result.questions.length <= 6 &&
-      result.questions.every((question) => typeof question === 'string' && question.trim() && question.length <= 400)) {
+    if (Array.isArray(result?.questions)) {
       delete plan.pending;
-      plan.rounds.push({ revision, questions: result.questions });
+      plan.rounds.push({ revision, questions: result.questions.filter((question) => typeof question === 'string' && question.trim())
+        .slice(0, 8).map((question) => clip(question, 1200)) });
       this.save(task, 'awaiting_details', 'plan_questions', true, { revision });
       return;
     }
-    if (typeof result?.summary !== 'string' || !result.summary.trim() || result.summary.length > 1800) throw new Error('invalid_plan');
+    if (typeof result?.summary !== 'string' || !result.summary.trim()) throw new Error('invalid_plan');
+    result.summary = clip(result.summary, 3000);
     let steps;
     try {
       steps = validateSteps(result.steps, this.availableRoles(), this.router,

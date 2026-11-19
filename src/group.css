@@ -584,3 +584,20 @@ button.lane-node { cursor: pointer; }
 .lanes-panel .member-panel-heading small { color: var(--faint); }
 .dispatch-thread.lane-located { animation: lane-located 1.6s ease-out; border-radius: 12px; }
 @keyframes lane-located { 0%, 40% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 6%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* 失败任务：原因和补救 */
+.task-failure { margin-top: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 6%, transparent); font-size: 12.5px; }
+.task-failure p { margin: 0 0 8px; color: var(--text); }
+.task-failure b { color: var(--danger); font-weight: 600; }
+.task-failure .task-actions { display: flex; align-items: center; gap: 10px; }
+
+/* 常驻流线：光线到达后留下，虚线持续从完成总结流向节点，并有光点沿线传导；点击终点节点后消失 */
+.light-links { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 40; overflow: visible; }
+.light-links path { fill: none; stroke: var(--link); stroke-linecap: round; }
+.light-links .ll-glow { stroke-width: 5; stroke-opacity: .12; }
+.light-links .ll-dash { stroke-width: 1.6; stroke-opacity: .85; stroke-dasharray: 7 6; animation: link-flow .9s linear infinite; }
+.light-links .ll-end { fill: var(--link); }
+.light-links .ll-spark { fill: var(--link); filter: drop-shadow(0 0 4px var(--link)); offset-rotate: 0deg; animation: link-spark 2.2s cubic-bezier(.45, 0, .55, 1) infinite; }
+@keyframes link-flow { to { stroke-dashoffset: -13; } }
+@keyframes link-spark { 0% { offset-distance: 0%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .light-links .ll-dash { animation: none; } .light-links .ll-spark { display: none; } }
