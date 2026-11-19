@@ -9,17 +9,25 @@ const operations = {
   windows_search_files: ['search', ['path', 'query']],
   windows_grep_files: ['grep', ['path', 'query']],
   windows_read_file_chunk: ['read', ['path']],
+  windows_write_file: ['write', ['path', 'content']],
+  windows_make_directory: ['mkdir', ['path']],
+  windows_move_path: ['move', ['path', 'destination']],
+  windows_delete_path: ['delete', ['path']],
   windows_list_commands: ['commands', []],
   windows_run_command: ['run', ['command']],
 };
 
 const descriptions = {
-  locations: 'List the named local directories authorized by this computer, including the project and any additional read-only locations. Use the returned id as root in file tools.',
+  locations: 'List the local locations on the person\'s computer: the project, the whole user folder (id "home", any folder such as Desktop/…) and any additional read-only folders. Use the returned id as root in the file tools.',
   list: 'List a directory in the authorized project on the person\'s machine.',
   stat: 'Get a file\'s size and SHA-256 version on the person\'s machine.',
   search: 'Search file and folder names in the authorized project on the person\'s machine.',
   grep: 'Search file contents in the authorized project on the person\'s machine, including files not in Git such as local config and logs. Returns path, line and text for each match.',
   read: 'Read one file chunk as Base64 from the person\'s machine. Pass version and offset to continue reading.',
+  write: 'Create or overwrite a file anywhere in the person\'s user folder (root "home", path relative to it, e.g. Desktop/demo/notes.md). Only for steps that change files; project files are changed in the task workspace instead. Pass version from windows_stat_file to overwrite an existing file safely.',
+  mkdir: 'Create a folder in the person\'s user folder (root "home").',
+  move: 'Move or rename a file or folder in the person\'s user folder (root "home"); destination is relative to the same root.',
+  delete: 'Move a file or folder in the person\'s user folder (root "home") to the trash.',
   commands: 'List the commands the person allows agents to run in their project.',
   run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
 };
@@ -27,7 +35,7 @@ const descriptions = {
 const tools = Object.entries(operations).map(([name, [action, required]]) => ({
   name,
   description: descriptions[action],
-  annotations: { readOnlyHint: action !== 'run' },
+  annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete'].includes(action) },
   inputSchema: {
     type: 'object',
     properties: {
@@ -37,6 +45,8 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
       ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
       ...(action === 'run' ? { command: { type: 'string', description: 'A name returned by windows_list_commands.' } } : {}),
+      ...(action === 'write' ? { content: { type: 'string' }, encoding: { type: 'string', enum: ['utf8', 'base64'] }, version: { type: 'string', description: 'Current version from windows_stat_file; omit for a new file.' } } : {}),
+      ...(action === 'move' ? { destination: { type: 'string' } } : {}),
     },
     required,
     additionalProperties: false,

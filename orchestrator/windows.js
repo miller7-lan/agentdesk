@@ -2,7 +2,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
-const { tmpdir } = require('node:os');
+const os = require('node:os');
+const { tmpdir } = os;
 const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
 const { attachmentRoot, idPattern } = require('./attachments');
@@ -83,6 +84,17 @@ async function version(filename) {
   if (stat.isDirectory()) return { type: 'directory', version: sha(String(stat.mtimeMs)), size: 0 };
   if (!stat.isFile() || stat.size > MAX_FILE) throw new Error('unsupported_file');
   return { type: 'file', version: sha(await fs.readFile(filename)), size: stat.size };
+}
+
+// The person's whole user folder ("home") is a location too, so the lead and the members can work in any folder
+// on this computer, not only the project. Credentials, keychains and app data stay out of reach, and .git and
+// symbolic links are refused by within() as everywhere else. A workspace can turn it off with anyFolder: false.
+const HOME_DENIED = new Set(['.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.agentdesk', '.codex', '.claude', '.gemini', '.grok',
+  '.config', '.local', '.password-store', '.netrc', '.npmrc', '.pypirc', '.git-credentials', '.bash_history', '.zsh_history',
+  'library', 'appdata', 'ntuser.dat']);
+function homeAllowed(relative) {
+  const first = String(relative || '').split('/')[0].toLowerCase();
+  if (HOME_DENIED.has(first)) throw new Error('home_path_denied: credentials and app data are not available');
 }
 
 async function checkVersion(filename, expected) {
@@ -185,12 +197,34 @@ class WindowsOperations {
     if (kind === 'file.read') {
       const roots = workspace.readRoots || {};
       if (body.operation === 'locations') return { locations: [
-        { id: 'project', label: '项目' }, ...Object.keys(roots).filter(id => id !== 'project').map(id => ({ id, label: id === 'desktop' ? '桌面' : id })),
+        { id: 'project', label: '项目', path: workspace.root },
+        ...(workspace.anyFolder !== false ? [{ id: 'home', label: '整个用户目录（任意文件夹，路径相对用户目录，例如 Desktop/某个文件夹）', path: (this.config.home || os.homedir()), writable: true }] : []),
+        ...Object.keys(roots).filter(id => id !== 'project' && id !== 'home').map(id => ({ id, label: id === 'desktop' ? '桌面' : id })),
       ] };
+      if (body.root === 'home') {
+        if (workspace.anyFolder === false) throw new Error('read_root_not_authorized');
+        homeAllowed(body.path);
+        return this.read(await fs.realpath((this.config.home || os.homedir())), body);
+      }
       const selected = body.root ?? 'project';
       if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
       const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
       return this.read(readRoot, body);
+    }
+    if (kind === 'file.write' && body.root === 'home') {
+      // Writing anywhere in the user folder: the orchestrator allows it only to steps that change files.
+      if (workspace.anyFolder === false) throw new Error('home_write_denied');
+      homeAllowed(body.path);
+      if (body.destination !== undefined) homeAllowed(body.destination);
+      const home = await fs.realpath((this.config.home || os.homedir()));
+      const project = await fs.realpath(workspace.root);
+      const target = path.join(home, ...String(body.path || '').split('/'));
+      // The project itself changes through the reviewed patch flow, never directly.
+      if (target === project || target.startsWith(project + path.sep)) throw new Error('home_write_in_project: change project files in the task workspace; they are applied as a reviewed patch');
+      const key = 'home:' + target;
+      if (this.busy.has(key)) throw new Error('workspace_busy');
+      this.busy.add(key);
+      try { return await this.write(taskId, home, body); } finally { this.busy.delete(key); }
     }
     if (body.root !== undefined && body.root !== 'project') throw new Error('read_root_readonly');
     const root = await fs.realpath(workspace.root);

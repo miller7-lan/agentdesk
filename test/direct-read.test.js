@@ -30,8 +30,7 @@ test('named local read locations stay inside their roots and never grant writes'
   await fs.writeFile(path.join(desktop, 'note.txt'), 'private desktop note');
   const ops = new WindowsOperations({ config: { workspaces: { test: { root: project, readRoots: { desktop }, write: true } } } });
   const call = (kind, body) => ops.call({ kind, task_id: randomUUID(), body: { workspace: 'test', ...body } });
-  assert.deepEqual((await call('file.read', { operation: 'locations' })).locations,
-    [{ id: 'project', label: '项目' }, { id: 'desktop', label: '桌面' }]);
+  assert.deepEqual((await call('file.read', { operation: 'locations' })).locations.map(({ id }) => id), ['project', 'home', 'desktop']);
   const listing = await call('file.read', { operation: 'list', root: 'desktop', path: '' });
   assert.match(JSON.stringify(listing), /note\.txt/);
   await assert.rejects(call('file.read', { operation: 'list', root: 'other', path: '' }), /read_root_not_authorized/);
@@ -84,4 +83,45 @@ test('direct chat reads live files without a clean local Git baseline and cannot
   assert.equal(calls, 4);
   assert.equal(mcp.capabilities.size, 0);
   assert.equal(await fs.readFile(path.join(local, 'note.txt'), 'utf8'), 'uncommitted user content\n');
+});
+
+test('the whole user folder can be read and changed, but not credentials, app data or the project itself', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-home-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const home = path.join(dir, 'home'), project = path.join(home, 'code', 'project');
+  await fs.mkdir(project, { recursive: true });
+  await fs.mkdir(path.join(home, 'Desktop', 'proxy'), { recursive: true });
+  await fs.mkdir(path.join(home, '.ssh'));
+  await fs.writeFile(path.join(home, '.ssh', 'id_ed25519'), 'secret');
+  await fs.writeFile(path.join(home, 'Desktop', 'proxy', 'config.yaml'), 'port: 1\n');
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const ops = new WindowsOperations({ store, config: { stateDir: path.join(dir, 'state'), home, workspaces: { test: { root: project, write: true } } } });
+  const taskId = randomUUID();
+  const call = (kind, body) => ops.call({ kind, task_id: taskId, body: { workspace: 'test', ...body } });
+  assert.match(JSON.stringify(await call('file.read', { operation: 'list', root: 'home', path: 'Desktop/proxy' })), /config\.yaml/);
+  await assert.rejects(call('file.read', { operation: 'read', root: 'home', path: '.ssh/id_ed25519' }), /home_path_denied/);
+  await assert.rejects(call('file.read', { operation: 'list', root: 'home', path: 'Library' }), /home_path_denied/);
+
+  // write through a stream, as the orchestrator does: a new file, then an overwrite with its version
+  const send = async (text) => {
+    const bytes = Buffer.from(text); const id = randomUUID();
+    const sha = require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+    await ops.call({ kind: 'stream.open', task_id: taskId, body: { stream_id: id, size: bytes.length } });
+    await ops.call({ kind: 'stream.chunk', task_id: taskId, body: { stream_id: id, offset: 0, data: bytes.toString('base64'), sha256: sha } });
+    await ops.call({ kind: 'stream.end', task_id: taskId, body: { stream_id: id, size: bytes.length, sha256: sha } });
+    return id;
+  };
+  await call('file.write', { root: 'home', operation: 'write', path: 'Desktop/proxy/README.md', stream_id: await send('hello'), version: null });
+  assert.equal(await fs.readFile(path.join(home, 'Desktop', 'proxy', 'README.md'), 'utf8'), 'hello');
+  const { version } = await call('file.read', { operation: 'stat', root: 'home', path: 'Desktop/proxy/config.yaml' });
+  await call('file.write', { root: 'home', operation: 'write', path: 'Desktop/proxy/config.yaml', stream_id: await send('port: 2\n'), version });
+  assert.equal(await fs.readFile(path.join(home, 'Desktop', 'proxy', 'config.yaml'), 'utf8'), 'port: 2\n');
+  await call('file.write', { root: 'home', operation: 'mkdir', path: 'Desktop/proxy/out', version: null });
+  assert.ok((await fs.stat(path.join(home, 'Desktop', 'proxy', 'out'))).isDirectory());
+
+  await assert.rejects(call('file.write', { root: 'home', operation: 'mkdir', path: '.ssh/keys', version: null }), /home_path_denied/);
+  await assert.rejects(call('file.write', { root: 'home', operation: 'mkdir', path: 'code/project/new', version: null }), /home_write_in_project/);
+  const off = new WindowsOperations({ config: { home, workspaces: { test: { root: project, anyFolder: false } } } });
+  await assert.rejects(off.call({ kind: 'file.read', task_id: taskId, body: { workspace: 'test', operation: 'list', root: 'home', path: '' } }), /read_root_not_authorized/);
 });
