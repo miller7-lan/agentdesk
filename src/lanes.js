@@ -232,6 +232,7 @@
       const meta = [took, files ? files + ' 个文件' : '', tries ? '第 ' + (tries + 1) + ' 次' : '', verdict].filter(Boolean).join(' · ');
       const summary = String(step.error || step.output || step.brief || '').replace(/\s+/g, ' ').trim();
       add({ role: step.role || 'claude', label: cap, stepId: step.id, state, model: step.model || '',
+        dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn : [],
         kind: state === 'failed' ? 'error' : step.capability === 'review' || step.capability === 'accept' ? 'review'
           : step.capability === 'triage' ? 'retry' : state === 'completed' ? 'commit' : 'start',
         meta, summary: summary.slice(0, 220), at: started || ended || 0, fail: state === 'failed',
@@ -360,16 +361,27 @@
     }).join('');
     // Handoffs between members: a curve from the previous node's dot to the next one's; it flows while the
     // receiving step is at work, and is solid once that step has finished.
-    const edges = nodes.slice(1).map((node, index) => {
-      const previous = nodes[index];
+    // Lines follow the plan's dependencies, so steps that run in parallel fan out from what they share and are
+    // never joined to each other. A step with no dependency starts from the lead's last planning node; a node
+    // that is not a planned step (acceptance, waiting for you) follows the node before it.
+    const byStep = new Map(nodes.map((node, index) => [node.stepId, index]).filter(([id]) => id));
+    const lastLead = (before) => { for (let i = before - 1; i >= 0; i -= 1) if (!nodes[i].stepId) return i; return before - 1; };
+    const parents = (node, index) => {
+      if (!node.stepId || !node.dependsOn) return index ? [index - 1] : [];
+      const found = node.dependsOn.map((id) => byStep.get(id)).filter((at) => at !== undefined && at < index);
+      if (found.length) return found;
+      return node.dependsOn.length ? [] : [lastLead(index)].filter((at) => at >= 0);
+    };
+    const edges = nodes.map((node, index) => parents(node, index).map((from) => {
+      const previous = nodes[from];
       if (laneOf(previous.role) === laneOf(node.role)) return '';
-      const x1 = spine(previous.role), y1 = middle(index);
-      const x2 = spine(node.role), y2 = middle(index + 1);
+      const x1 = spine(previous.role), y1 = middle(from);
+      const x2 = spine(node.role), y2 = middle(index);
       const lane = laneOf(node.role);
       const bend = Math.max(30, Math.abs(y2 - y1) * 0.55);
       return `<path class="sg-edge handoff${active(node) ? ' live' : ''}${pending(node) && !active(node) ? ' later' : ''}"
         d="M${x1} ${y1} C${x1} ${y1 + bend},${x2} ${y2 - bend},${x2} ${y2}" style="--lane:${lane.colour}"/>`;
-    }).join('');
+    }).join('')).join('');
     // The node dots on the spines.
     const dots = nodes.map((node, index) => {
       const lane = laneOf(node.role);
