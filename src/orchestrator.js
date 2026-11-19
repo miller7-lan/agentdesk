@@ -75,6 +75,7 @@ window.__groupReady = (async () => {
     accepted_with_risk: '组长按风险接受本次结果，补丁仍可人工应用。',
     windows_test_started: '正在本机运行测试。',
     windows_test_failed: '本机测试失败。',
+    dependency_failed: '前置步骤没有正常结束，后面的步骤无法开始，任务已停止。可以让组长重新安排。',
     budget_exceeded: '这项任务的预算（步骤数或 token）已用完，已暂停；确认后可重新发起或调高主控的 taskBudget。',
   };
   const routeNames = { ssh: 'SSH 主用', relay: 'VPS 1 Relay 备用' };
@@ -223,6 +224,7 @@ window.__groupReady = (async () => {
     for (const [id, group] of groups) {
       group.records.clear();
       group.expanded?.clear();
+      group.summaryOpen?.clear();
       group.approvals.clear();
       group.selected = undefined;
       group.output = null;
@@ -646,7 +648,17 @@ window.__groupReady = (async () => {
   const RECENT_TASKS = 4;
   const threadRoles = new Set(['codex', 'claude', 'grok', 'gemini', 'antigravity']);
   const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
-  const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', replaced: '已重新分配', cancelled: '已停止', skipped: '跳过' };
+  const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败',
+    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止' };
+  const terminalTask = new Set(['completed', 'failed', 'cancelled']);
+  // A step still marked running or queued under a task that has already ended was cut off; show that
+  // instead of a live state that contradicts the task.
+  function stepDisplay(task, state) {
+    if (!terminalTask.has(task.state)) return state;
+    if (state === 'running') return 'stopped';
+    if (['queued', 'pending', 'proposed', 'waiting'].includes(state)) return 'skipped';
+    return state;
+  }
 
   function milestone(step) {
     const text = step.verdict?.summary || step.error || step.output || '';
@@ -655,12 +667,13 @@ window.__groupReady = (async () => {
   }
 
   // A short closing summary for the group: the member's verdict, or the opening lines of its final reply.
-  function closingSummary(step) {
+  // The group message folds it; expanding asks for a longer excerpt (the full text stays in the member's chat).
+  function closingSummary(step, limit = 260) {
     if (step.verdict?.summary) return step.verdict.summary;
     const text = (step.error || step.output || '').trim();
     if (!text) return '';
-    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 3).join(' ');
-    return lines.length > 260 ? lines.slice(0, 260) + '…' : lines;
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean).join(' ');
+    return lines.length > limit ? lines.slice(0, limit) + '…' : lines;
   }
 
   function stepBoard(task, steps) {
@@ -668,7 +681,7 @@ window.__groupReady = (async () => {
     const rows = steps.map((step) => {
       const open = !task.redacted && threadRoles.has(step.role);
       const tag = open ? 'button' : 'div';
-      const attrs = open ? `type="button" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" title="打开 ${esc(memberName(step.role))} 单聊"` : '';
+      const attrs = open ? `type="button" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" data-agent-step="${esc(step.id)}" title="打开 ${esc(memberName(step.role))} 单聊"` : '';
       const what = [capabilityLabels[step.capability] || (step.write ? '修改' : ''), step.model].filter(Boolean).join(' · ');
       const tried = (step.history || []).map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : ''));
       // The counter is the escalation round: it grows when the step fails, before the lead has decided
@@ -679,12 +692,13 @@ window.__groupReady = (async () => {
         : triaging ? `${waiting ? '等待' : ''}组长诊断 ${step.reassigns}/3` : `重排 ${step.reassigns}/3`;
       const note = step.state === 'replaced' ? '已由新步骤接替'
         : step.reassigns ? `${progress} · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
-      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
-        ${step.state === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}<span class="step-node" aria-hidden="true"></span>
+      const shown = stepDisplay(task, step.state || 'queued');
+      return `<${tag} class="step-row" data-state="${esc(shown)}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" data-step-anchor="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
+        ${shown === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}<span class="step-node" aria-hidden="true"></span>
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
         <span class="step-row-what">${esc(what)}</span>
-        <span class="step-row-state">${esc(stepStates[step.state] || step.state || '排队')}</span>
+        <span class="step-row-state">${esc(stepStates[shown] || shown || '排队')}</span>
         <span class="step-row-note">${esc(note)}</span>
         ${open ? '<span class="step-row-open">单聊 ›</span>' : ''}
       </${tag}>`;
@@ -812,10 +826,10 @@ window.__groupReady = (async () => {
       }
       if (requiresReview && (!filterSelect.value || filterSelect.value === 'local')) {
         const title = task.detail === 'patches_ready' ? '待审核的本机补丁' : '待核对的本机操作';
-        const writer = !task.redacted && steps.findLast((step) => step.write && threadRoles.has(step.role))?.role;
+        const writer = !task.redacted && steps.findLast((step) => step.write && threadRoles.has(step.role));
         messages.push(messageRow('local', '工作区', `<div class="group-review">
           <strong>${svg('shield')}${title}</strong>
-          ${writer ? `<button type="button" class="btn primary" data-agent-thread="${writer}" data-agent-task="${esc(task.id)}">在 ${esc(memberName(writer))} 单聊中审核</button>` : ''}
+          ${writer ? `<button type="button" class="btn primary" data-agent-thread="${writer.role}" data-agent-task="${esc(task.id)}" data-agent-step="${esc(writer.id)}">在 ${esc(memberName(writer.role))} 单聊中审核</button>` : ''}
           <button type="button" class="btn" data-task-id="${esc(task.id)}">查看任务 ${taskLabel(task)}</button>
         </div>`));
       }
@@ -833,16 +847,25 @@ window.__groupReady = (async () => {
           if (['running', 'completed', 'failed'].includes(step.state)) {
             messages.push(`<p class="group-system agent-ack">${esc(memberName(step.role))} 已接受${esc(what)}任务${step.model ? ' · ' + esc(step.model) : ''}</p>`);
           }
-          const summary = closingSummary(step);
+          const summaryKey = task.id + ':' + step.id;
+          const expanded = Boolean(group.summaryOpen?.has(summaryKey));
+          const fullSummary = closingSummary(step, 4000);
+          const summary = closingSummary(step, expanded ? 900 : 160);
           if (summary && ['completed', 'failed'].includes(step.state)) {
+            const collapsible = fullSummary.length > 160;
             const link = !task.redacted && threadRoles.has(step.role)
-              ? `<button type="button" class="task-text-link" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}">在单聊查看全文 ${svg('chev')}</button>` : '';
+              ? `<button type="button" class="task-text-link" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" data-agent-step="${esc(step.id)}">在单聊查看全文 ${svg('chev')}</button>` : '';
             // A member's summary is its own report until the lead has accepted the task.
             const verdict = task.acceptance?.verdict;
             const checked = ['accept', 'pass'].includes(verdict) ? '已验收' : verdict === 'accept_with_risk' ? '已验收（带风险）' : '';
             const trust = step.state === 'failed' ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
+            // Every member's closing summary folds the same way: the first lines stay, the long detail opens
+            // on demand, and the full text remains one click away in that member's own conversation.
             messages.push(messageRow(step.role, [step.state === 'failed' ? '未完成' : '完成总结', what].join(' · '),
-              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}">${trust}<p>${esc(summary)}</p>${link}</div>`, 'summary'));
+              `<div class="step-summary${step.state === 'failed' ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}" data-step-summary="${esc(task.id + ':' + step.id)}">${trust}
+                <p class="step-summary-text${collapsible && !expanded ? ' clamped' : ''}">${esc(summary)}</p>
+                ${collapsible ? `<button type="button" class="task-text-link" data-summary-toggle="${esc(summaryKey)}" aria-expanded="${expanded}">${expanded ? '收起详情' : '展开详情'}</button>` : ''}
+                ${link}</div>`, 'summary'));
           }
         }
         if (task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
@@ -874,8 +897,8 @@ window.__groupReady = (async () => {
     if (lanes.length) setHtml(strip, window.AgentDeskLanes.pipeline(lanes, laneHelpers));
   }
   function laneClick(event) {
-    const node = event.target.closest('[data-lane-event]')?.dataset.laneEvent;
-    if (node) { laneSelect(node); return true; }
+    const card = event.target.closest('[data-lane-event]');
+    if (card) { laneSelect(card.dataset.laneEvent, card.dataset.laneStep); return true; }
     const head = event.target.closest('[data-lane-open]');
     if (!head) return false;
     const id = head.dataset.laneOpen;
@@ -1291,7 +1314,8 @@ window.__groupReady = (async () => {
   // group's "泳道" view shows the member chains, the interleaved event list and the tree side by side.
   const laneRole = (role) => role === 'claude' ? 'lead' : role;
   const laneHelpers = {
-    memberName: (role) => role === 'you' ? '你' : memberName(laneRole(role)),
+    // The lead's lane header keeps the model readable at narrow widths; "Claude" is already the member name.
+    memberName: (role) => role === 'claude' ? '组长' : role === 'you' ? '你' : memberName(laneRole(role)),
     colour: (role) => window.AgentDeskLight?.colour(laneRole(role)) || 'var(--accent)',
     avatar: (role) => avatars.html(laneRole(role), { size: 16, still: true }),
   };
@@ -1305,22 +1329,45 @@ window.__groupReady = (async () => {
       .map((task) => ({ task, groupName: name }));
     return window.AgentDeskLanes.model({ tasks, sessions: [], ...laneHelpers, limit });
   }
-  let laneFocus = null;     // the lane whose nodes are highlighted
+  let laneFocus = null;     // the task whose nodes are highlighted
+  // The swimlane panel belongs to one group chat: the selected task is split into its members/models, not into
+  // one column per task or per group chat. Nodes show step id, model, state, duration, files and retries.
   function panelLanes() {
+    const group = currentGroup();
+    if (!group) return '<div class="empty-note">选择一个群聊后，这里会按成员和模型显示节点。</div>';
     const width = document.querySelector('#panel')?.offsetWidth || 420;
-    const lanes = lanesModel(width >= 400 ? 4 : width >= 320 ? 3 : 2);
-    return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>工作树 · 泳道</h3><small>${esc(nameOf(state.group))} · ${lanes.length} 条任务线 · 点节点定位对话</small></div>
-      ${window.AgentDeskLanes.tree(lanes, { ...laneHelpers, focus: laneFocus })}</div>`;
+    const tasks = [...group.records.values()].filter((task) => !task.redacted && belongs(group, task));
+    if (!tasks.length) return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>群聊 · 泳道</h3><small>${esc(nameOf(state.group))}</small></div>
+      <div class="empty-note">这个群聊还没有任务；发出任务后，这里会按成员和模型显示节点。</div></div>`;
+    const selected = tasks.find((task) => task.id === group.selected) || tasks.at(-1);
+    const picker = tasks.length > 1 ? `<label class="sg-pick"><span>任务</span><select data-lane-task>${tasks.map((task) =>
+      `<option value="${esc(task.id)}" ${task.id === selected.id ? 'selected' : ''}>${taskLabel(task)} · ${esc((task.prompt || '').slice(0, 40))}</option>`).join('')}</select></label>` : '';
+    const model = window.AgentDeskLanes.groupModel(selected, laneHelpers);
+    return `<div class="project-panel-body lanes-panel">
+      <div class="member-panel-heading"><h3>群聊 · 泳道</h3><small>${esc(nameOf(state.group))} · 按成员/模型分道</small></div>
+      ${picker}${window.AgentDeskLanes.groupTree(model, { ...laneHelpers, focus: laneFocus, width })}</div>`;
   }
   // Clicking a node on the lane tree focuses its lane and finds the conversation it belongs to: a group task
   // scrolls into view in the conversation and a light flies from the node to it; a single chat opens.
-  function laneSelect(key) {
+  function laneSelect(key, stepKey) {
     const laneId = key.split(':')[0];
     laneFocus = laneId;
+    const group = currentGroup();
+    // A finished task beyond the recent few is folded to one line; unfold it before locating a step in it.
+    const hasTask = Boolean(timeline.querySelector(`[data-message-id="${CSS.escape(laneId)}"]`));
+    if (!hasTask && group?.records.has(laneId)) {
+      (group.expanded ||= new Set()).add(laneId);
+      renderTimeline();
+    }
     A.renderPanel();
     requestAnimationFrame(() => {
       const node = document.querySelector(`[data-lane-event="${CSS.escape(key)}"]`);
-      const message = timeline.querySelector(`[data-message-id="${CSS.escape(laneId)}"]`);
+      // A node that names a step lands on that step's closing summary, else on its row in the progress
+      // board; only the task as a whole when neither is shown (e.g. a filter hides it).
+      const stepTarget = stepKey
+        ? timeline.querySelector(`[data-step-summary="${CSS.escape(stepKey)}"]`) || timeline.querySelector(`[data-step-anchor="${CSS.escape(stepKey)}"]`)
+        : null;
+      const message = stepTarget || timeline.querySelector(`[data-message-id="${CSS.escape(laneId)}"]`);
       window.AgentDeskLight?.arrive(node);
       if (!message || !node) return;
       message.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -1882,17 +1929,26 @@ window.__groupReady = (async () => {
   $('#panelBody').addEventListener('click', (event) => { if (event.target.closest('[data-open-quota]')) window.__quotaView?.open(); });
   $('#panelBody').addEventListener('change', (event) => {
     if (state.group && event.target.matches('[data-log-select]')) openTaskOutput('task_log', { stepId: event.target.value });
+    if (state.group && event.target.matches('[data-lane-task]')) selectTask(event.target.value, 'lanes');
     if (state.group && event.target.id === 'flowTask') selectTask(event.target.value, 'graph');
   });
   for (const surface of [timeline, $('#panelBody')]) {
     surface.addEventListener('click', (event) => {
       if (!state.group) return;
       const group = currentGroup();
+      const summaryToggle = event.target.closest('[data-summary-toggle]');
+      if (summaryToggle) {
+        const key = summaryToggle.dataset.summaryToggle;
+        group.summaryOpen ||= new Set();
+        if (group.summaryOpen.has(key)) group.summaryOpen.delete(key); else group.summaryOpen.add(key);
+        render();
+        return;
+      }
       const sub = event.target.closest('[data-task-sub]');
       if (sub) { A.showPanel(sub.dataset.taskSub); return; }
       const thread = event.target.closest('[data-agent-thread]');
       if (thread) {
-        window.__agentThreadsReady.then(() => window.__agentThreads?.open(group.id, thread.dataset.agentThread, thread.dataset.agentTask));
+        window.__agentThreadsReady.then(() => window.__agentThreads?.open(group.id, thread.dataset.agentThread, thread.dataset.agentTask, thread.dataset.agentStep));
         return;
       }
       const expand = event.target.closest('[data-expand-task]');

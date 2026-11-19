@@ -1150,6 +1150,12 @@ event(task, state, detail) {
       }
       delete task.planRaw;
     }
+    // A step left "running" belongs to a run that is no longer alive (the service stopped mid-step and the
+    // task was put back in line later). Nothing of this task is executing now, so put those steps back in
+    // line; otherwise the loop below finds no ready step and fails the whole task with dependency_failed.
+    for (const step of task.steps) {
+      if (step.state === 'running') step.state = 'queued';
+    }
     this.save(task, 'running', 'plan_ready');
     for (;;) {
       while (task.steps.some((step) => !this.isAcceptStep(step) && step.state === 'queued')) {
@@ -1157,7 +1163,14 @@ event(task, state, detail) {
         const ready = task.steps.filter((step) => step.state === 'queued' && !this.isAcceptStep(step) &&
           step.dependsOn.every((id) => task.steps.find((dep) => dep.id === id).state === 'completed'));
         const wave = ready.filter((step, i) => ready.findIndex((other) => other.role === step.role) === i);
-        if (!wave.length) throw new Error('dependency_failed');
+        if (!wave.length) {
+          // The same staleness can appear while the loop runs if a step was requeued from outside. Reset
+          // once and try again; a dependency that is really failed or replaced still ends the task below.
+          const stale = task.steps.filter((step) => step.state === 'running');
+          if (!stale.length) throw new Error('dependency_failed');
+          for (const step of stale) step.state = 'queued';
+          continue;
+        }
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
         const failed = results.find((result) => result.status === 'rejected');
         if (failed) {

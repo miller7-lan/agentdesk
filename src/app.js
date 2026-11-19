@@ -177,11 +177,11 @@
       const showGroup = hasGroup && (!q || p.name.toLowerCase().includes(q) || '群聊'.includes(q) || projectGroups.some((g) => g.name.toLowerCase().includes(q)));
       if (q && !items.length && !showGroup && !p.name.toLowerCase().includes(q)) continue;
       // Work the lead handed out in the group sits under the group; the person's own conversations come after.
-      const dispatched = items.filter((s) => s.agentThread);
+      const dispatched = items.filter((s) => s.agentThread).sort((a, b) => (b.order || 0) - (a.order || 0));
       const own = items.filter((s) => !s.agentThread);
       const row = (s) => `
           <div class="sess ${s.agentThread ? 'sess-dispatched ' : ''}${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.agentThread ? s.title + '（只读记录）' : s.title)}" role="button" tabindex="0">
-            ${avatars.html(s.provider || s.agent || 'codex', { size: s.agentThread ? 20 : 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.agentThread ? (window.__providerDirect?.names[s.provider] || s.provider) : s.title)}</span>${s.agentThread ? '<span class="s-badge">派遣</span>' : `<span class="s-time">${esc(s.time)}</span>`}
+            ${avatars.html(s.provider || s.agent || 'codex', { size: s.agentThread ? 20 : 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.agentThread ? (s.shortTitle || s.title || window.__providerDirect?.names[s.provider] || s.provider) : s.title)}</span>${s.agentThread ? '<span class="s-badge">派遣</span>' : `<span class="s-time">${esc(s.time)}</span>`}
           </div>`;
       const col = state.collapsed.has(p.id) && !q;
       html += `<div class="group ${col ? 'collapsed' : ''}" data-proj="${p.id}">

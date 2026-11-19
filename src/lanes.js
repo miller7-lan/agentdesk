@@ -98,14 +98,16 @@
     // While the lead diagnoses, the active member is the lead, not the member whose step failed.
     const triaging = task.state === 'triaging';
     const waitingTriage = triaging && String(task.detail || '').startsWith('triage_unavailable');
+    const shown = (state) => endedState(task.state, state);
     const current = triaging ? { role: 'claude', state: 'running' }
-      : [...steps].reverse().find((s) => s.state === 'running') || [...steps].reverse().find((s) => s.state !== 'queued');
+      : [...steps].reverse().find((s) => shown(s.state) === 'running') || [...steps].reverse().find((s) => !['queued', 'skipped'].includes(shown(s.state)));
     const done = steps.filter((s) => s.state === 'completed').length;
     const chain = [];
     for (const step of steps) {
       const r = role(step);
-      if (chain.at(-1)?.role === r) { chain.at(-1).state = step.state === 'running' ? 'running' : chain.at(-1).state === 'running' ? 'running' : step.state; continue; }
-      chain.push({ role: r, state: step.state });
+      const state = shown(step.state);
+      if (chain.at(-1)?.role === r) { chain.at(-1).state = state === 'running' ? 'running' : chain.at(-1).state === 'running' ? 'running' : state; continue; }
+      chain.push({ role: r, state });
     }
     if (triaging && chain.at(-1)?.role !== 'claude') chain.push({ role: 'claude', state: 'running' });
     if (waiting) chain.push({ role: 'you', state: 'running' });
@@ -139,6 +141,144 @@
       running: !!s.busy, waiting: false, chain: [{ role, state: s.busy ? 'running' : 'completed' }], events, last: base,
       tail: s.busy ? '等待 ' + memberName(role) : '',
     };
+  }
+
+  // ---------- one group chat: lanes are its members/models ----------
+  // The swimlane belongs to the group chat that is open. Instead of one column per task (which reads like
+  // several conversations), each member that took part in the selected task gets a lane, and every node is a
+  // detailed card: step id, capability, exact model, state, duration, files and attempt count. The graph is
+  // drawn top-down in execution order; a dashed edge marks a handoff between members.
+  const ROLE_ORDER = ['claude', 'codex', 'grok', 'gemini', 'antigravity', 'local', 'you'];
+  const STEP_STATE = {
+    queued: '排队中', pending: '待开始', proposed: '拟执行', planning: '规划中', running: '运行中',
+    applying: '应用中', testing: '验证中', completed: '完成', accepted: '已验收', failed: '失败',
+    cancelled: '已取消', replaced: '已改派', awaiting_approval: '待确认', awaiting_details: '待补充',
+    awaiting_acceptance: '待验收', needs_review: '待处理', triaging: '诊断中', waiting: '等待',
+    stopped: '已中止', skipped: '未执行',
+  };
+  const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+  // A step still running or queued when the task itself ended was cut off; never draw it as live beside
+  // the task's end state.
+  const endedState = (taskState, state) => {
+    if (!TERMINAL.has(taskState)) return state;
+    if (state === 'running') return 'stopped';
+    if (['queued', 'pending', 'proposed', 'waiting'].includes(state)) return 'skipped';
+    return state;
+  };
+  const VERDICT = {
+    accept: '通过', pass: '通过', accept_with_risk: '带风险通过', rework: '要求返工', reject: '拒绝',
+    blocked: '受阻', unknown: '无法判断', limit: '达到上限',
+  };
+  const span = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm';
+    return Math.floor(m / 60) + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+  };
+  function modelShort(model) {
+    const text = String(model || '');
+    if (!text) return '';
+    let m = /^claude-(sonnet|opus|haiku)-(\d+)-(\d+)$/.exec(text);
+    if (m) return m[1][0].toUpperCase() + m[1].slice(1) + ' ' + m[2] + '.' + m[3];
+    m = /^gemini-(\d+(?:\.\d+)?)-([a-z]+)(?:-(high|xhigh|medium|low))?$/.exec(text);
+    if (m) return 'Gemini ' + m[1] + ' ' + m[2][0].toUpperCase() + m[2].slice(1) + (m[3]
+      ? ' ' + ({ high: 'H', xhigh: 'XH', medium: 'M', low: 'L' })[m[3]] : '');
+    return text.replace(/^gpt-/i, 'GPT-').replace(/-/g, ' ');
+  }
+
+  function groupModel(task, { memberName, colour } = {}) {
+    if (!task) return null;
+    const events = task.events || [];
+    const eventTime = (detail) => {
+      const found = [...events].reverse().find((event) => String(event.detail || '') === detail);
+      return found ? time(found.time) : 0;
+    };
+    const startOf = (step) => time(step.startedAt) || eventTime(step.id + ':started');
+    const endOf = (step) => time(step.endedAt) || eventTime(step.id + ':completed') || eventTime(step.id + ':failed');
+    const plan = task.plan?.rounds?.at(-1);
+    const runtime = task.steps || [];
+    const planned = plan?.steps || [];
+    const steps = runtime.length ? runtime : planned.map((step) => ({ ...step, state: step.state || 'proposed' }));
+    const nodes = [];
+    const checks = [];
+    const add = (node) => nodes.push({ model: '', meta: '', summary: '', fail: false, ...node });
+    const planAt = eventTime('plan_ready') || time(task.createdAt) || 0;
+
+    // Plan milestones stay in the lead's lane and always start the graph.
+    if (plan || ['planning', 'awaiting_details', 'awaiting_approval'].includes(task.state)) {
+      add({ role: 'claude', kind: 'checkpoint', label: '组长规划', at: planAt,
+        detail: plan ? '第 ' + (plan.revision || task.plan?.approved || 1) + ' 版方案' : '制定方案',
+        meta: [plan?.steps?.length ? plan.steps.length + ' 步' : '', task.leadEffort ? '思考 ' + task.leadEffort : ''].filter(Boolean).join(' · '),
+        state: task.state === 'planning' ? 'running' : 'completed', summary: String(plan?.summary || '').replace(/\s+/g, ' ') });
+    } else {
+      add({ role: 'claude', kind: 'start', label: '任务指派', detail: task.provider ? '直接交给 ' + (memberName?.(task.provider) || task.provider) : '直接派给成员',
+        state: 'completed', at: planAt });
+    }
+    if (task.plan?.approved) add({ role: 'claude', kind: 'checkpoint', label: '方案确认',
+      detail: '你确认了第 ' + task.plan.approved + ' 版', meta: steps.length + ' 步', state: 'completed', at: planAt + 1 });
+
+    // Steps in execution order: started steps first by start time, queued steps keep the plan's order.
+    const ordered = steps.map((step, index) => ({ step, index, at: startOf(step) }))
+      .sort((a, b) => (a.at && b.at ? a.at - b.at : a.at ? -1 : b.at ? 1 : a.index - b.index));
+    for (const { step } of ordered) {
+      const state = endedState(task.state, step.state || 'proposed');
+      const cap = capability[step.capability] || '步骤';
+      const started = startOf(step), ended = endOf(step);
+      const took = started && ended && ended >= started ? span(ended - started) : '';
+      const files = Array.isArray(step.paths) ? step.paths.length : 0;
+      const tries = step.history?.length || step.reassigns || 0;
+      const verdict = step.verdict?.verdict ? VERDICT[step.verdict.verdict] : '';
+      const meta = [took, files ? files + ' 个文件' : '', tries ? '第 ' + (tries + 1) + ' 次' : '', verdict].filter(Boolean).join(' · ');
+      const summary = String(step.error || step.output || step.brief || '').replace(/\s+/g, ' ').trim();
+      add({ role: step.role || 'claude', label: cap, stepId: step.id, state, model: step.model || '',
+        kind: state === 'failed' ? 'error' : step.capability === 'review' || step.capability === 'accept' ? 'review'
+          : step.capability === 'triage' ? 'retry' : state === 'completed' ? 'commit' : 'start',
+        meta, summary: summary.slice(0, 220), at: started || ended || 0, fail: state === 'failed',
+        flight: ['completed', 'accepted'].includes(state) });
+    }
+
+    if (task.acceptance && !steps.some((step) => step.capability === 'accept' && step.state === 'completed')) {
+      const verdict = task.acceptance.verdict;
+      const ok = ['accept', 'pass', 'accept_with_risk'].includes(verdict);
+      add({ role: 'claude', kind: 'review', label: '验收', stepId: 'accept', model: steps.find((step) => step.capability === 'accept')?.model || '',
+        state: ok ? 'completed' : 'failed', fail: !ok, meta: VERDICT[verdict] || '', at: 0,
+        summary: String(task.acceptance.summary || '').replace(/\s+/g, ' ').slice(0, 220) });
+    }
+    if (task.testResult) {
+      // A local test is not one of the models in the group; keep it out of the model lanes and show it as a
+      // check under the graph instead of taking a whole column.
+      const ok = task.testResult.code === 0;
+      checks.push({ kind: 'test', label: '本机测试', detail: ok ? '自动验证通过' : '自动验证失败', state: ok ? 'completed' : 'failed',
+        fail: !ok, summary: String(task.testResult.output || '').replace(/\s+/g, ' ').slice(0, 220) });
+    }
+    const waiting = {
+      awaiting_details: ['you', '等你补充'],
+      awaiting_approval: ['you', '等你确认方案'],
+      needs_review: ['you', '等你审核'],
+      awaiting_acceptance: ['claude', '等待验收'],
+    }[task.state];
+    if (waiting) add({ role: waiting[0], kind: 'wait', label: waiting[1], detail: task.detail || '', state: 'waiting' });
+    if (task.state === 'triaging' && !nodes.some((node) => node.role === 'claude' && node.state === 'running')) {
+      add({ role: 'claude', kind: 'retry', label: '组长诊断', detail: task.detail || '正在诊断失败原因', state: 'running' });
+    }
+
+    const rank = (role) => { const index = ROLE_ORDER.indexOf(role); return index < 0 ? ROLE_ORDER.length : index; };
+    const roles = [...new Set(nodes.map((node) => node.role))].sort((a, b) => rank(a) - rank(b));
+    const lanes = roles.map((role) => {
+      const mine = nodes.filter((node) => node.role === role);
+      const models = [...new Set(mine.map((node) => node.model).filter(Boolean))];
+      const done = mine.filter((node) => ['completed', 'accepted'].includes(node.state)).length;
+      const failed = mine.some((node) => node.state === 'failed');
+      const running = mine.some((node) => node.state === 'running' || node.state === 'waiting');
+      return {
+        id: role, role, name: memberName?.(role) || role, colour: colour?.(role) || 'var(--accent)',
+        models, model: models[0] || '', done, count: mine.length, running, failed,
+        status: failed ? '有失败' : running ? (role === 'you' ? '等你' : '执行中')
+          : done === mine.length ? '完成' : TERMINAL.has(task.state) ? '已结束' : '排队',
+      };
+    });
+    return { task, lanes, nodes, checks };
   }
 
   // ---------- drawing ----------
@@ -184,6 +324,94 @@
       <div class="lt-legend"><b>图例 · 轨迹事件</b>${legend}</div></div>`;
   }
 
+  function groupTree(model, { avatar, focus, width = 420 } = {}) {
+    if (!model) return '<div class="empty-note">这个群聊还没有任务；发出任务后，这里会按成员和模型显示节点。</div>';
+    const { task, lanes, nodes, checks = [] } = model;
+    if (!lanes.length || !nodes.length) return '<div class="empty-note">这个任务还没有可显示的步骤。</div>';
+    const columns = lanes.length;
+    const inner = Math.max(280, Math.floor(width) - 22);
+    // Fit the members side by side in the panel instead of cutting the last one off; very many members still
+    // scroll horizontally, but four (lead plus three models) fit at the usual panel width.
+    const col = Math.max(84, Math.floor(inner / columns));
+    const content = col * columns;
+    const ROW = 114, NODE_H = 94, PAD = 10;
+    const height = PAD * 2 + nodes.length * ROW - (ROW - NODE_H);
+    const laneIndex = new Map(lanes.map((lane, index) => [lane.id, index]));
+    const laneOf = (role) => lanes[laneIndex.get(role) ?? 0];
+    const center = (role) => (laneIndex.get(role) ?? 0) * col + col / 2;
+
+    const bands = lanes.map((lane, index) =>
+      `<i class="sg-band" style="left:${index * col}px;width:${col}px;--lane:${lane.colour}"></i>`).join('');
+    const edges = nodes.slice(1).map((node, index) => {
+      const previous = nodes[index];
+      const x1 = center(previous.role), y1 = PAD + index * ROW + NODE_H;
+      const x2 = center(node.role), y2 = PAD + (index + 1) * ROW;
+      const lane = laneOf(node.role);
+      const handoff = previous.role !== node.role ? ' handoff' : '';
+      return `<path class="sg-edge${handoff}" d="M${x1} ${y1} C${x1} ${(y1 + y2) / 2},${x2} ${(y1 + y2) / 2},${x2} ${y2}" style="--lane:${lane.colour}"/>` +
+        `<circle class="sg-edge-dot" cx="${x2}" cy="${y2}" r="2.4" style="--lane:${lane.colour}"/>`;
+    }).join('');
+    const heads = lanes.map((lane, index) => {
+      const modelText = lane.models.length > 1 ? lane.models.length + ' 个模型' : modelShort(lane.model) || '—';
+      return `<div class="sg-head" style="left:${index * col + 4}px;width:${col - 8}px;--lane:${lane.colour}"
+        title="${esc([lane.name, ...lane.models].join('\n'))}">
+        <span class="sg-head-name">${avatar ? avatar(lane.role) : ''}<b>${esc(lane.name)}</b></span>
+        <span class="sg-head-model" title="${esc(lane.models.join(', '))}">${esc(modelText)}</span>
+        <span class="sg-head-meta"><i>${lane.done}/${lane.count}</i>${esc(lane.status)}</span></div>`;
+    }).join('');
+    const cards = nodes.map((node, index) => {
+      const lane = laneOf(node.role);
+      const detail = node.stepId
+        ? [node.label, node.model ? modelShort(node.model) : ''].filter(Boolean).join(' · ')
+        : node.detail || '';
+      const meta = [STEP_STATE[node.state] || '', node.meta || ''].filter(Boolean).join(' · ');
+      // Do not repeat the short detail; the note is the part that makes a node worth opening.
+      const note = node.summary && node.summary !== detail ? node.summary : '';
+      const title = [
+        node.stepId ? node.stepId + ' · ' + node.label : node.label,
+        node.model, '状态：' + (STEP_STATE[node.state] || node.state || ''), node.meta, node.summary,
+      ].filter(Boolean).join('\n');
+      const flight = node.stepId && ['completed', 'accepted'].includes(node.state)
+        ? ` data-flight-to="${esc(task.id + ':' + node.stepId)}"` : '';
+      // The step key lets a click on this node land on that step's own message in the group chat, not just
+      // on the task as a whole.
+      const stepKey = node.stepId ? ` data-lane-step="${esc(task.id + ':' + node.stepId)}"` : '';
+      return `<button type="button" class="sg-node${node.fail ? ' fail' : ''}${focus === task.id ? ' focus' : ''}"
+        data-lane-event="${esc(task.id + ':' + index)}"${stepKey} data-state="${esc(node.state || '')}"${flight}
+        style="left:${(laneIndex.get(node.role) ?? 0) * col + 5}px;top:${PAD + index * ROW}px;width:${col - 10}px;--lane:${lane.colour}"
+        title="${esc(title)}">
+        <span class="sg-node-top">${glyph({ kind: node.kind, fail: node.fail, done: node.state === 'completed' })}
+          <b>${esc(node.stepId || node.label)}</b><i class="sg-state"></i></span>
+        <span class="sg-node-detail">${esc(detail)}</span>
+        <span class="sg-node-meta">${esc(meta)}</span>
+        ${note ? `<span class="sg-node-note">${esc(note)}</span>` : ''}</button>`;
+    }).join('');
+    const prompt = String(task.prompt || '任务').replace(/\s+/g, ' ');
+    const taskHead = `<div class="sg-task" data-flight-task="${esc(task.id)}">
+      <span class="sg-task-state" data-state="${esc(task.state || '')}">${esc(STEP_STATE[task.state] || task.state || '')}</span>
+      <p class="sg-task-prompt" title="${esc(prompt)}">${esc(prompt)}</p>
+      <small>${esc(task.id.slice(0, 8))} · ${lanes.length} 个成员/模型 · ${nodes.length} 个节点 · 点节点定位对话</small></div>`;
+    const checkRow = checks.length ? `<div class="sg-checks">${checks.map((check) =>
+      `<span class="sg-check${check.fail ? ' fail' : ''}" title="${esc([check.label, check.detail, check.summary].filter(Boolean).join('\n'))}">
+        <i class="sg-state" data-state="${esc(check.state || '')}"></i><b>${esc(check.label)}</b>
+        <span>${esc(check.detail || '')}${check.summary ? ' · ' + esc(check.summary.slice(0, 60)) : ''}</span></span>`).join('')}</div>` : '';
+    const legend = `<div class="sg-legend"><b>节点状态</b>
+      <span><i class="sg-state" data-state="completed"></i>完成</span>
+      <span><i class="sg-state" data-state="running"></i>运行中</span>
+      <span><i class="sg-state" data-state="failed"></i>失败</span>
+      <span><i class="sg-state" data-state="queued"></i>排队</span>
+      <span><i class="sg-edge-sample"></i>交接</span></div>`;
+    return `<div class="sg">${taskHead}
+      <div class="sg-scroll"><div class="sg-canvas" style="width:${content}px">
+        <div class="sg-heads" style="width:${content}px;height:64px">${heads}</div>
+        <div class="sg-body" style="width:${content}px;height:${height}px">
+          ${bands}
+          <svg class="sg-edges" width="${content}" height="${height}" viewBox="0 0 ${content} ${height}" aria-hidden="true">${edges}</svg>
+          ${cards}
+        </div>
+      </div></div>${checkRow}${legend}</div>`;
+  }
+
   function list(lanes, { memberName, open } = {}) {
     const all = lanes.flatMap((lane, column) => lane.events.map((event, index) => ({ ...event, laneObj: lane, column, index })))
       .sort((a, b) => a.at - b.at);
@@ -205,5 +433,5 @@
       ${lane.chain.map((link) => `<span class="lp-chip ${link.state === 'running' ? 'current' : link.state === 'completed' ? 'done' : ''}">${avatar ? avatar(link.role) : ''}${esc(link.role === 'you' ? '你' : memberName?.(link.role) || link.role)}${link.state === 'completed' ? '<em>✓</em>' : ''}</span>`).join('<span class="lp-arrow">→</span>')}</div>`).join('')}</div>`;
   }
 
-  window.AgentDeskLanes = { model, tree, list, pipeline, KINDS };
+  window.AgentDeskLanes = { model, groupModel, tree, groupTree, list, pipeline, KINDS };
 })();

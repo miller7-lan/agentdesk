@@ -40,7 +40,7 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
     type: 'object',
     properties: {
       ...(required.includes('path') ? { path: { type: 'string', description: 'Slash-separated path relative to the selected root. Empty string means the root. For the computer root, use an absolute path (or ~ for the home folder), for example /Users/name/Documents or C:/Users/name/Documents.' } } : {}),
-      ...(required.includes('path') ? { root: { type: 'string', description: 'A location id returned by windows_list_locations. Defaults to project. Additional locations are read-only; computer is read-only and lead-only.' } } : {}),
+      ...(required.includes('path') ? { root: { type: 'string', description: 'A location id returned by windows_list_locations. Defaults to project. Additional locations are read-only; computer can be read by every step and changed by steps whose task allows file changes.' } } : {}),
       ...(required.includes('query') ? { query: { type: 'string' } } : {}),
       ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
@@ -94,8 +94,11 @@ if (require.main === module) {
       } else if (frame.method === 'tools/call' && Object.hasOwn(operations, frame.params.name)) {
         const [operation] = operations[frame.params.name];
         const args = frame.params.arguments || {};
+        // Forward every argument the service acts on. Dropping content here made every write look empty
+        // ("invalid_content") even though the client had listed the write tools.
         const value = await request(socketPath, { capability, operation, root: args.root, path: args.path, query: args.query, offset: args.offset,
-          version: args.version, caseSensitive: args.caseSensitive, command: args.command }, operation === 'run' ? 320000 : 35000);
+          version: args.version, caseSensitive: args.caseSensitive, command: args.command,
+          content: args.content, encoding: args.encoding, destination: args.destination }, operation === 'run' ? 320000 : 35000);
         result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
       } else {
         throw new Error('unsupported_mcp_method');

@@ -257,6 +257,8 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .step-summary p { margin: 0; white-space: pre-wrap; }
 .step-summary.failed { background: var(--danger-soft); }
 .step-summary .task-text-link { justify-self: start; }
+/* Long member summaries fold to a few lines; the same button opens every model's report. */
+.step-summary-text.clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 
 /* Sidebar: lead-dispatched records sit under the group, the person's own conversations after them. */
 .sess-section.dispatched { margin: 0 0 4px 14px; padding-left: 6px; border-left: 1px solid var(--border); }
@@ -574,6 +576,64 @@ button.lane-node { cursor: pointer; }
 .lt-legend span { display: inline-flex; align-items: center; gap: 5px; --lane: var(--muted); }
 .lanes-panel .lane-tree { font-size: 10.5px; }
 @media (max-width: 1180px) { .lanes-workspace { grid-template-columns: minmax(0, 1fr); } }
+
+/* 群聊泳道：一个群聊的成员/模型各一条泳道，节点是详细卡片 */
+.sg { display: grid; gap: 8px; font-size: 11px; min-width: 0; }
+.sg-task { display: grid; gap: 3px; padding: 8px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel, #fff); }
+.sg-task-state { justify-self: start; padding: 1px 6px; border-radius: 5px; font-size: 10px; color: #fff; background: var(--muted); }
+.sg-task-state[data-state="running"], .sg-task-state[data-state="awaiting_acceptance"], .sg-task-state[data-state="triaging"] { background: var(--accent); }
+.sg-task-state[data-state="failed"], .sg-task-state[data-state="cancelled"] { background: var(--danger); }
+.sg-task-state[data-state="completed"], .sg-task-state[data-state="accepted"] { background: var(--ok); }
+.sg-task-state[data-state="awaiting_approval"], .sg-task-state[data-state="awaiting_details"], .sg-task-state[data-state="needs_review"] { background: var(--warn); }
+.sg-task-prompt { margin: 0; color: var(--text); font-size: 12px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sg-task small { color: var(--faint); font-size: 10px; font-family: var(--mono, ui-monospace, monospace); }
+.sg-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
+.sg-canvas { min-width: 100%; }
+.sg-heads { position: relative; }
+.sg-head { position: absolute; top: 0; height: 58px; display: grid; gap: 2px; padding: 5px 6px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--panel, #fff); text-align: left; overflow: hidden; }
+.sg-head::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--lane); }
+.sg-head-name { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sg-head-name b { font-size: 10.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-head-model { font-family: var(--mono, ui-monospace, monospace); font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-head-meta { display: flex; align-items: center; gap: 4px; font-size: 9px; color: var(--faint); white-space: nowrap; }
+.sg-head-meta i { font-style: normal; color: var(--lane); font-weight: 650; }
+.sg-body { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--main, transparent); }
+.sg-band { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--lane) 4%, transparent); border-left: 1px dashed color-mix(in srgb, var(--lane) 16%, transparent); }
+.sg-band:first-of-type { border-left: 0; }
+.sg-edges { position: absolute; inset: 0; pointer-events: none; }
+.sg-edge { fill: none; stroke: var(--lane); stroke-width: 1.5; opacity: .5; }
+.sg-edge.handoff { stroke-dasharray: 4 3; opacity: .75; }
+.sg-edge-dot { fill: var(--lane); opacity: .8; }
+.sg-node { position: absolute; display: grid; gap: 2px; align-content: start; height: 94px; padding: 5px 6px; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--panel, #fff); color: var(--text); text-align: left; font: inherit; cursor: pointer; z-index: 2; overflow: hidden; }
+.sg-node:hover { border-color: var(--lane); box-shadow: 0 2px 8px color-mix(in srgb, var(--lane) 18%, transparent); }
+.sg-node.fail { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.sg-node.focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--lane) 35%, transparent); }
+.sg-node[data-state="running"] { border-color: var(--lane); }
+.sg-node[data-state="queued"], .sg-node[data-state="proposed"] { opacity: .68; }
+.sg-node-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sg-node-top .lg { width: 12px; height: 12px; transform: scale(.86); transform-origin: center; }
+.sg-node-top b { flex: 1; min-width: 0; font-family: var(--mono, ui-monospace, monospace); font-size: 9.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-state { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--faint); }
+.sg-node[data-state="running"] .sg-state, .sg-state[data-state="running"] { border-color: var(--lane); animation: lane-pulse 1.6s ease-in-out infinite; }
+.sg-node[data-state="completed"] .sg-state, .sg-state[data-state="completed"] { background: var(--ok); border-color: var(--ok); }
+.sg-node[data-state="failed"] .sg-state, .sg-state[data-state="failed"] { background: var(--danger); border-color: var(--danger); }
+.sg-node[data-state="waiting"] .sg-state { border-color: var(--warn); border-style: dashed; }
+.sg-node-detail { font-size: 9.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-node-meta { font-family: var(--mono, ui-monospace, monospace); font-size: 9px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-node-note { font-size: 9px; line-height: 1.35; color: var(--faint); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sg-checks { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.sg-check { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 3px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel, #fff); font-size: 10px; color: var(--muted); }
+.sg-check b { color: var(--text); font-weight: 600; }
+.sg-check span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-check.fail { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.sg-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 12px; padding: 2px 2px 0; color: var(--muted); font-size: 10px; }
+.sg-legend b { width: 100%; color: var(--faint); font-weight: 600; font-size: 10px; }
+.sg-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.sg-legend .sg-state { width: 8px; height: 8px; }
+.sg-edge-sample { display: inline-block; width: 16px; height: 0; border-top: 1.5px dashed var(--muted); }
+.sg-pick { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+.sg-pick select { flex: 1; min-width: 0; height: 26px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel, #fff); color: var(--text); font: inherit; }
+@media (prefers-reduced-motion: reduce) { .sg-state[data-state="running"], .sg-node[data-state="running"] .sg-state { animation: none; } }
 
 /* 同页：对话上方的任务线成员链 */
 .group-pipeline { padding: 8px clamp(16px, 3vw, 31px) 6px; border-bottom: 1px solid var(--border); }

@@ -4,8 +4,17 @@
     running: '执行中', applying: '应用补丁', testing: '验证中', needs_review: '待处理',
     triaging: '组长诊断', awaiting_acceptance: '待验收', auth_expired: '登录过期', quota_limited: '额度受限', accepted: '已验收',
     completed: '已完成', failed: '失败', cancelled: '已取消', pending: '未开始', proposed: '拟执行', replaced: '已重新分配',
+    stopped: '已中止', skipped: '未执行',
   };
   const endStates = new Set(['completed', 'failed', 'cancelled']);
+  // Once the task itself has ended, a step that still says running or queued was cut off. Showing it as
+  // live under a "任务结束 · 失败" node would contradict the task; say that it was stopped or never ran.
+  function shownState(task, state) {
+    if (!endStates.has(task.state)) return state;
+    if (state === 'running') return 'stopped';
+    if (['queued', 'pending', 'proposed', 'waiting'].includes(state)) return 'skipped';
+    return state;
+  }
   const stepKey = (id) => 'step:' + id;
 
   function build(task, memberName) {
@@ -71,7 +80,7 @@
           key, step, parents, depth: Math.max(entryDepth, ...parents.map((parent) => ready.get(parent).depth)) + 1,
           title: memberName(step.role),
           subtitle: [step.id, step.model, progress(step)].filter(Boolean).join(' · '),
-          state: proposedOnly ? 'proposed' : step.state || 'pending',
+          state: proposedOnly ? 'proposed' : shownState(task, step.state || 'pending'),
           description: [step.prompt || step.brief, (step.history || []).length
             ? '之前尝试：' + step.history.map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : '')).join('、') : '']
             .filter(Boolean).join('\n'),
