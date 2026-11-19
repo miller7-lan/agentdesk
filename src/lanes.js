@@ -73,6 +73,7 @@
         add({ at, kind: step.capability === 'review' ? 'review' : 'commit', role: who, label: (step.capability === 'review' ? '审查 · ' : '完成 · ') + (what || '步骤'), sub: memberName(who), step: step.id, flight: true, fail: step.verdict?.verdict && !['pass', 'accept'].includes(step.verdict.verdict) });
         if (step.paths?.length) add({ at: at + 0.1, kind: 'artifact', role: who, label: '产物 · ' + step.paths.length + ' 个文件', sub: step.paths[0] });
       } else if (step && detail === step.id + ':failed') add({ at, kind: 'error', role: who, label: (what || '步骤') + '失败', sub: String(step.error || '').slice(0, 40), fail: true });
+      else if (step && (m = /^[\w-]+:continuing:(\d+)\/(\d+)$/.exec(detail))) add({ at, kind: 'retry', role: who, label: `续跑 ${m[1]}/${m[2]}`, sub: (what || '步骤') + ' · CLI 输出时限', step: step.id });
       else if ((m = /^test_failed:(\d+)$/.exec(detail))) add({ at, kind: 'test', role: 'local', label: '测试失败 #' + m[1], fail: true });
       else if ((m = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail))) add({ at, kind: 'retry', role: 'claude', label: `组长诊断 ${m[2]}/${m[3]}`, sub: m[1] });
       else if (detail === 'triage_started') add({ at, kind: 'retry', role: 'claude', label: '交给组长诊断' });

@@ -211,6 +211,28 @@ test('a crash while awaiting acceptance resumes the queued acceptance step', asy
   assert.equal(restored.detail, 'patches_ready');
 });
 
+test('a planned accept step is the acceptance; no duplicate automatic round is added', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const scheduler = schedulerFor(dir, mirror, async ({ name, cwd }) => {
+    if (name === 'claude') return { output: verdict('accept') };
+    await fs.writeFile(path.join(cwd, 'README.md'), 'changed\n');
+    return { output: 'edited' };
+  });
+  t.after(() => scheduler.store.close());
+  const task = writerTask(scheduler, head);
+  task.planRaw = JSON.stringify([
+    { id: 'edit', capability: 'implement', prompt: 'edit the fixture', dependsOn: [] },
+    { id: 'accept', capability: 'accept', prompt: 'accept the fixture', dependsOn: ['edit'] },
+  ]);
+  await scheduler.run(task, new AbortController().signal);
+
+  assert.equal(task.acceptance.verdict, 'accept');
+  assert.equal(task.acceptance.round, 1);
+  assert.deepEqual(task.steps.filter((step) => step.capability === 'accept').map((step) => step.id), ['accept']);
+  assert.equal(task.state, 'needs_review');
+  assert.equal(task.detail, 'patches_ready');
+});
+
 test('invalid acceptance settings are rejected', async (t) => {
   const { dir, mirror } = await repository(t);
   assert.throws(() => schedulerFor(dir, mirror, async () => ({ output: 'x' }), { mode: 'sure' }), /invalid_acceptance/);

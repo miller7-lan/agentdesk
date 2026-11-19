@@ -514,6 +514,8 @@ window.__groupReady = (async () => {
     if (verdict) return `验收结论：${acceptanceNames[verdict[1]] || verdict[1]}。`;
     const fix = /^(fix-\d+):(started|completed|failed)$/.exec(detail || '');
     if (fix) return fix[2] === 'started' ? '返工步骤开始执行。' : fix[2] === 'completed' ? '返工步骤完成，等待重新验收。' : '返工步骤失败。';
+    const continuing = /^([\w-]+):continuing:(\d+)\/(\d+)$/.exec(detail || '');
+    if (continuing) return `${continuing[1]} 的 CLI 到达单次输出时限，正在同一会话续跑（第 ${continuing[2]}/${continuing[3]} 次），不会重复已确认的写入。`;
     return detail;
   }
   // A CLI's exit message in words a person can act on; the original sentence stays after the colon.
@@ -523,6 +525,8 @@ window.__groupReady = (async () => {
     if (model) return `模型 ${model[1]} 不可用或与推理强度不匹配（CLI 拒绝执行）：${raw}`;
     if (/^cli_auth_required/i.test(raw)) return `成员的登录已过期，需要重新登录：${raw}`;
     if (/^cli_quota_exhausted/i.test(raw)) return `成员的额度已用完：${raw}`;
+    if (/^cli_print_timeout/i.test(raw)) return `成员的 CLI 到达单次输出时限，会话已保留，将尝试有限续跑：${raw}`;
+    if (/^write_failed:/i.test(raw)) return `本机文件写入未得到确认，步骤不能算完成：${raw}`;
     if (/^cli_exit_\d+/i.test(raw)) return `成员的命令行异常退出：${raw}`;
     return raw;
   }

@@ -1,5 +1,7 @@
 const { createInterface } = require('node:readline');
 const { connect } = require('node:net');
+const { appendFileSync } = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
 
 const operations = {
@@ -53,6 +55,33 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
   },
 }));
 
+// Mutations leave a local, verifiable record next to the step log. A step may claim success only when the
+// matching receipt shows the bridge accepted the write and returned the new version.
+const MUTATIONS = new Set(['write', 'mkdir', 'move', 'delete']);
+
+function receiptFor(operation, args, requestId, value, error) {
+  const text = (field) => typeof field === 'string' ? field : undefined;
+  return {
+    id: randomUUID(),
+    requestId,
+    operation,
+    at: new Date().toISOString(),
+    root: text(args.root),
+    path: text(args.path),
+    destination: text(args.destination),
+    expectedVersion: text(args.version),
+    encoding: text(args.encoding),
+    ok: !error,
+    ...(value && typeof value === 'object' ? { type: value.type, version: value.version, size: value.size } : {}),
+    ...(error ? { error: String(error.message || error).slice(0, 300) } : {}),
+  };
+}
+
+function writeReceipt(filename, receipt) {
+  if (!filename) return;
+  try { appendFileSync(filename, JSON.stringify(receipt) + '\n', { mode: 0o600 }); } catch {}
+}
+
 function request(socketPath, frame, timeout = 35000, limit) {
   return new Promise((resolve, reject) => {
     const socket = connect(socketPath);
@@ -96,10 +125,16 @@ if (require.main === module) {
         const args = frame.params.arguments || {};
         // Forward every argument the service acts on. Dropping content here made every write look empty
         // ("invalid_content") even though the client had listed the write tools.
-        const value = await request(socketPath, { capability, operation, root: args.root, path: args.path, query: args.query, offset: args.offset,
-          version: args.version, caseSensitive: args.caseSensitive, command: args.command,
-          content: args.content, encoding: args.encoding, destination: args.destination }, operation === 'run' ? 320000 : 35000);
-        result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
+        try {
+          const value = await request(socketPath, { capability, operation, root: args.root, path: args.path, query: args.query, offset: args.offset,
+            version: args.version, caseSensitive: args.caseSensitive, command: args.command,
+            content: args.content, encoding: args.encoding, destination: args.destination }, operation === 'run' ? 320000 : 35000);
+          if (MUTATIONS.has(operation)) writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS, receiptFor(operation, args, frame.id, value));
+          result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
+        } catch (error) {
+          if (MUTATIONS.has(operation)) writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS, receiptFor(operation, args, frame.id, null, error));
+          throw error;
+        }
       } else {
         throw new Error('unsupported_mcp_method');
       }
@@ -110,4 +145,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { request, toolNames: Object.keys(operations) };
+module.exports = { request, toolNames: Object.keys(operations), receiptFor, writeReceipt, MUTATIONS };

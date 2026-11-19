@@ -36,10 +36,16 @@
 ```sh
 ssh <管理员>@<VPS2>
 cd <VPS2 上的仓库目录> && git pull --ff-only
-sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock ls   # 先看有没有正在跑的任务
+ADMIN='sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/admin.js /var/lib/agentdesk-orchestrator/admin.sock'
+$ADMIN ls                                                            # 先看有没有正在跑的任务
+$ADMIN maintenance on "deploy <版本或提交>"                           # 排空：不再领取新任务，正在执行的步骤继续跑完
+$ADMIN maintenance                                                   # 等到 enabled=true 且 running 为空、ready=true
 sudo bash orchestrator/install-ubuntu.sh          # 复制 orchestrator/*.js 到 /opt；已有的 config.json 不会被覆盖
 sudo systemctl restart agentdesk-orchestrator
+$ADMIN maintenance off                                               # 确认新服务正常后再恢复领取任务
 ```
+
+排空后已有任务的当前步骤不会被重启，所有可中断的部署都应在 `ready=true` 之后进行。维护状态持久化在数据库里，**重启后不会自动解除**；忘记执行 `maintenance off` 时，新任务会一直排队。旧版本没有 `maintenance` 命令时，只能按下面的规则等待。
 
 重启时正在执行的步骤会重新排队、从头再跑（重复消耗该 CLI 的额度）；正在写回本机或跑测试的任务会转为待处理，等人核对（`ad reconcile`）。所以 `ad ls` 里有 `running`、`applying` 或 `testing` 的任务时，等它结束再重启，或先告诉用户。
 

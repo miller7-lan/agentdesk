@@ -33,6 +33,15 @@ test('claude tool calls are paired with their results; Bash is a command and Edi
   assert.equal(items[1].status, 'completed');
 });
 
+test('activity keeps the newest 300 items so a long step does not look frozen', () => {
+  const events = Array.from({ length: 320 }, (_, index) => ({ type: 'message', role: 'assistant', content: 'm' + index }));
+  const { items, dropped } = parseActivity('gemini', log(...events));
+  assert.equal(items.length, 300);
+  assert.equal(dropped, 20);
+  assert.equal(items[0].text, 'm20');
+  assert.equal(items.at(-1).text, 'm319');
+});
+
 test('gemini deltas join into one reply; unknown CLIs and plain text still show their words', () => {
   const gemini = parseActivity('gemini', log(
     { type: 'tool_use', tool_id: 't', tool_name: 'run_shell_command', parameters: { command: 'git status' } },

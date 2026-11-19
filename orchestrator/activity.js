@@ -41,7 +41,17 @@ class Record {
 
   add(item, id) {
     if (id !== undefined && this.byId.has(id)) return Object.assign(this.byId.get(id), item);
-    if (this.items.length >= MAX_ITEMS) { this.dropped += 1; return item; }
+    // Keep the newest work visible: evict the oldest entry instead of refusing new ones. Dropping new
+    // events made a long step look frozen at its first 300 items even while it was still progressing.
+    if (this.items.length >= MAX_ITEMS) {
+      const oldest = this.items.shift();
+      if (oldest) {
+        for (const [key, value] of this.byId) {
+          if (value === oldest) { this.byId.delete(key); break; }
+        }
+      }
+      this.dropped += 1;
+    }
     this.items.push(item);
     if (id !== undefined) this.byId.set(id, item);
     return item;

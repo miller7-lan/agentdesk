@@ -272,7 +272,12 @@ ad submit project '修复并审核项目中的问题' python-test
 ad status "$TASK_ID"
 ad apply "$TASK_ID"
 ad cancel "$TASK_ID"
+ad maintenance                      # 查看维护/排空状态：running、queued、ready
+ad maintenance on "deploy 2026-11"  # 停止领取新任务；正在执行的步骤跑完后 ready=true
+ad maintenance off                  # 部署并确认服务正常后恢复领取任务
 ```
+
+维护状态保存在数据库的 `settings` 桶里，重启后仍有效；排空期间只影响尚未开始的任务，不会终止正在执行的 CLI，也不会把运行中的步骤重新排队。
 
 `apply` 只接受状态为 `needs_review`、原因是 `patches_ready` 的任务。它会应用已审核的补丁，并在提供测试命令时运行测试。查看补丁时使用 `/var/lib/agentdesk-orchestrator/worktrees/<task-id>/<step-id>.patch`。子 Agent 的保留工件应在确认无需恢复后清理。
 
