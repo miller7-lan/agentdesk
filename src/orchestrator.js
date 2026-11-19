@@ -1207,18 +1207,21 @@ window.__groupReady = (async () => {
     colour: (role) => window.AgentDeskLight?.colour(laneRole(role)) || 'var(--accent)',
     avatar: (role) => avatars.html(laneRole(role), { size: 16, still: true }),
   };
+  // The lanes belong to the group chat that is open: only its own tasks, never other group chats of the project
+  // and never the person's own single chats.
   function lanesModel(limit = 6) {
-    const project = projectIdOf(state.group);
-    const tasks = groupsOf(project).flatMap(({ id, name }) => [...(groups.get(id)?.records.values() || [])]
-      .filter((task) => !task.redacted).map((task) => ({ task, groupName: name })));
-    const sessions = A.D.sessions.filter((s) => projectIdOf(s.project) === project && !s.agentThread && (s.items || []).length);
-    return window.AgentDeskLanes.model({ tasks, sessions, ...laneHelpers, limit });
+    const group = currentGroup();
+    if (!group) return [];
+    const name = nameOf(group.id);
+    const tasks = [...group.records.values()].filter((task) => !task.redacted && belongs(group, task))
+      .map((task) => ({ task, groupName: name }));
+    return window.AgentDeskLanes.model({ tasks, sessions: [], ...laneHelpers, limit });
   }
   let laneFocus = null;     // the lane whose nodes are highlighted
   function panelLanes() {
     const width = document.querySelector('#panel')?.offsetWidth || 420;
     const lanes = lanesModel(width >= 400 ? 4 : width >= 320 ? 3 : 2);
-    return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>工作树 · 泳道</h3><small>${lanes.length} 条任务线 · 点节点定位对话</small></div>
+    return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>工作树 · 泳道</h3><small>${esc(nameOf(state.group))} · ${lanes.length} 条任务线 · 点节点定位对话</small></div>
       ${window.AgentDeskLanes.tree(lanes, { ...laneHelpers, focus: laneFocus })}</div>`;
   }
   // Clicking a node on the lane tree focuses its lane and finds the conversation it belongs to: a group task
