@@ -50,6 +50,7 @@ window.__groupReady = (async () => {
     plan_revise_requested: '你改了方向：组长保留已完成的部分，按你的话重新规划剩下的，新方案出来后请确认。',
     plan_proposed: '确认方案后开始执行。',
     plan_approved: '方案已确认，等待分派。',
+    plan_auto_approved: '方案较小，已自动开始执行；改动应用到本机前仍要你审核。',
     plan_workspace_changed: '工作区版本已变化，请基于当前版本重新规划。',
     plan_ready: '执行计划已就绪',
     submitted: '任务已进入队列',
@@ -375,7 +376,7 @@ window.__groupReady = (async () => {
   const workbench = temporary ? {} : store.get('groupWorkbench', {});
   function saveWorkbench(group) {
     if (!group || temporary || isExample(group.id)) return;
-    workbench[group.id] = { panel: group.panel, leadEffort: group.leadEffort, leadModel: group.leadModel };
+    workbench[group.id] = { panel: group.panel, leadEffort: group.leadEffort, leadModel: group.leadModel, approval: group.approval };
     store.set('groupWorkbench', workbench);
   }
   const leadEffortSelect = () => document.querySelector('#groupLeadEffort');
@@ -389,6 +390,7 @@ window.__groupReady = (async () => {
       previous.model = model.value;
       previous.leadEffort = leadEffortSelect()?.value;
       previous.leadModel = document.querySelector('#groupLeadModel')?.value || '';
+      previous.approval = document.querySelector('#groupApproval')?.value || 'small';
       previous.panel = state.panel;
       previous.scroll = timeline.scrollTop;
       previous.atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
@@ -409,6 +411,8 @@ window.__groupReady = (async () => {
       if (next) next.leadModel = leadModelSelect.value;
     }
     fitLeadEffort();
+    const approvalSelect = document.querySelector('#groupApproval');
+    if (approvalSelect) approvalSelect.value = next?.approval || workbench[id]?.approval || 'small';
     laneFocus = next?.laneFocus || null;
     filter = 'all';
     filterSelect.value = '';
@@ -1827,6 +1831,7 @@ window.__groupReady = (async () => {
         prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || latestTask(group)?.id || undefined, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         leadModel: $('#groupLeadModel')?.value || undefined,
+        approval: $('#groupApproval')?.value || undefined,
         provider: recipient || undefined,
         // The person's member order from the quota page (only the kinds of work they reordered).
         ...(!['broadcast', 'compact'].includes(kind) && personRouteOrder()),
@@ -2259,6 +2264,14 @@ window.__groupReady = (async () => {
     leadEffort.addEventListener('change', () => {
       const group = currentGroup();
       if (group) { group.leadEffort = leadEffort.value; saveWorkbench(group); }
+    });
+  }
+  const approvalPick = $('#groupApproval');
+  if (approvalPick) {
+    approvalPick.value = (state.group && workbench[state.group]?.approval) || 'small';
+    approvalPick.addEventListener('change', () => {
+      const group = currentGroup();
+      if (group) { group.approval = approvalPick.value; saveWorkbench(group); }
     });
   }
   const leadModelPick = $('#groupLeadModel');

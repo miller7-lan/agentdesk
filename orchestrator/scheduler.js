@@ -549,6 +549,8 @@ event(task, state, detail) {
         (body.group !== undefined && (typeof body.group !== 'string' || !/^[A-Za-z0-9._~-]{1,96}$/.test(body.group))) ||
         // leadEffort: how hard the lead (Claude) thinks while planning, diagnosing and accepting; the person picks it.
         (body.leadEffort !== undefined && !EFFORTS.claude.includes(body.leadEffort)) ||
+        // approval: whether the person confirms each plan (always), only bigger ones (small) or none (auto).
+        (body.approval !== undefined && !['always', 'small', 'auto'].includes(body.approval)) ||
         // leadModel: which of the lead's models plans, diagnoses and accepts; the person may pick any of them.
         (body.leadModel !== undefined && (typeof body.leadModel !== 'string' ||
           !Object.hasOwn(this.config.adapters[LEAD_ROLE]?.profiles?.models || {}, body.leadModel))) ||
@@ -624,6 +626,7 @@ event(task, state, detail) {
       ...(body.group && { group: body.group }),
       ...(body.leadEffort && { leadEffort: body.leadEffort }),
       ...(body.leadModel && { leadModel: body.leadModel }),
+      ...(body.approval && { approval: body.approval }),
       ...(body.routeOrder && Object.keys(body.routeOrder).length && { routeOrder: body.routeOrder }),
       ...(body.broadcastId && { broadcastId: body.broadcastId }),
       ...(body.reviewOf && { reviewOf: body.reviewOf }),
@@ -808,19 +811,7 @@ event(task, state, detail) {
     } else {
       if (plan.approved === revision) return this.status(task.id);
       if (round.revision !== revision || task.state !== 'awaiting_approval' || !round.steps?.length) throw new Error('plan_changed');
-      plan.approved = revision;
-      // After a change of direction the steps already done stay; the new plan's steps follow them.
-      const kept = (task.keptSteps || []).map((step) => ({ ...step }));
-      const taken = new Set(kept.map((step) => step.id));
-      const renamed = new Map();
-      for (const step of round.steps) {
-        let next = step.id;
-        for (let n = 2; taken.has(next); n += 1) next = step.id + '-' + n;
-        taken.add(next);
-        renamed.set(step.id, next);
-      }
-      task.steps = [...kept, ...round.steps.map((step) => ({ ...step, id: renamed.get(step.id),
-        dependsOn: (step.dependsOn || []).map((id) => renamed.get(id) || id) }))];
+      this.approveRound(task, round);
       this.save(task, 'queued', 'plan_approved');
     }
     this.pump();
@@ -1533,6 +1524,36 @@ event(task, state, detail) {
     }
     plan.rounds.push({ revision, summary: result.summary, steps });
     this.save(task, 'awaiting_approval', 'plan_proposed');
+    // A small plan starts by itself when the group allows it; the final changes still wait for the person's review.
+    if (this.autoApproves(task, steps)) {
+      this.approveRound(task, plan.rounds.at(-1));
+      this.save(task, 'queued', 'plan_auto_approved');
+    }
+  }
+
+  // always (when the client says nothing, e.g. WeChat): every plan waits for the person. small (the desktop's
+  // default): a plan that changes no files, or has at most three steps, starts by itself. auto: every plan does.
+  autoApproves(task, steps) {
+    const mode = task.approval || 'always';
+    if (mode === 'auto') return true;
+    if (mode !== 'small' || !steps?.length) return false;
+    return !steps.some((step) => step.write) || steps.length <= 3;
+  }
+
+  // The plan's steps become the task's steps; after a change of direction the steps already done stay first.
+  approveRound(task, round) {
+    task.groupPlan.approved = round.revision;
+    const kept = (task.keptSteps || []).map((step) => ({ ...step }));
+    const taken = new Set(kept.map((step) => step.id));
+    const renamed = new Map();
+    for (const step of round.steps) {
+      let next = step.id;
+      for (let n = 2; taken.has(next); n += 1) next = step.id + '-' + n;
+      taken.add(next);
+      renamed.set(step.id, next);
+    }
+    task.steps = [...kept, ...round.steps.map((step) => ({ ...step, id: renamed.get(step.id),
+      dependsOn: (step.dependsOn || []).map((id) => renamed.get(id) || id) }))];
   }
 
   isAcceptStep(step) {

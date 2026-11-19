@@ -107,6 +107,7 @@ test('a message while the lead\'s task is under way changes that task\'s plan, k
     pump() {}, status: (id) => ({ id }),
   };
   self.updatePlan = Scheduler.prototype.updatePlan.bind(self);
+  self.approveRound = Scheduler.prototype.approveRound.bind(self);
   const task = { id: 't1', state: 'running', groupPlan: { approved: 1, rounds: [{ revision: 1, steps: [] }] },
     steps: [{ id: 'scout', state: 'completed', output: 'found it' }, { id: 'edit', state: 'running' }, { id: 'review', state: 'queued' }] };
   Scheduler.prototype.revisePlan.call(self, task, '别改数据库，只改接口');
@@ -124,4 +125,17 @@ test('a message while the lead\'s task is under way changes that task\'s plan, k
   // A finished task is not revised; a new message starts new work instead.
   task.state = 'completed';
   assert.throws(() => Scheduler.prototype.revisePlan.call(self, task, 'x'), /task_finished/);
+});
+
+test('a small plan starts by itself when the group allows it; bigger ones wait for the person', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const auto = (approval, steps) => Scheduler.prototype.autoApproves.call({}, { approval }, steps);
+  const read = (n) => Array.from({ length: n }, (_, i) => ({ id: 's' + i, write: false }));
+  const write = (n) => Array.from({ length: n }, (_, i) => ({ id: 'w' + i, write: true }));
+  assert.equal(auto(undefined, read(1)), false);            // a client that says nothing keeps confirming every plan
+  assert.equal(auto('always', read(1)), false);
+  assert.equal(auto('small', read(8)), true);               // changes no files
+  assert.equal(auto('small', write(3)), true);              // at most three steps
+  assert.equal(auto('small', [...write(2), ...read(2)]), false);
+  assert.equal(auto('auto', write(9)), true);
 });

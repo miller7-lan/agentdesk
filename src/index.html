@@ -215,6 +215,13 @@
                   <option value="max">最高</option>
                 </select>
               </label>
+              <label class="group-recipient" title="组长出方案后要不要等你确认。小方案：不改文件、或者 3 步以内的方案直接开始，其余等你确认。无论哪种，改动应用到本机前都要你审核。">方案确认
+                <select id="groupApproval" aria-label="方案确认方式">
+                  <option value="small" selected>小方案自动</option>
+                  <option value="always">每次确认</option>
+                  <option value="auto">全部自动</option>
+                </select>
+              </label>
               <input id="groupModel" type="text" list="groupModelOptions" placeholder="模型 ID（可选）" aria-label="模型 ID" maxlength="128" hidden disabled />
               <datalist id="groupModelOptions"></datalist>
               <span class="grow"></span>
