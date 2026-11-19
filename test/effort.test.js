@@ -88,7 +88,8 @@ test('the lead runs on the model the person picked, else the newest Opus, never 
   const { Scheduler } = require('../orchestrator/scheduler');
   const models = { 'claude-haiku-5-5': {}, 'claude-opus-4-8': {}, 'claude-opus-5-5': {}, 'claude-sonnet-5-5': {} };
   const self = (extra = {}) => ({ config: { adapters: { claude: { profiles: { defaultModel: 'claude-haiku-5-5', models }, ...extra } } } });
-  const pick = (context, task) => Scheduler.prototype.leadModelFor.call(context, task);
+  const S = Scheduler.prototype;
+  const pick = (context, task) => Scheduler.prototype.leadModelFor.call({ ...context, orderModels: S.orderModels, orderEntries: S.orderEntries }, task);
   assert.equal(pick(self(), {}), 'claude-opus-5-5');                                       // newest Opus beats a small default
   assert.equal(pick(self(), { leadModel: 'claude-sonnet-5-5' }), 'claude-sonnet-5-5');     // the person may pick any model
   assert.equal(pick(self(), { leadModel: 'claude-haiku-5-5' }), 'claude-haiku-5-5');
@@ -158,7 +159,7 @@ test('while members work, the lead decides per step: continue, guide with the wo
     ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
     execute: async () => ({ output: JSON.stringify(reply) }),
   };
-  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan']) self[name] = S[name].bind(self);
+  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan', 'orderModels', 'orderEntries']) self[name] = S[name].bind(self);
   const task = { id: 't2', state: 'running', approval: 'always', prompt: '修登录', groupPlan: { approved: 1, rounds: [{ revision: 1, summary: 's', steps: [] }] },
     steps: [{ id: 'scout', role: 'grok', state: 'completed', dependsOn: [] }, { id: 'edit', role: 'codex', state: 'running', dependsOn: ['scout'] },
       { id: 'docs', role: 'grok', state: 'running', dependsOn: ['scout'] }, { id: 'review', role: 'grok', state: 'queued', dependsOn: ['edit'] }] };
@@ -194,4 +195,26 @@ test('the lead prefers new models: newest generation first, full before small, a
   assert.equal(preferredModel({ defaultModel: 'gpt-5.4', models: { 'gpt-5.4': {}, 'gpt-5.5': {} } }), 'gpt-5.5');
   assert.equal(preferredModel({ defaultModel: 'gemini-4-hydrogen-medium', models: { 'gemini-4-hydrogen-high': {}, 'gemini-4-hydrogen-medium': {}, 'gemini-3-pro': {} } }), 'gemini-4-hydrogen-medium');
   assert.equal(preferredModel({ defaultModel: 'gpt-5.5-mini', models: { 'gpt-5.5-mini': {}, 'gpt-5.5': {} } }), 'gpt-5.5');
+});
+
+test('the person fills each kind of work with more members and models; the lead stays Claude', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  const models = (...ids) => ({ profiles: { models: Object.fromEntries(ids.map((id) => [id, {}])) } });
+  const self = {
+    config: { adapters: { claude: models('claude-opus-5-5', 'claude-sonnet-5-5'), codex: models('gpt-5.5', 'gpt-5.4'), grok: models('grok-4.7'), gemini: models('gemini-3-pro') } },
+    router: { configured: (role) => ['claude', 'codex', 'grok', 'gemini'].includes(role), canWrite: (role) => role !== 'gemini',
+      candidates: (capability, exclude) => ({ scout: ['codex'], implement: ['codex'] }[capability] || []).filter((role) => !exclude.includes(role)),
+      available: () => true, quotaAllows: () => true },
+  };
+  for (const name of ['validRouteOrder', 'orderEntries', 'orderModels', 'ordered', 'candidatesFor']) self[name] = S[name].bind(self);
+  assert.equal(self.validRouteOrder({ implement: ['grok', 'codex@gpt-5.5', 'codex@gpt-5.4'] }), true);
+  assert.equal(self.validRouteOrder({ triage: ['claude@claude-sonnet-5-5'], plan: ['claude@claude-opus-5-5'] }), true);
+  assert.equal(self.validRouteOrder({ implement: ['claude'] }), false);            // Claude never takes member work
+  assert.equal(self.validRouteOrder({ plan: ['codex'] }), false);                  // the lead stays Claude
+  assert.equal(self.validRouteOrder({ implement: ['gemini'] }), false);            // a read-only member cannot change code
+  assert.equal(self.validRouteOrder({ scout: ['codex@gpt-9'] }), false);           // not one of its models
+  const task = { routeOrder: { scout: ['grok', 'codex@gpt-5.4'], implement: ['codex@gpt-5.4', 'codex@gpt-5.5'] } };
+  assert.deepEqual(self.candidatesFor(task, 'scout'), ['grok', 'codex']);          // grok added by the person, first
+  assert.deepEqual(self.orderModels(task, 'implement', 'codex'), ['gpt-5.4', 'gpt-5.5']);
 });

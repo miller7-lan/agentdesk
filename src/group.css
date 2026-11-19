@@ -714,3 +714,9 @@ button.lane-node { cursor: pointer; }
 /* 改方向后组长新增的步骤，等你确认 */
 .task-addition { margin-top: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 6%, transparent); font-size: 12.5px; }
 .task-addition p { margin: 0 0 8px; color: var(--text); }
+/* 额度页：每种活可以补充成员和具体模型 */
+.qv-model { margin-left: 4px; padding: 0 5px; border-radius: 6px; background: var(--hover); color: var(--muted); font-size: 11px; font-weight: 500; }
+.qv-member.added { outline: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px; }
+.qv-drop { margin-left: 2px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.qv-drop:hover { color: var(--danger); }
+.qv-add { width: auto; max-width: 112px; flex: none; margin-left: 6px; height: 26px; padding: 0 6px; border: 1px dashed var(--border); border-radius: 13px; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }

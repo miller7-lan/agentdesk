@@ -12,25 +12,67 @@
   const names = { claude: 'Claude', codex: 'Codex', grok: 'Grok Build', antigravity: 'Antigravity', gemini: 'Gemini' };
   const capabilities = [['plan', '规划'], ['triage', '诊断'], ['scout', '侦察'], ['implement', '改代码'], ['review', '审查'], ['research', '查资料'], ['accept', '验收']];
   const capName = Object.fromEntries(capabilities);
-  // The person's own order for the kinds of work that have a choice of members (kept on this computer and sent
-  // with every group task; the orchestrator only ranks members it already routes that work to).
+  // The person's own order for each kind of work (kept on this computer and sent with every group task). An entry
+  // is a member ("codex") or a member on one of its models ("codex@gpt-5.5"); with「+ 补充」the person adds more
+  // members and models to fill the fallback chain. Member work never goes to Claude; the lead's work (规划、诊断、
+  // 验收) takes only Claude models, so the lead stays Claude.
   const ORDERABLE = ['scout', 'implement', 'review', 'research'];
+  const LEAD = ['plan', 'triage', 'accept'];
+  const WRITES = new Set(['implement']);
   const store = A.store;
   const savedOrder = () => store.get('routeOrder', {});
-  function orderedRoute(capability, list) {
-    const preferred = savedOrder()[capability];
-    if (!preferred) return [...list];   // a copy: reordering must never change the orchestrator's own order
-    const rank = (role) => { const i = preferred.indexOf(role); return i < 0 ? preferred.length + list.indexOf(role) : i; };
-    return [...list].sort((a, b) => rank(a) - rank(b));
+  const parse = (entry) => { const [role, model] = String(entry).split('@'); return { entry, role, model }; };
+  const modelLabel = (role, model) => model ? (data?.models?.[role]?.models?.[model]?.label || window.AgentDeskLanes?.modelShort?.(model) || model) : '';
+  // The chain shown for a kind of work: the person's entries first, then the configured members not named yet.
+  function chainFor(capability) {
+    const base = data.team.routes[capability] || [];
+    const saved = (savedOrder()[capability] || []).map(parse);
+    if (LEAD.includes(capability)) {
+      const lead = saved.filter((item) => item.role === 'claude');
+      return [...(lead.length ? lead : [parse('claude')]), ...base.filter((role) => role !== 'claude').map(parse)]
+        .map((item) => ({ ...item, added: Boolean(item.model), movable: item.role === 'claude' && lead.length > 1 }));
+    }
+    const named = new Set(saved.map((item) => item.role));
+    return [...saved, ...base.filter((role) => !named.has(role)).map(parse)]
+      .map((item) => ({ ...item, added: Boolean(item.model) || !base.includes(item.role), movable: true }));
   }
-  function move(capability, role, step) {
-    const list = orderedRoute(capability, data.team.routes[capability] || []);
-    const from = list.indexOf(role);
-    const to = from + step;
-    if (from < 0 || to < 0 || to >= list.length) return;
-    [list[from], list[to]] = [list[to], list[from]];
-    store.set('routeOrder', { ...savedOrder(), [capability]: list });
+  function save(capability, chain) {
+    const entries = LEAD.includes(capability) ? chain.filter((item) => item.role === 'claude' && item.model).map((item) => item.entry)
+      : chain.map((item) => item.entry);
+    const order = { ...savedOrder() };
+    if (entries.length) order[capability] = entries; else delete order[capability];
+    store.set('routeOrder', order);
     render();
+  }
+  function move(capability, entry, step) {
+    const chain = chainFor(capability);
+    const from = chain.findIndex((item) => item.entry === entry);
+    const to = from + step;
+    if (from < 0 || to < 0 || to >= chain.length || !chain[to].movable) return;
+    [chain[from], chain[to]] = [chain[to], chain[from]];
+    save(capability, chain);
+  }
+  function remove(capability, entry) {
+    save(capability, chainFor(capability).filter((item) => item.entry !== entry));
+  }
+  function add(capability, entry) {
+    const chain = chainFor(capability);
+    if (!entry || chain.some((item) => item.entry === entry)) return;
+    save(capability, [...chain, parse(entry)]);
+  }
+  // What can still be added to a kind of work: every configured member that may do it, on its latest model or
+  // on one of its models (newest first).
+  function addable(capability) {
+    const present = new Set(chainFor(capability).map((item) => item.entry));
+    const roles = LEAD.includes(capability) ? ['claude']
+      : data.team.configured.filter((role) => role !== 'claude' && (!WRITES.has(capability) || (data.writeProviders || []).includes(role)));
+    const version = (id) => (/(\d+(?:[.-]\d+)*)/.exec(id)?.[1] || '').split(/[.-]/).map(Number).filter((n) => n <= 999);
+    const newest = (a, b) => { const x = version(a), y = version(b); for (let i = 0; i < Math.max(x.length, y.length); i += 1) { const d = (y[i] ?? -1) - (x[i] ?? -1); if (d) return d; } return 0; };
+    return roles.flatMap((role) => {
+      const models = Object.keys(data.models?.[role]?.models || {}).sort(newest);
+      return [...(LEAD.includes(capability) ? [] : [[role, `${names[role]} · 最新模型`]]),
+        ...models.map((model) => [role + '@' + model, `${names[role]} · ${modelLabel(role, model)}`])];
+    }).filter(([entry]) => !present.has(entry));
   }
   function reset(capability) {
     const order = savedOrder();
@@ -63,6 +105,13 @@
         grok: { soft: 95, hard: 95, keepFor: [] }, antigravity: { soft: 95, hard: 95, keepFor: [] } },
     },
     resources: { memory: { used: 2.9 * 1024 ** 3, total: 4 * 1024 ** 3 }, swap: { used: 0.3 * 1024 ** 3, total: 2 * 1024 ** 3 } },
+    models: {
+      claude: { models: { 'claude-opus-5-5': { label: 'Opus 5.5' }, 'claude-sonnet-5-5': { label: 'Sonnet 5.5' }, 'claude-haiku-5-5': { label: 'Haiku 5.5' } } },
+      codex: { models: { 'gpt-5.5': { label: 'GPT-5.5' }, 'gpt-5.4': { label: 'GPT-5.4' }, 'gpt-5.5-mini': { label: 'GPT-5.5 mini' } } },
+      grok: { models: { 'grok-4.7': {}, 'grok-4.7-build-fast': {} } },
+      antigravity: { models: { 'gemini-4-hydrogen': {}, 'gemini-3-pro': {} } },
+    },
+    writeProviders: ['codex', 'claude', 'grok', 'antigravity'],
   };
   function now(hours) { return Math.round(Date.now() / 1000 + hours * 3600); }
 
@@ -90,7 +139,8 @@
         control('resource_status').catch(() => null),
       ]);
       if (!routes?.team) throw Error(routes?.ssh || routes?.relay ? 'old_orchestrator' : 'offline');
-      data = { quotas: Array.isArray(quotas) ? quotas : [], quotaError: quotas?.failed, team: routes.team, resources, live: true };
+      data = { quotas: Array.isArray(quotas) ? quotas : [], quotaError: quotas?.failed, team: routes.team, resources, live: true,
+        models: routes.modelProfiles || {}, writeProviders: routes.writeProviders || [] };
       error = '';
     } catch (e) {
       data = { ...sample, live: false };
@@ -189,20 +239,26 @@
     const routes = data.team.routes || {};
     return capabilities.filter(([key]) => routes[key]).map(([key, label]) => {
       let picked = false;
-      const editable = ORDERABLE.includes(key) && routes[key].length > 1;
-      const list = editable ? orderedRoute(key, routes[key]) : routes[key];
-      const custom = editable && savedOrder()[key] && list.join() !== routes[key].join();
-      const chain = list.map((role, index) => {
+      const editable = ORDERABLE.includes(key) || LEAD.includes(key);
+      const list = chainFor(key);
+      const custom = Boolean(savedOrder()[key]?.length);
+      const chain = list.map((item, index) => {
+        const { role, model, entry } = item;
         const state = standing(role, key);
         const takesIt = !picked && takes(state);
         if (takesIt) picked = true;
         const why = takesIt ? (state === 'reserved' ? '接手（主业）' : '接手')
           : picked ? '后备' : { absent: '未配置', auth: '需登录', cooling: '冷却中', stopped: '已停', 'reserved-other': '只接主业' }[state] || '跳过';
-        const arrows = editable ? `<span class="qv-move"><button type="button" data-qv-move="${key}" data-role="${role}" data-step="-1" ${index ? '' : 'disabled'} title="往前排" aria-label="${names[role]} 往前排">‹</button><button type="button" data-qv-move="${key}" data-role="${role}" data-step="1" ${index < list.length - 1 ? '' : 'disabled'} title="往后排" aria-label="${names[role]} 往后排">›</button></span>` : '';
-        return `${index ? '<span class="qv-arrow">›</span>' : ''}<span class="qv-member ${takesIt ? 'pick' : picked ? 'backup' : 'skip'}">
-          ${avatars?.html(role === 'claude' ? 'lead' : role, { size: 18, still: true }) || ''}${names[role]}<small>${why}</small>${arrows}</span>`;
+        const canMove = editable && item.movable;
+        const before = index > 0 && list[index - 1].movable, after = index < list.length - 1 && list[index + 1].movable;
+        const arrows = canMove ? `<span class="qv-move"><button type="button" data-qv-move="${key}" data-entry="${esc(entry)}" data-step="-1" ${before ? '' : 'disabled'} title="往前排" aria-label="${names[role]} 往前排">‹</button><button type="button" data-qv-move="${key}" data-entry="${esc(entry)}" data-step="1" ${after ? '' : 'disabled'} title="往后排" aria-label="${names[role]} 往后排">›</button></span>` : '';
+        const drop = item.added ? `<button type="button" class="qv-drop" data-qv-remove="${key}" data-entry="${esc(entry)}" title="去掉" aria-label="去掉 ${names[role]} ${esc(modelLabel(role, model))}">×</button>` : '';
+        return `${index ? '<span class="qv-arrow">›</span>' : ''}<span class="qv-member ${takesIt ? 'pick' : picked ? 'backup' : 'skip'}${item.added ? ' added' : ''}">
+          ${avatars?.html(role === 'claude' ? 'lead' : role, { size: 18, still: true }) || ''}${names[role]}${model ? `<span class="qv-model">${esc(modelLabel(role, model))}</span>` : ''}<small>${why}</small>${arrows}${drop}</span>`;
       }).join('');
-      return `<div class="qv-route"><span class="qv-cap">${label}${custom ? '<em class="qv-custom">自定义</em>' : ''}</span><div class="qv-chain">${chain}${picked ? '' : '<span class="qv-wait">没人能接，这一步会排队等待</span>'}${custom ? `<button type="button" class="qv-reset" data-qv-reset="${key}">恢复默认</button>` : ''}</div></div>`;
+      const options = editable ? addable(key) : [];
+      const picker = options.length ? `<select class="qv-add" data-qv-add="${key}" aria-label="给${label}补充成员或模型"><option value="">+ 补充</option>${options.map(([value, text]) => `<option value="${esc(value)}">${esc(text)}</option>`).join('')}</select>` : '';
+      return `<div class="qv-route"><span class="qv-cap">${label}${custom ? '<em class="qv-custom">自定义</em>' : ''}</span><div class="qv-chain">${chain}${picked ? '' : '<span class="qv-wait">没人能接，这一步会排队等待</span>'}${picker}${custom ? `<button type="button" class="qv-reset" data-qv-reset="${key}">恢复默认</button>` : ''}</div></div>`;
     }).join('');
   }
 
@@ -231,13 +287,13 @@
     body.innerHTML = `${error ? `<p class="qv-banner">${esc(error)}</p>` : ''}
       ${data.quotaError ? '<p class="qv-banner">主控没有开放额度读取（quotaBridges），只能显示分工规则。</p>' : ''}
       <section class="qv-cards">${roles.map(card).join('')}${resourceCard()}</section>
-      <section class="qv-section"><h3>分工与降级顺序 <small>实时 · 每种活从左往右找第一个能接的成员 · 侦察、改代码、审查、查资料可以用 ‹ › 调整你自己的顺序</small></h3>${routesTable()}</section>
+      <section class="qv-section"><h3>分工与降级顺序 <small>实时 · 每种活从左往右找第一个能接的成员 · 用「+ 补充」给每种活加成员和具体模型，用 ‹ › 调整顺序</small></h3>${routesTable()}</section>
       <section class="qv-section qv-rules"><h3>规则</h3><ul>
         <li>额度按 5 小时窗口和每周窗口里<b>用得多的那个</b>算。</li>
         <li>过了软线只接自己的主业，过了硬线不再派活；Claude 只当组长（规划、诊断、验收），配置也改不了。</li>
         <li>CLI 报额度用尽会冷却 30 分钟，报登录失效会停 6 小时，到时自动恢复。</li>
         <li>改代码默认按 Antigravity → Codex → Grok Build 降级，永不派给 Claude；困难的改动由组长点名 Codex。</li>
-        <li>你调整的顺序保存在这台电脑上，随你发出的群聊任务一起发给主控：自动派活、降级和重新分配都按你的顺序；组长也会参考，确有更合适的成员时会说明原因。只能在主控已配置的成员之间排序，不影响别人发的任务。</li>
+        <li>你调整和补充的顺序保存在这台电脑上，随你发出的群聊任务一起发给主控：自动派活、降级、重新分配和卡住换模型都按你的顺序，排在前面的具体模型先用；组长也会参考，确有更合适的成员时会说明原因。可以补充主控已配置的任何成员和它的任何模型；规划、诊断、验收只能补充 Claude 的模型（组长始终是 Claude）。不影响别人发的任务。</li>
         <li>审查交给与改代码不同的成员（交叉审查），没有别人可用时才由作者自审。</li>
       </ul></section>`;
     dialog.querySelector('.qv-time').textContent = loading ? '刷新中…' : loadedAt ? '更新于 ' + new Date(loadedAt).toLocaleTimeString() : '';
@@ -258,8 +314,15 @@
       else if (event.target.closest('[data-qv-refresh]')) load();
       else if (event.target.closest('[data-qv-move]')) {
         const button = event.target.closest('[data-qv-move]');
-        move(button.dataset.qvMove, button.dataset.role, Number(button.dataset.step));
+        move(button.dataset.qvMove, button.dataset.entry, Number(button.dataset.step));
+      } else if (event.target.closest('[data-qv-remove]')) {
+        const button = event.target.closest('[data-qv-remove]');
+        remove(button.dataset.qvRemove, button.dataset.entry);
       } else if (event.target.closest('[data-qv-reset]')) reset(event.target.closest('[data-qv-reset]').dataset.qvReset);
+    });
+    dialog.addEventListener('change', (event) => {
+      const select = event.target.closest('[data-qv-add]');
+      if (select?.value) add(select.dataset.qvAdd, select.value);
     });
     document.body.appendChild(dialog);
     return dialog;

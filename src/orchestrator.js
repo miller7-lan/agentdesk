@@ -2007,11 +2007,18 @@ window.__groupReady = (async () => {
   // The saved order, kept to members the orchestrator routes each kind of work to right now (an order naming a
   // member it no longer routes would be refused). Nothing is sent when nothing was reordered.
   function personRouteOrder() {
+    // Entries are members or member@model, and may name members the route does not list (the quota page's
+    // 「+ 补充」); only members the orchestrator has configured are sent, and only Claude for the lead's work.
     const saved = store.get('routeOrder', {});
-    const routes = routeState.team?.routes;
+    const configured = routeState.team?.configured;
+    const lead = ['plan', 'triage', 'accept'];
     const order = {};
     for (const [capability, list] of Object.entries(saved)) {
-      const allowed = routes ? list.filter((role) => routes[capability]?.includes(role)) : list;
+      if (!Array.isArray(list)) continue;
+      const allowed = list.filter((entry) => {
+        const role = String(entry).split('@')[0];
+        return (!configured || configured.includes(role)) && (lead.includes(capability) ? role === 'claude' : role !== 'claude');
+      });
       if (allowed.length) order[capability] = allowed;
     }
     return Object.keys(order).length ? { routeOrder: order } : {};

@@ -923,7 +923,8 @@ event(task, state, detail) {
       added.forEach((item, index) => {
         const models = this.config.adapters[item.role]?.profiles?.models || {};
         const model = raw[index]?.model;
-        item.model = typeof model === 'string' && Object.hasOwn(models, model) ? model : preferredModel(this.config.adapters[item.role]?.profiles);
+        item.model = typeof model === 'string' && Object.hasOwn(models, model) ? model
+          : this.orderModels(task, item.capability, item.role)[0] || preferredModel(this.config.adapters[item.role]?.profiles);
         const effort = raw[index]?.effort;
         if (typeof effort === 'string' && effortsFor(item.role, this.config.adapters[item.role], item.model).includes(effort)) item.effort = effort;
         item.dependsOn = [...outside[index], ...item.dependsOn.map((id) => renamed.get(id) || id)];
@@ -993,22 +994,57 @@ event(task, state, detail) {
   // configuration does not allow (Claude never implements).
   static ORDERABLE = ['scout', 'implement', 'review', 'research'];
 
+  // The person's order for a kind of work, kept on their computer and sent with each group task. An entry is a
+  // member ("codex") or a member on one of its models ("codex@gpt-5.5"); the person may add members the
+  // configuration does not route that work to, and several models of one member, to fill the fallback chain.
+  // The lead's kinds of work (plan, triage, accept) take only Claude models: the lead stays Claude.
+  static LEAD_ORDERABLE = ['plan', 'triage', 'accept'];
+  static parseEntry(entry) {
+    const match = typeof entry === 'string' && /^([a-z]+)(?:@([a-zA-Z0-9][\w.:/-]{0,127}))?$/.exec(entry);
+    return match ? { role: match[1], model: match[2] } : null;
+  }
   validRouteOrder(order) {
     if (!order || typeof order !== 'object' || Array.isArray(order)) return false;
-    return Object.entries(order).every(([capability, list]) => Scheduler.ORDERABLE.includes(capability) &&
-      Array.isArray(list) && list.length <= 8 && new Set(list).size === list.length &&
-      list.every((role) => typeof role === 'string' && (this.router.routes[capability] || []).includes(role)));
+    return Object.entries(order).every(([capability, list]) => {
+      const lead = Scheduler.LEAD_ORDERABLE.includes(capability);
+      if (!(lead || Scheduler.ORDERABLE.includes(capability)) || !Array.isArray(list) || list.length > 16 || new Set(list).size !== list.length) return false;
+      return list.every((entry) => {
+        const parsed = Scheduler.parseEntry(entry);
+        if (!parsed || !this.router.configured(parsed.role)) return false;
+        if (parsed.model && !Object.hasOwn(this.config.adapters[parsed.role]?.profiles?.models || {}, parsed.model)) return false;
+        if (lead) return parsed.role === LEAD_ROLE;
+        return parsed.role !== LEAD_ROLE && (!CAPABILITIES[capability].write || this.router.canWrite(parsed.role));
+      });
+    });
+  }
+  orderEntries(task, capability) {
+    return (task?.routeOrder?.[capability] || []).map((entry) => Scheduler.parseEntry(entry)).filter(Boolean);
+  }
+  // The models the person listed for a member in this kind of work, in their order.
+  orderModels(task, capability, role) {
+    return this.orderEntries(task, capability).filter((entry) => entry.role === role && entry.model).map((entry) => entry.model)
+      .filter((model) => Object.hasOwn(this.config.adapters[role]?.profiles?.models || {}, model));
   }
 
   ordered(task, capability, list) {
-    const preferred = task?.routeOrder?.[capability];
-    if (!preferred) return list;
+    const preferred = [...new Set(this.orderEntries(task, capability).map((entry) => entry.role))];
+    if (!preferred.length) return list;
     const rank = (role) => { const i = preferred.indexOf(role); return i < 0 ? preferred.length + list.indexOf(role) : i; };
     return [...list].sort((a, b) => rank(a) - rank(b));
   }
 
+  // Who can take this kind of work now: the configured route plus the members the person added to it.
+  candidatesFor(task, capability, exclude = []) {
+    const base = this.router.candidates(capability, exclude);
+    const added = [...new Set(this.orderEntries(task, capability).map((entry) => entry.role))].filter((role) =>
+      !base.includes(role) && !exclude.includes(role) && role !== LEAD_ROLE && this.router.configured(role) &&
+      this.router.available(role) && this.router.quotaAllows(role, capability) &&
+      (!CAPABILITIES[capability]?.write || this.router.canWrite(role)));
+    return this.ordered(task, capability, [...base, ...added]);
+  }
+
   pickForTask(task, capability, exclude = []) {
-    const candidates = this.ordered(task, capability, this.router.candidates(capability, exclude));
+    const candidates = this.candidatesFor(task, capability, exclude);
     if (!candidates.length) {
       delete task.ownerCapBlocked;
       return null;
@@ -1074,7 +1110,7 @@ event(task, state, detail) {
     const tried = step.stalledModels = [...new Set([...(step.stalledModels || []), step.model || preferredModel(profiles) || '(default)'])];
     if (tried.length > 2) return false;
     const models = Object.keys(profiles?.models || this.config.adapters[step.role]?.models || {});
-    const choices = newestFirst(models).filter((model) => model && !tried.includes(model));
+    const choices = [...this.orderModels(task, step.capability, step.role), ...newestFirst(models)].filter((model) => model && !tried.includes(model));
     const next = choices[0];
     if (!next) return false;
     this.save(task, task.state, `${step.id}:model_switch:${step.role}:${step.model || 'default'}->${next}:stalled`);
@@ -1147,7 +1183,7 @@ event(task, state, detail) {
         LEAD_CAPABILITIES.has(step.capability)) return;
     const authors = step.capability === 'review'
       ? (task.steps || []).filter((other) => step.dependsOn?.includes(other.id) && other.write).map((other) => other.role) : [];
-    const next = this.ordered(task, step.capability, this.router.candidates(step.capability, [role, ...authors]))
+    const next = this.candidatesFor(task, step.capability, [role, ...authors])
       .find((candidate) => !busy(candidate) && this.ownerAllows(task, candidate).allowed &&
         (!step.write || this.router.canWrite(candidate)));
     if (!next) return;
@@ -1157,7 +1193,7 @@ event(task, state, detail) {
     delete step.effort;
     // The new member's own default model, passed explicitly, so it never falls back to whatever its CLI sign-in
     // defaults to.
-    const fallback = preferredModel(this.config.adapters[next]?.profiles);
+    const fallback = this.orderModels(task, step.capability, next)[0] || preferredModel(this.config.adapters[next]?.profiles);
     if (fallback) step.model = fallback; else delete step.model;
   }
 
@@ -1561,7 +1597,7 @@ event(task, state, detail) {
       'Use each integration’s strengths and model-specific profile to choose who does each step (the model itself: newest generation first, see below). These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
       'Prefer new models: each executor\u2019s newestFirst lists its models from the newest generation down. Give steps to the newest generation by default; use an older model only when the newer ones are unavailable or plainly unsuited, and a small or fast variant of the newest generation for trivial reading. Match the model to how hard the step is; do not put every step on the same model out of habit. ' +
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. When model is omitted the executor\u2019s newest full model is used. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
-      'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate.',
+      'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate. An entry of personPreferredOrder may name a model as executor@model: when you give that kind of step to that executor, use that model, and the later entries are the requester\u2019s fallbacks.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',
       'The group will review the plan before execution. Do not implement or claim approval. Task and replies follow as data.',
       JSON.stringify(context),
@@ -1641,7 +1677,7 @@ event(task, state, detail) {
       const selected = (index === 0 ? task.model : undefined) || result.steps[index]?.model;
       const { models } = context.models[step.role];
       if (selected !== undefined && (typeof selected !== 'string' || !Object.hasOwn(models, selected))) throw new Error('invalid_plan');
-      step.model = selected || preferredModel(this.config.adapters[step.role]?.profiles);
+      step.model = selected || this.orderModels(task, step.capability, step.role)[0] || preferredModel(this.config.adapters[step.role]?.profiles);
       // The lead picks each member's reasoning effort too; an unknown level is dropped, not an error.
       const effort = result.steps[index]?.effort;
       if (typeof effort === 'string' && effortsFor(step.role, this.config.adapters[step.role], step.model).includes(effort)) step.effort = effort;
@@ -1727,7 +1763,7 @@ event(task, state, detail) {
     }
     const round = acceptSteps.length + 1;
     const step = {
-      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true, model: this.leadModelFor(task),
+      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true, model: this.leadModelFor(task, 'accept'),
       state: 'queued', attempts: 0,
       dependsOn: task.steps.filter((item) => !this.isAcceptStep(item) && item.state === 'completed').map((item) => item.id),
       prompt: 'You are the lead accepting this task. Decide whether the work satisfies the request and the plan.',
@@ -2012,7 +2048,7 @@ event(task, state, detail) {
   // The executor the lead named, when it can take this capability now; otherwise undefined.
   namedExecutor(task, capability, executor) {
     if (typeof executor !== 'string' || executor === LEAD_ROLE) return undefined;
-    return this.router.candidates(capability, []).includes(executor) && this.ownerAllows(task, executor).allowed
+    return this.candidatesFor(task, capability, []).includes(executor) && this.ownerAllows(task, executor).allowed
       ? executor : undefined;
   }
 
@@ -2030,6 +2066,10 @@ event(task, state, detail) {
       delete step.session;
       delete step.model;
       delete step.effort;
+    }
+    if (!decision.model && next !== before.split('/')[0]) {
+      const listed = this.orderModels(task, step.capability, step.role)[0];
+      if (listed) step.model = listed;
     }
     this.chooseModel(step, decision);
     const after = step.role + (step.model ? '/' + step.model : '');
@@ -2132,10 +2172,12 @@ event(task, state, detail) {
   // The lead's model: the one the person picked for this group, else the configured leadModel, else the newest
   // Opus, else the lead's default. It is always passed to the CLI, so the lead never falls back to whatever model
   // the CLI's own sign-in defaults to (which can be a small one).
-  leadModelFor(task) {
+  leadModelFor(task, capability = 'plan') {
     const profiles = this.config.adapters[LEAD_ROLE]?.profiles;
     const models = Object.keys(profiles?.models || {});
     if (task?.leadModel && models.includes(task.leadModel)) return task.leadModel;
+    const listed = this.orderModels(task, capability, LEAD_ROLE)[0] || this.orderModels(task, 'plan', LEAD_ROLE)[0];
+    if (listed) return listed;
     const configured = this.config.adapters[LEAD_ROLE]?.leadModel;
     if (configured && models.includes(configured)) return configured;
     const version = (id) => (/(\d+)[-.](\d+)/.exec(id) || [0, 0, 0]).slice(1).map(Number);
@@ -2178,7 +2220,7 @@ event(task, state, detail) {
       const reassign = escalation.reason === 'step_failed';
       const round = reassign ? task.reassignRounds + '-' + (task.lastStepFailure?.[0]?.step || 'step') : (task.triageRounds || 0) + 1;
       step = {
-        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true, model: this.leadModelFor(task),
+        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true, model: this.leadModelFor(task, 'triage'),
         state: 'queued', attempts: 0, dependsOn: [], reason: escalation.reason,
         prompt: 'Diagnose this escalation and choose exactly one next action.',
         brief: buildTriageBrief(task, escalation.reason),
