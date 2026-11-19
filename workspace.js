@@ -49,9 +49,10 @@ function git(root, args, { okCodes = [0] } = {}) {
 }
 
 class Workspace extends EventEmitter {
-  constructor(root = null) {
+  constructor(root = null, { skillRoots = SKILL_ROOTS } = {}) {
     super();
     this.root = root;
+    this.skillRoots = skillRoots;
     this.watcher = null;
     this.timer = null;
   }
@@ -157,16 +158,22 @@ class Workspace extends EventEmitter {
 
   /* ---------- 本机技能 ---------- */
   async localSkills() {
-    const out = [];
-    for (const root of SKILL_ROOTS) {
+    const out = []; const seen = new Set();
+    for (const root of this.skillRoots) {
       let ents; try { ents = await fsp.readdir(root, { withFileTypes: true }); } catch { continue; }
       for (const e of ents) {
-        if (!e.isDirectory() || e.name.startsWith('.')) continue;   // .system 是 Codex 自带技能，VPS 上已有
+        if (e.name.startsWith('.')) continue;   // .system 是 Codex 自带技能，VPS 上已有
         const dir = path.join(root, e.name);
+        // skills-manager 等工具用符号链接安装技能，stat 会跟随链接；坏链接和普通文件直接跳过。
+        let st; try { st = await fsp.stat(dir); } catch { continue; }
+        if (!st.isDirectory()) continue;
         let md; try { md = await fsp.readFile(path.join(dir, 'SKILL.md'), 'utf8'); } catch { continue; }
         const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(md);
         const field = (k) => { const m = fm && new RegExp(`^${k}:\\s*(.*)$`, 'm').exec(fm[1]); return m ? m[1].trim().replace(/^["']|["']$/g, '') : ''; };
-        out.push({ name: field('name') || e.name, folder: e.name, description: field('description'), dir, source: 'local' });
+        const name = field('name') || e.name;
+        if (seen.has(name)) continue;   // 两个技能根目录指向同一个技能时只列一次
+        seen.add(name);
+        out.push({ name, folder: e.name, description: field('description'), dir, source: 'local' });
       }
     }
     return out;
@@ -174,17 +181,23 @@ class Workspace extends EventEmitter {
 
   // 打包一个本机技能目录（相对路径 + base64），供上传到 VPS
   async packSkill(dir) {
-    const files = []; let total = 0;
+    const files = []; let total = 0; const visited = new Set();
     const walk = async (d, rel) => {
-      for (const e of await fsp.readdir(d, { withFileTypes: true })) {
+      let real; try { real = await fsp.realpath(d); } catch { return; }
+      if (visited.has(real)) return;   // 符号链接成环或重复目录只走一次
+      visited.add(real);
+      let ents; try { ents = await fsp.readdir(d, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
         if (e.name === '.git' || e.name === 'node_modules' || e.name === '__pycache__') continue;
         const abs = path.join(d, e.name); const r = rel ? rel + '/' + e.name : e.name;
-        if (e.isDirectory()) { await walk(abs, r); continue; }
+        let st; try { st = await fsp.stat(abs); } catch { continue; }   // 跟随技能内的符号链接
+        if (st.isDirectory()) { await walk(abs, r); continue; }
+        if (!st.isFile()) continue;
         const buf = await fsp.readFile(abs);
         total += buf.length;
         if (total > SKILL_MAX_BYTES) throw new Error('技能目录超过 5 MB，未上传');
         if (files.length >= SKILL_MAX_FILES) throw new Error('技能文件超过 300 个，未上传');
-        files.push({ rel: r, b64: buf.toString('base64'), mtime: (await fsp.stat(abs)).mtimeMs });
+        files.push({ rel: r, b64: buf.toString('base64'), mtime: st.mtimeMs });
       }
     };
     await walk(dir, '');
