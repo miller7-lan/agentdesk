@@ -519,8 +519,14 @@ ipcMain.handle('skills:upload', async (_e, skill) => {
     const pack = await ws.packSkill(approved.dir);
     const workspace = currentRemoteDirectory();
     if (!workspace) throw new Error('请配置远程工作区目录。');
-    const dest = path.posix.join(workspace, '.agentdesk-skills', skill.folder.replace(/[^\w.-]/g, '_'));
+    const root = path.posix.join(workspace, '.agentdesk-skills');
+    const dest = path.posix.join(root, skill.folder.replace(/[^\w.-]/g, '_'));
     if (skillCache.get(dest) !== pack.sig) { await remote.upload(dest, pack.files); skillCache.set(dest, pack.sig); }
+    // Codex 只从已注册的技能根目录装载技能；上传后注册该目录并刷新目录缓存。
+    await remote.request('skills/extraRoots/set', { extraRoots: [root] });
+    const listed = await remote.request('skills/list', { cwds: [workspace], forceReload: true });
+    const found = (listed?.data || []).some((entry) => (entry.skills || []).some((s) => s.enabled !== false && s.name === approved.name));
+    if (!found) throw new Error('技能已上传，但 Codex 没有识别；请升级 VPS 上的 Codex。');
     return { ok: true, path: path.posix.join(dest, 'SKILL.md') };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
