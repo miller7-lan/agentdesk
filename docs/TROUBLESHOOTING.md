@@ -9,5 +9,7 @@
 | 额度数据缺失 | 检查主控是否为当前 Bridge 开放额度查询，以及对应 CLI 是否提供额度数据。 |
 | 容器指标缺失 | 核对当前服务版本是否提供 `resource_status` 与 Docker 遥测。 |
 | 需要排查连接或构建 | 打开「诊断」，预览并导出 `tar.gz`，其中包含版本、有限的运行状态、应用日志和审计记录。 |
+| 单聊桌面工具报「辅助功能未授权」 | 按 [本机桌面权限](DESKTOP-PERMISSIONS.md) 的 macOS 一节检查；重点是把 `AgentDesk.app/Contents/MacOS/AgentDesk` 也加入辅助功能和屏幕录制主列表，并重启应用。 |
+| Windows 桌面工具无输出或截图为黑 | 检查 AgentDesk 与目标窗口的提权级别是否一致、是否运行在交互式会话（而非 Session 0）、是否锁屏或 RDP 已断开；见 [本机桌面权限](DESKTOP-PERMISSIONS.md) 的 Windows 清单。 |
 
 应用日志位于 Electron 用户数据目录的 `logs/agentdesk.log`，最多三份，每份 5 MiB。审计文件按本地日期写为 `logs/audit-YYYYMMDD.jsonl`。
