@@ -9,17 +9,25 @@ const operations = {
   windows_search_files: ['search', ['path', 'query']],
   windows_grep_files: ['grep', ['path', 'query']],
   windows_read_file_chunk: ['read', ['path']],
+  windows_write_file: ['write', ['path', 'content']],
+  windows_make_directory: ['mkdir', ['path']],
+  windows_move_path: ['move', ['path', 'destination']],
+  windows_delete_path: ['delete', ['path']],
   windows_list_commands: ['commands', []],
   windows_run_command: ['run', ['command']],
 };
 
 const descriptions = {
-  locations: 'List the local locations this computer authorized, including the project and any additional read-only folders. The computer location (when enabled) covers the person\'s home, mounted volumes and temporary folders read-only, and is available to the lead only. Use the returned id as root in file tools.',
+  locations: 'List the local locations this computer authorized, including the project and any additional read-only folders. The computer location (when enabled) covers the person\'s home, mounted volumes and temporary folders: every step can read it, and steps that change files can also write there when the computer allows it. Use the returned id as root in file tools.',
   list: 'List a directory in an authorized local location on the person\'s machine.',
   stat: 'Get a file\'s size and SHA-256 version in an authorized local location on the person\'s machine.',
   search: 'Search file and folder names in an authorized local location on the person\'s machine.',
   grep: 'Search file contents in an authorized local location on the person\'s machine, including files not in Git such as local config and logs. Returns path, line and text for each match.',
   read: 'Read one file chunk as Base64 from an authorized local location on the person\'s machine. Pass version and offset to continue reading.',
+  write: 'Create or overwrite a file in any folder of the person\'s computer (root "computer", absolute path or ~/...). Only steps that change files may use it; project files are changed in the task workspace instead. Pass version from windows_stat_file to overwrite an existing file; omit it for a new file.',
+  mkdir: 'Create a folder anywhere on the person\'s computer (root "computer"); its parent must exist.',
+  move: 'Move or rename a file or folder on the person\'s computer (root "computer"); destination is an absolute path.',
+  delete: 'Move a file or folder on the person\'s computer (root "computer") to the trash.',
   commands: 'List the commands the person allows agents to run in their project.',
   run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
 };
@@ -27,7 +35,7 @@ const descriptions = {
 const tools = Object.entries(operations).map(([name, [action, required]]) => ({
   name,
   description: descriptions[action],
-  annotations: { readOnlyHint: action !== 'run' },
+  annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete'].includes(action) },
   inputSchema: {
     type: 'object',
     properties: {
@@ -37,6 +45,8 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
       ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
       ...(action === 'run' ? { command: { type: 'string', description: 'A name returned by windows_list_commands.' } } : {}),
+      ...(action === 'write' ? { content: { type: 'string' }, encoding: { type: 'string', enum: ['utf8', 'base64'] }, version: { type: 'string', description: 'Current version from windows_stat_file; omit for a new file.' } } : {}),
+      ...(action === 'move' ? { destination: { type: 'string', description: 'Absolute path of the new location.' } } : {}),
     },
     required,
     additionalProperties: false,

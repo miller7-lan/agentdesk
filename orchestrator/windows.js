@@ -261,7 +261,7 @@ class WindowsOperations {
       const anyFolder = this.config.readAnyFolder === true || workspace.readAnyFolder === true;
       if (body.operation === 'locations') return { locations: [
         { id: 'project', label: '项目' },
-        ...(anyFolder ? [{ id: 'computer', label: '本机（只读）' }] : []),
+        ...(anyFolder ? [{ id: 'computer', label: this.config.writeAnyFolder === true || workspace.writeAnyFolder === true ? '本机（任意文件夹，改文件的步骤可写）' : '本机（只读）' }] : []),
         ...Object.keys(roots).filter((id) => id !== 'project' && id !== 'computer').map((id) => ({ id, label: id === 'desktop' ? '桌面' : id })),
       ] };
       const selected = body.root ?? 'project';
@@ -273,6 +273,14 @@ class WindowsOperations {
       if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
       const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
       return this.read(readRoot, body);
+    }
+    if (kind === 'file.write' && body.root === 'computer') {
+      // Writing in any folder needs both switches on this computer (readAnyFolder and writeAnyFolder) and the
+      // orchestrator's anyFolder mark, which it only sets for steps that change files.
+      const writable = (this.config.readAnyFolder === true || workspace.readAnyFolder === true) &&
+        (this.config.writeAnyFolder === true || workspace.writeAnyFolder === true);
+      if (!writable || body.anyFolder !== true) throw new Error('read_root_readonly');
+      return this.writeAnywhere(taskId, await fs.realpath(workspace.root), body);
     }
     if (body.root !== undefined && body.root !== 'project') throw new Error('read_root_readonly');
     const root = await fs.realpath(workspace.root);
@@ -445,6 +453,69 @@ class WindowsOperations {
     const metadata = await version(filename);
     if (metadata.type !== 'file' || (body.version && metadata.version !== body.version)) throw new Error('version_conflict');
     return { ...await this.readChunk(filename, metadata.size, body.offset), version: metadata.version };
+  }
+
+  // A file or folder anywhere the computer location allows, by absolute path. The same checks as reading
+  // (system, credential and .git paths refused; links resolved first) apply to the target and to its folder,
+  // which must exist. The project folder itself only changes through reviewed patches. Overwrites name the
+  // version they replace; deletions go to the trash.
+  async writeAnywhere(taskId, project, body) {
+    const place = async (value, { existing = false } = {}) => {
+      if (typeof value !== 'string' || value.length > 1024 || /[\x00-\x1f]/.test(value)) throw new Error('invalid_path');
+      let requested = value;
+      if (/^~[\\/]/.test(requested)) requested = path.join(HOME, requested.slice(2));
+      if (!path.isAbsolute(requested)) throw new Error('invalid_path');
+      const target = existing ? await anyPath(requested) : path.join(await anyPath(path.dirname(path.resolve(requested))), path.basename(requested));
+      allowedAnywhere(target);
+      if (/^\.{1,2}$/.test(path.basename(target))) throw new Error('invalid_path');
+      if (target === project || target.startsWith(project + path.sep)) {
+        throw new Error('project_write_denied: change project files in the task workspace; they are applied as a reviewed patch');
+      }
+      return target;
+    };
+    const key = 'any:' + body.path;
+    if (this.busy.has(key)) throw new Error('workspace_busy');
+    this.busy.add(key);
+    try {
+      if (body.operation === 'mkdir') {
+        const target = await place(body.path);
+        await checkVersion(target, null);
+        await fs.mkdir(target);
+        return version(target);
+      }
+      if (body.operation === 'move') {
+        const source = await place(body.path, { existing: true });
+        await checkVersion(source, body.version);
+        const destination = await place(body.destination);
+        await checkVersion(destination, null);
+        await fs.rename(source, destination);
+        return version(destination);
+      }
+      if (body.operation === 'delete') {
+        const target = await place(body.path, { existing: true });
+        await checkVersion(target, body.version);
+        if (!this.recycle) throw new Error('recycle_unavailable');
+        await this.recycle(target);
+        return { deleted: true };
+      }
+      if (body.operation !== 'write') throw new Error('invalid_file_operation');
+      const target = await place(body.path);
+      const current = await checkVersion(target, body.version);
+      if (current?.type === 'directory') throw new Error('invalid_file_operation');
+      const record = this.stream(taskId, body.stream_id);
+      if (!record.closed) throw new Error('stream_incomplete');
+      const temporary = path.join(path.dirname(target), '.agentdesk-' + randomUUID());
+      try {
+        await fs.copyFile(this.streamPath(body.stream_id), temporary, require('node:fs').constants.COPYFILE_EXCL);
+        await checkVersion(target, body.version);
+        await fs.rename(temporary, target);
+      } finally {
+        await fs.rm(temporary, { force: true });
+      }
+      return version(target);
+    } finally {
+      this.busy.delete(key);
+    }
   }
 
   async write(taskId, root, body) {

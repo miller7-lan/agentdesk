@@ -44,5 +44,6 @@
     "deviceId": "mac-bridge",
     "tokenFile": "/Users/yourname/.agentdesk/relay-mac.token",
     "caFile": "/Users/yourname/.agentdesk/relay-ca.pem"
-  }
+  },
+  "writeAnyFolder": true
 }

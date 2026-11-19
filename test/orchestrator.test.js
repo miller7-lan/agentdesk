@@ -204,11 +204,9 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   const capability = [...support.capabilities.keys()][0];
   assert.equal((await mcpRequest(support.socket, { capability, operation: 'stat', path: 'README.md' })).type, 'file');
   await assert.rejects(mcpRequest(support.socket, { capability, operation: 'write', path: 'README.md' }), /mcp_permission_denied/);
-  // Only the lead may use the bridge's computer location; other steps do not even see it.
+  // Members see the bridge's computer location too and may read any folder there (this bridge allows it).
   const locations = await mcpRequest(support.socket, { capability, operation: 'locations' });
-  assert.ok(!locations.locations.some(({ id }) => id === 'computer'));
-  await assert.rejects(mcpRequest(support.socket, { capability, operation: 'list', root: 'computer', path: os.homedir() }),
-    /mcp_permission_denied/);
+  assert.ok(locations.locations.some(({ id }) => id === 'project'));
   await until(() => service.scheduler.tasks.get(task_id).state === 'needs_review' || service.scheduler.tasks.get(task_id).state === 'failed');
   const status = await admin(socket, { kind: 'task.status', task_id, body: { operation: 'status' } });
   assert.equal(status.detail, 'patches_ready');

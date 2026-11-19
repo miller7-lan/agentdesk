@@ -94,6 +94,7 @@
 ## 补充（2026-11-19 晚）
 
 - **组长可读本机任意文件夹（只读）**：VPS2 主控新增只给组长的 `computer` 位置。在桌面端 Bridge 配置顶层加 `"readAnyFolder": true` 并重启 Bridge 后，组长的 `windows_list_locations` 会出现它：家目录、`/Volumes` 挂载卷和临时目录里的文件夹可以列举、搜索、grep 和读取，`path` 用绝对路径（`~` 为家目录）。写入、命令和桌面操作仍只限项目；系统目录、`~/Library`、`.ssh` 等凭据目录、`.git` 和常见凭据文件被拒绝，符号链接解析后再校验。主控只给组长的规划、诊断、验收步骤下发这个位置。需要同时更新 VPS2 和桌面端 Bridge；只更新一端时该位置不可用（安全降级）。Mac 的示例配置和本机配置已打开，Windows 配置见 `orchestrator/windows-bridge.example.json`。
+- **成员也能读写本机任意文件夹**（在上一条基础上）：`computer` 位置不再只给组长，所有成员都能读。改文件的步骤（改代码）还可以用 `windows_write_file`、`windows_make_directory`、`windows_move_path`、`windows_delete_path` 在家目录、挂载卷、临时目录里新建、覆盖、建目录、移动、删除（删除进废纸篓/回收站），前提是 Bridge 配置顶层再加 `"writeAnyFolder": true`（示例配置已打开）。覆盖已有文件要带当前版本（主控会自动先查），不会覆盖别人刚改过的内容。同样的拒绝规则对写入生效；项目目录本身仍只通过补丁审核改动，不能借这个位置直接改。需要同时更新 VPS2 和各电脑的 Bridge 并重启 Bridge。
 - **Actions 自动构建**：推送到 `main` 会自动构建 `agentdesk-windows` 和 `agentdesk-mac` 产物，不再需要手动运行 workflow。
 
 ## 直接交给本机 agent 的提示

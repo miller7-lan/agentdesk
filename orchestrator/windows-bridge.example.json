@@ -70,5 +70,6 @@
     "deviceId": "windows-bridge",
     "tokenFile": "C:/Users/YourName/.agentdesk/relay.token",
     "caFile": "C:/Users/YourName/.agentdesk/relay-ca.pem"
-  }
+  },
+  "writeAnyFolder": true
 }

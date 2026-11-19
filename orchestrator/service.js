@@ -273,7 +273,7 @@ function start(config) {
         let value;
         if (['locations', 'read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
           const anyFolder = frame.root === 'computer';
-          if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: only the lead may read the whole computer');
+          if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
           value = await files.call(route, scope.taskId, 'file.read', {
             operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
@@ -281,6 +281,26 @@ function start(config) {
           });
           if (frame.operation === 'locations' && Array.isArray(value?.locations)) {
             value = { ...value, locations: value.locations.filter((location) => location?.id !== 'computer' || scope.readAnyFolder === true) };
+          }
+        } else if (['write', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
+          // Any folder on the person's computer; the project itself only changes through reviewed patches.
+          if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
+          if (frame.root !== 'computer') throw new Error('mcp_permission_denied: write with root "computer" and an absolute path; project files are changed in the task workspace');
+          const target = { workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path };
+          let current = frame.version;
+          if (current === undefined && frame.operation !== 'mkdir') {
+            // The model did not say which version it replaces: use the one there now (or none for a new file).
+            current = await files.call(route, scope.taskId, 'file.read', { ...target, operation: 'stat' })
+              .then((info) => info.version ?? null, (error) => { if (/invalid_path|ENOENT|no such/i.test(error.message)) return null; throw error; });
+          }
+          if (frame.operation === 'write') {
+            if (typeof frame.content !== 'string') throw new Error('invalid_content');
+            const bytes = Buffer.from(frame.content, frame.encoding === 'base64' ? 'base64' : 'utf8');
+            const stream = await files.upload(route, scope.taskId, bytes);
+            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: 'write', stream_id: stream, version: current ?? null });
+          } else {
+            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: frame.operation,
+              ...(frame.operation !== 'mkdir' && { version: current ?? null }), ...(frame.operation === 'move' && { destination: frame.destination }) });
           }
         } else if (frame.operation === 'commands' || frame.operation === 'run') {
           // Commands run in the person's real project, so only scout and code-changing steps may use them,

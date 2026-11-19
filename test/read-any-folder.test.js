@@ -78,3 +78,47 @@ test('the computer location never grants writes or commands and blocks system, G
     await assert.rejects(call('file.read', { ...common, operation: 'list', path: link }), /path_not_allowed/);
   }
 });
+test('with writeAnyFolder, steps that change files can write any folder but not the project, credentials or system paths', async (t) => {
+  const Store = require('../orchestrator/store');
+  const { createHash } = require('node:crypto');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-any-write-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const project = path.join(dir, 'project'), outside = path.join(dir, 'Desktop', 'proxy');
+  await fs.mkdir(project); await fs.mkdir(outside, { recursive: true });
+  await fs.writeFile(path.join(outside, 'config.yaml'), 'port: 1\n');
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const trashed = [];
+  const ops = new WindowsOperations({ store, recycle: async (target) => { trashed.push(target); await fs.rm(target, { recursive: true }); },
+    config: { readAnyFolder: true, writeAnyFolder: true, stateDir: path.join(dir, 'state'), workspaces: { test: { root: project, write: true } } } });
+  const taskId = randomUUID();
+  const call = (kind, body) => ops.call({ kind, task_id: taskId, body: { workspace: 'test', root: 'computer', anyFolder: true, ...body } });
+  const send = async (text) => {
+    const bytes = Buffer.from(text); const id = randomUUID(); const sha = createHash('sha256').update(bytes).digest('hex');
+    await ops.call({ kind: 'stream.open', task_id: taskId, body: { stream_id: id, size: bytes.length } });
+    await ops.call({ kind: 'stream.chunk', task_id: taskId, body: { stream_id: id, offset: 0, data: bytes.toString('base64'), sha256: sha } });
+    await ops.call({ kind: 'stream.end', task_id: taskId, body: { stream_id: id, size: bytes.length, sha256: sha } });
+    return id;
+  };
+  assert.match((await call('file.read', { operation: 'locations' })).locations.find(({ id }) => id === 'computer').label, /可写/);
+  await call('file.write', { operation: 'write', path: path.join(outside, 'README.md'), stream_id: await send('hello'), version: null });
+  assert.equal(await fs.readFile(path.join(outside, 'README.md'), 'utf8'), 'hello');
+  const { version } = await call('file.read', { operation: 'stat', path: path.join(outside, 'config.yaml') });
+  await assert.rejects(call('file.write', { operation: 'write', path: path.join(outside, 'config.yaml'), stream_id: await send('x'), version: null }), /version_conflict/);
+  await call('file.write', { operation: 'write', path: path.join(outside, 'config.yaml'), stream_id: await send('port: 2\n'), version });
+  assert.equal(await fs.readFile(path.join(outside, 'config.yaml'), 'utf8'), 'port: 2\n');
+  await call('file.write', { operation: 'mkdir', path: path.join(outside, 'out'), version: null });
+  const moved = await call('file.read', { operation: 'stat', path: path.join(outside, 'README.md') });
+  await call('file.write', { operation: 'move', path: path.join(outside, 'README.md'), destination: path.join(outside, 'out', 'README.md'), version: moved.version });
+  assert.equal(await fs.readFile(path.join(outside, 'out', 'README.md'), 'utf8'), 'hello');
+  const doomed = await call('file.read', { operation: 'stat', path: path.join(outside, 'out', 'README.md') });
+  await call('file.write', { operation: 'delete', path: path.join(outside, 'out', 'README.md'), version: doomed.version });
+  assert.deepEqual(trashed.map((p) => path.basename(p)), ['README.md']);
+
+  await assert.rejects(call('file.write', { operation: 'mkdir', path: path.join(project, 'new'), version: null }), /project_write_denied/);
+  await assert.rejects(call('file.write', { operation: 'write', path: path.join(outside, '.npmrc'), stream_id: await send('x'), version: null }), /credential_path_denied/);
+  await assert.rejects(call('file.write', { operation: 'mkdir', path: path.join(outside, '.git'), version: null }), /git_path_denied/);
+  if (process.platform !== 'win32') await assert.rejects(call('file.write', { operation: 'mkdir', path: '/etc/agentdesk-test', version: null }), /path_not_allowed/);
+  // without the mark the orchestrator sets for steps that change files, nothing is written
+  await assert.rejects(ops.call({ kind: 'file.write', task_id: taskId, body: { workspace: 'test', root: 'computer', operation: 'mkdir', path: path.join(outside, 'x'), version: null } }), /read_root_readonly/);
+});
