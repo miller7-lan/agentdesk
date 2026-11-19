@@ -29,10 +29,20 @@ const brief = (input) => {
 const textOf = (content) => Array.isArray(content)
   ? content.map((part) => typeof part === 'string' ? part : part?.text ?? '').join('')
   : typeof content === 'string' ? content : content === undefined ? '' : JSON.stringify(content);
+// Antigravity reaches the person's computer through one MCP gateway. Show the real tool it called and its
+// arguments rather than the gateway's name.
+const unwrapTool = (name, input) => {
+  if (name !== 'call_mcp_tool' || !input || typeof input !== 'object') return { name, input };
+  let args = input.Arguments;
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { /* keep the text */ }
+  }
+  return { name: input.ToolName || name, input: args ?? input };
+};
 
 // Names CLIs use for tools that run a shell command or change a file.
-const SHELL = /^(bash|shell|run_shell_command|run_command|exec(_command)?|terminal)$/i;
-const EDIT = /^(edit|write|multiedit|notebookedit|write_file|write_to_file|replace|replace_file_content|multi_replace_file_content|edit_file|sed_file|apply_patch|str_replace\w*)$/i;
+const SHELL = /^(bash|shell|run_shell_command|run_command|windows_run_command|windows_run_shell_command|exec(_command)?|terminal)$/i;
+const EDIT = /^(edit|write|multiedit|notebookedit|write_file|write_to_file|windows_write_file|replace|replace_file_content|multi_replace_file_content|windows_replace_file_content|edit_file|sed_file|apply_patch|windows_apply_patch|str_replace\w*)$/i;
 
 class Record {
   constructor() {
@@ -163,7 +173,8 @@ const readers = {
     if (!step) return;
     if (step.step_type === 'tool') {
       const id = 'antigravity:' + step.step_index;
-      record.tool(id, step.tool_name || 'tool', step.tool_info?.parameters);
+      const tool = unwrapTool(step.tool_name || 'tool', step.tool_info?.parameters);
+      record.tool(id, tool.name, tool.input);
       if (step.state !== 'ACTIVE') {
         const output = step.tool_info?.output ?? '';
         const match = /Command exited with code (\d+)/i.exec(output);

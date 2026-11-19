@@ -7,10 +7,98 @@
   const { esc } = A;
   const api = window.desk.orchestrator;
 
+  // Older orchestrators only understood the final Antigravity result line. If the activity record has no
+  // working rows, read the step log the group view already exposes and turn its step_update entries into
+  // the same rows here, so a running chat shows its commands without restarting the orchestrator.
+  const WORK = new Set(['thinking', 'command', 'edit', 'tool', 'search', 'plan']);
+  const SHELL = /^(bash|shell|run_shell_command|run_command|windows_run_command|windows_run_shell_command|exec(_command)?|terminal)$/i;
+  const EDIT = /^(edit|write|multiedit|notebookedit|write_file|write_to_file|windows_write_file|replace|replace_file_content|multi_replace_file_content|windows_replace_file_content|edit_file|sed_file|apply_patch|windows_apply_patch|str_replace\w*)$/i;
+  const clip = (value, limit = 3000) => {
+    const text = typeof value === 'string' ? value : value === undefined || value === null ? '' : JSON.stringify(value);
+    return text.length > limit ? text.slice(0, limit) + '…' : text;
+  };
+  const tail = (value, limit = 3000) => {
+    const text = typeof value === 'string' ? value : value === undefined || value === null ? '' : JSON.stringify(value);
+    return text.length > limit ? '…' + text.slice(-limit) : text;
+  };
+  const brief = (input) => {
+    if (!input || typeof input !== 'object') return clip(input, 300);
+    const pick = input.command ?? input.cmd ?? input.CommandLine ?? input.commandLine ?? input.file_path ?? input.path ??
+      input.absolute_path ?? input.TargetFile ?? input.targetFile ?? input.DirectoryPath ?? input.directoryPath ??
+      input.pattern ?? input.query ?? input.url;
+    return clip(typeof pick === 'string' ? pick : JSON.stringify(input), 300);
+  };
+  const unwrapTool = (name, input) => {
+    if (name !== 'call_mcp_tool' || !input || typeof input !== 'object') return { name, input };
+    let args = input.Arguments;
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); } catch { /* keep the text */ }
+    }
+    return { name: input.ToolName || name, input: args ?? input };
+  };
+  function parseAntigravity(text) {
+    const items = [];
+    const byId = new Map();
+    const push = (item) => { if (items.length >= 300) items.shift(); items.push(item); };
+    for (const line of String(text || '').split('\n')) {
+      const space = line.indexOf(' ');
+      if (space < 0 || line.slice(0, space) !== 'stdout') continue;
+      let event;
+      try { event = JSON.parse(line.slice(space + 1)); } catch { continue; }
+      if (event?.event === 'result') {
+        const answer = event.result?.response;
+        const spoken = items.filter((item) => item.kind === 'message').map((item) => item.text).join('').trim();
+        if (typeof answer === 'string' && answer.trim() && spoken !== answer.trim()) push({ kind: 'message', text: clip(answer) });
+        continue;
+      }
+      const step = event?.step_update;
+      if (!step) continue;
+      if (step.step_type === 'tool') {
+        const id = 'antigravity:' + step.step_index;
+        const tool = unwrapTool(step.tool_name || step.tool_info?.name || 'tool', step.tool_info?.parameters);
+        let item = byId.get(id);
+        if (!item) {
+          if (SHELL.test(tool.name)) item = { kind: 'command', command: brief(tool.input), status: 'running' };
+          else if (EDIT.test(tool.name)) item = { kind: 'edit', files: [{ path: brief(tool.input), change: tool.name }] };
+          else item = { kind: 'tool', name: tool.name, input: brief(tool.input), status: 'running' };
+          byId.set(id, item);
+          push(item);
+        }
+        if (step.state !== 'ACTIVE') {
+          const output = String(step.tool_info?.output ?? '');
+          const match = /Command exited with code (\d+)/i.exec(output);
+          const exitCode = match ? Number(match[1]) : undefined;
+          const failed = /fail|error|cancel/i.test(step.state || '') || (exitCode !== undefined && exitCode !== 0);
+          if (item.kind === 'command' || item.kind === 'tool') {
+            item.output = tail(output);
+            item.status = failed ? 'failed' : 'completed';
+            if (exitCode !== undefined) item.exitCode = exitCode;
+          } else if (failed) item.error = clip(output, 600);
+        }
+      } else if (step.step_type === 'agent_response' && typeof step.text_delta === 'string' && step.text_delta) {
+        const last = items.at(-1);
+        if (last?.kind === 'message') last.text = clip(last.text + step.text_delta);
+        else push({ kind: 'message', text: clip(step.text_delta) });
+      }
+    }
+    return { items, dropped: 0, truncated: false };
+  }
+  const hasWork = (activity) => (activity?.items || []).some((item) => WORK.has(item.kind));
+
   async function load(project, taskId, stepId, { configuredOnly = false } = {}) {
     const withProject = !configuredOnly || A.proj(project)?.configured;
-    const result = await api.control({ operation: 'task_activity', taskId, stepId, ...(withProject && { projectId: project }) });
+    const scope = { taskId, stepId, ...(withProject && { projectId: project }) };
+    const result = await api.control({ operation: 'task_activity', ...scope });
     if (!result?.ok) throw Error(result?.error || 'activity_unavailable');
+    if (!hasWork(result.value)) {
+      try {
+        const log = await api.control({ operation: 'task_log', ...scope });
+        if (log?.ok && /"step_update"\s*:/.test(log.value?.text || '')) {
+          const parsed = parseAntigravity(log.value.text);
+          if (parsed.items.length) return { ...parsed, truncated: Boolean(log.value.truncated), state: result.value.state };
+        }
+      } catch { /* keep the activity record */ }
+    }
     return result.value;
   }
 
