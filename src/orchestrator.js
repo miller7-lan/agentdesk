@@ -1621,6 +1621,8 @@ window.__groupReady = (async () => {
         prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || undefined, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         provider: recipient || undefined,
+        // The person's member order from the quota page (only the kinds of work they reordered).
+        ...(!['broadcast', 'compact'].includes(kind) && personRouteOrder()),
         ...(files.length && { attachments: files }),
       },
     };
@@ -1723,6 +1725,19 @@ window.__groupReady = (async () => {
       timeline.scrollTop = timeline.scrollHeight;
     } else if (group.draft.trim() === draft) group.draft = '';
   });
+
+  // The saved order, kept to members the orchestrator routes each kind of work to right now (an order naming a
+  // member it no longer routes would be refused). Nothing is sent when nothing was reordered.
+  function personRouteOrder() {
+    const saved = store.get('routeOrder', {});
+    const routes = routeState.team?.routes;
+    const order = {};
+    for (const [capability, list] of Object.entries(saved)) {
+      const allowed = routes ? list.filter((role) => routes[capability]?.includes(role)) : list;
+      if (allowed.length) order[capability] = allowed;
+    }
+    return Object.keys(order).length ? { routeOrder: order } : {};
+  }
 
   function updateFilters() {
     $$('[data-group-filter]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.groupFilter === filter)));

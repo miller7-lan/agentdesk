@@ -532,3 +532,11 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .stage-editor input, .stage-editor select, .stage-editor textarea { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; }
 .stage-editor fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; padding: 4px 12px 8px; }
 .stage-editor legend { font-size: 12px; color: var(--text); }
+
+/* 额度页：自己调整分工顺序 */
+.qv-move { display: inline-flex; gap: 1px; margin-left: 4px; }
+.qv-move button { width: 16px; height: 16px; border-radius: 4px; font-size: 11px; line-height: 1; color: var(--muted); }
+.qv-move button:hover:not(:disabled) { background: var(--hover); color: var(--accent); }
+.qv-move button:disabled { opacity: .25; }
+.qv-custom { margin-left: 5px; padding: 0 5px; border-radius: 4px; font-style: normal; font-size: 10px; color: var(--accent); background: var(--accent-soft); }
+.qv-reset { margin-left: 8px; font-size: 11px; color: var(--accent); }

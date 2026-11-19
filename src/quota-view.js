@@ -12,6 +12,32 @@
   const names = { claude: 'Claude', codex: 'Codex', grok: 'Grok Build', antigravity: 'Antigravity', gemini: 'Gemini' };
   const capabilities = [['plan', '规划'], ['triage', '诊断'], ['scout', '侦察'], ['implement', '改代码'], ['review', '审查'], ['research', '查资料'], ['accept', '验收']];
   const capName = Object.fromEntries(capabilities);
+  // The person's own order for the kinds of work that have a choice of members (kept on this computer and sent
+  // with every group task; the orchestrator only ranks members it already routes that work to).
+  const ORDERABLE = ['scout', 'implement', 'review', 'research'];
+  const store = A.store;
+  const savedOrder = () => store.get('routeOrder', {});
+  function orderedRoute(capability, list) {
+    const preferred = savedOrder()[capability];
+    if (!preferred) return [...list];   // a copy: reordering must never change the orchestrator's own order
+    const rank = (role) => { const i = preferred.indexOf(role); return i < 0 ? preferred.length + list.indexOf(role) : i; };
+    return [...list].sort((a, b) => rank(a) - rank(b));
+  }
+  function move(capability, role, step) {
+    const list = orderedRoute(capability, data.team.routes[capability] || []);
+    const from = list.indexOf(role);
+    const to = from + step;
+    if (from < 0 || to < 0 || to >= list.length) return;
+    [list[from], list[to]] = [list[to], list[from]];
+    store.set('routeOrder', { ...savedOrder(), [capability]: list });
+    render();
+  }
+  function reset(capability) {
+    const order = savedOrder();
+    delete order[capability];
+    store.set('routeOrder', order);
+    render();
+  }
   const levels = {
     ok: ['正常', 'ok'], reserved: ['只接主业', 'reserved'], stopped: ['已停', 'stopped'],
     auth: ['需登录', 'auth'], cooling: ['冷却中', 'stopped'], absent: ['未配置', 'auth'], unknown: ['未读到', 'auth'],
@@ -163,16 +189,20 @@
     const routes = data.team.routes || {};
     return capabilities.filter(([key]) => routes[key]).map(([key, label]) => {
       let picked = false;
-      const chain = routes[key].map((role, index) => {
+      const editable = ORDERABLE.includes(key) && routes[key].length > 1;
+      const list = editable ? orderedRoute(key, routes[key]) : routes[key];
+      const custom = editable && savedOrder()[key] && list.join() !== routes[key].join();
+      const chain = list.map((role, index) => {
         const state = standing(role, key);
         const takesIt = !picked && takes(state);
         if (takesIt) picked = true;
         const why = takesIt ? (state === 'reserved' ? '接手（主业）' : '接手')
           : picked ? '后备' : { absent: '未配置', auth: '需登录', cooling: '冷却中', stopped: '已停', 'reserved-other': '只接主业' }[state] || '跳过';
+        const arrows = editable ? `<span class="qv-move"><button type="button" data-qv-move="${key}" data-role="${role}" data-step="-1" ${index ? '' : 'disabled'} title="往前排" aria-label="${names[role]} 往前排">‹</button><button type="button" data-qv-move="${key}" data-role="${role}" data-step="1" ${index < list.length - 1 ? '' : 'disabled'} title="往后排" aria-label="${names[role]} 往后排">›</button></span>` : '';
         return `${index ? '<span class="qv-arrow">›</span>' : ''}<span class="qv-member ${takesIt ? 'pick' : picked ? 'backup' : 'skip'}">
-          ${avatars?.html(role === 'claude' ? 'lead' : role, { size: 18, still: true }) || ''}${names[role]}<small>${why}</small></span>`;
+          ${avatars?.html(role === 'claude' ? 'lead' : role, { size: 18, still: true }) || ''}${names[role]}<small>${why}</small>${arrows}</span>`;
       }).join('');
-      return `<div class="qv-route"><span class="qv-cap">${label}</span><div class="qv-chain">${chain}${picked ? '' : '<span class="qv-wait">没人能接，这一步会排队等待</span>'}</div></div>`;
+      return `<div class="qv-route"><span class="qv-cap">${label}${custom ? '<em class="qv-custom">自定义</em>' : ''}</span><div class="qv-chain">${chain}${picked ? '' : '<span class="qv-wait">没人能接，这一步会排队等待</span>'}${custom ? `<button type="button" class="qv-reset" data-qv-reset="${key}">恢复默认</button>` : ''}</div></div>`;
     }).join('');
   }
 
@@ -201,12 +231,13 @@
     body.innerHTML = `${error ? `<p class="qv-banner">${esc(error)}</p>` : ''}
       ${data.quotaError ? '<p class="qv-banner">主控没有开放额度读取（quotaBridges），只能显示分工规则。</p>' : ''}
       <section class="qv-cards">${roles.map(card).join('')}${resourceCard()}</section>
-      <section class="qv-section"><h3>分工与降级顺序 <small>实时 · 每种活从左往右找第一个能接的成员</small></h3>${routesTable()}</section>
+      <section class="qv-section"><h3>分工与降级顺序 <small>实时 · 每种活从左往右找第一个能接的成员 · 侦察、改代码、审查、查资料可以用 ‹ › 调整你自己的顺序</small></h3>${routesTable()}</section>
       <section class="qv-section qv-rules"><h3>规则</h3><ul>
         <li>额度按 5 小时窗口和每周窗口里<b>用得多的那个</b>算。</li>
         <li>过了软线只接自己的主业，过了硬线不再派活；Claude 只当组长（规划、诊断、验收），配置也改不了。</li>
         <li>CLI 报额度用尽会冷却 30 分钟，报登录失效会停 6 小时，到时自动恢复。</li>
-        <li>改代码按 Antigravity → Codex → Grok Build 降级，永不派给 Claude；困难的改动由组长点名 Codex。</li>
+        <li>改代码默认按 Antigravity → Codex → Grok Build 降级，永不派给 Claude；困难的改动由组长点名 Codex。</li>
+        <li>你调整的顺序保存在这台电脑上，随你发出的群聊任务一起发给主控：自动派活、降级和重新分配都按你的顺序；组长也会参考，确有更合适的成员时会说明原因。只能在主控已配置的成员之间排序，不影响别人发的任务。</li>
         <li>审查交给与改代码不同的成员（交叉审查），没有别人可用时才由作者自审。</li>
       </ul></section>`;
     dialog.querySelector('.qv-time').textContent = loading ? '刷新中…' : loadedAt ? '更新于 ' + new Date(loadedAt).toLocaleTimeString() : '';
@@ -225,6 +256,10 @@
     dialog.addEventListener('click', (event) => {
       if (event.target === dialog || event.target.closest('[data-qv-close]')) dialog.close();
       else if (event.target.closest('[data-qv-refresh]')) load();
+      else if (event.target.closest('[data-qv-move]')) {
+        const button = event.target.closest('[data-qv-move]');
+        move(button.dataset.qvMove, button.dataset.role, Number(button.dataset.step));
+      } else if (event.target.closest('[data-qv-reset]')) reset(event.target.closest('[data-qv-reset]').dataset.qvReset);
     });
     document.body.appendChild(dialog);
     return dialog;

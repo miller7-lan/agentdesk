@@ -491,3 +491,21 @@ test('a task stops at its budget and waits for the person instead of failing or 
   assert.equal(task.budget.used.tokens, 2200);
   assert.equal(task.reassignRounds, undefined);
 });
+
+test('the person can rank the members of a capability; the order only ranks members the routes allow', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const used = [];
+  const scheduler = schedulerFor(dir, mirror, async ({ name }) => { used.push(name); return { output: 'ok' }; }, { acceptance: { mode: 'off' } });
+  t.after(() => scheduler.store.close());
+  assert.deepEqual(scheduler.router.routes.scout.filter((role) => scheduler.router.configured(role)), ['gemini', 'grok']);
+
+  assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'x', routeOrder: { implement: ['claude'] } }), /invalid/);
+  assert.throws(() => scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'x', routeOrder: { plan: ['codex'] } }), /invalid/);
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'look', routeOrder: { scout: ['grok', 'gemini'] } });
+  task.base = head;
+  task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.state, 'completed');
+  assert.equal(task.steps[0].role, 'grok');      // the routes would have picked gemini first
+  assert.deepEqual(used, ['grok']);
+});
