@@ -752,3 +752,4 @@ button.lane-node { cursor: pointer; }
 .qv-drop { margin-left: 2px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
 .qv-drop:hover { color: var(--danger); }
 .qv-add { width: auto; max-width: 112px; flex: none; margin-left: 6px; height: 26px; padding: 0 6px; border: 1px dashed var(--border); border-radius: 13px; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
+.qv-member.qv-fill { outline: 1px dotted var(--border); outline-offset: -1px; color: var(--muted); font-weight: 500; }

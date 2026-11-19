@@ -256,9 +256,24 @@
         return `${index ? '<span class="qv-arrow">›</span>' : ''}<span class="qv-member ${takesIt ? 'pick' : picked ? 'backup' : 'skip'}${item.added ? ' added' : ''}">
           ${avatars?.html(role === 'claude' ? 'lead' : role, { size: 18, still: true }) || ''}${names[role]}${model ? `<span class="qv-model">${esc(modelLabel(role, model))}</span>` : ''}<small>${why}</small>${arrows}${drop}</span>`;
       }).join('');
+      // Filled in automatically: the other members that can do this work step in when nobody above can take it;
+      // for the lead's work, Claude's other models are the fallbacks when the lead's model gets stuck.
+      const inChain = new Set(list.map((item) => item.role));
+      const fillRoles = LEAD.includes(key) ? [] : data.team.configured.filter((role) => role !== 'claude' && !inChain.has(role) &&
+        (!WRITES.has(key) || (data.writeProviders || []).includes(role)));
+      const listedClaude = new Set(list.filter((item) => item.role === 'claude' && item.model).map((item) => item.model));
+      const fillModels = LEAD.includes(key) ? Object.keys(data.models?.claude?.models || {}).filter((model) => !listedClaude.has(model)) : [];
+      let fill = '';
+      if (fillRoles.length) {
+        const taker = !picked && fillRoles.find((role) => takes(standing(role, key)));
+        if (taker) picked = true;
+        fill = `<span class="qv-arrow">›</span><span class="qv-member qv-fill ${taker ? 'pick' : 'backup'}" title="上面的成员都接不了时，这些成员自动补上，用各自最新的模型">补齐：${fillRoles.map((role) => names[role]).join('、')}<small>${taker ? names[taker] + ' 接手' : '后备'}</small></span>`;
+      } else if (fillModels.length) {
+        fill = `<span class="qv-arrow">›</span><span class="qv-member qv-fill backup" title="组长的模型卡住时，按从新到旧换成这些模型">补齐：${fillModels.map((model) => esc(modelLabel('claude', model))).join('、')}<small>卡住时换</small></span>`;
+      }
       const options = editable ? addable(key) : [];
       const picker = options.length ? `<select class="qv-add" data-qv-add="${key}" aria-label="给${label}补充成员或模型"><option value="">+ 补充</option>${options.map(([value, text]) => `<option value="${esc(value)}">${esc(text)}</option>`).join('')}</select>` : '';
-      return `<div class="qv-route"><span class="qv-cap">${label}${custom ? '<em class="qv-custom">自定义</em>' : ''}</span><div class="qv-chain">${chain}${picked ? '' : '<span class="qv-wait">没人能接，这一步会排队等待</span>'}${picker}${custom ? `<button type="button" class="qv-reset" data-qv-reset="${key}">恢复默认</button>` : ''}</div></div>`;
+      return `<div class="qv-route"><span class="qv-cap">${label}${custom ? '<em class="qv-custom">自定义</em>' : ''}</span><div class="qv-chain">${chain}${fill}${picked ? '' : '<span class="qv-wait">没人能接，这一步会排队等待</span>'}${picker}${custom ? `<button type="button" class="qv-reset" data-qv-reset="${key}">恢复默认</button>` : ''}</div></div>`;
     }).join('');
   }
 
@@ -295,6 +310,7 @@
         <li>改代码默认按 Antigravity → Codex → Grok Build 降级，永不派给 Claude；困难的改动由组长点名 Codex。</li>
         <li>你调整和补充的顺序保存在这台电脑上，随你发出的群聊任务一起发给主控：自动派活、降级、重新分配和卡住换模型都按你的顺序，排在前面的具体模型先用；组长也会参考，确有更合适的成员时会说明原因。可以补充主控已配置的任何成员和它的任何模型；规划、诊断、验收只能补充 Claude 的模型（组长始终是 Claude）。不影响别人发的任务。</li>
         <li>审查交给与改代码不同的成员（交叉审查），没有别人可用时才由作者自审。</li>
+        <li>每种活最后都会自动「补齐」：上面列的成员都接不了（额度、登录、没配置）时，其他能做这种活的成员自动补上；每个成员卡住时，按从新到旧换它的其他模型。只是暂时忙的成员会等它空下来，不会补。</li>
       </ul></section>`;
     dialog.querySelector('.qv-time').textContent = loading ? '刷新中…' : loadedAt ? '更新于 ' + new Date(loadedAt).toLocaleTimeString() : '';
   }

@@ -1054,17 +1054,24 @@ event(task, state, detail) {
   }
 
   // Who can take this kind of work now: the configured route plus the members the person added to it.
-  candidatesFor(task, capability, exclude = []) {
+  candidatesFor(task, capability, exclude = [], fill = false) {
     const base = this.router.candidates(capability, exclude);
     const added = [...new Set(this.orderEntries(task, capability).map((entry) => entry.role))].filter((role) =>
       !base.includes(role) && !exclude.includes(role) && role !== LEAD_ROLE && this.router.configured(role) &&
       this.router.available(role) && this.router.quotaAllows(role, capability) &&
       (!CAPABILITIES[capability]?.write || this.router.canWrite(role)));
-    return this.ordered(task, capability, [...base, ...added]);
+    const chain = this.ordered(task, capability, [...base, ...added]);
+    if (chain.length || !fill || LEAD_CAPABILITIES.has(capability)) return chain;
+    // Filled in: when no member of the chain can take the work at all (quota, login, not set up), every other
+    // configured member that can do it steps in, on its newest model, so the step does not sit waiting. A member
+    // that is only busy is not filled in for: that wait is short and keeps the configured split.
+    return this.router.roles().filter((role) => role !== LEAD_ROLE && !exclude.includes(role) &&
+      this.router.available(role) && this.router.quotaAllows(role, capability) &&
+      (!CAPABILITIES[capability]?.write || this.router.canWrite(role)));
   }
 
   pickForTask(task, capability, exclude = []) {
-    const candidates = this.candidatesFor(task, capability, exclude);
+    const candidates = this.candidatesFor(task, capability, exclude, true);
     if (!candidates.length) {
       delete task.ownerCapBlocked;
       return null;
@@ -1737,6 +1744,8 @@ event(task, state, detail) {
           result = { problem };
         } catch (error) {
           if (signal.aborted || error.message.startsWith('executor_waiting:')) throw error;
+          // The lead's model got stuck: plan again on its next model (newest first, or the person's order).
+          if (/^cli_(stalled|timeout)/.test(error.message) && this.switchModel(task, step)) { attempt -= 1; continue; }
           result = { problem: error.message === 'invalid_plan' ? 'it was not valid JSON' : error.message, failed: error.message !== 'invalid_plan' };
           if (result.failed) break;
         }

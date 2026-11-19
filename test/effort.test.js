@@ -205,9 +205,15 @@ test('the person fills each kind of work with more members and models; the lead 
     config: { adapters: { claude: models('claude-opus-5-5', 'claude-sonnet-5-5'), codex: models('gpt-5.5', 'gpt-5.4'), grok: models('grok-4.7'), gemini: models('gemini-3-pro') } },
     router: { configured: (role) => ['claude', 'codex', 'grok', 'gemini'].includes(role), canWrite: (role) => role !== 'gemini',
       candidates: (capability, exclude) => ({ scout: ['codex'], implement: ['codex'] }[capability] || []).filter((role) => !exclude.includes(role)),
-      available: () => true, quotaAllows: () => true },
+      available: () => true, quotaAllows: () => true, roles: () => ['claude', 'codex', 'grok', 'gemini'] },
   };
   for (const name of ['validRouteOrder', 'orderEntries', 'orderModels', 'ordered', 'candidatesFor']) self[name] = S[name].bind(self);
+  // Nobody in the chain can take the work: every other member that can do it is filled in (never Claude; a
+  // read-only member never for changing code). A chain that has someone is left alone.
+  assert.deepEqual(self.candidatesFor({}, 'research', [], true), ['codex', 'grok', 'gemini']);
+  assert.deepEqual(self.candidatesFor({}, 'implement', ['codex'], true), ['grok']);
+  assert.deepEqual(self.candidatesFor({}, 'implement', [], true), ['codex']);
+  assert.deepEqual(self.candidatesFor({}, 'research', [], false), []);
   assert.equal(self.validRouteOrder({ implement: ['grok', 'codex@gpt-5.5', 'codex@gpt-5.4'] }), true);
   assert.equal(self.validRouteOrder({ triage: ['claude@claude-sonnet-5-5'], plan: ['claude@claude-opus-5-5'] }), true);
   assert.equal(self.validRouteOrder({ implement: ['claude'] }), false);            // Claude never takes member work
