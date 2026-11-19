@@ -52,6 +52,25 @@ sudo systemctl restart agentdesk-orchestrator
 
 配置项的含义以 `orchestrator/vps2.example.json` 和 `orchestrator/OPERATIONS.md` 为准。路由、额度阈值、`writeProviders` 有校验，写错时服务启动就会失败，日志里写明是哪一项（如 `invalid_routing:implement`）。
 
+### 60 天保留与系统日志
+
+`retention` 的默认值已经包含 `historyDays: 60` 和 `uploadDays: 7`；需要显式写进配置时，在 `/etc/agentdesk-orchestrator/config.json` 顶层加：
+
+```json
+"retention": { "completedDays": 3, "failedDays": 7, "historyDays": 60, "uploadDays": 7, "minFreePercent": 15 }
+```
+
+任务记录、单聊线程元数据、上传缓存和无主 worktree/日志到期后由主控和单聊服务自动删除；项目文件、技能、登录凭据和配置不受影响。系统日志由单独的定时器清理：
+
+```sh
+sudo install -m 0644 orchestrator/agentdesk-journal-retention.service orchestrator/agentdesk-journal-retention.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now agentdesk-journal-retention.timer
+systemctl list-timers agentdesk-journal-retention.timer
+```
+
+定时器每天执行一次 `journalctl --vacuum-time=60d`；立即执行一次用 `sudo systemctl start agentdesk-journal-retention.service`。
+
 ### 确认生效
 
 ```sh
