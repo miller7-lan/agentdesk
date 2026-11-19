@@ -452,3 +452,17 @@ button.step-row:hover, button.step-row:focus-visible { background: var(--hover);
 .step-row { position: relative; }
 .trust-tag { display: inline-block; margin-bottom: 4px; padding: 1px 7px; border-radius: 9px; font-size: 10.5px; color: var(--warn, #a66b00); background: color-mix(in srgb, var(--warn, #a66b00) 12%, transparent); }
 .trust-tag.checked { color: var(--ok, #2f8a57); background: color-mix(in srgb, var(--ok, #2f8a57) 12%, transparent); }
+
+/* 节点：空心圆点，完成后填满；光线到达时亮一圈（参考 Lancer GitTree 节点） */
+.step-node, .flow-node-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; border: 1.6px solid var(--node-color, var(--accent)); background: var(--panel, #fff); transition: background .3s, box-shadow .3s; }
+.step-row { grid-template-columns: 9px 22px minmax(70px, auto) minmax(0, auto) auto minmax(0, 1fr) auto; }
+.step-row[data-state="completed"] .step-node, .flow-node[data-flow-state="completed"] .flow-node-dot { background: var(--node-color); }
+.step-row[data-state="failed"] .step-node, .flow-node[data-flow-state="failed"] .flow-node-dot { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 25%, transparent); }
+.step-row[data-state="replaced"] .step-node { border-style: dashed; }
+.flow-node { overflow: visible; }
+.flow-node .flow-node-dot { position: absolute; left: -5px; top: calc(50% - 5px); }
+.light-arrived .step-node, .light-arrived .flow-node-dot { background: var(--node-color); animation: node-arrive 1.2s ease-out; }
+.light-arrived { animation: node-glow 1.2s ease-out; }
+@keyframes node-arrive { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--node-color) 70%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes node-glow { 0% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--node-color, var(--accent)) 55%, transparent), 0 0 14px color-mix(in srgb, var(--node-color, var(--accent)) 35%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .light-arrived, .light-arrived .step-node, .light-arrived .flow-node-dot { animation: none; } }

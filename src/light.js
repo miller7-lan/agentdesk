@@ -23,12 +23,29 @@
     requestAnimationFrame(() => {
       for (const { key, role } of fresh) {
         const source = root.querySelector(`[data-flight-from="${CSS.escape(key)}"]`);
-        const target = root.querySelector(`[data-flight-to="${CSS.escape(key)}"]`);
-        if (!source || !target) continue;
-        try { layer.emit({ id: key + ':' + Date.now(), source, target, color: colour(role) }); } catch { /* a duplicate id is harmless */ }
+        if (!source) continue;
+        // Every node of that step gets a light: its row on the progress board and, when the dispatch graph is
+        // open, its node there. Targets are looked up on each frame, so a re-render does not lose them.
+        const targets = document.querySelectorAll(`[data-flight-to="${CSS.escape(key)}"]`);
+        targets.forEach((_, index) => {
+          const find = () => document.querySelectorAll(`[data-flight-to="${CSS.escape(key)}"]`)[index];
+          try {
+            const flight = layer.emit({ id: key + ':' + index + ':' + Date.now(), source, target: find, color: colour(role) });
+            flight.finished.then((result) => { if (result === 'arrived') arrive(find()); });
+          } catch { /* a duplicate id is harmless */ }
+        });
       }
     });
   }
 
-  window.AgentDeskLight = { border, completed, colour };
+  // The node lights up when the light reaches it: its dot fills and a ring spreads out once.
+  function arrive(node) {
+    if (!node) return;
+    node.classList.remove('light-arrived');
+    void node.offsetWidth;   // restart the animation
+    node.classList.add('light-arrived');
+    setTimeout(() => node.classList.remove('light-arrived'), 1400);
+  }
+
+  window.AgentDeskLight = { border, completed, colour, arrive };
 })();

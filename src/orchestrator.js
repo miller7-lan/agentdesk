@@ -607,8 +607,8 @@ window.__groupReady = (async () => {
       const tried = (step.history || []).map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : ''));
       const note = step.state === 'replaced' ? '已由新步骤接替'
         : step.reassigns ? `重排 ${step.reassigns}/3 · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
-      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" ${attrs}>
-        ${step.state === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}
+      return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
+        ${step.state === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}<span class="step-node" aria-hidden="true"></span>
         ${avatars.html(step.role, { size: 22, still: true })}
         <span class="step-row-name">${esc(memberName(step.role))}</span>
         <span class="step-row-what">${esc(what)}</span>
