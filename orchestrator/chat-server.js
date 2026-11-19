@@ -697,7 +697,9 @@ if (turn.effort) args.push('--effort', turn.effort);
     '--settings', JSON.stringify({ permissions }), '--disable-slash-commands',
   ];
   if (turn.model) args.push('--model', turn.model);
-  if (turn.effort) args.push('--effort', turn.effort);
+  // agy encodes the level in some model IDs and rejects an --effort that conflicts with it; only pass the
+  // effort when it matches the model's suffix (or no model is selected).
+  if (turn.effort && (!turn.model || turn.model.endsWith('-' + turn.effort))) args.push('--effort', turn.effort);
   if (session) { args.push('--conversation', session); turn.resumeAttempt = true; }
   // Antigravity keeps the conversation, so the instructions are sent once per conversation (again only when
   // they change), not repeated in every message.

@@ -127,6 +127,16 @@ class Router {
     return used === undefined || used < this.quotaPolicy[role].hard;
   }
 
+  // Why a configured role cannot take this capability right now, for the person-facing status line.
+  unavailableReason(role, capability) {
+    if (!this.configured(role)) return 'unconfigured';
+    if (this.config.adapters[role].authRequired) return 'auth';
+    const block = this.blocked.get(role);
+    if (block && block.until > this.now()) return block.reason;
+    if (!this.quotaAllows(role, capability)) return 'quota';
+    return 'busy';
+  }
+
   configured(role) {
     return Boolean(this.config.adapters?.[role]);
   }

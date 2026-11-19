@@ -107,26 +107,20 @@
     "antigravity": {
       "bin": "/usr/local/bin/agy",
       "models": {
-        "gemini-4-hydrogen": {
-          "label": "Gemini 4 Hydrogen",
+        "gemini-3.8-flash-low": {
+          "label": "Gemini 3.8 Flash (Low)",
+          "strengths": "Fastest, plenty of quota. Default for listing files, short searches, routine reading and quick summaries.",
+          "billing": "subscription"
+        },
+        "gemini-3.8-flash-medium": {
+          "label": "Gemini 3.8 Flash (Medium)",
           "strengths": "Fast with plenty of quota. Default for scouting, research with Google search, routine single-file edits and first-pass review.",
-          "billing": "subscription",
-          "efforts": ["low", "medium", "high", "xhigh", "max"],
-          "defaultEffort": "medium"
+          "billing": "subscription"
         },
-        "gemini-4-argon": {
-          "label": "Gemini 4 Argon",
-          "strengths": "Frontier coding agent for multi-file implementation and long multi-step tasks. Use for implement steps beyond a small edit.",
-          "billing": "subscription",
-          "efforts": ["low", "medium", "high", "xhigh", "max"],
-          "defaultEffort": "high"
-        },
-        "gemini-4-carbon": {
-          "label": "Gemini 4 Carbon",
-          "strengths": "Deepest reasoning (Ultra only), slower. Hard debugging, architecture questions and security-sensitive review; use sparingly.",
-          "billing": "subscription",
-          "efforts": ["low", "medium", "high", "xhigh", "max"],
-          "defaultEffort": "high"
+        "gemini-3.8-flash-high": {
+          "label": "Gemini 3.8 Flash (High)",
+          "strengths": "Deeper reasoning, slower. Multi-file implementation, hard debugging, architecture questions and security-sensitive review; use sparingly.",
+          "billing": "subscription"
         }
       },
       "template": {
@@ -157,14 +151,12 @@
           "--conversation",
           "{session}"
         ],
-        "efforts": ["low", "medium", "high", "xhigh", "max"],
-        "effortArgs": ["--effort", "{effort}"],
         "outputField": "result.response",
         "sessionField": "result.conversation_id",
         "usageField": "result.usage",
         "errorField": "result.error"
       },
-      "defaultModel": "gemini-4-hydrogen",
+      "defaultModel": "gemini-3.8-flash-medium",
       "callLimits": {
         "fiveHour": 300,
         "weekly": 3000

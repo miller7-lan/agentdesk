@@ -4,9 +4,9 @@
 
 - Codex 单聊通过 VPS 上的 Codex app-server 读取 GPT 模型列表，模型、推理强度和速度仍由 Codex 提供。
 - Claude Code、Grok Build、Antigravity 单聊从 VPS2 的 `adapters.<供应商>.models` 读取候选模型。每个单聊记住各自的选择，发送和生成项目补丁时都传入所选模型。新会话优先选配置里的 `defaultModel`，其次第一个模型；选择「默认模型（CLI）」才使用 CLI 自带的默认模型。
-- 每个模型可配置 `label`（下拉框显示名）、`efforts`（该模型支持的推理强度）和 `defaultEffort`。单聊会按所选模型显示推理强度下拉框，并在 `turn/start` 时传给 CLI：Claude 同时设置 `CLAUDE_CODE_EFFORT_LEVEL` 并传 `--effort`（`low`/`medium`/`high`/`xhigh`/`max`），Grok 用 `--effort`（最高 `xhigh`），Antigravity 用 `--effort`（`low`…`max`）。未配置 `efforts` 的模型不显示该下拉框。群聊里由组长为每个成员选择模型和推理强度，composer 的「组长思考」只控制组长自己的档位。
+- 每个模型可配置 `label`（下拉框显示名）、`efforts`（该模型支持的推理强度）和 `defaultEffort`。单聊会按所选模型显示推理强度下拉框，并在 `turn/start` 时传给 CLI：Claude 同时设置 `CLAUDE_CODE_EFFORT_LEVEL` 并传 `--effort`（`low`/`medium`/`high`/`xhigh`/`max`），Grok 用 `--effort`（最高 `xhigh`），Antigravity 的模型 ID 已包含档位（如 `gemini-3.8-flash-medium`），CLI 不接受与 ID 冲突的 `--effort`，因此只在档位与 ID 后缀一致时才传。未配置 `efforts` 的模型不显示该下拉框；模型的 `efforts` 会覆盖角色级设置，模型没有声明时沿用角色级设置。群聊里由组长为每个成员选择模型和推理强度，composer 的「组长思考」只控制组长自己的档位。
 - 群聊点名成员后，模型 ID 输入框会提示该成员的已配置模型。组长自动分派时使用主控已有的分工与模型规则。
-- 当前 VPS2 的 Grok 订阅经 `grok models` 确认提供 `grok-4.7`、`grok-4.7-build-fast`、`grok-4.6`、`grok-4.5`。Claude Code 使用具体版本 ID `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-1`。Antigravity 待登录，登录后用 `agy models` 核对 `gemini-4-hydrogen`、`gemini-4-argon`、`gemini-4-carbon`。旧 Gemini CLI 已退出当前部署。
+- 当前 VPS2 的 Grok 订阅经 `grok models` 确认提供 `grok-4.7`、`grok-4.7-build-fast`、`grok-4.6`、`grok-4.5`。Claude Code 使用具体版本 ID `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-1`。Antigravity 经 `agy models` 确认提供 `gemini-3.8-flash-high`、`gemini-3.8-flash-medium`、`gemini-3.8-flash-low`、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`；AgentDesk 默认只配置前三个 Gemini 模型（档位已写在 ID 里），旧的 `gemini-4-*` 占位 ID 已删除。旧 Gemini CLI 已退出当前部署。
 
 ## 给 VPS2 增加模型
 

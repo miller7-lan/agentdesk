@@ -91,6 +91,26 @@ test('a blocked implementer keeps the task queued and resumes without planning a
   }
 });
 
+test('a planned step whose model was removed falls back to the role default', () => {
+  const store = new Store(':memory:');
+  const scheduler = new Scheduler({
+    config: {
+      adapters: { antigravity: { bin: 'agy', env: {},
+        profiles: { defaultModel: 'new-model', models: { 'new-model': { billing: 'subscription' } } } } },
+      workspaces: { mac: { repository: '/nonexistent' } },
+    },
+    store, files: {},
+  });
+  const task = {
+    steps: [{ role: 'antigravity', model: 'old-model' }],
+    groupPlan: { rounds: [{ steps: [{ role: 'antigravity', model: 'old-model' }] }] },
+  };
+  scheduler.refreshModels(task);
+  assert.equal(task.steps[0].model, 'new-model');
+  assert.equal(task.groupPlan.rounds[0].steps[0].model, 'new-model');
+  store.close();
+});
+
 test('task metadata is validated and stored for reports and benchmarks', async (t) => {
   const { dir, mirror } = await repository(t);
   const store = new Store(':memory:');

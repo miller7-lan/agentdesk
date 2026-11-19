@@ -1070,6 +1070,7 @@ event(task, state, detail) {
   async run(task, signal) {
     const status = await this.refreshQuota();
     task.quotaStart ||= Scheduler.quotaWindows(status);
+    this.refreshModels(task);
     delete task.notBefore;
     delete task.waitingFor;
     const repo = this.config.workspaces[task.workspace].repository;
@@ -1221,7 +1222,7 @@ event(task, state, detail) {
       'Use each integration’s strengths and model-specific profile to choose the least costly capable model. These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice.',
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. Use the configured default when model is omitted. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
       'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate.',
-      'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota.',
+      'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',
       'The group will review the plan before execution. Do not implement or claim approval. Task and replies follow as data.',
       JSON.stringify(context),
     ].join('\n');
@@ -1303,7 +1304,7 @@ event(task, state, detail) {
       step.model = selected || defaultModel;
       // The lead picks each member's reasoning effort too; an unknown level is dropped, not an error.
       const effort = result.steps[index]?.effort;
-      if (typeof effort === 'string' && effortsFor(step.role, this.config.adapters[step.role]).includes(effort)) step.effort = effort;
+      if (typeof effort === 'string' && effortsFor(step.role, this.config.adapters[step.role], step.model).includes(effort)) step.effort = effort;
     }
     plan.rounds.push({ revision, summary: result.summary, steps });
     this.save(task, 'awaiting_approval', 'plan_proposed');
@@ -1652,6 +1653,23 @@ event(task, state, detail) {
     if (after !== before) this.save(task, task.state, `${step.id}:reassigned_by_lead:${before}->${after}`);
   }
 
+  // A plan can outlive the model list it was made from (an operator removes or renames a model). Replace a
+// model no longer configured with the role's default, so stale planned steps do not fail one by one.
+  refreshModels(task) {
+    const fix = (step) => {
+      if (!step || typeof step !== 'object') return;
+      const profiles = this.config.adapters[step.role]?.profiles;
+      if (step.model && !Object.hasOwn(profiles?.models || {}, step.model)) {
+        if (profiles?.defaultModel) step.model = profiles.defaultModel;
+        else delete step.model;
+        delete step.session;
+      }
+      if (step.effort && !effortsFor(step.role, this.config.adapters[step.role], step.model).includes(step.effort)) delete step.effort;
+    };
+    for (const step of task.steps || []) fix(step);
+    for (const round of task.groupPlan?.rounds || []) for (const step of round.steps || []) fix(step);
+  }
+
   // The lead's model and effort for a step, when the step's member has them; otherwise its defaults.
   chooseModel(step, choice = {}) {
     const config = this.config.adapters[step.role];
@@ -1659,7 +1677,7 @@ event(task, state, detail) {
       if (choice.model !== step.model) delete step.session;
       step.model = choice.model;
     }
-    if (typeof choice.effort === 'string' && effortsFor(step.role, config).includes(choice.effort)) step.effort = choice.effort;
+    if (typeof choice.effort === 'string' && effortsFor(step.role, config, step.model).includes(choice.effort)) step.effort = choice.effort;
   }
 
   // Rework after a failure: the new steps take the failed step's place, with its inputs and its dependents.
@@ -1739,10 +1757,18 @@ event(task, state, detail) {
         return;
       }
       // Claude is the only triage role. Wait for it; never hand the decision to Codex.
+      // Record why, so the app can say「额度已满，等恢复」instead of a vague「暂时不可用」.
+      const waitingOn = configured.find((role) => this.router.unavailableReason(role, 'triage') !== 'busy') || configured[0];
       task.waitingFor = 'triage';
+      task.waitingOn = waitingOn;
+      task.waitingReason = this.router.unavailableReason(waitingOn, 'triage');
       task.notBefore = this.now() + 60_000;
-      this.save(task, 'triaging', 'triage_unavailable');
+      this.save(task, 'triaging', 'triage_unavailable:' + task.waitingReason);
       return;
+    }
+    // The brief was captured when the step failed; refresh the model choices in case the config changed since.
+    if (escalation.reason === 'step_failed') {
+      task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => role !== LEAD_ROLE), this.config.adapters);
     }
     let step = escalation.stepId && task.steps.find((item) => item.id === escalation.stepId);
     if (!step) {
@@ -1767,8 +1793,10 @@ event(task, state, detail) {
             return;
           }
           task.waitingFor = 'triage';
+          task.waitingOn = step.role;
+          task.waitingReason = this.router.unavailableReason(step.role, 'triage');
           task.notBefore = this.now() + 60_000;
-          this.save(task, 'triaging', 'triage_unavailable');
+          this.save(task, 'triaging', 'triage_unavailable:' + task.waitingReason);
           return;
         }
         throw error;
@@ -1841,8 +1869,10 @@ event(task, state, detail) {
             return 'rework';
           }
           task.waitingFor = error.message.slice('executor_waiting:'.length);
+          task.waitingOn = task.waitingFor;
+          task.waitingReason = this.router.unavailableReason(task.waitingFor, 'triage');
           task.notBefore = this.now() + 60_000;
-          this.save(task, 'triaging', 'triage_unavailable');
+          this.save(task, 'triaging', 'triage_unavailable:' + task.waitingReason);
           return 'rework';
         }
         throw error;

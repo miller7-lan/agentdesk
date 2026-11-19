@@ -2,7 +2,7 @@
   const states = {
     queued: '排队中', planning: '规划中', awaiting_details: '待你补充', awaiting_approval: '待你确认',
     running: '执行中', applying: '应用补丁', testing: '验证中', needs_review: '待处理',
-    triaging: '升级诊断', awaiting_acceptance: '待验收', auth_expired: '登录过期', quota_limited: '额度受限', accepted: '已验收',
+    triaging: '组长诊断', awaiting_acceptance: '待验收', auth_expired: '登录过期', quota_limited: '额度受限', accepted: '已验收',
     completed: '已完成', failed: '失败', cancelled: '已取消', pending: '未开始', proposed: '拟执行', replaced: '已重新分配',
   };
   const endStates = new Set(['completed', 'failed', 'cancelled']);
@@ -51,6 +51,13 @@
     // A step the lead replaced after it failed stays on the graph, linked to the steps that took its place.
     const predecessor = (step) => Array.isArray(step.dependsOn)
       ? [...new Set([...step.dependsOn, ...(step.replaces || [])])].map(stepKey) : null;
+    // reassigns counts escalation rounds, not reassignments: the step failed and the lead is diagnosing it.
+    const progress = (step) => {
+      if (!step.reassigns) return '';
+      const triaging = task.state === 'triaging' && step.state === 'failed';
+      if (!triaging) return `重排 ${step.reassigns}/3`;
+      return `${String(task.detail || '').startsWith('triage_unavailable') ? '等待组长诊断' : '组长诊断中'} ${step.reassigns}/3`;
+    };
     const entryDepth = ready.get(entry).depth;
     while (waiting.size) {
       const count = waiting.size;
@@ -63,7 +70,7 @@
         add({
           key, step, parents, depth: Math.max(entryDepth, ...parents.map((parent) => ready.get(parent).depth)) + 1,
           title: memberName(step.role),
-          subtitle: [step.id, step.model, step.reassigns ? `重排 ${step.reassigns}/3` : ''].filter(Boolean).join(' · '),
+          subtitle: [step.id, step.model, progress(step)].filter(Boolean).join(' · '),
           state: proposedOnly ? 'proposed' : step.state || 'pending',
           description: [step.prompt || step.brief, (step.history || []).length
             ? '之前尝试：' + step.history.map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : '')).join('、') : '']

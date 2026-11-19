@@ -74,7 +74,7 @@
         if (step.paths?.length) add({ at: at + 0.1, kind: 'artifact', role: who, label: '产物 · ' + step.paths.length + ' 个文件', sub: step.paths[0] });
       } else if (step && detail === step.id + ':failed') add({ at, kind: 'error', role: who, label: (what || '步骤') + '失败', sub: String(step.error || '').slice(0, 40), fail: true });
       else if ((m = /^test_failed:(\d+)$/.exec(detail))) add({ at, kind: 'test', role: 'local', label: '测试失败 #' + m[1], fail: true });
-      else if ((m = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail))) add({ at, kind: 'retry', role: 'claude', label: `重排 ${m[2]}/${m[3]}`, sub: m[1] });
+      else if ((m = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail))) add({ at, kind: 'retry', role: 'claude', label: `组长诊断 ${m[2]}/${m[3]}`, sub: m[1] });
       else if (detail === 'triage_started') add({ at, kind: 'retry', role: 'claude', label: '交给组长诊断' });
       else if ((m = /:reassigned(?:_by_lead)?:(\w+)(?:\/[^>]*)?->(\w+)/.exec(detail))) add({ at, kind: 'switch', role: m[2], label: '改派 → ' + memberName(m[2]), sub: memberName(m[1]) + ' 让出' });
       else if ((m = /^acceptance_verdict:(\w+)$/.exec(detail))) add({ at, kind: 'checkpoint', role: 'claude', label: ['accept', 'pass'].includes(m[1]) ? '验收通过' : m[1] === 'accept_with_risk' ? '带风险通过' : '验收要求返工', fail: !['accept', 'pass', 'accept_with_risk'].includes(m[1]) });
@@ -95,7 +95,11 @@
     if (task.state === 'completed' && !events.some((e) => e.kind === 'merge')) add({ at: (events.at(-1)?.at || t0) + 0.4, kind: 'checkpoint', role: 'claude', label: '完成' });
     if (!events.length) add({ at: t0, kind: 'start', role: 'claude', label: '已提交' });
     const running = ['planning', 'running', 'applying', 'testing', 'triaging', 'awaiting_acceptance', 'queued'].includes(task.state);
-    const current = [...steps].reverse().find((s) => s.state === 'running') || [...steps].reverse().find((s) => s.state !== 'queued');
+    // While the lead diagnoses, the active member is the lead, not the member whose step failed.
+    const triaging = task.state === 'triaging';
+    const waitingTriage = triaging && String(task.detail || '').startsWith('triage_unavailable');
+    const current = triaging ? { role: 'claude', state: 'running' }
+      : [...steps].reverse().find((s) => s.state === 'running') || [...steps].reverse().find((s) => s.state !== 'queued');
     const done = steps.filter((s) => s.state === 'completed').length;
     const chain = [];
     for (const step of steps) {
@@ -103,14 +107,15 @@
       if (chain.at(-1)?.role === r) { chain.at(-1).state = step.state === 'running' ? 'running' : chain.at(-1).state === 'running' ? 'running' : step.state; continue; }
       chain.push({ role: r, state: step.state });
     }
+    if (triaging && chain.at(-1)?.role !== 'claude') chain.push({ role: 'claude', state: 'running' });
     if (waiting) chain.push({ role: 'you', state: 'running' });
     return {
       id: task.id, kind: 'task', name: groupName, title: String(task.prompt || '任务').slice(0, 40), tag: short(task.prompt || groupName),
       colour: colour(role(current) === 'claude' ? 'lead' : role(current)), current: role(current) === 'claude' ? 'lead' : role(current),
       progress: steps.length ? done / steps.length : 0, progressText: steps.length ? `${done}/${steps.length}` : '',
-      status: running ? '进行中' : waiting ? '等你' : task.state === 'completed' ? '完成' : task.state === 'failed' ? '失败' : task.state || '',
+      status: triaging ? '诊断中' : running ? '进行中' : waiting ? '等你' : task.state === 'completed' ? '完成' : task.state === 'failed' ? '失败' : task.state || '',
       running, waiting, chain, events, last: events.at(-1)?.at || t0,
-      tail: running ? '等待 ' + memberName(role(current)) : waiting ? '等你' : '',
+      tail: triaging ? (waitingTriage ? '等组长诊断' : '组长诊断中') : running ? '等待 ' + memberName(role(current)) : waiting ? '等你' : '',
     };
   }
 

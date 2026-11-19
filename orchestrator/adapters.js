@@ -53,12 +53,17 @@ const providers = {
 // Reasoning effort per CLI, as each accepts it. Codex: -c model_reasoning_effort; Claude Code: the
 // CLAUDE_CODE_EFFORT_LEVEL environment variable (its --effort flag is ignored by some versions); Grok Build:
 // --effort. Antigravity has no flag for it (only the interactive /effort); a template may give effortArgs.
+// A model may accept fewer levels (agy encodes the level in some model IDs and rejects a conflicting
+// --effort), so a model profile's own efforts list wins when it declares one.
 const EFFORTS = {
   codex: ['minimal', 'low', 'medium', 'high', 'xhigh'],
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   grok: ['low', 'medium', 'high', 'xhigh'],
 };
-const effortsFor = (name, config) => config?.template?.efforts || EFFORTS[name] || [];
+const effortsFor = (name, config, model) => {
+  const declared = model && config?.profiles?.models?.[model]?.efforts;
+  return Array.isArray(declared) ? declared : config?.template?.efforts || EFFORTS[name] || [];
+};
 
 // Claude Code's own allow rules for an MCP server. The documented wildcard mcp__<server>__* silently stops
 // matching in some versions (e.g. 2.1.198), which under dontAsk denies every call; the bare server name and the
@@ -132,8 +137,17 @@ function classifyFailure(text) {
   return null;
 }
 
+// The line that explains an exit code. A CLI often writes a useful line ("invalid model selection ...")
+// to stderr while the JSON error field only says something generic; picking the first error-like line keeps
+// the step's error readable instead of the bare `cli_exit_1`.
+function errorDetail(text) {
+  const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  return (lines.find((line) => /\b(?:error|invalid|not supported|failed|unknown|unrecognized|denied|unable|cannot|no such|conflicts?)\b/i.test(line))
+    || '').replace(/\s+/g, ' ').slice(0, 300);
+}
+
 async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal, log, onSession, session, model, effort, mcp, attachmentDirectory }) {
-  if (effort !== undefined && !effortsFor(name, config).includes(effort)) effort = undefined;   // never pass an unknown level
+  if (effort !== undefined && !effortsFor(name, config, model).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
   if (!provider) throw new Error(name + '_not_supported');
@@ -273,7 +287,10 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, signal
     if (code !== 0 || failure) {
       const kind = failure === 'cli_tool_permission_required' ? failure : classifyFailure((failure || '') + '\n' + tail);
       const retryAfterMs = kind === 'cli_quota_exhausted' ? resetDelay((failure || '') + '\n' + tail) : null;
-      throw Object.assign(new Error(kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error')),
+      const label = kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error');
+      // Keep the raw sentence when it explains the exit code; it is redacted already.
+      const detail = failure && failure !== label ? failure.trim() : errorDetail(tail);
+      throw Object.assign(new Error(detail && detail !== label ? label + ': ' + detail.slice(0, 300) : label),
         { provider: name, usage, ...(retryAfterMs && { retryAfterMs }) });
     }
     return { output, usage };

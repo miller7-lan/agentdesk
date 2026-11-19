@@ -210,11 +210,12 @@ test('a blocked Claude makes triage wait instead of handing the decision to Code
   await scheduler.run(task, new AbortController().signal);
 
   assert.equal(task.state, 'triaging');
-  assert.equal(task.detail, 'triage_unavailable');
+  assert.equal(task.detail, 'triage_unavailable:quota');
   assert.equal(task.waitingFor, 'triage');
+  assert.equal(task.waitingReason, 'quota');
   assert.ok(task.notBefore > Date.now());
   assert.deepEqual(calls, ['gemini']);
-  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'triage_unavailable'));
+  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'triage_unavailable:quota'));
 
   scheduler.router.blocked.clear();
   task.notBefore = Date.now() - 1;

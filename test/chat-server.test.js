@@ -289,7 +289,7 @@ test('the selected model and reasoning effort are passed to every provider CLI',
   for (const [provider, model, effort, flag] of [
     ['claude', 'claude-opus-5-5', 'high', '--effort'],
     ['grok', 'grok-4.7', 'xhigh', '--effort'],
-    ['antigravity', 'gemini-4-hydrogen', 'max', '--effort'],
+    ['antigravity', 'gemini-3.8-flash-medium', 'medium', '--effort'],
   ]) {
     const dir = temporary(t);
     const client = await new ChatClient(t, provider, dir).start();

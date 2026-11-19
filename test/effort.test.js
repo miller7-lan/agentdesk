@@ -39,3 +39,47 @@ test('each CLI gets the reasoning effort the way it accepts it, and unknown leve
   const unknown = await run('grok', 'ultra');
   assert.ok(!unknown.args.includes('--effort'));                // never passed on
 });
+
+test('a model profile narrows the effort levels it accepts', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-model-effort-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const bin = await fakeCli(dir);
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', (file, args, options) => spawn(process.execPath, [file, ...args], options));
+  const { runAdapter } = require('../orchestrator/adapters');
+  const config = {
+    bin, env: { PATH: process.env.PATH },
+    template: { prompt: 'arg', output: 'plain', args: ['-p', '{prompt}'], modelArgs: ['--model', '{model}'],
+      efforts: ['low', 'high'], effortArgs: ['--effort', '{effort}'] },
+    // agy encodes the level in the model ID: the low model only accepts low.
+    profiles: { models: { 'm-low': { efforts: ['low'], billing: 'subscription' }, 'm-high': { billing: 'subscription' } } },
+  };
+  const run = async (model, effort) => {
+    const { output } = await runAdapter({ name: 'antigravity', config, cwd: dir, prompt: 'p', readonly: true,
+      timeout: 10000, signal: new AbortController().signal, log: path.join(dir, 'model.log'), onSession() {}, model, effort });
+    return JSON.parse(output.trim().split('\n').at(-1));
+  };
+  const narrowed = await run('m-low', 'high');
+  assert.ok(!narrowed.args.includes('--effort'));                // conflicting level is dropped, not passed
+  const declared = await run('m-low', 'low');
+  assert.equal(declared.args[declared.args.indexOf('--effort') + 1], 'low');
+  const fallback = await run('m-high', 'high');
+  assert.equal(fallback.args[fallback.args.indexOf('--effort') + 1], 'high');   // model without efforts uses the role list
+});
+
+test('an exit code keeps the CLI line that explains it', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-error-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bad-cli.js');
+  await fs.writeFile(bin, `#!${process.execPath}
+process.stderr.write('error: invalid model selection (--model "gemini-4-hydrogen" --effort "medium"): --effort is not supported for model "gemini-4-hydrogen"\\n');
+process.exit(1);
+`, { mode: 0o755 });
+  const { runAdapter } = require('../orchestrator/adapters');
+  await assert.rejects(runAdapter({ name: 'codex', config: { bin, env: { PATH: process.env.PATH } }, cwd: dir, prompt: 'p',
+    readonly: true, timeout: 10000, signal: new AbortController().signal, log: path.join(dir, 'error.log'), onSession() {} }),
+  (error) => {
+    assert.match(error.message, /^cli_exit_1: error: invalid model selection/);
+    return true;
+  });
+});

@@ -25,11 +25,11 @@ window.__groupReady = (async () => {
   };
   const statuses = {
     queued: '排队中', planning: '规划中', running: '执行中', applying: '应用补丁',
-    awaiting_details: '待补充细节', awaiting_approval: '待确认方案', awaiting_acceptance: '待验收', triaging: '升级诊断',
+    awaiting_details: '待补充细节', awaiting_approval: '待确认方案', awaiting_acceptance: '待验收', triaging: '组长诊断',
     testing: '验证中', needs_review: '待处理', completed: '已完成', failed: '失败', cancelled: '已取消',
   };
   const terminal = new Set(['needs_review', 'completed', 'failed', 'cancelled']);
-  const stages = { executing: '执行', awaiting_acceptance: '待验收', triaging: '升级诊断', reworking: '返工', accepted: '已验收' };
+  const stages = { executing: '执行', awaiting_acceptance: '待验收', triaging: '组长诊断', reworking: '返工', accepted: '已验收' };
   const acceptanceNames = {
     accept: '通过', pass: '通过', accept_with_risk: '有风险接受', rework: '返工',
     reject: '拒绝', blocked: '受阻', unknown: '无法判断', limit: '达到上限',
@@ -56,7 +56,7 @@ window.__groupReady = (async () => {
     cancel_requested: '已请求取消',
     owner_quota_cap: '今日额度上限已到，任务将在本地零点后继续。',
     triage_started: '任务遇到问题，已交给组长诊断。',
-    triage_unavailable: '组长暂时不可用，稍后自动继续诊断。',
+    triage_unavailable: '组长暂时不可用，稍后自动继续诊断；不会改派给其他成员。',
     triage_retry: '组长要求重试，任务重新排队。',
     triage_rework: '组长要求返工，任务重新排队。',
     triage_limit: '诊断次数已达上限，请人工处理。',
@@ -426,9 +426,16 @@ window.__groupReady = (async () => {
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${moved[3] === 'quota' ? '额度用尽' : '需要重新登录'}，改由 ${memberName(moved[2])} 接手。`;
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
-    if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长重新分配。`;
+    if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
-    if (round) return `组长正在重新安排这个环节（第 ${round[2]}/${round[3]} 次）。`;
+    if (round) return `组长正在诊断这个环节（第 ${round[2]}/${round[3]} 次），诊断后才决定重试还是改派。`;
+    const unavailable = /^triage_unavailable(?::(\w+))?$/.exec(detail || '');
+    if (unavailable) {
+      const at = resetClock(quotaResetAt('claude'));
+      if (unavailable[1] === 'quota') return `组长 Claude 的额度已到上限，暂时不能诊断${at ? `，预计 ${at} 恢复` : ''}；恢复后会自动继续，不会改派给其他成员。`;
+      if (unavailable[1] === 'auth') return '组长 Claude 需要重新登录，登录后会自动继续诊断；不会改派给其他成员。';
+      return '组长 Claude 正忙，稍后自动继续诊断；不会改派给其他成员。';
+    }
     const byLead = /:reassigned_by_lead:(\w+)(?:\/([^>]+))?->(\w+)(?:\/(.+))?$/.exec(detail || '');
     if (byLead) {
       const who = (role, model) => memberName(role) + (model ? `（${model}）` : '');
@@ -446,12 +453,22 @@ window.__groupReady = (async () => {
     if (fix) return fix[2] === 'started' ? '返工步骤开始执行。' : fix[2] === 'completed' ? '返工步骤完成，等待重新验收。' : '返工步骤失败。';
     return detail;
   }
+  // A CLI's exit message in words a person can act on; the original sentence stays after the colon.
+  function errorText(error) {
+    const raw = String(error || '').trim();
+    const model = /invalid model selection/i.test(raw) && /--model "([^"]+)"/.exec(raw);
+    if (model) return `模型 ${model[1]} 不可用或与推理强度不匹配（CLI 拒绝执行）：${raw}`;
+    if (/^cli_auth_required/i.test(raw)) return `成员的登录已过期，需要重新登录：${raw}`;
+    if (/^cli_quota_exhausted/i.test(raw)) return `成员的额度已用完：${raw}`;
+    if (/^cli_exit_\d+/i.test(raw)) return `成员的命令行异常退出：${raw}`;
+    return raw;
+  }
   // Why a task failed, in words: the failing step and its error when there is one, else the task's detail.
   function failureReason(task) {
     const step = (task.steps || []).findLast((item) => item.state === 'failed');
     const detail = String(task.detail || '');
     const known = details[detail] || details[detail.split(':')[0]];
-    if (step) return `${memberName(step.role === 'claude' ? 'lead' : step.role)} 的${capabilityLabels[step.capability] || '步骤'}失败：${String(step.error || detail || '未知错误').slice(0, 300)}`;
+    if (step) return `${memberName(step.role === 'claude' ? 'lead' : step.role)} 的${capabilityLabels[step.capability] || '步骤'}失败：${String((step.error && errorText(step.error)) || detail || '未知错误').slice(0, 300)}`;
     return known || (detail ? detail.slice(0, 300) : '主控没有说明原因。');
   }
   const pathsOf = (task) => [...new Set((task?.steps || []).flatMap((step) => step.paths || []))];
@@ -654,8 +671,14 @@ window.__groupReady = (async () => {
       const attrs = open ? `type="button" data-agent-thread="${step.role}" data-agent-task="${esc(task.id)}" title="打开 ${esc(memberName(step.role))} 单聊"` : '';
       const what = [capabilityLabels[step.capability] || (step.write ? '修改' : ''), step.model].filter(Boolean).join(' · ');
       const tried = (step.history || []).map((entry) => memberName(entry.role) + (entry.model ? ' ' + entry.model : ''));
+      // The counter is the escalation round: it grows when the step fails, before the lead has decided
+      // whether to retry the same member or reassign. Say「等待组长诊断」until that decision is made.
+      const triaging = task.state === 'triaging' && step.state === 'failed';
+      const waiting = triaging && String(task.detail || '').startsWith('triage_unavailable');
+      const progress = !step.reassigns ? ''
+        : triaging ? `${waiting ? '等待' : ''}组长诊断 ${step.reassigns}/3` : `重排 ${step.reassigns}/3`;
       const note = step.state === 'replaced' ? '已由新步骤接替'
-        : step.reassigns ? `重排 ${step.reassigns}/3 · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
+        : step.reassigns ? `${progress} · 之前：${tried.join('、')}${milestone(step) ? ' · ' + milestone(step) : ''}` : milestone(step);
       return `<${tag} class="step-row" data-state="${esc(step.state || 'queued')}" data-member="${step.role === 'claude' ? 'lead' : esc(step.role)}" data-flight-to="${esc(task.id + ':' + step.id)}" style="--node-color:${window.AgentDeskLight?.colour(step.role) || 'var(--accent)'}" ${attrs}>
         ${step.state === 'running' ? window.AgentDeskLight?.border(step.role) || '' : ''}<span class="step-node" aria-hidden="true"></span>
         ${avatars.html(step.role, { size: 22, still: true })}
@@ -924,6 +947,20 @@ window.__groupReady = (async () => {
   const capabilityNames = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const quotaList = () => isExample(state.group) ? exampleQuotas : connected ? quotas : [];
   const quotaOf = (id) => quotaList().find((quota) => quota.provider === id);
+  // When the fullest window that is holding this member back comes back, for the waiting message.
+  function quotaResetAt(provider) {
+    const windows = (quotaOf(provider)?.buckets || []).flatMap((bucket) => [bucket.fiveHour, bucket.weekly])
+      .filter((window) => Number.isFinite(window?.usedPercent) && Number.isFinite(window?.resetsAt));
+    const tightest = windows.sort((a, b) => b.usedPercent - a.usedPercent)[0];
+    return tightest ? new Date(tightest.resetsAt * 1000) : null;
+  }
+  function resetClock(date) {
+    if (!date || !Number.isFinite(date.getTime())) return '';
+    const now = new Date();
+    const day = date.toDateString() === now.toDateString() ? ''
+      : `${date.getMonth() + 1} 月 ${date.getDate()} 日 `;
+    return day + date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
   const pct = (value) => Math.round(value) + '%';
   function levelText(quota) {
     if (quota.level === 'stopped') return '额度将尽，暂停派活';
@@ -997,7 +1034,7 @@ window.__groupReady = (async () => {
       if (waiting) add(`等待 ${memberName(waiting[1])} 可用，任务保持排队。`);
       else if (detail === 'owner_quota_cap') add('今日额度上限已到，任务将在本地零点后继续。');
       else if (detail === 'triage_started') add('任务遇到问题，已交给组长诊断。');
-      else if (detail === 'triage_unavailable') add('组长暂时不可用，稍后自动继续诊断。');
+      else if (detail.startsWith('triage_unavailable')) add(textOf(detail));
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');

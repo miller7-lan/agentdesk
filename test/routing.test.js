@@ -148,11 +148,12 @@ test('the VPS2 example config is valid: subscription models, routing and the Ant
   assert.deepEqual(validateRoutes(example.routing), example.routing);
   const antigravity = validateTemplate(example.adapters.antigravity.template, 'antigravity');
   assert.equal(antigravity.prompt, 'arg');
-  assert.deepEqual(antigravity.efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
-  assert.deepEqual(antigravity.effortArgs, ['--effort', '{effort}']);
+  // agy encodes the effort level in the model ID; a conflicting --effort is rejected, so the template has none.
+  assert.equal(antigravity.efforts, undefined);
+  assert.equal(antigravity.effortArgs, undefined);
   assert.throws(() => validateTemplate({ prompt: 'arg', args: ['-p'] }, 'antigravity'), /invalid_antigravity_template/);
   assert.throws(() => validateTemplate({ ...antigravity, efforts: ['ultra'] }, 'antigravity'), /invalid_antigravity_template/);
-  assert.throws(() => validateTemplate({ ...antigravity, efforts: undefined }, 'antigravity'), /invalid_antigravity_template/);
+  assert.throws(() => validateTemplate({ ...antigravity, effortArgs: ['--effort', '{effort}'] }, 'antigravity'), /invalid_antigravity_template/);
   assert.throws(() => validateTemplate(undefined, 'antigravity'), /antigravity_template_required/);
 });
 
@@ -221,6 +222,12 @@ test('quota decides who works: Claude and Codex step back early and keep their q
   quota({ claude: 96, codex: 10, grok: 97 });
   assert.equal(router.pick('plan'), 'codex');                  // Claude above 95%: out entirely
   assert.equal(router.pick('review', ['antigravity']), null);  // Grok above 95%: skipped
+  // The person-facing status can say why the only triage member is waiting.
+  assert.equal(router.unavailableReason('claude', 'triage'), 'quota');
+  router.block('grok', 'auth', 1000);
+  assert.equal(router.unavailableReason('grok', 'review'), 'auth');
+  assert.equal(router.unavailableReason('antigravity', 'scout'), 'busy');
+  router.blocked.clear();
   quota({});                                                   // unknown quota counts as available
   assert.equal(router.pick('review', ['antigravity']), 'grok');
   assert.equal(validateQuotaPolicy({ claude: { soft: 40 } }).claude.hard, 95);
