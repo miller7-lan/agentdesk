@@ -99,6 +99,31 @@ window.__groupReady = (async () => {
     select.replaceChildren(new Option('最新 Opus（默认）', ''),
       ...Object.entries(models).map(([id, profile]) => new Option(profile?.label || id, id)));
     select.value = Object.hasOwn(models, wanted) ? wanted : '';
+    fitLeadEffort();
+  }
+  // The thinking levels the selected lead model accepts (Haiku has no 超高/最高, for example); the default is the
+  // newest Opus, chosen the same way as on the server. A level the model does not accept moves to the nearest one.
+  function leadModelId() {
+    const models = Object.keys(routeState.modelProfiles?.claude?.models || {});
+    const picked = document.querySelector('#groupLeadModel')?.value;
+    if (picked && models.includes(picked)) return picked;
+    const version = (id) => (/(\d+)[-.](\d+)/.exec(id) || [0, 0, 0]).slice(1).map(Number);
+    return models.filter((id) => /opus/i.test(id)).sort((a, b) => { const [x1, y1] = version(a), [x2, y2] = version(b); return x2 - x1 || y2 - y1; })[0];
+  }
+  function fitLeadEffort() {
+    const effort = document.querySelector('#groupLeadEffort');
+    if (!effort) return;
+    const profile = routeState.modelProfiles?.claude?.models?.[leadModelId()];
+    const allowed = Array.isArray(profile?.efforts) && profile.efforts.length ? profile.efforts : null;
+    const options = [...effort.options];
+    for (const option of options) option.disabled = Boolean(allowed && !allowed.includes(option.value));
+    if (allowed && !allowed.includes(effort.value)) {
+      const order = options.map((option) => option.value);
+      const below = order.slice(0, order.indexOf(effort.value) + 1).reverse().find((value) => allowed.includes(value));
+      effort.value = below || profile.defaultEffort || allowed[0];
+      const group = currentGroup();
+      if (group) { group.leadEffort = effort.value; saveWorkbench(group); }
+    }
   }
   const entry = $('#sbOrchestrator');
   const routeStatus = $('#sbGroupRoute');
@@ -383,6 +408,7 @@ window.__groupReady = (async () => {
       leadModelSelect.value = [...leadModelSelect.options].some((option) => option.value === wanted) ? wanted : '';
       if (next) next.leadModel = leadModelSelect.value;
     }
+    fitLeadEffort();
     laneFocus = next?.laneFocus || null;
     filter = 'all';
     filterSelect.value = '';
@@ -901,9 +927,6 @@ window.__groupReady = (async () => {
         for (const step of steps) {
           if (!members[step.role] || (filterSelect.value && filterSelect.value !== step.role)) continue;
           const what = capabilityLabels[step.capability] || (step.write ? '修改' : '任务');
-          if (['running', 'completed', 'failed'].includes(step.state)) {
-            messages.push(`<p class="group-system agent-ack">${esc(memberName(step.role))} 已接受${esc(what)}任务${step.model ? ' · ' + esc(step.model) : ''}</p>`);
-          }
           const summaryKey = task.id + ':' + step.id;
           const expanded = Boolean(group.summaryOpen?.has(summaryKey));
           const fullSummary = closingSummary(step, 4000);
@@ -945,14 +968,6 @@ window.__groupReady = (async () => {
     if (!timeline.hidden) window.AgentDeskLight?.completed(timeline, stepProgress(records));
   }
 
-  // Conversation and lanes on one page (like Lancer): the member chains of the active task lines sit above the
-  // conversation, the lane tree is the right panel's first tab, and lights fly from the conversation to it.
-  function applyGroupView() {
-    const strip = document.querySelector('#groupPipeline');
-    const lanes = isExample(state.group) && !currentGroup()?.records.size ? [] : lanesModel(4).filter((lane) => lane.running || lane.waiting);
-    strip.hidden = !lanes.length;
-    if (lanes.length) setHtml(strip, window.AgentDeskLanes.pipeline(lanes, laneHelpers));
-  }
   function laneClick(event) {
     const card = event.target.closest('[data-lane-event]');
     if (card) { laneSelect(card.dataset.laneEvent, card.dataset.laneStep); return true; }
@@ -965,18 +980,11 @@ window.__groupReady = (async () => {
     selectTask(id, 'graph');
     return true;
   }
-  document.querySelector('#groupPipeline').addEventListener('click', (event) => {
-    const row = event.target.closest('[data-lane-pipeline]')?.dataset.lanePipeline;
-    if (!row) return;
-    laneFocus = laneFocus === row ? null : row;
-    A.showPanel('lanes');
-  });
   document.querySelector('#panelBody').addEventListener('click', (event) => { if (state.group && state.panel === 'lanes') laneClick(event); });
 
   function render() {
     drawRoutes();
     if (!state.group) return;
-    applyGroupView();
     const count = taskCount();
     $('#groupSubtitle').textContent = shownMembers().filter((id) => id !== 'you' && id !== 'local').length + ' 位 AI 成员' + (count ? ' · ' + count + ' 项未结任务' : '');
     $('#taskBadge').textContent = count || '';
@@ -2258,6 +2266,7 @@ window.__groupReady = (async () => {
     leadModelPick.addEventListener('change', () => {
       const group = currentGroup();
       if (group) { group.leadModel = leadModelPick.value; saveWorkbench(group); }
+      fitLeadEffort();
     });
   }
 
