@@ -285,7 +285,7 @@ window.__agentThreadsReady = (async () => {
     let changed = false;
     try {
       // A step moved to another model is followed in that model's conversation.
-      const steps = s.items.filter((it) => it.t === 'dispatch-step' && it.snap && !['queued', 'switched'].includes(it.snap.state));
+      const steps = s.items.filter((it) => it.t === 'dispatch-step' && it.snap && !['queued', 'skipped', 'switched'].includes(it.snap.state));
       // Every step in this conversation shows its own execution log, like a conversation the person started
       // themselves: running steps refresh, finished steps are loaded once if they have no record yet. A record
       // built from the old 12 KB log fallback is replaced by the server's full one after an orchestrator upgrade.
@@ -343,8 +343,11 @@ window.__agentThreadsReady = (async () => {
     }
     if (A.state.active !== s.id || A.state.group) return;
     A.renderAll();
-    requestAnimationFrame(() => document.querySelector(`[data-dispatch="${CSS.escape(taskId + ':' + role)}"]`)
-      ?.scrollIntoView({ block: 'start' }));
+    // Open on the newest work, not the first step of the task: the person has already seen how it began.
+    requestAnimationFrame(() => {
+      const timeline = $('#timeline');
+      if (timeline) timeline.scrollTop = timeline.scrollHeight;
+    });
   }
 
   // The member's work in the look of a single chat (like a Grok Bot teammate's own thread): the lead's brief
@@ -404,6 +407,9 @@ window.__agentThreadsReady = (async () => {
     if (it.t !== 'dispatch-step') return null;
     const s = D.sessions.find((session) => session.id === A.state.active);
     const snap = it.snap || {};
+    // Steps still waiting for their turn, or retired before they ever ran, stay out of the conversation;
+    // a queued one appears once the member starts. Failure records are kept.
+    if (['queued', 'skipped'].includes(snap.state)) return '';
     const name = P.names[s?.provider] || '';
     const what = [capabilities[snap.capability] || (snap.write ? '修改' : ''), modelName(snap.model)].filter(Boolean).join(' · ');
     const state = stepStates[snap.state] || snap.state || '排队';

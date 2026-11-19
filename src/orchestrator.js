@@ -941,7 +941,7 @@ window.__groupReady = (async () => {
       // The full work of each member lives in that member's own conversation, so the group stays short.
       // Steps the lead stopped after a direction change never ran: they stay in the record but not on the board,
       // where they would otherwise sit beside the replacement steps as if the work were duplicated.
-      const boardSteps = steps.filter((step) => step.state !== 'skipped');
+      const boardSteps = steps.filter((step) => step.state !== 'skipped' && step.capability !== 'triage');
       const board = stepBoard(task, boardSteps);
       if (board && filter !== 'mine' && (!filterSelect.value || boardSteps.some((step) => step.role === filterSelect.value))) {
         messages.push(messageRow('lead', '分工进度', board, 'board'));
@@ -956,42 +956,59 @@ window.__groupReady = (async () => {
         return Number.isFinite(at) ? at : Number.MAX_SAFE_INTEGER;
       };
       const addLate = (value, html) => { if (html) late.push({ at: lateAt(value), order: late.length, html }); };
-      let adjustmentShown = false;
-      for (const revision of task.revisions || []) {
+      // When a step appears in the chat is when it ended, not when it started: a long step that failed after
+      // a newer direction message must not be replayed above that message. Older records have no finishedAt,
+      // so read the ending time from the task events.
+      const endedAt = (step) => {
+        if (step.finishedAt) return step.finishedAt;
+        const wanted = step.state === 'completed' ? ':completed'
+          : ['failed', 'replaced'].includes(step.state) ? ':failed' : '';
+        if (wanted) {
+          const event = [...(task.events || [])].reverse()
+            .find((item) => item.stepId === step.id && String(item.detail || '').endsWith(wanted));
+          if (event?.time) return event.time;
+        }
+        return step.startedAt;
+      };
+      // The lead answers the newest direction message, so the person always sees a reply to what they just said.
+      // Older direction messages stay on their own; repeating every earlier "调整" summary buried the chat.
+      const revisions = task.revisions || [];
+      const latestRevision = revisions.at(-1);
+      for (const revision of revisions) {
         const parts = [];
         if (!filterSelect.value) parts.push(messageRow('you', '改方向', `<p class="group-user-text">${esc(revision.text)}</p>`));
-        if (revision.state === 'deciding') {
-          if (!adjustmentShown) parts.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>'));
-        } else {
-          const names = (ids) => (ids || []).map((stepId) => {
-            const step = (task.steps || []).find((item) => item.id === stepId);
-            return step ? memberName(step.role) + '（' + (capabilityLabels[step.capability] || stepId) + '）' : stepId;
-          }).join('、');
-          const lines = revision.state === 'fallback'
-            ? [`暂时没法逐步判断，已把你的话作为指导发给正在做的成员：${names(revision.guided) || '无'}。`]
-            : [revision.summary,
-              revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
-              revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
-              revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
-              revision.added?.length ? '新增：' + names(revision.added) : '',
-              revision.modelFallbacks?.length ? '模型名无效，已改用默认：' + revision.modelFallbacks.map((item) => `${item.step}「${item.requested}」→ ${item.used}`).join('、') : ''].filter(Boolean);
-          const waiting = (task.steps || []).some((step) => step.state === 'proposed') && revision === task.revisions.at(-1);
-          const addition = waiting
-            ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '';
-          if (adjustmentShown) {
-            // Only a pending approval still needs the person; the repeated summary stays out of the chat.
-            if (waiting) parts.push(messageRow('lead', '待确认', addition));
+        if (revision === latestRevision) {
+          if (revision.state === 'deciding') {
+            parts.push(messageRow('lead', '调整', '<p>正在判断你的话影响哪些步骤…</p>'));
           } else {
-            adjustmentShown = true;
-            parts.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + addition));
+            const names = (ids) => (ids || []).map((stepId) => {
+              const step = (task.steps || []).find((item) => item.id === stepId);
+              return step ? memberName(step.role) + '（' + (capabilityLabels[step.capability] || stepId) + '）' : stepId;
+            }).join('、');
+            const lines = revision.state === 'fallback'
+              ? [`暂时没法逐步判断，已把你的话作为指导发给正在做的成员：${names(revision.guided) || '无'}。`]
+              : [revision.summary,
+                revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
+                revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
+                revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
+                revision.added?.length ? '新增：' + names(revision.added) : '',
+                revision.remodeled?.length ? '只换模型：' + revision.remodeled.map((item) => `${item.step}「${item.from || '默认'}」→ ${item.to}`).join('、') : '',
+                revision.modelFallbacks?.length ? '模型名没认出来，改用：' + revision.modelFallbacks.map((item) => `${item.step}「${item.requested}」→ ${item.used}`).join('、') : ''].filter(Boolean);
+            const waiting = (task.steps || []).some((step) => step.state === 'proposed');
+            const addition = waiting
+              ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '';
+            parts.push(messageRow('lead', '调整', (lines.length ? lines.map((line) => `<p>${esc(line)}</p>`).join('') : '<p>已按你的话调整。</p>') + addition));
           }
         }
         addLate(revision.at, parts.join(''));
       }
       // Forwarded from each member's own conversation: that it took the work, and its closing summary.
+      // The lead's own diagnosis steps stay internal: the "调整" reply above already says what was decided,
+      // so posting a second "Claude Code 完成总结 · 诊断" after it reads as another AI speaking again.
       if (filter !== 'mine') {
         for (const step of steps) {
-          if (!members[step.role] || (filterSelect.value && filterSelect.value !== step.role)) continue;
+          if (!threadRoles.has(step.role) || step.capability === 'triage' ||
+              (filterSelect.value && filterSelect.value !== step.role)) continue;
           const what = capabilityLabels[step.capability] || (step.write ? '修改' : '任务');
           const summaryKey = task.id + ':' + step.id;
           const expanded = Boolean(group.summaryOpen?.has(summaryKey));
@@ -1009,7 +1026,7 @@ window.__groupReady = (async () => {
             const trust = failedRecord ? '' : `<span class="trust-tag${checked ? ' checked' : ''}">${checked || '成员自报 · 待验收'}</span>`;
             // Every member's closing summary folds the same way: the first lines stay, the long detail opens
             // on demand, and the full text remains one click away in that member's own conversation.
-            addLate(step.finishedAt || step.startedAt, messageRow(step.role, [step.state === 'failed' ? '未完成' : step.state === 'replaced' ? '失败记录' : '完成总结', what].join(' · '),
+            addLate(endedAt(step), messageRow(step.role, [step.state === 'failed' ? '未完成' : step.state === 'replaced' ? '失败记录' : '完成总结', what, step.id].join(' · '),
               `<div class="step-summary${failedRecord ? ' failed' : ''}" data-flight-from="${esc(task.id + ':' + step.id)}" data-step-summary="${esc(task.id + ':' + step.id)}">${trust}
                 <p class="step-summary-text${collapsible && !expanded ? ' clamped' : ''}">${esc(summary)}</p>
                 ${collapsible ? `<button type="button" class="task-text-link" data-summary-toggle="${esc(summaryKey)}" aria-expanded="${expanded}">${expanded ? '收起详情' : '展开详情'}</button>` : ''}

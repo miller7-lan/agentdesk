@@ -52,6 +52,9 @@
 
   function taskLane(task, groupName, memberName, colour) {
     const steps = task.steps || [];
+    // Diagnosis steps are the lead's internal triage, not work in the plan; their outcome already appears on the
+    // failed step and in the group chat, so counting them here makes the lane look far longer than the work.
+    const workSteps = steps.filter((step) => step.state !== 'skipped' && step.capability !== 'triage');
     const role = (step) => step?.role || 'lead';
     const events = [];
     const add = (event) => events.push({ lane: task.id, ...event });
@@ -61,6 +64,7 @@
       const detail = String(event.detail || '');
       const at = time(event.time) || t0 + index;
       const step = steps.find((s) => s.id === event.stepId) || steps.find((s) => detail.startsWith(s.id + ':'));
+      if (step?.capability === 'triage') return;
       const who = event.role || step?.role || 'claude';
       const what = capability[step?.capability] || '';
       let m;
@@ -101,10 +105,10 @@
     const waitingTriage = triaging && String(task.detail || '').startsWith('triage_unavailable');
     const shown = (state) => endedState(task.state, state);
     const current = triaging ? { role: 'claude', state: 'running' }
-      : [...steps].reverse().find((s) => shown(s.state) === 'running') || [...steps].reverse().find((s) => !['queued', 'skipped'].includes(shown(s.state)));
-    const done = steps.filter((s) => s.state === 'completed').length;
+      : [...workSteps].reverse().find((s) => shown(s.state) === 'running') || [...workSteps].reverse().find((s) => !['queued', 'skipped'].includes(shown(s.state)));
+    const done = workSteps.filter((s) => s.state === 'completed').length;
     const chain = [];
-    for (const step of steps) {
+    for (const step of workSteps) {
       const r = role(step);
       const state = shown(step.state);
       if (chain.at(-1)?.role === r) { chain.at(-1).state = state === 'running' ? 'running' : chain.at(-1).state === 'running' ? 'running' : state; continue; }
@@ -115,7 +119,7 @@
     return {
       id: task.id, kind: 'task', name: groupName, title: String(task.prompt || '任务').slice(0, 40), tag: short(task.prompt || groupName),
       colour: colour(role(current) === 'claude' ? 'lead' : role(current)), current: role(current) === 'claude' ? 'lead' : role(current),
-      progress: steps.length ? done / steps.length : 0, progressText: steps.length ? `${done}/${steps.length}` : '',
+      progress: workSteps.length ? done / workSteps.length : 0, progressText: workSteps.length ? `${done}/${workSteps.length}` : '',
       status: triaging ? '诊断中' : running ? '进行中' : waiting ? '等你' : task.state === 'completed' ? '完成' : task.state === 'failed' ? '失败' : task.state || '',
       running, waiting, chain, events, last: events.at(-1)?.at || t0,
       tail: triaging ? (waitingTriage ? '等组长诊断' : '组长诊断中') : running ? '等待 ' + memberName(role(current)) : waiting ? '等你' : '',
@@ -205,7 +209,7 @@
     // A step stopped by a direction change never ran. It stays in the task record, but the lane shows only the
     // work that is actually part of the plan; otherwise the replacement steps look duplicated beside it.
     const allSteps = task.steps || [];
-    const runtime = allSteps.filter((step) => step.state !== 'skipped');
+    const runtime = allSteps.filter((step) => step.state !== 'skipped' && step.capability !== 'triage');
     const planned = plan?.steps || [];
     const steps = allSteps.length ? runtime : planned.map((step) => ({ ...step, state: step.state || 'proposed' }));
     const nodes = [];
