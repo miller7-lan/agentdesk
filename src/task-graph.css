@@ -11,7 +11,7 @@
 .flow-node { position: absolute; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 1px; padding: 5px 8px; text-align: left; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
 .flow-node:hover, .flow-node[aria-pressed="true"] { border-color: var(--accent); }
 .flow-node[aria-pressed="true"] { background: var(--accent-soft); }
-.flow-node > * { width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.flow-node > :is(span:not(.flow-node-dot), small) { width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .flow-node .flow-node-title { display: flex; align-items: center; gap: 4px; }
 .flow-node-title strong { overflow: hidden; text-overflow: ellipsis; color: var(--text); font-size: 12px; }
 .flow-node[data-flow-role="gemini"] { border-left: 3px solid var(--member-gemini); }
