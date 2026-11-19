@@ -556,3 +556,36 @@ test('a step whose member is busy moves to an idle member of the same kind of wo
   await second;
   assert.deepEqual(used.map(([, name]) => name), ['gemini', 'gemini']);
 });
+
+test('the status says what a running step is doing and what a queued step waits for', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  let release;
+  const holding = new Promise((resolve) => { release = resolve; });
+  const scheduler = schedulerFor(dir, mirror, async () => { await holding; return { output: 'ok' }; },
+    { acceptance: { mode: 'off' }, routing: { scout: ['gemini'] } });
+  t.after(() => scheduler.store.close());
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'two looks' });
+  task.base = head;
+  task.planRaw = JSON.stringify([
+    { id: 'one', capability: 'scout', prompt: 'first look', dependsOn: [] },
+    { id: 'two', capability: 'scout', prompt: 'second look', dependsOn: ['one'] },
+  ]);
+  const other = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'another task' });
+  other.base = head;
+  other.planRaw = JSON.stringify([{ id: 'x', capability: 'scout', prompt: 'other look', dependsOn: [] }]);
+  const first = scheduler.run(task, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const second = scheduler.run(other, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const running = scheduler.status(task.id).live.steps[0];
+  assert.equal(running.state, 'running');
+  assert.equal(running.role, 'gemini');
+  assert.ok(running.startedAt);
+  const waiting = scheduler.status(other.id).live.steps[0];
+  assert.equal(waiting.state, 'waiting_member');
+  assert.equal(waiting.holder.taskId, task.id);
+  assert.equal(waiting.holder.prompt, 'two looks');
+  release();
+  await Promise.all([first, second]);
+  assert.equal(scheduler.status(task.id).live, undefined);   // finished tasks carry no live line
+});

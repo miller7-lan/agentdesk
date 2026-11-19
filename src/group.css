@@ -601,3 +601,9 @@ button.lane-node { cursor: pointer; }
 @keyframes link-flow { to { stroke-dashoffset: -13; } }
 @keyframes link-spark { 0% { offset-distance: 0%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .light-links .ll-dash { animation: none; } .light-links .ll-spark { display: none; } }
+
+/* 进行中任务：在做什么、在等什么、多久没动静 */
+.task-live { list-style: none; margin: 6px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--raised); font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
+.task-live b { color: var(--text); font-weight: 600; }
+.task-live li.stalled { color: var(--warn); }
+.task-live em { font-style: normal; font-weight: 600; }

@@ -463,6 +463,37 @@ window.__groupReady = (async () => {
     if (/^cli_exit_\d+/i.test(raw)) return `成员的命令行异常退出：${raw}`;
     return raw;
   }
+  // What an unfinished task is doing or waiting for, in words, with how long it has been quiet. A running step
+  // whose CLI has written nothing for a while is flagged, so a stall is visible instead of a silent spinner.
+  const STALL_MINUTES = 8;
+  const ago = (iso) => {
+    const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    return seconds < 60 ? seconds + ' 秒' : seconds < 3600 ? Math.round(seconds / 60) + ' 分钟' : (seconds / 3600).toFixed(1) + ' 小时';
+  };
+  const whyNot = { auth: '需要登录', quota: '额度不够', cooling: '冷却中', busy: '正忙', unconfigured: '未配置' };
+  function liveLine(task) {
+    const live = task.live;
+    if (!live || task.redacted) return '';
+    const lines = [];
+    for (const step of live.steps || []) {
+      const who = memberName(step.role === 'claude' ? 'lead' : step.role);
+      if (step.state === 'running') {
+        const quiet = step.lastOutputAt ? (Date.now() - Date.parse(step.lastOutputAt)) / 60000 : null;
+        const stalled = quiet !== null ? quiet >= STALL_MINUTES : step.startedAt && (Date.now() - Date.parse(step.startedAt)) / 60000 >= STALL_MINUTES;
+        lines.push(`<li class="${stalled ? 'stalled' : ''}"><b>${esc(who)}</b> 正在执行${step.startedAt ? '，已 ' + ago(step.startedAt) : ''}；${step.lastOutputAt ? '最后一次输出在 ' + ago(step.lastOutputAt) + '前' : '还没有任何输出'}${stalled ? '。<em>超过 ' + STALL_MINUTES + ' 分钟没有动静，可能卡住了</em>（CLI 最长 10–15 分钟会超时退出，之后交给组长重新安排；也可以停止任务）' : ''}</li>`);
+      } else if (step.state === 'waiting_member') {
+        const holder = step.holder;
+        const where = !holder ? '' : holder.prompt ? `另一个任务「${esc(holder.prompt)}」` : '这个任务的另一步';
+        lines.push(`<li><b>${esc(who)}</b> 正在忙${where ? '（' + where + '，已 ' + ago(holder.since) + '）' : ''}，这一步排队等它；同类活里没有空闲成员可以接手。</li>`);
+      }
+    }
+    if (live.waitingFor) {
+      const reasons = Object.entries(live.reasons || {}).map(([role, info]) => `${memberName(role === 'claude' ? 'lead' : role)}：${whyNot[info.reason] || info.reason}${info.until ? '（' + new Date(info.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' 恢复）' : ''}`);
+      lines.push(`<li>等待能做「${esc(capabilityLabels[live.waitingFor] || live.waitingFor)}」的成员：${esc(reasons.join('；') || '没有已配置的成员')}${live.notBefore ? '，' + new Date(live.notBefore).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' 再试' : ''}。</li>`);
+    }
+    return lines.length ? `<ul class="task-live">${lines.join('')}</ul>` : '';
+  }
+
   // Why a task failed, in words: the failing step and its error when there is one, else the task's detail.
   function failureReason(task) {
     const step = (task.steps || []).findLast((item) => item.state === 'failed');
@@ -785,7 +816,7 @@ window.__groupReady = (async () => {
         ].filter(Boolean).join(' · '))}</span>
         ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
-      </button>${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
+      </button>${liveLine(task)}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
         <p><b>为什么失败：</b>${esc(failureReason(task))}</p>
         <div class="task-actions"><button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>
         <button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="terminal">看输出 ${svg('chev')}</button></div></div>` : ''}`;

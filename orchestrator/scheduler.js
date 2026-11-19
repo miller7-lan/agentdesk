@@ -753,7 +753,39 @@ event(task, state, detail) {
       steps: steps.map(({ prompt, output, ...step }) => ({ ...step, brief: prompt?.slice(0, 800), output: output?.slice(0, 1600),
         paths: step.paths?.slice(0, 20) })),
       events: this.store.events(id, after),
+      live: this.liveState(task),
     };
+  }
+
+  // What a task is doing or waiting for right now, as facts the desktop turns into one line per step (after
+  // Grok Bot's "every piece of work has an owner who reports its state"): for a running step its member, when it
+  // started and when its CLI last wrote anything; for a queued step the member it waits for and who holds that
+  // member now; for a task waiting for an executor, why each candidate cannot take it (login, cooling, quota).
+  liveState(task) {
+    if (!['running', 'queued', 'planning', 'triaging', 'awaiting_acceptance'].includes(task.state)) return undefined;
+    const fs = require('node:fs');
+    const steps = [];
+    const holds = (step) => (this.cliHolders?.get(step.role) || []).some((entry) => entry.taskId === task.id && entry.stepId === step.id);
+    for (const step of task.steps || []) {
+      // A step is marked running before it gets its member's CLI; until then it is waiting for that member.
+      if (step.state === 'running' && holds(step)) {
+        let lastOutputAt;
+        try { lastOutputAt = fs.statSync(path.join(this.config.stateDir, 'logs', task.id, step.id + '.log')).mtime.toISOString(); } catch { /* no output yet */ }
+        steps.push({ id: step.id, role: step.role, state: 'running', startedAt: step.startedAt, lastOutputAt });
+      } else if (['queued', 'running'].includes(step.state) && (this.cliBusy.get(step.role) || 0) >= (this.config.cliConcurrency?.[step.role] ?? 1)) {
+        const holder = (this.cliHolders?.get(step.role) || [])[0];
+        const other = holder && this.tasks.get(holder.taskId);
+        steps.push({ id: step.id, role: step.role, state: 'waiting_member', ...(holder && {
+          holder: { taskId: holder.taskId, stepId: holder.stepId, since: new Date(holder.since).toISOString(),
+            prompt: holder.taskId === task.id ? undefined : String(other?.prompt || '').slice(0, 60) },
+        }) });
+      }
+    }
+    const waitingFor = task.waitingFor;
+    const reasons = waitingFor ? Object.fromEntries((this.router.routes[waitingFor] || []).filter((role) => this.router.configured(role))
+      .map((role) => [role, { reason: this.router.unavailableReason(role, waitingFor),
+        until: this.router.status().blocked[role]?.until }])) : undefined;
+    return { at: new Date(this.now()).toISOString(), steps, ...(waitingFor && { waitingFor, reasons, notBefore: task.notBefore ? new Date(task.notBefore).toISOString() : undefined }) };
   }
 
   updatePlan(task, { operation, revision, reply }) {
@@ -927,10 +959,15 @@ event(task, state, detail) {
       });
     }
     this.cliBusy.set(role, (this.cliBusy.get(role) || 0) + 1);
+    const holding = { taskId: task.id, stepId: step.id, since: this.now() };
+    this.cliHolders ||= new Map();
+    this.cliHolders.set(role, [...(this.cliHolders.get(role) || []), holding]);
+    step.startedAt = new Date(holding.since).toISOString();
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      this.cliHolders.set(role, (this.cliHolders.get(role) || []).filter((entry) => entry !== holding));
       this.cliBusy.set(role, this.cliBusy.get(role) - 1);
       this.cliWaiters.get(role)?.shift()?.resolve();
     };
@@ -2142,7 +2179,7 @@ event(task, state, detail) {
           ? candidate.workspace === workspace
           : selected ? selected.includes(candidate.project) : true)
         .slice(-30).reverse().map((candidate) => named && candidate.owner !== named ? publicTask(candidate)
-          : { ...publicTask(candidate), redacted: false, workspace: candidate.workspace, prompt: clip(candidate.prompt, 240) });
+          : { ...publicTask(candidate), redacted: false, workspace: candidate.workspace, prompt: clip(candidate.prompt, 240), live: this.liveState(candidate) });
     }
     const task = this.tasks.get(id);
     const sameProject = named && this.isProjectMember(task?.project, named);
