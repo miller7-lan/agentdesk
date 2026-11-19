@@ -219,6 +219,7 @@
     const block = team.blocked?.[role];
     const note = block ? (block.reason === 'auth' ? '登录失效，' : '额度报尽，') + new Date(block.until).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + ' 后再试'
       : team.authRequired?.includes(role) ? '在 VPS2 完成登录后才会派活' : entry?.source === 'direct' ? '来自 Codex 直连账户'
+      : entry?.source === 'snapshot' && role === 'claude' ? '实时用量没读到（VPS2 上 Claude 没有用账号登录，或接口变了），这是最近一轮对话报告的用量'
       : entry?.source === 'estimate' ? '估算：按主控调用次数，' + [five && `5 小时 ${five.calls}/${five.limit} 次`, week && `每周 ${week.calls}/${week.limit} 次`].filter(Boolean).join('，')
       : entry?.reason === 'no_quota_source' ? '这个 CLI 不报告额度；在配置里填 callLimits 即可按调用次数估算' : '';
     return `<article class="qv-card ${focus === role ? 'focused' : ''}" data-tone="${tone}">

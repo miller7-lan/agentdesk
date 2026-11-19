@@ -80,3 +80,37 @@ test('an exhausted quota keeps the CLI out until the reset it states, plus a min
   assert.equal(resetDelay('Rate limit reached, try again in 2h 3m'), (2 * 3600 + 3 * 60) * 1000 + 60_000);
   assert.equal(resetDelay('You have exhausted your quota on this model.'), null);
 });
+
+test('Claude quota is read live from the plan usage endpoint, with the per-turn snapshot as the fallback', async (t) => {
+  const fsp = require('node:fs/promises');
+  const osm = require('node:os');
+  const pathm = require('node:path');
+  const { claudeUsageBuckets, readClaudeQuotas, quotaStatus: status } = require('../orchestrator/quotas');
+  const later = new Date(Date.now() + 3600_000).toISOString();
+  const [bucket] = claudeUsageBuckets({ five_hour: { utilization: 37.5, resets_at: later }, seven_day: { utilization: 12, resets_at: later }, seven_day_opus: null });
+  assert.equal(bucket.fiveHour.usedPercent, 37.5);
+  assert.equal(bucket.weekly.usedPercent, 12);
+  assert.ok(bucket.fiveHour.resetsAt > Date.now() / 1000);
+  assert.throws(() => claudeUsageBuckets({}), /claude_usage_format/);
+
+  const home = await fsp.mkdtemp(pathm.join(osm.tmpdir(), 'ad-claude-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  await fsp.mkdir(pathm.join(home, '.claude'));
+  await fsp.writeFile(pathm.join(home, '.claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok', expiresAt: Date.now() + 3600_000 } }));
+  let seen;
+  const live = await readClaudeQuotas({ env: { HOME: home } }, async (url, options) => {
+    seen = { url, auth: options.headers.Authorization, beta: options.headers['anthropic-beta'] };
+    return { ok: true, json: async () => ({ five_hour: { utilization: 50, resets_at: later }, seven_day: { utilization: 20, resets_at: later } }) };
+  });
+  assert.deepEqual(seen, { url: 'https://api.anthropic.com/api/oauth/usage', auth: 'Bearer tok', beta: 'oauth-2025-04-20' });
+  assert.equal(live[0].fiveHour.usedPercent, 50);
+
+  // No sign-in in that HOME: the snapshot written by each turn is used instead.
+  const empty = await fsp.mkdtemp(pathm.join(osm.tmpdir(), 'ad-claude-'));
+  t.after(() => fsp.rm(empty, { recursive: true, force: true }));
+  const snapshot = pathm.join(empty, 'quota.json');
+  await fsp.writeFile(snapshot, JSON.stringify({ observedAt: new Date(Date.now() - 1000).toISOString(), buckets: [{ id: 'claude-account', fiveHour: { usedPercent: 9 } }] }));
+  const [claude] = (await status({ claude: { bin: 'claude', env: { HOME: empty }, quotaFile: snapshot } })).filter((entry) => entry.provider === 'claude');
+  assert.equal(claude.source, 'snapshot');
+  assert.equal(claude.buckets[0].fiveHour.usedPercent, 9);
+});

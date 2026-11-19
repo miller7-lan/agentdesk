@@ -147,6 +147,42 @@ function readAntigravityQuotas({ bin, env }) {
   });
 }
 
+// Claude: the plan's live usage, as Claude Code's own /usage reads it — GET api.anthropic.com/api/oauth/usage
+// with the subscription's OAuth token (from the CLI's sign-in in its HOME). This endpoint is not documented by
+// Anthropic; `utilization` is a percentage (0-100). When it cannot be read (an API key instead of a sign-in, a
+// long-lived setup token without the profile scope, a changed response), the snapshot each turn writes is used.
+function claudeUsageBuckets(body) {
+  const toWindow = (window) => {
+    const used = Number(window?.utilization);
+    if (!window || !Number.isFinite(used) || used < 0) return null;
+    const resetsAt = Date.parse(window.resets_at || '');
+    return quotaWindow({ usedPercent: Math.min(100, used), resetsAt: Number.isFinite(resetsAt) ? Math.ceil(resetsAt / 1000) : undefined });
+  };
+  const bucket = { id: 'claude-account', fiveHour: toWindow(body?.five_hour), weekly: toWindow(body?.seven_day) };
+  if (!bucket.fiveHour && !bucket.weekly) throw new Error('claude_usage_format');
+  return [bucket];
+}
+
+async function claudeToken(env = {}) {
+  const directory = env.CLAUDE_CONFIG_DIR || ((env.HOME || '') + '/.claude');
+  const file = JSON.parse(await readFile(directory + '/.credentials.json', 'utf8'));
+  const token = file?.claudeAiOauth?.accessToken;
+  if (typeof token !== 'string' || !token) throw new Error('claude_signed_out');
+  const expires = Number(file.claudeAiOauth.expiresAt);
+  if (Number.isFinite(expires) && expires < Date.now()) throw new Error('claude_token_expired');
+  return token;
+}
+
+async function readClaudeQuotas({ env }, request = globalThis.fetch) {
+  const token = await claudeToken(env);
+  const response = await request('https://api.anthropic.com/api/oauth/usage', {
+    headers: { Authorization: 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20', 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error('claude_usage_' + response.status);
+  return claudeUsageBuckets(await response.json());
+}
+
 async function readSnapshot(filename) {
   const snapshot = JSON.parse(await readFile(filename, 'utf8'));
   const observedAt = Date.parse(snapshot.observedAt);
@@ -167,6 +203,14 @@ async function quotaStatus(adapters, { liveOnly = false } = {}) {
     const adapter = adapters?.[provider];
     if (!adapter) return { provider, state: 'not_configured', buckets: [] };
     try {
+      // Claude: live from the plan's usage endpoint first; the per-turn snapshot only when that cannot be read.
+      if (provider === 'claude' && !adapter.authRequired) {
+        try {
+          return { provider, state: 'available', source: 'claude_usage', observedAt: new Date().toISOString(), buckets: await readClaudeQuotas(adapter) };
+        } catch (error) {
+          if (liveOnly || !adapter.quotaFile) throw error;
+        }
+      }
       const useSnapshot = !liveOnly && adapter.quotaFile;
       const live = { codex: 'codex_app_server', grok: 'grok_billing', antigravity: 'antigravity_usage' }[provider];
       const source = useSnapshot ? 'snapshot' : live || null;
@@ -240,6 +284,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets,
+  codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets, claudeUsageBuckets, readClaudeQuotas,
   captureClaudeQuotas, claudeRateLimitBuckets, captureClaudeRateLimitEvent,
 };
