@@ -7,4 +7,5 @@
 - 本机桌面控制可从状态栏开启或关闭。macOS 用到桌面操作时，在系统设置中授予对应工具辅助功能权限，截图需要屏幕录制权限。计划模式关闭桌面工具。授权对象、步骤和 Windows 注意事项见 [本机桌面权限](DESKTOP-PERMISSIONS.md)。
 - 单聊默认「对话与查看」，直接由所选 AI 处理，不经过组长；需要改动时选择「修改文件」，预览后确认应用。只读对话不要求本机 Git 干净或已有提交。
 - Bridge 的工作区可配置 `readRoots`（例如 `{"desktop":"<本机桌面路径>"}`），只开放这些命名目录的列举、读取与搜索。额外目录不提供写入、命令或桌面操作权限；符号链接与路径越界仍被拒绝。
+- 组长（Claude）可以额外读取「本机」位置。在 Bridge 配置顶层打开 `"readAnyFolder": true` 并重启 Bridge 后，`windows_list_locations` 会多出 id 为 `computer` 的只读位置：家目录、`/Volumes` 挂载卷和临时目录里的任意文件夹都能列举、搜索、grep 和读取，`path` 用绝对路径（`~` 表示家目录，`~/Desktop` 也可以）。它不提供写入、命令或桌面操作。系统目录（macOS 的 `/System`、`/Library`、`/usr` 等；Windows 的 `C:\Windows`、`Program Files` 等）、`~/Library`、`.ssh`、`.aws`、`.config/gcloud` 等凭据目录、`.git` 以及 `.netrc`、`.npmrc`、`id_rsa` 等凭据文件一律拒绝，解析符号链接后再校验一次。主控只给组长的规划、诊断和验收步骤下发这个位置；其他成员的请求会被拒绝，`locations` 结果里也不会出现 `computer`。Windows Bridge 同样支持，覆盖用户目录与本地盘符。
 - 单聊任务标记为 `direct`，不会作为组长派遣记录显示在群聊中；群聊派遣记录只读，继续对话应新建单聊。

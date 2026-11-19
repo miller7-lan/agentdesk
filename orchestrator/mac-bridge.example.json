@@ -2,6 +2,7 @@
   "stateDir": "/Users/yourname/Library/Application Support/AgentDesk/bridge/state",
   "controlSocket": "/Users/yourname/Library/Application Support/AgentDesk/bridge/state/control.sock",
   "controlWorkspace": "mac",
+  "readAnyFolder": true,
   "desktopSocket": "/Users/yourname/Library/Application Support/AgentDesk/bridge/state/desktop.sock",
   "git": "/usr/bin/git",
   "workspaces": {

@@ -272,28 +272,15 @@ function start(config) {
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
         if (['locations', 'read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+          const anyFolder = frame.root === 'computer';
+          if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: only the lead may read the whole computer');
           value = await files.call(route, scope.taskId, 'file.read', {
             operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
+            ...(anyFolder && { anyFolder: true }),
           });
-        } else if (['write', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
-          // Folders anywhere in the person's user folder; the project itself only changes through reviewed patches.
-          if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
-          if (frame.root !== 'home') throw new Error('mcp_permission_denied: use root "home" (any folder in the user folder); project files are changed in the task workspace');
-          const target = { workspace: scope.workspace, root: 'home', path: frame.path };
-          let current = frame.version;
-          if (current === undefined && frame.operation !== 'mkdir') {
-            current = await files.call(route, scope.taskId, 'file.read', { ...target, operation: 'stat' })
-              .then((info) => info.version ?? null, (error) => { if (/ENOENT|not_found|no such/i.test(error.message)) return null; throw error; });
-          }
-          if (frame.operation === 'write') {
-            if (typeof frame.content !== 'string') throw new Error('invalid_content');
-            const bytes = Buffer.from(frame.content, frame.encoding === 'base64' ? 'base64' : 'utf8');
-            const stream = await files.upload(route, scope.taskId, bytes);
-            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: 'write', stream_id: stream, version: current ?? null });
-          } else {
-            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: frame.operation,
-              version: frame.operation === 'mkdir' ? null : current ?? null, ...(frame.operation === 'move' && { destination: frame.destination }) });
+          if (frame.operation === 'locations' && Array.isArray(value?.locations)) {
+            value = { ...value, locations: value.locations.filter((location) => location?.id !== 'computer' || scope.readAnyFolder === true) };
           }
         } else if (frame.operation === 'commands' || frame.operation === 'run') {
           // Commands run in the person's real project, so only scout and code-changing steps may use them,

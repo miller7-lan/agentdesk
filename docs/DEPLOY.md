@@ -102,7 +102,7 @@ Windows 的 Bridge 运行在 AgentDesk 应用进程里，所以**代码改动要
 | 文件（`%USERPROFILE%\.agentdesk\`） | 管什么 |
 |---|---|
 | `remote.json` | VPS 地址、端口、SSH 用户和密钥路径、`orchestratorBridge`（指向 Bridge 配置的绝对路径）。安装包内带服务器配置时，地址和端口以安装包为准 |
-| Bridge 配置（照 `orchestrator/windows-bridge.example.json`） | 授权的项目路径、`write`、`desktop`、允许运行的命令、`agentCommands`、Relay 令牌、`controlSocket` |
+| Bridge 配置（照 `orchestrator/windows-bridge.example.json`） | 授权的项目路径、`write`、`desktop`、允许运行的命令、`agentCommands`、Relay 令牌、`controlSocket`；顶层 `readAnyFolder: true` 额外允许组长只读整机（家目录与本地盘符，不含系统与凭据目录） |
 
 项目、外观、向导进度在 `%APPDATA%\AgentDesk\config.json`，一般在应用里改，不手改。
 
@@ -149,7 +149,7 @@ Apple Silicon 上 `npm ci && npm run dist:mac -- --arm64`，产物在 `dist/mac-
 | 文件 | 管什么 |
 |---|---|
 | `~/.agentdesk/mac-remote.json` | 应用连 VPS 的地址、SSH 用户和密钥 |
-| Bridge 配置（照 `orchestrator/mac-bridge.example.json`） | 授权项目、命令、`agentCommands`、Relay、`controlSocket` / `desktopSocket`（在 `~/Library/Application Support/AgentDesk/bridge/state/`） |
+| Bridge 配置（照 `orchestrator/mac-bridge.example.json`） | 授权项目、命令、`agentCommands`、Relay、`controlSocket` / `desktopSocket`（在 `~/Library/Application Support/AgentDesk/bridge/state/`）；顶层 `readAnyFolder: true` 额外允许组长只读整机（家目录、`/Volumes` 与临时目录，不含系统与凭据目录） |
 
 改 Bridge 配置后用上面的 `launchctl kickstart -k` 重启 Bridge；改 `mac-remote.json` 后重启应用。
 

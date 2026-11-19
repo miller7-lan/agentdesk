@@ -53,7 +53,7 @@
 ## 3. Windows
 
 1. 确认仓库 secret `AGENTDESK_SERVER_JSON` 已填好（VPS2 的地址、端口和 SSH 主机公钥，格式见 `agentdesk-server.example.json`）。这一步只能由用户在 GitHub 网页上操作，agent 只核对用户给出的值是不是合法 JSON、主机公钥指纹是否与 VPS2 上 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 的结果一致。
-2. 在 GitHub Actions 手动运行 **Build release artifacts**，下载 `agentdesk-windows` 产物，用里面的 `AgentDesk-<版本>-setup.exe` 覆盖安装。
+2. 推送到 `main` 后 Actions 会自动运行 **Build release artifacts**（文档改动除外），下载最近一次构建的 `agentdesk-windows` 产物，用里面的 `AgentDesk-<版本>-setup.exe` 覆盖安装。也可以手动运行该 workflow。
 3. 第一次打开时，核对向导显示的指纹与 VPS2 上的一致，然后确认。
 
 **完成标准：**
@@ -91,7 +91,10 @@
 - **群聊默认在和组长对话**（桌面端）：组长等你回答问题或确认方案时，直接发的消息就是回答，不会新开任务；新任务自动关联这个群聊的上一个任务。失败的任务卡片写明原因，有「让组长重新来」。
 - **常驻流线**（桌面端）：成员完成一步后，从完成总结到泳道节点和进度表留一条流动的虚线，有光点沿线传导，点击终点节点后消失；重启后仍在。
 
-- **组长和成员能访问任意文件夹**（VPS2 + 各电脑的 Bridge）：Bridge 新增位置 `home`（整个用户目录，路径相对用户目录，例如 `Desktop/某个文件夹`）。组长规划和所有成员都能读；改文件的步骤（改代码）还能在里面新建、覆盖、建目录、移动、删除（删除进废纸篓/回收站）。凭据和应用数据（`.ssh`、`.aws`、`.config`、`Library`、`AppData` 等）一律拒绝；项目目录本身仍只通过补丁审核后改动。覆盖已有文件要带当前版本，主控会自动先查。不想开放时，在 Bridge 配置对应 workspace 里加 `"anyFolder": false`。**需要更新各电脑的 Bridge 并重启**（Mac 用 `launchctl kickstart -k`）。
+## 补充（2026-11-19 晚）
+
+- **组长可读本机任意文件夹（只读）**：VPS2 主控新增只给组长的 `computer` 位置。在桌面端 Bridge 配置顶层加 `"readAnyFolder": true` 并重启 Bridge 后，组长的 `windows_list_locations` 会出现它：家目录、`/Volumes` 挂载卷和临时目录里的文件夹可以列举、搜索、grep 和读取，`path` 用绝对路径（`~` 为家目录）。写入、命令和桌面操作仍只限项目；系统目录、`~/Library`、`.ssh` 等凭据目录、`.git` 和常见凭据文件被拒绝，符号链接解析后再校验。主控只给组长的规划、诊断、验收步骤下发这个位置。需要同时更新 VPS2 和桌面端 Bridge；只更新一端时该位置不可用（安全降级）。Mac 的示例配置和本机配置已打开，Windows 配置见 `orchestrator/windows-bridge.example.json`。
+- **Actions 自动构建**：推送到 `main` 会自动构建 `agentdesk-windows` 和 `agentdesk-mac` 产物，不再需要手动运行 workflow。
 
 ## 直接交给本机 agent 的提示
 

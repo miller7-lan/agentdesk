@@ -10,6 +10,15 @@ on:
       macos_release_tag:
         description: Existing GitHub release tag for the generic macOS DMG (optional)
         type: string
+  # Every code push builds both generic installers so Windows and macOS can be updated by downloading
+  # the agentdesk-windows / agentdesk-mac artifact and installing it by hand. Documentation-only pushes
+  # do not need new binaries.
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
 
 permissions:
   contents: read
