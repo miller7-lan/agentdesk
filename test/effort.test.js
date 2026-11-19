@@ -183,3 +183,15 @@ test('while members work, the lead decides per step: continue, guide with the wo
   assert.equal(task.revisions.at(-1).state, 'fallback');
   assert.equal(step('docs').guidance.at(-1).text, '再加个日志');
 });
+
+test('the lead prefers new models: newest generation first, full before small, a date is not a version', () => {
+  const { newestFirst, preferredModel } = require('../orchestrator/model-profiles');
+  assert.deepEqual(newestFirst(['gpt-5', 'gpt-5.4-mini', 'gpt-5.5-mini', 'gpt-5.4', 'gpt-5.5-codex']), ['gpt-5.5-codex', 'gpt-5.5-mini', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5']);
+  assert.deepEqual(newestFirst(['grok-4', 'grok-4.7-build-fast', 'grok-4.7']), ['grok-4.7', 'grok-4.7-build-fast', 'grok-4']);
+  assert.deepEqual(newestFirst(['gemini-3-pro', 'gemini-4-hydrogen', 'gemini-2.5-flash-medium']), ['gemini-4-hydrogen', 'gemini-3-pro', 'gemini-2.5-flash-medium']);
+  assert.deepEqual(newestFirst(['claude-3-5-sonnet-20241022', 'claude-sonnet-5-5']), ['claude-sonnet-5-5', 'claude-3-5-sonnet-20241022']);
+  // an older configured default gives way to the newest model; one of the newest generation is kept
+  assert.equal(preferredModel({ defaultModel: 'gpt-5.4', models: { 'gpt-5.4': {}, 'gpt-5.5': {} } }), 'gpt-5.5');
+  assert.equal(preferredModel({ defaultModel: 'gemini-4-hydrogen-medium', models: { 'gemini-4-hydrogen-high': {}, 'gemini-4-hydrogen-medium': {}, 'gemini-3-pro': {} } }), 'gemini-4-hydrogen-medium');
+  assert.equal(preferredModel({ defaultModel: 'gpt-5.5-mini', models: { 'gpt-5.5-mini': {}, 'gpt-5.5': {} } }), 'gpt-5.5');
+});

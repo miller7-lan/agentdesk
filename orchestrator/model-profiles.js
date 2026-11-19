@@ -46,6 +46,39 @@ function modelProfiles(settings) {
   };
 }
 
+// Newer generations first, read from the version numbers in the model ID (gpt-5.5 > gpt-5.4 > gpt-5,
+// grok-4.7 > grok-4, gemini-4-… > gemini-3-…, claude-opus-5-5 > claude-opus-4-8); within one generation a full
+// model comes before a small or fast one. A number above 999 (a date) is not a version. Equal models keep
+// their listed order.
+const SMALL = /(^|[-_.])(mini|nano|lite|flash|fast|haiku|small)([-_.]|$)/i;
+function versionOf(id) {
+  const match = /(\d+(?:[.-]\d+)*)/.exec(String(id));
+  return match ? match[1].split(/[.-]/).map(Number).filter((part) => part <= 999) : [];
+}
+function compareVersions(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const difference = (b[i] ?? -1) - (a[i] ?? -1);
+    if (difference) return difference;
+  }
+  return 0;
+}
+function newestFirst(ids) {
+  return ids.map((id, index) => ({ id, index, version: versionOf(id), small: SMALL.test(id) }))
+    .sort((a, b) => compareVersions(a.version, b.version) || Number(a.small) - Number(b.small) || a.index - b.index)
+    .map(({ id }) => id);
+}
+// The model a member uses when the lead names none: its newest full model. The configured default wins only
+// when it is of that same newest generation and size (it may pick a variant, e.g. an effort level).
+function preferredModel(profiles) {
+  const ids = Object.keys(profiles?.models || {});
+  if (!ids.length) return profiles?.defaultModel;
+  const [top] = newestFirst(ids);
+  const fallback = profiles.defaultModel;
+  if (fallback && ids.includes(fallback) && compareVersions(versionOf(fallback), versionOf(top)) === 0 &&
+      SMALL.test(fallback) === SMALL.test(top)) return fallback;
+  return top;
+}
+
 function plannerProfiles(roles, adapters, preferredRole, preferredModel) {
   return Object.fromEntries(roles.map((role) => {
     const { defaultModel, models } = adapters[role]?.profiles || { models: {} };
@@ -54,8 +87,9 @@ function plannerProfiles(roles, adapters, preferredRole, preferredModel) {
       configuredModels[preferredModel] = { billing: 'unknown' };
     }
     const { effortsFor } = require('./adapters');
-    return [role, { strengths: abilities[role], defaultModel, models: configuredModels, efforts: effortsFor(role, adapters[role]) }];
+    return [role, { strengths: abilities[role], defaultModel, newestFirst: newestFirst(Object.keys(configuredModels)),
+      models: configuredModels, efforts: effortsFor(role, adapters[role]) }];
   }));
 }
 
-module.exports = { EFFORT_LEVELS, modelId, modelProfiles, plannerProfiles };
+module.exports = { EFFORT_LEVELS, modelId, modelProfiles, plannerProfiles, newestFirst, preferredModel };
