@@ -643,3 +643,34 @@ test('a stalled step tries another model of the same member before going to the 
   assert.ok(!runs.some(([name]) => name === 'claude'));   // the lead was not needed
   assert.ok(scheduler.store.events(task.id).some((event) => /^look:model_switch:gemini:/.test(event.detail)));
 });
+
+test('the person can guide a working member: the step resumes its session with the guidance', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const prompts = [];
+  let first = true;
+  const scheduler = schedulerFor(dir, mirror, async ({ name, prompt, signal, session, onSession }) => {
+    prompts.push({ name, prompt, session });
+    if (name === 'gemini' && first) {
+      first = false;
+      onSession('gemini-session');
+      await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+    return { output: 'done the right way' };
+  }, { acceptance: { mode: 'off' } });
+  t.after(() => scheduler.store.close());
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'look' });
+  task.base = head;
+  task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
+  const run = scheduler.run(task, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  scheduler.steerStep(task, 'look', '只看 src 目录');
+  await run;
+  assert.equal(task.state, 'completed');
+  assert.equal(prompts.length, 2);
+  assert.equal(prompts[1].name, 'gemini');                 // same member
+  assert.equal(prompts[1].session, 'gemini-session');      // same conversation
+  assert.match(prompts[1].prompt, /只看 src 目录/);
+  assert.equal(task.steps[0].guidance[0].text, '只看 src 目录');
+  assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'look:steered'));
+  assert.throws(() => scheduler.steerStep(task, 'look', '再改改'), /step_finished/);
+});

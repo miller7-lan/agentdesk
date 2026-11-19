@@ -1369,7 +1369,7 @@
     refreshChanges();
   });
 
-  window.__live = { send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
+  window.__live = { md, send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
   async function workspaceChanged() {
     const revision = ++workspaceRevision;
     const [config, access] = await Promise.all([rm.config(), wsApi.access()]);

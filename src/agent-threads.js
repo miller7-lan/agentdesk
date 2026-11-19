@@ -10,9 +10,12 @@ window.__agentThreadsReady = (async () => {
   const G = window.__group;
   const P = window.__providerDirect;
   if (!A?.LIVE || !G || !P) return;
-  const { $, esc, store, D } = A;
+  const { $, esc, svg, store, D } = A;
+  const avatars = window.AgentDeskAvatars;
   const api = window.desk.orchestrator;
-  const ROLES = new Set(['codex', 'claude', 'grok', 'gemini', 'antigravity']);
+  // Members only: the lead (Claude) plans, diagnoses and accepts in the group itself, so it gets no conversation
+  // of its own under the group.
+  const ROLES = new Set(['codex', 'grok', 'gemini', 'antigravity']);
   const capabilities = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
   const taskTerminal = new Set(['completed', 'failed', 'cancelled']);
@@ -26,7 +29,7 @@ window.__agentThreadsReady = (async () => {
 
   for (const saved of (Array.isArray(store.get('agentThreads', [])) ? store.get('agentThreads', []) : []).slice(0, MAX_THREADS)) {
     if (!saved || typeof saved.project !== 'string' || !ROLES.has(saved.provider) || !A.proj(saved.project) ||
-        D.sessions.some((s) => s.id === saved.id) || !Array.isArray(saved.items)) continue;
+        D.sessions.some((s) => s.id === saved.id) || !Array.isArray(saved.items) || !ROLES.has(saved.provider)) continue;   // old lead threads are dropped
     const items = saved.items.filter((it) => it && ['user', 'provider-task', 'dispatch-step'].includes(it.t) &&
       !P.ownsTask({ id: it.taskId || it.task?.id }));
     if (items.length) D.sessions.push({ ...saved, group: saved.group || saved.project, agentThread: true, live: true, diffs: [], term: [], busy: false, items });
@@ -81,6 +84,7 @@ window.__agentThreadsReady = (async () => {
         label: task.id.slice(0, 8), state: step.state, capability: step.capability, model: step.model, write: Boolean(step.write),
         brief: step.brief, output: step.output, error: step.error, files: step.paths?.length || 0,
         verdict: step.verdict?.summary, taskState: task.state, detail: String(task.detail || '').split(':')[0],
+        guidance: step.guidance || [],
       };
       if (JSON.stringify(snap) !== JSON.stringify(item.snap)) {
         item.snap = snap;
@@ -176,6 +180,59 @@ window.__agentThreadsReady = (async () => {
       ?.scrollIntoView({ block: 'start' }));
   }
 
+  // The member's work in the look of a single chat (like a Grok Bot teammate's own thread): the lead's brief
+  // and the person's guidance as messages, then thinking blocks, command and file rows, and the member's replies.
+  const md = (text) => window.__live?.md ? window.__live.md(text) : `<p>${esc(text)}</p>`;
+  function chatWork(activity, key, s, running) {
+    const role = s?.provider || 'codex';
+    const opened = (id, fallback) => s?.actOpen?.has(id) ? s.actOpen.get(id) : fallback;
+    const row = (id, kind, icon, arg, meta, body, open, failed) => `<div class="tool ${open ? 'open' : ''} ${failed ? 'err' : ''}" data-act-toggle="${esc(id)}">
+      <div class="tool-head">${svg('chev').replace('<svg', '<svg class="chev"')}<span class="tool-ic">${svg(icon)}</span>
+        <span class="tool-kind">${esc(kind)}</span><span class="tool-arg mono">${esc(arg)}</span><span class="tool-meta">${esc(meta || '')}</span></div>
+      <div class="tool-body">${body}</div></div>`;
+    const items = activity?.items || [];
+    const html = items.map((item, index) => {
+      const id = key + ':' + index;
+      const last = index === items.length - 1;
+      switch (item.kind) {
+        case 'thinking': {
+          const first = String(item.text || '').split('\n').find((line) => line.trim()) || '';
+          return `<div class="tool reason ${opened(id, false) ? 'open' : ''}" data-act-toggle="${esc(id)}">
+            <div class="tool-head">${svg('chev').replace('<svg', '<svg class="chev"')}<span class="tool-ic">${svg('spark')}</span>
+            <span class="tool-kind">已思考</span><span class="tool-arg">${esc(first.replace(/\*\*/g, '').slice(0, 90))}</span></div>
+            <div class="tool-body reason-body">${md(item.text)}</div></div>`;
+        }
+        case 'message':
+          return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(role, { size: 32, still: true })}</span><div class="msg-body">${md(item.text)}</div></div>`;
+        case 'command': {
+          const failed = item.status === 'failed' || (Number.isFinite(item.exitCode) && item.exitCode !== 0);
+          const meta = item.status === 'in_progress' || item.status === 'running' ? (running ? '运行中' : '')
+            : Number.isFinite(item.exitCode) ? '退出码 ' + item.exitCode : '';
+          return row(id, '运行命令', 'term', item.command, meta, `<div class="io-label">输出</div><pre class="io">${esc(item.output || '（没有输出）')}</pre>`,
+            opened(id, failed || (running && last)), failed);
+        }
+        case 'edit':
+          return (item.files || []).map((file, n) => row(id + ':' + n, file.change === 'add' || file.change === 'create' ? '新建文件' : file.change === 'delete' ? '删除文件' : '编辑文件',
+            'edit', file.path, '', item.error ? `<pre class="io">${esc(item.error)}</pre>` : '<p class="act-empty">已修改</p>', false, Boolean(item.error))).join('');
+        case 'tool':
+          return row(id, '工具', 'shield', `${item.name} ${item.input || ''}`.trim(), item.status === 'failed' ? '失败' : '',
+            `<div class="io-label">返回</div><pre class="io">${esc(item.output || '（没有返回内容）')}</pre>`, opened(id, false), item.status === 'failed');
+        case 'search':
+          return row(id, '搜索', 'file', item.text, '', '', false, false);
+        case 'plan':
+          return `<div class="plan-card"><div class="plan-title">${svg('term')}<span>计划</span><span class="grow"></span><span class="plan-count">${(item.steps || []).filter((x) => x.done).length}/${(item.steps || []).length}</span></div>
+            <ol class="plan-steps">${(item.steps || []).map((x) => `<li class="${x.done ? 'completed' : ''}"><span class="ps-dot"></span><span>${esc(x.text)}</span></li>`).join('')}</ol></div>`;
+        case 'error':
+          return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(role, { size: 32, still: true })}</span><div class="msg-body"><p class="err-note">${esc(item.text)}</p></div></div>`;
+        default:
+          return '';
+      }
+    }).join('');
+    const live = running ? `<div class="msg-assist"><span class="direct-avatar">${avatars.html(role, { size: 32, still: true })}</span>
+      <div class="msg-body thinking">${window.AgentDeskLight?.border(role) || ''}<i></i><i></i><i></i>正在工作…</div></div>` : '';
+    return html + live;
+  }
+
   function itemHtml(it, index) {
     if (it.t !== 'dispatch-step') return null;
     const s = D.sessions.find((session) => session.id === A.state.active);
@@ -185,7 +242,8 @@ window.__agentThreadsReady = (async () => {
     const state = stepStates[snap.state] || snap.state || '排队';
     const patches = snap.write && snap.detail === 'patches_ready' && !it.applied;
     const running = snap.state === 'running';
-    const work = window.__activity?.html(it.activity, { key: it.taskId + ':' + it.stepId, open: s?.actOpen, running }) || '';
+    const work = chatWork(it.activity, it.taskId + ':' + it.stepId, s, running);
+    const guidance = (snap.guidance || []).map((item) => `<div class="msg-user"><span class="steer-tag">你的指导</span>${esc(item.text)}</div>`).join('');
     const body = [work,
       snap.error ? `<p class="err-note">${esc(P.errors[snap.error] || snap.error)}</p>` : '',
       snap.output && !window.__activity?.hasReply(it.activity) ? `<pre class="dispatch-output">${esc(snap.output)}</pre>` : '',
@@ -193,7 +251,8 @@ window.__agentThreadsReady = (async () => {
     return `<div class="dispatch-step" data-state="${esc(snap.state || 'queued')}" data-dispatch="${esc(it.taskId + ':' + (s?.provider || ''))}">
       <header><span class="dispatch-from">组长派遣</span><span class="mono">#${esc(snap.label || it.taskId.slice(0, 8))}</span>
         ${what ? `<span>${esc(what)}</span>` : ''}<span class="dispatch-state">${esc(state)}</span></header>
-      ${snap.brief ? `<div class="dispatch-brief"><strong>任务</strong><p>${esc(snap.brief)}</p></div>` : ''}
+      ${snap.brief ? `<div class="dispatch-brief"><strong>组长派给 ${esc(name)} 的任务</strong><p>${esc(snap.brief)}</p></div>` : ''}
+      ${guidance}
       ${body}
       ${snap.verdict ? `<p class="dispatch-verdict">结论：${esc(snap.verdict)}</p>` : ''}
       ${snap.files ? `<p class="dispatch-files">涉及 ${snap.files} 个文件</p>` : ''}
@@ -255,17 +314,51 @@ window.__agentThreadsReady = (async () => {
     previousRender(s);
     const dispatched = Boolean(s?.agentThread);
     banner.hidden = !dispatched;
-    $('#input').disabled = dispatched;
-    $('#sendBtn').disabled = dispatched;
-    $('.composer[data-direct]')?.classList.toggle('composer-locked', dispatched);
+    const target = dispatched && steerTarget(s);
+    $('#input').disabled = dispatched && !target;
+    $('#sendBtn').disabled = dispatched && !target;
+    $('.composer[data-direct]')?.classList.toggle('composer-locked', dispatched && !target);
     if (dispatched) {
-      $('#threadBannerText').textContent = `组长在群聊派给 ${P.names[s.provider]} 的工作记录，只读。`;
+      $('#threadBannerText').textContent = target
+        ? `组长在群聊派给 ${P.names[s.provider]} 的工作。可以在下面给它指导方向，它会按你的话接着做，完成后结果回到群聊。`
+        : `组长在群聊派给 ${P.names[s.provider]} 的工作，目前没有进行中的步骤。`;
       $('#threadBannerNew').textContent = `新建 ${P.names[s.provider]} 单聊`;
-      $('#input').placeholder = `这里不能直接发消息。要追加要求，回群聊 @${P.names[s.provider]}，或新建单聊。`;
+      $('#input').placeholder = target ? `告诉 ${P.names[s.provider]} 该往哪个方向做（它会停下当前这一轮，带着你的话继续）…`
+        : `这里的步骤都已结束。要追加要求，回群聊找组长，或新建单聊。`;
     }
   };
+  // The step the person's guidance goes to: the newest step of this conversation that is still to do or at work.
+  function steerTarget(s) {
+    return [...(s?.items || [])].reverse().find((it) => it.t === 'dispatch-step' && it.snap &&
+      ['queued', 'running'].includes(it.snap.state) && !taskTerminal.has(it.snap.taskState));
+  }
   const previousSend = P.send;
-  P.send = (s, fromButton) => s?.agentThread ? A.toast('组长派遣的记录是只读的；请回群聊或新建单聊。') : previousSend(s, fromButton);
+  P.send = async (s, fromButton) => {
+    if (!s?.agentThread) return previousSend(s, fromButton);
+    const target = steerTarget(s);
+    const text = $('#input').value.trim();
+    if (!target) { A.toast('这里的步骤都已结束；要追加要求请回群聊找组长。'); return; }
+    if (!text) return;
+    try {
+      const status = await control(s.project, 'steer_step', { taskId: target.taskId, stepId: target.stepId, reply: text });
+      $('#input').value = '';
+      if (apply(s.group || s.project, status)) { persist(); }
+      G.merge?.(s.group || s.project, status);
+      A.toast(`已告诉 ${P.names[s.provider]}，它会带着你的话继续`);
+      A.renderAll();
+    } catch (error) {
+      A.toast(error.message === 'step_finished' ? '这一步已经结束；要追加要求请回群聊找组长。' : P.errors[error.message] || error.message);
+    }
+  };
+  // Expanding and collapsing the rows of a dispatched conversation.
+  $('#timeline').addEventListener('click', (event) => {
+    const row = event.target.closest('[data-act-toggle]');
+    if (!row || event.target.closest('.tool-body')) return;
+    const s = D.sessions.find((session) => session.id === A.state.active);
+    if (!s?.agentThread) return;
+    (s.actOpen ||= new Map()).set(row.dataset.actToggle, !row.classList.contains('open'));
+    row.classList.toggle('open');
+  });
   $('#threadBannerGroup').addEventListener('click', () => {
     const s = D.sessions.find((session) => session.id === A.state.active);
     if (s?.agentThread) A.openGroup(s.group || s.project);

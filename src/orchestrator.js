@@ -430,6 +430,7 @@ window.__groupReady = (async () => {
     const stalled = /^([\w-]+):stalled:(\w+):(\d+)$/.exec(detail || '');
     if (stalled) return `${memberName(stalled[2])} 超过 ${stalled[3]} 分钟没有任何输出，已自动停止；先换模型重试，再不行交给组长。`;
     if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
+    if (/:steered$/.test(detail || '')) return '你在成员的单聊里给了指导，它正按你的话继续。';
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
@@ -681,7 +682,7 @@ window.__groupReady = (async () => {
   });
 
   const RECENT_TASKS = 4;
-  const threadRoles = new Set(['codex', 'claude', 'grok', 'gemini', 'antigravity']);
+  const threadRoles = new Set(['codex', 'grok', 'gemini', 'antigravity']);   // members only; the lead works in the group itself
   const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', replaced: '已重新分配', cancelled: '已停止', skipped: '跳过' };
 
@@ -1078,7 +1079,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));

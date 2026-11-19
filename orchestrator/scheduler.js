@@ -929,6 +929,19 @@ event(task, state, detail) {
     return true;
   }
 
+  // The person guides a member from the member's own conversation (like talking to a Grok Bot teammate). A step
+  // at work stops and resumes its session with the guidance; a step not started yet gets it when it starts.
+  steerStep(task, stepId, text) {
+    if (typeof text !== 'string' || !text.trim() || text.length > 2000) throw new Error('invalid_guidance');
+    const step = (task.steps || []).find((item) => item.id === stepId);
+    if (!step) throw new Error('unknown_step');
+    if (!['queued', 'running'].includes(step.state) || terminal.has(task.state)) throw new Error('step_finished');
+    step.guidance = [...(step.guidance || []), { text: text.trim(), at: new Date(this.now()).toISOString() }].slice(-10);
+    this.save(task, task.state, `${stepId}:steered`);
+    this.stepControllers?.get(task.id + ':' + stepId)?.abort(new Error('steered'));
+    return this.status(task.id);
+  }
+
   // The person stops one step (it looks stuck or wrong); the lead then reassigns it.
   stopStep(task, stepId) {
     const controller = this.stepControllers?.get(task.id + ':' + stepId);
@@ -1665,6 +1678,9 @@ event(task, state, detail) {
           // No raw upstream transcripts, logs or patches are sent to the lead.
           prompt = step.prompt + '\n\nBrief (summaries only, not raw logs): ' + JSON.stringify(brief);
         }
+        // What the person said to this member in its own conversation, newest last; it takes priority.
+        if (step.guidance?.length) prompt += '\n\nThe person gave this guidance in your conversation while you worked; follow it, it takes priority over the plan where they conflict:\n' +
+          step.guidance.map((item) => '- ' + item.text).join('\n');
         if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
         else if (step.capability === 'accept') prompt += '\n\n' + ACCEPTANCE_INSTRUCTION;
         else if (step.capability === 'triage') prompt += '\n\n' + TRIAGE_INSTRUCTION;
@@ -1703,6 +1719,8 @@ event(task, state, detail) {
         }
         if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
         // A stalled step first tries another model of the same member (at most twice) before it goes to the lead.
+        // The person steered the step: it continues in the same session with their guidance.
+        if (error.message === 'steered') continue;
         if (error.message.startsWith('cli_stalled') && this.switchModel(task, step)) continue;
         step.state = 'failed';
         step.error = error.message;
@@ -2252,6 +2270,11 @@ event(task, state, detail) {
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');
       return this.updatePlan(task, body);
+    }
+    if (body.operation === 'steer_step') {
+      if (!owner) throw new Error('task_access_denied');
+      if (typeof body.stepId !== 'string' || !/^[\w-]{1,64}$/.test(body.stepId)) throw new Error('invalid_step');
+      return this.steerStep(task, body.stepId, body.reply);
     }
     if (body.operation === 'stop_step') {
       if (!owner) throw new Error('task_access_denied');
