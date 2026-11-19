@@ -73,6 +73,11 @@ test('validates the task graph and generates Relay UUIDv7 IDs', () => {
   ]));
   assert.equal(steps[0].write, false);
   assert.equal(steps[1].write, true);
+  const implicit = parsePlan(JSON.stringify([
+    { id: 'a', role: 'grok', prompt: 'x' },
+    { id: 'b', role: 'codex', prompt: 'y', dependsOn: ['a'] },
+  ]));
+  assert.deepEqual(implicit[0].dependsOn, []);
 });
 
 test('desktop control uses a Windows named pipe and reports an offline bridge accurately', async (t) => {

@@ -108,6 +108,8 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
     if (!step || typeof step !== 'object') throw new Error('invalid_plan');
     const { capability } = step;
     let role = step.role;
+    // A root step may omit dependsOn; treat it as an empty dependency list.
+    const dependsOn = step.dependsOn === undefined ? [] : step.dependsOn;
     if (capability !== undefined) {
       if (!router || !Object.hasOwn(CAPABILITIES, capability)) throw new Error('invalid_plan');
       if (role === LEAD_ROLE && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_plan:lead_capability');
@@ -119,8 +121,8 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
         throw new Error(configured.length ? 'executor_waiting:' + capability : 'no_executor:' + capability);
       }
       // Cross review: whoever wrote the change it reviews does not review it, when someone else can.
-      if (capability === 'review' && Array.isArray(step.dependsOn)) {
-        const authors = step.dependsOn.map((id) => writers.get(id)).filter(Boolean);
+      if (capability === 'review' && Array.isArray(dependsOn)) {
+        const authors = dependsOn.map((id) => writers.get(id)).filter(Boolean);
         if (authors.includes(role)) role = choose(capability, authors) || role;
       }
     } else if (role === LEAD_ROLE) {
@@ -128,11 +130,11 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
     }
     if (!/^[a-z0-9_-]{1,32}$/.test(step.id) || ids.has(step.id) || !availableRoles.includes(role) ||
       typeof step.prompt !== 'string' || !step.prompt.trim() || step.prompt.length > 8000 ||
-      !Array.isArray(step.dependsOn) || step.dependsOn.some((id) => id === 'planner' || id === 'group-planner' || !ids.has(id))) throw new Error('invalid_plan');
+      !Array.isArray(dependsOn) || dependsOn.some((id) => id === 'planner' || id === 'group-planner' || !ids.has(id))) throw new Error('invalid_plan');
     ids.add(step.id);
     if (capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex') writers.set(step.id, role);
     return {
-      id: step.id, role, ...(capability !== undefined && { capability }), prompt: step.prompt, dependsOn: [...new Set(step.dependsOn)],
+      id: step.id, role, ...(capability !== undefined && { capability }), prompt: step.prompt, dependsOn: [...new Set(dependsOn)],
       write: capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex',
       state: 'queued', attempts: 0,
     };
