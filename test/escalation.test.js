@@ -589,3 +589,30 @@ test('the status says what a running step is doing and what a queued step waits 
   await Promise.all([first, second]);
   assert.equal(scheduler.status(task.id).live, undefined);   // finished tasks carry no live line
 });
+
+test('a step with no output for its stall time is stopped and goes to the lead, who reassigns it', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const scheduler = schedulerFor(dir, mirror, async ({ name, signal }) => {
+    if (name === 'claude') return { output: decision('retry') };
+    if (name === 'gemini') {
+      // never writes anything: only the watchdog ends it
+      await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+    return { output: 'looked' };
+  }, { acceptance: { mode: 'off' }, stallTimeoutMs: 50 });
+  t.after(() => scheduler.store.close());
+  const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'look' });
+  task.base = head;
+  task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
+  const run = scheduler.run(task, new AbortController().signal);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  scheduler.watchStalls();
+  await run;
+  const events = scheduler.store.events(task.id).map((event) => event.detail);
+  assert.ok(events.some((detail) => /^look:stalled:gemini:\d+$/.test(detail)), events.join(','));
+  assert.match(task.lastStepFailure[0].error, /cli_stalled/);
+  assert.equal(task.state, 'queued');            // the lead decided to retry with another member
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.state, 'completed');
+  assert.equal(task.steps.find((step) => step.id === 'look').role, 'grok');
+});

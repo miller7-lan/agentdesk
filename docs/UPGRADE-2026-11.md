@@ -97,6 +97,12 @@
 - **成员也能读写本机任意文件夹**（在上一条基础上）：`computer` 位置不再只给组长，所有成员都能读。改文件的步骤（改代码）还可以用 `windows_write_file`、`windows_make_directory`、`windows_move_path`、`windows_delete_path` 在家目录、挂载卷、临时目录里新建、覆盖、建目录、移动、删除（删除进废纸篓/回收站），前提是 Bridge 配置顶层再加 `"writeAnyFolder": true`（示例配置已打开）。覆盖已有文件要带当前版本（主控会自动先查），不会覆盖别人刚改过的内容。同样的拒绝规则对写入生效；项目目录本身仍只通过补丁审核改动，不能借这个位置直接改。需要同时更新 VPS2 和各电脑的 Bridge 并重启 Bridge。
 - **Actions 自动构建**：推送到 `main` 会自动构建 `agentdesk-windows` 和 `agentdesk-mac` 产物，不再需要手动运行 workflow。
 
+- **群聊卡住时能看到原因、能自动脱困**（VPS2 + 桌面端）：
+  - 成员忙时，并行步骤改派给同类活里空闲的成员（你指定的执行者、组长点名的成员不改派）。
+  - 任务卡片显示实时状态：谁在执行、已执行多久、最后一次输出是多久前；排队的步骤在等谁、那个成员正在做哪个任务；等待执行者时每个候选成员为什么不能接（需要登录、冷却到几点、额度不够）。
+  - 看门狗（参考 gbdev 的 stall timeout）：运行中的步骤超过 10 分钟没有任何输出，自动停掉并交给组长换成员或换模型重新安排。可在 VPS2 配置里按成员设 `adapters.<成员>.stallTimeoutMs`（毫秒，0 关闭），或全局设 `stallTimeoutMs`。
+  - 运行中的步骤旁有「停止这一步」，停掉后同样交给组长重新安排，任务本身继续。
+
 ## 直接交给本机 agent 的提示
 
 Mac 和 Windows 各一段，见 [UPGRADE-PROMPTS.md](UPGRADE-PROMPTS.md)。先在 Mac 上运行（它负责 VPS2 和 Mac），VPS2 确认生效后再在 Windows 上运行。

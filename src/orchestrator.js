@@ -425,6 +425,9 @@ window.__groupReady = (async () => {
     if (executor) return `等待 ${memberName(executor[1])} 可用：额度或登录状态恢复后自动继续，不会改派给其他成员。`;
     const moved = /:reassigned:(\w+)->(\w+):(quota|auth|busy)$/.exec(detail || '');
     if (moved) return `${memberName(moved[1])} ${{ quota: '额度用尽', auth: '需要重新登录', busy: '正忙' }[moved[3]]}，改由 ${memberName(moved[2])} 接手。`;
+    const stalled = /^([\w-]+):stalled:(\w+):(\d+)$/.exec(detail || '');
+    if (stalled) return `${memberName(stalled[2])} 超过 ${stalled[3]} 分钟没有任何输出，已自动停止，交给组长重新安排。`;
+    if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
@@ -480,7 +483,8 @@ window.__groupReady = (async () => {
       if (step.state === 'running') {
         const quiet = step.lastOutputAt ? (Date.now() - Date.parse(step.lastOutputAt)) / 60000 : null;
         const stalled = quiet !== null ? quiet >= STALL_MINUTES : step.startedAt && (Date.now() - Date.parse(step.startedAt)) / 60000 >= STALL_MINUTES;
-        lines.push(`<li class="${stalled ? 'stalled' : ''}"><b>${esc(who)}</b> 正在执行${step.startedAt ? '，已 ' + ago(step.startedAt) : ''}；${step.lastOutputAt ? '最后一次输出在 ' + ago(step.lastOutputAt) + '前' : '还没有任何输出'}${stalled ? '。<em>超过 ' + STALL_MINUTES + ' 分钟没有动静，可能卡住了</em>（CLI 最长 10–15 分钟会超时退出，之后交给组长重新安排；也可以停止任务）' : ''}</li>`);
+        lines.push(`<li class="${stalled ? 'stalled' : ''}"><b>${esc(who)}</b> 正在执行${step.startedAt ? '，已 ' + ago(step.startedAt) : ''}；${step.lastOutputAt ? '最后一次输出在 ' + ago(step.lastOutputAt) + '前' : '还没有任何输出'}${stalled ? '。<em>超过 ' + STALL_MINUTES + ' 分钟没有动静，可能卡住了</em>；10 分钟没有任何输出时主控会自动停掉它，交给组长重新安排' : ''}
+          <button type="button" class="task-text-link" data-stop-step="${esc(task.id)}" data-step="${esc(step.id)}" title="停掉这一步，交给组长换成员或换模型重新安排；任务本身继续">停止这一步</button></li>`);
       } else if (step.state === 'waiting_member') {
         const holder = step.holder;
         const where = !holder ? '' : holder.prompt ? `另一个任务「${esc(holder.prompt)}」` : '这个任务的另一步';
@@ -1069,7 +1073,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:stopped_by_person$/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
@@ -1873,6 +1877,18 @@ window.__groupReady = (async () => {
     return Object.keys(order).length ? { routeOrder: order } : {};
   }
 
+  // Stop one running step: the lead reassigns it; the task carries on.
+  timeline.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-stop-step]');
+    if (!button || busy) return;
+    if (!window.confirm('停止这一步？它会交给组长换成员或换模型重新安排，任务本身继续。')) return;
+    try {
+      const answer = await control('stop_step', { taskId: button.dataset.stopStep, stepId: button.dataset.step });
+      updateTask(currentGroup(), button.dataset.stopStep, answer);
+      A.toast('已停止这一步，交给组长重新安排');
+      render();
+    } catch (error) { A.toast('停止失败：' + error.message); }
+  });
   timeline.addEventListener('click', (event) => {
     const id = event.target.closest('[data-retry-task]')?.dataset.retryTask;
     const group = currentGroup();

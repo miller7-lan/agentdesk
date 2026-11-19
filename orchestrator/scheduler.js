@@ -890,10 +890,41 @@ event(task, state, detail) {
     this.save(task, 'queued', 'executor_waiting:' + capability);
   }
 
+  // Stall watchdog (after gbdev's per-role stall_timeout_s): a running step whose CLI has written nothing to its
+  // log for the member's stall time is stopped as cli_stalled, so it goes to the lead to be reassigned instead
+  // of hanging until the CLI's own long timeout. Output is the only signal; the time is per member
+  // (adapters.<member>.stallTimeoutMs, default 10 minutes, 0 turns it off).
+  watchStalls() {
+    const now = this.now();
+    for (const [key, controller] of this.stepControllers || []) {
+      const [taskId, stepId] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+      const task = this.tasks.get(taskId);
+      const step = task?.steps?.find((item) => item.id === stepId);
+      if (!step || step.state !== 'running' || controller.signal.aborted) continue;
+      const limit = this.config.adapters[step.role]?.stallTimeoutMs ?? this.config.stallTimeoutMs ?? 600_000;
+      if (!limit) continue;
+      let last = Date.parse(step.startedAt || '') || now;
+      try { last = Math.max(last, require('node:fs').statSync(path.join(this.config.stateDir, 'logs', taskId, stepId + '.log')).mtimeMs); } catch { /* no output yet */ }
+      if (now - last < limit) continue;
+      this.save(task, task.state, `${stepId}:stalled:${step.role}:${Math.round(limit / 60000)}`);
+      controller.abort(new Error(`cli_stalled: ${Math.round(limit / 60000)} 分钟没有任何输出`));
+    }
+  }
+
+  // The person stops one step (it looks stuck or wrong); the lead then reassigns it.
+  stopStep(task, stepId) {
+    const controller = this.stepControllers?.get(task.id + ':' + stepId);
+    if (!controller) throw new Error('step_not_running');
+    this.save(task, task.state, `${stepId}:stopped_by_person`);
+    controller.abort(new Error('stopped_by_person: 你手动停止了这一步'));
+    return this.status(task.id);
+  }
+
   // Called by the service timer: refresh cached quota (a Codex read starts an App Server) and retry
   // tasks whose executor may have become available.
   tick() {
     const now = this.now();
+    try { this.watchStalls(); } catch (error) { console.error('stall watch:', error.message); }
     if (!this.lastCleanupAt || now - this.lastCleanupAt >= 3600_000) {
       this.lastCleanupAt = now;
       this.cleanupNow().catch((error) => console.error('cleanup:', error.message));
@@ -1109,6 +1140,12 @@ event(task, state, detail) {
     }
     this.spillOver(task, step);
     const release = await this.acquireCli(task, step, signal);
+    // A step can be stopped on its own (stall watchdog, or the person) without cancelling the task; the reason
+    // becomes the step's error and goes to the lead like any failure.
+    const stepController = new AbortController();
+    const stepKey = task.id + ':' + step.id;
+    (this.stepControllers ||= new Map()).set(stepKey, stepController);
+    const stepSignal = AbortSignal.any([signal, stepController.signal]);
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace,
@@ -1126,7 +1163,7 @@ event(task, state, detail) {
           repository: this.config.workspaces[task.workspace].repository,
         }),
         name: step.role, config, cwd: folder, prompt, readonly: !step.write,
-        timeout: task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000, signal,
+        timeout: task.mode === 'team' ? teamTimeout : this.config.cliTimeoutMs || 900000, signal: stepSignal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
         session: step.session, model: step.model,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort) || undefined,
@@ -1142,6 +1179,7 @@ event(task, state, detail) {
       return result;
     } finally {
       mcp?.capabilities.delete(capability);
+      this.stepControllers?.delete(stepKey);
       release();
     }
   }
@@ -2194,6 +2232,11 @@ event(task, state, detail) {
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');
       return this.updatePlan(task, body);
+    }
+    if (body.operation === 'stop_step') {
+      if (!owner) throw new Error('task_access_denied');
+      if (typeof body.stepId !== 'string' || !/^[\w-]{1,64}$/.test(body.stepId)) throw new Error('invalid_step');
+      return this.stopStep(task, body.stepId);
     }
     if (body.operation === 'reconcile') {
       if (!owner) throw new Error('task_access_denied');
