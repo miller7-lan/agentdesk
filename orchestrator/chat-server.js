@@ -12,6 +12,7 @@ const { sandboxCommand } = require('./sandbox');
 const { captureClaudeRateLimitEvent } = require('./quotas');
 const { validAttachments, attachmentLimit, maxAttachments, idPattern, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
+const { pruneThreads } = require('./chat-retention');
 
 // Attachments are read through this tool, served here on the VPS, so every chat can read them whether or not
 // the CLI runs in the sandbox with its own file tools. Images come back as images the model can look at.
@@ -180,6 +181,18 @@ function persist() {
     log('state_write_failed', error.message);
   }
 }
+
+// Drop single-chat threads that have not been used for the history window, along with their scratch folder.
+// Runs at start-up and whenever the app reconnects, so a long-running chat server still expires old threads.
+function pruneExpiredThreads() {
+  const expired = pruneThreads(state);
+  if (!expired.length) return;
+  persist();
+  for (const id of expired) {
+    try { fs.rmSync(path.join(THREADS_DIR, id), { recursive: true, force: true }); } catch {}
+  }
+}
+pruneExpiredThreads();
 
 /* ---------- 与 Electron 的 JSON-RPC ---------- */
 function send(frame) {
@@ -1001,6 +1014,7 @@ function finishTurn(turn, code, startupError) {
 async function dispatch(method, params) {
   switch (method) {
     case 'initialize':
+      pruneExpiredThreads();
       return { serverInfo: { name: `agentdesk-chat-${PROVIDER}`, version: '1.0.0' }, capabilities: {} };
 
     case 'thread/start': {

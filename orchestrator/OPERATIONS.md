@@ -152,11 +152,17 @@ agent 在 VPS2 的代码副本里改代码。通过本机 Bridge，它还能看�
 
 | 设置（`config.json` 的 `retention`） | 默认 | 含义 |
 |---|---|---|
-| `completedDays` | 3 | 完成或取消的任务保留几天 |
-| `failedDays` | 7 | 失败的任务保留几天（方便排查） |
+| `completedDays` | 3 | 完成或取消的任务文件（worktree、补丁、CLI 日志）保留几天 |
+| `failedDays` | 7 | 失败的任务文件保留几天（方便排查） |
+| `historyDays` | 60 | 任务记录和事件、单聊线程元数据、无主 worktree/日志保留几天；超期删除并回收数据库空间 |
+| `uploadDays` | 7 | 工作区 `.agentdesk-uploads` 里的附件副本保留几天 |
 | `minFreePercent` | 15 | 磁盘剩余低于这个百分比时，提前清理最早结束的任务，直到高出 5 个百分点 |
 
+任务文件在 `completedDays`/`failedDays` 后先清掉；任务记录和事件再保留到 `historyDays`（默认 60 天），到期后从 SQLite 删除并执行一次 `VACUUM`。单聊线程元数据在单聊服务启动和应用每次重连时按同一个 60 天窗口清理。项目文件、`.agentdesk-skills`、登录凭据和配置永远不在清理范围。
+
 等你审核补丁的任务永远不会被自动清理，因为应用补丁需要它；`ad doctor` 会显示有几个这样的任务。正在运行的任务也不会被清理。
+
+系统日志由 `agentdesk-journal-retention.timer` 每天执行一次 `journalctl --vacuum-time=60d`，只保留最近 60 天的 journald 日志。
 
 ### 管理命令补充
 

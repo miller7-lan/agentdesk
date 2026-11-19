@@ -11,7 +11,7 @@ const { validAttachments, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
 const { quotaStatus } = require('./quotas');
 const { teamAdapter } = require('./team');
-const { cleanup, retention } = require('./cleanup');
+const { cleanup, retention, historyCandidates } = require('./cleanup');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
 const { stepActivity } = require('./activity');
 const { hostResources } = require('./host-resources');
@@ -331,6 +331,26 @@ class Scheduler {
       tasks: [...this.tasks.values()], running: this.running, config: this.config, now: this.now(),
       onCleared: (task) => this.save(task, task.state, task.detail, false),   // marks cleanedAt without a new event
     }).then((result) => {
+      // Records are kept for the history window; files were already cleared 3/7 days after the task ended.
+      // A task referenced by a newer review/reply is kept for one more pass so its link does not dangle.
+      const keep = retention(this.config.retention);
+      const referenced = new Set();
+      for (const task of this.tasks.values()) {
+        for (const key of ['replyTo', 'reviewOf']) {
+          if (typeof task[key] === 'string') referenced.add(task[key]);
+        }
+      }
+      const expired = historyCandidates([...this.tasks.values()], this.running, this.now(), keep, { referenced });
+      if (expired.length) {
+        const ids = expired.map((task) => task.id);
+        result.historyRemoved = this.store.deleteTasks(ids);
+        for (const id of ids) this.tasks.delete(id);
+        try { this.store.vacuum(); result.vacuumed = true; }
+        catch (error) { console.error('cleanup vacuum:', error.message); result.vacuumed = false; }
+      } else {
+        result.historyRemoved = 0;
+        result.vacuumed = false;
+      }
       this.lastCleanup = result;
       if (result.lowDisk) console.error('cleanup: low disk', result.freePercent + '% free');
       return result;

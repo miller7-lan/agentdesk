@@ -37,6 +37,29 @@ class Store {
     this.db.exec('PRAGMA wal_checkpoint(PASSIVE)');
   }
 
+  // Drop old task records together with their events. The caller decides which tasks are safe to drop.
+  deleteTasks(ids) {
+    const list = [...new Set(ids)].filter((id) => typeof id === 'string');
+    if (!list.length) return 0;
+    const removeTask = this.db.prepare("DELETE FROM records WHERE bucket='tasks' AND id=?");
+    const removeEvents = this.db.prepare('DELETE FROM events WHERE task_id=?');
+    this.db.exec('BEGIN');
+    try {
+      for (const id of list) { removeEvents.run(id); removeTask.run(id); }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return list.length;
+  }
+
+  // SQLite keeps the pages of deleted rows until a VACUUM. Run it only after a history prune, not hourly.
+  vacuum() {
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    this.db.exec('VACUUM');
+  }
+
   all(bucket) {
     return this.db.prepare('SELECT document FROM records WHERE bucket=? ORDER BY rowid')
       .all(bucket).map((row) => JSON.parse(row.document));
