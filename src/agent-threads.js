@@ -20,7 +20,7 @@ window.__agentThreadsReady = (async () => {
   const stepStates = { switched: '已换模型', queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
   const taskTerminal = new Set(['completed', 'failed', 'cancelled']);
   const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped', 'switched']);
-  const MAX_THREADS = 40;
+  const MAX_THREADS = 400;   // a safety net; the real limit is ten per group chat (prune)
 
   // A record belongs to one group chat (s.group) and is listed under that group's project (s.project).
   // One conversation per task and member, so two tasks the same AI works on in parallel stay apart; when one
@@ -48,7 +48,7 @@ window.__agentThreadsReady = (async () => {
   function newThread(id, group, role, task, step, items = [], model) {
     const at = Date.parse(task?.createdAt || '') || items.reduce((last, it) => Math.max(last, it.at || 0), 0) || Date.now();
     const s = { id, project: projectOf(group), group, provider: role, ...(model && { model }), agentThread: true, title: titleOf(role, task, step, model),
-      shortTitle: titleOf(role, task, step, model), status: 'idle', time: '刚刚', order: at, items, live: true, diffs: [], term: [] };
+      shortTitle: titleOf(role, task, step, model), status: 'idle', time: '刚刚', order: at, openedAt: Date.now(), items, live: true, diffs: [], term: [] };
     // Newer assignments sit above older ones under the group.
     const index = D.sessions.findIndex((other) => other.agentThread && (other.order || 0) < at);
     if (index === -1) D.sessions.push(s); else D.sessions.splice(index, 0, s);
@@ -86,18 +86,18 @@ window.__agentThreadsReady = (async () => {
   }
 
   function persist() {
-    store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, group, provider, model, title, shortTitle, order, items, taskId, status, time }) =>
-      ({ id, project, group, provider, model, title, shortTitle, order, taskId, status, time,
+    store.set('agentThreads', threads().slice(0, MAX_THREADS).map(({ id, project, group, provider, model, title, shortTitle, order, openedAt, items, taskId, status, time }) =>
+      ({ id, project, group, provider, model, title, shortTitle, order, openedAt, taskId, status, time,
         items: items.slice(-80).map(({ preview, log, activity, ...item }) => item) })));
   }
   if (migrated) persist();
 
   // Steps of one task worked by the same member that do not depend on each other are parallel branches:
   // each gets its own conversation so their logs never mix.
-  function parallelSteps(task) {
-    const steps = (task.steps || []).filter((step) => ROLES.has(step.role) && step.id && step.capability !== 'triage' &&
-      !String(step.id).startsWith('reassign-'));
-    const byId = new Map(steps.map((step) => [step.id, step]));
+  // Which steps of a task come before a step (its dependencies, transitively): those run one after another and
+  // may share a conversation; steps with no such link run side by side and must not.
+  function ancestry(task) {
+    const byId = new Map((task.steps || []).map((step) => [step.id, step]));
     const memo = new Map();
     const ancestors = (step) => {
       if (memo.has(step.id)) return memo.get(step.id);
@@ -111,26 +111,59 @@ window.__agentThreadsReady = (async () => {
       }
       return found;
     };
-    const parallel = new Set();
-    for (let i = 0; i < steps.length; i += 1) {
-      for (let j = i + 1; j < steps.length; j += 1) {
-        const a = steps[i], b = steps[j];
-        if (a.role !== b.role || (a.model || '') !== (b.model || '') || ancestors(a).has(b.id) || ancestors(b).has(a.id)) continue;
-        parallel.add(a.id); parallel.add(b.id);
-      }
-    }
-    return parallel;
+    return (a, b) => ancestors(a).has(b.id) || ancestors(b).has(a.id);
   }
 
-  function ensureThread(group, role, task, step, parallel) {
-    const model = step?.model;
-    const id = parallel ? stepThreadId(group, role, task.id, step.id, model) : taskThreadId(group, role, task.id, model);
-    let s = D.sessions.find((session) => session.id === id);
-    if (!s) s = newThread(id, group, role, task, parallel ? step : null, [], model);
-    const title = titleOf(role, task, parallel ? step : null, model);
-    if (s.title !== title) { s.title = title; s.shortTitle = title; }
-    s.order = Date.parse(task.createdAt || '') || s.order || Date.now();
+  // One conversation per member and exact model, reused for that member's later work in the group (the lead
+  // hands Codex on GPT-5.5 another step: it goes into the same Codex GPT-5.5 chat). Only when that conversation
+  // is busy with work running at the same time does a second one open (「Codex GPT 5.5 · 2」).
+  const ACTIVE = new Set(['queued', 'running', 'proposed', 'waiting']);
+  function threadTitle(role, model, n) {
+    return [P.names[role] || role, modelName(model)].filter(Boolean).join(' ') + (n > 1 ? ' · ' + n : '');
+  }
+  function busyFor(s, task, step, related) {
+    return s.items.some((it) => it.t === 'dispatch-step' && it.snap && ACTIVE.has(it.snap.state) && !taskTerminal.has(it.snap.taskState) &&
+      !(it.taskId === task.id && it.stepId === step.id) &&
+      !(it.taskId === task.id && related(step, (task.steps || []).find((other) => other.id === it.stepId) || { id: it.stepId })));
+  }
+  function ensureThread(group, role, task, step, related = () => false) {
+    const model = step?.model || '';
+    const mine = threads().filter((s) => (s.group || s.project) === group && s.provider === role && (s.model || '') === model);
+    const holding = mine.find((s) => s.items.some((it) => it.t === 'dispatch-step' && it.taskId === task.id && it.stepId === step.id && it.snap?.state !== 'switched'));
+    if (holding) return holding;
+    const free = mine.filter((s) => !busyFor(s, task, step, related))
+      .sort((a, b) => (b.openedAt || b.order || 0) - (a.openedAt || a.order || 0))[0];
+    if (free) {
+      free.order = Math.max(free.order || 0, Date.parse(task.createdAt || '') || 0);
+      return free;
+    }
+    const base = threadId(group, role, model);
+    let n = 1;
+    while (D.sessions.some((s) => s.id === (n === 1 ? base : base + '#' + n))) n += 1;
+    const s = newThread(n === 1 ? base : base + '#' + n, group, role, task, null, [], model || undefined);
+    s.title = s.shortTitle = threadTitle(role, model, n);
     return s;
+  }
+
+  // At most ten member conversations per group chat. When there are more, the ones whose work is over and that
+  // were opened longest ago go first; a conversation with work going on or waiting for the person, and the one
+  // on screen, always stay. The tasks themselves stay on the orchestrator and can be opened again.
+  const PER_GROUP = 10;
+  function prune(group) {
+    const mine = threads().filter((s) => (s.group || s.project) === group);
+    if (mine.length <= PER_GROUP) return false;
+    const removable = mine.filter((s) => s.id !== A.state.active && !['running', 'waiting'].includes(threadStatus(s)))
+      .sort((a, b) => (a.openedAt || a.order || 0) - (b.openedAt || b.order || 0));
+    // (a conversation counts as used when it is created or opened, so one made just now is never the first to go)
+    let extra = mine.length - PER_GROUP;
+    let removed = false;
+    for (const s of removable) {
+      if (extra <= 0) break;
+      D.sessions.splice(D.sessions.indexOf(s), 1);
+      extra -= 1;
+      removed = true;
+    }
+    return removed;
   }
 
   async function control(project, operation, params = {}) {
@@ -151,10 +184,10 @@ window.__agentThreadsReady = (async () => {
   function apply(project, task) {
     if (P.ownsTask(task)) return false;
     const touched = new Set();
-    const parallel = parallelSteps(task);
+    const related = ancestry(task);
     for (const step of task.steps || []) {
       if (!ROLES.has(step.role)) continue;
-      const s = ensureThread(project, step.role, task, step, parallel.has(step.id));
+      const s = ensureThread(project, step.role, task, step, related);
       // The same step in another conversation: an earlier model of this member (it was switched, e.g. when stuck)
       // keeps its record with a note; a record from before conversations were split by model moves here.
       for (const other of threads()) {
@@ -197,7 +230,8 @@ window.__agentThreadsReady = (async () => {
       s.status = threadStatus(s);
       s.time = '刚刚';
     }
-    return touched.size > 0;
+    const pruned = prune(project);
+    return touched.size > 0 || pruned;
   }
 
   const fetched = new Map();   // taskId -> updatedAt last copied
@@ -287,10 +321,10 @@ window.__agentThreadsReady = (async () => {
       } catch { /* fall back to an empty conversation that fills in on the next sync */ }
       s = find();
     }
-    if (!s && taskId) s = ensureThread(project, role, { id: taskId, createdAt: new Date().toISOString() },
-      { id: stepId || '任务' }, Boolean(stepId));
+    if (!s && taskId) s = ensureThread(project, role, { id: taskId, createdAt: new Date().toISOString() }, { id: stepId || '任务' });
     if (!s) s = D.sessions.find((session) => session.agentThread && session.provider === role && (session.group || session.project) === project);
     if (!s) return;
+    s.openedAt = Date.now();
     persist();
     A.openSession(s.id);
     if (!taskId) { await sync(); return; }
@@ -523,6 +557,6 @@ window.__agentThreadsReady = (async () => {
     persist();
   }
 
-  window.__agentThreads = { threadsOf, removeGroup, open, persist, onOpen: () => { sync(); refreshActivity(); } };
+  window.__agentThreads = { threadsOf, removeGroup, open, persist, onOpen: (s) => { if (s?.agentThread) s.openedAt = Date.now(); sync(); refreshActivity(); } };
   A.renderSidebar();
 })();
