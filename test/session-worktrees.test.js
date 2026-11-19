@@ -13,6 +13,7 @@ function repo(t) {
   fs.mkdirSync(root);
   const git = (...args) => execFileSync('git', ['-C', root, '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', ...args], { encoding: 'utf8' }).trim();
   git('init', '-q', '-b', 'main');
+  git('config', 'core.autocrlf', 'false');
   fs.writeFileSync(path.join(root, 'app.txt'), 'one\n');
   git('add', '.');
   git('commit', '-qm', 'base');

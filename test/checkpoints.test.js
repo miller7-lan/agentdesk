@@ -18,10 +18,13 @@ function setup(t) {
 }
 
 test('the paths each file tool may change', () => {
-  assert.deepEqual(affected('agentdesk_file_write', { path: '/a/b.txt' }), [{ path: '/a/b.txt', action: 'write' }]);
-  assert.deepEqual(affected('windows_file_move', { path: '/a', destination: '/b' }).map((x) => x.path), ['/a', '/b']);
-  assert.deepEqual(affected('agentdesk_file_copy', { path: '/a', destination: '/b' }), [{ path: '/b', action: 'copy' }]);
-  assert.deepEqual(affected('agentdesk_file_read', { path: '/a' }), []);
+  const source = path.resolve('a');
+  const target = path.resolve('b');
+  const file = path.join(source, 'b.txt');
+  assert.deepEqual(affected('agentdesk_file_write', { path: file }), [{ path: file, action: 'write' }]);
+  assert.deepEqual(affected('windows_file_move', { path: source, destination: target }).map((x) => x.path), [source, target]);
+  assert.deepEqual(affected('agentdesk_file_copy', { path: source, destination: target }), [{ path: target, action: 'copy' }]);
+  assert.deepEqual(affected('agentdesk_file_read', { path: source }), []);
   assert.deepEqual(affected('agentdesk_file_write', { path: 'relative.txt' }), []);
 });
 

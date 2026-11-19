@@ -219,7 +219,8 @@ window.__groupReady = (async () => {
       group.output = null;
       group.reference = null;
       group.planReply = null;
-      group.draft = '';
+      group.taskError = '';
+      group.statusError = '';
       clearedAt.set(id, now);
       lastSeen.delete(id);
       window.__agentThreads?.removeGroup?.(id);
@@ -229,6 +230,7 @@ window.__groupReady = (async () => {
     store.set('groupTasksByProject', savedByGroup);
     store.set('groupLastSeen', Object.fromEntries(lastSeen));
     store.set('groupClearedAt', Object.fromEntries(clearedAt));
+    store.set('macTask', null);
     localStorage.removeItem('agentdesk.macTask');
     displayedCounts.clear();
     filter = 'all';
@@ -299,7 +301,7 @@ window.__groupReady = (async () => {
   // Clearing a group hides the tasks that already existed. The cutoff is saved so the periodic project
   // refresh cannot bring the same history back; a task that updates after the cutoff shows up again.
   const clearedAt = new Map(Object.entries(store.get('groupClearedAt', {})));
-  const isCleared = (id, task) => taskTime(task) <= (Number(clearedAt.get(id)) || 0);
+  const isCleared = (id, task) => clearedAt.has(id) && taskTime(task) <= Number(clearedAt.get(id));
   function markSeen(group) {
     if (document.hidden) return;
     const time = Math.max(lastSeen.get(group.id) || 0, ...[...group.records.values()].map(taskTime));
@@ -356,7 +358,9 @@ window.__groupReady = (async () => {
   function updateTask(group, id, summary, complete = false) {
     const previous = group.records.get(id) || {};
     const local = complete ? { prompt: previous.prompt, time: previous.time } : previous;
-    group.records.set(id, { ...local, ...summary, id });
+    const task = { ...local, ...summary, id };
+    if (isCleared(group.id, task)) return;
+    group.records.set(id, task);
     if (group === currentGroup()) markSeen(group);
     if (complete) persist(group);
   }
