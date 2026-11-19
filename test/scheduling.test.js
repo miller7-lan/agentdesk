@@ -347,6 +347,7 @@ test('a CLI print timeout continues the same session and records the continuatio
 
   await scheduler.runStep(task, step, mirror, path.join(dir, 'worktrees', id), new AbortController().signal);
   assert.equal(step.state, 'completed');
+  assert.ok(step.finishedAt, 'a completed step records when it ended');
   assert.equal(step.continuations, 1);
   assert.equal(prompts.length, 2);
   assert.match(prompts[1], /continuation 1\/1/);
@@ -389,6 +390,7 @@ test('an unresolved bridge write failure keeps the step from claiming completion
   await assert.rejects(scheduler.runStep(task, step, mirror, path.join(dir, 'worktrees', id), new AbortController().signal),
     /write_failed:\/tmp\/report\.md/);
   assert.equal(step.state, 'failed');
+  assert.ok(step.finishedAt, 'a failed step records when it ended');
   assert.equal(step.deliveries[0].ok, false);
   assert.equal(step.deliveries[0].expectedVersion, 'old');
 });

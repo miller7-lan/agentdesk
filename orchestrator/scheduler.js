@@ -223,7 +223,7 @@ class Scheduler {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
       } else if (['planning', 'running', 'awaiting_acceptance', 'triaging'].includes(task.state)) {
         for (const step of task.steps) {
-          if (step.state === 'running') step.state = 'queued';
+          if (step.state === 'running') { step.state = 'queued'; delete step.finishedAt; }
         }
         this.save(task, 'queued', 'recovered');
       }
@@ -888,8 +888,9 @@ event(task, state, detail) {
     const steps = (task.steps || []).filter((step) => !this.isAcceptStep(step));
     const context = {
       request: clip(task.prompt, 4000), planSummary: task.groupPlan?.rounds?.at(-1)?.summary, newMessage: text,
-      steps: steps.map(({ id, role, capability, state, prompt, output, dependsOn }) => ({ id, role, capability, state,
-        prompt: clip(prompt, 600), ...(output && { output: clip(output, 600) }), dependsOn })),
+      steps: steps.map(({ id, role, capability, state, prompt, output, dependsOn, model, effort }) => ({ id, role, capability, state,
+        prompt: clip(prompt, 600), ...(output && { output: clip(output, 600) }), dependsOn,
+        ...(model && { model }), ...(effort && { effort }) })),
       capabilities: Object.fromEntries(Object.entries(this.router.routes)
         .map(([name, list]) => [name, this.ordered(task, name, list.filter((role) => this.router.available(role)))])),
       models: plannerProfiles(this.availableRoles(), this.config.adapters, task.provider, task.model),
@@ -898,8 +899,9 @@ event(task, state, detail) {
       'You are 组长, the group lead. While the members were working, the person sent a new message about this task (newMessage).',
       'Decide for every step that is queued or running: "continue" when the message does not affect it, "guide" when it should take the message into account and carry on with the work it has done (give a short instruction in the person’s language), "stop" only when the step is now pointless or wrong. Prefer guide over stop: stopping throws away half-done work.',
       'If the message needs work no step covers, add steps in "add" with the same fields as a plan step (id, capability, prompt, optional role, model, effort, dependsOn); dependsOn may name existing steps.',
-      'In add, model must be an exact id listed under models for that role (never a label, a family name or the person’s shorthand), and effort one of that model’s efforts; leave either out to use the member’s default. Match the newest generation and the size of the model to the work, as in the original plan.',
-      'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"..."}},"add":[]}.',
+      'Each step in steps shows the exact model it runs on (model). When the person changes a model, read their words against models: the id and label carry the family and the effort. Shorthand such as "gemini 4 hy", "4hy" or "4hydragon" means the Hydrogen family; when no effort is named use the high variant. A queued step cannot switch model in place: set its action to "continue" and give model (an exact id) on that step, and the scheduler will change only its model. A running step cannot switch model; stop it and add the same work again with the chosen model.',
+      'In add, model must be an exact id listed under models for that role (never a label, a family name or the person’s shorthand), and effort one of that model’s efforts; leave either out to use the member’s default. Without a model from the person, use that role’s defaultModel — it is their preferred model. Use another model only when the person names one or the step clearly needs a different size.',
+      'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"...","model":"exact id"}},"add":[]}.',
       JSON.stringify(context),
     ].join('\n');
     const step = { id: 'revise-' + ((task.revisions || []).length), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task) };
@@ -913,10 +915,24 @@ event(task, state, detail) {
     if (terminal.has(task.state)) return;
     const record = task.revisions?.at(-1);
     const actions = decision.steps && typeof decision.steps === 'object' ? decision.steps : {};
-    const outcome = { continued: [], guided: [], stopped: [], added: [], modelFallbacks: [] };
+    const outcome = { continued: [], guided: [], stopped: [], added: [], remodeled: [], modelFallbacks: [] };
     for (const item of steps) {
       if (!['running', 'queued'].includes(item.state)) continue;
       const choice = actions[item.id] || {};
+      // A queued step has not started, so its model can change in place. This keeps a model change from turning
+      // into a stop plus a duplicate step and is the case the person usually means by "改模型".
+      const requested = typeof choice.model === 'string' ? choice.model.trim() : '';
+      if (requested && item.state === 'queued' && choice.action !== 'stop') {
+        const from = item.model || '';
+        const resolved = this.resolveModel(item.role, requested);
+        if (resolved) {
+          item.model = resolved;
+          if (item.effort && !effortsFor(item.role, this.config.adapters[item.role], resolved).includes(item.effort)) delete item.effort;
+          outcome.remodeled.push({ step: item.id, from, to: resolved });
+        } else {
+          outcome.modelFallbacks.push({ step: item.id, requested: clip(requested, 80), used: from || '(default)' });
+        }
+      }
       if (choice.action === 'stop') {
         item.revisedOut = true;
         if (item.state === 'queued') { item.state = 'skipped'; this.save(task, task.state, item.id + ':revised_out'); }
@@ -972,17 +988,84 @@ event(task, state, detail) {
     } else this.save(task, task.state, proposed ? 'revise_needs_approval' : 'revise_decided');
   }
 
-  // The lead names a model for an added step: accept an exact id, the same id ignoring case and punctuation, or a
-  // profile's display label. Anything else is a miss; the caller falls back to the member's default and records it.
+  // The lead names a model for an added step: accept an exact id, the same id ignoring case and punctuation, a
+  // profile's display label, or a shorthand the person actually types ("gemini 4 hy", "4hy", "4hydragon"). A name
+  // without an effort resolves to the high variant of that family. Anything else is a miss; the caller falls back
+  // to the member's default and records it.
   resolveModel(role, requested) {
     if (typeof requested !== 'string' || !requested.trim()) return null;
     const models = this.config.adapters[role]?.profiles?.models || {};
     if (Object.hasOwn(models, requested)) return requested;
-    const fold = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const fold = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const wanted = fold(requested);
-    return Object.keys(models).find((id) => fold(id) === wanted)
-      || Object.keys(models).find((id) => fold(models[id]?.label || '') === wanted)
-      || null;
+    if (!wanted) return null;
+    const EFFORTS = ['minimal', 'medium', 'xhigh', 'high', 'low', 'max'];
+    const short = (value) => value.replace(/^(google|gemini|openai|gpt|anthropic|claude|xai|grok)/, '');
+    const entries = Object.keys(models).map((id) => {
+      const idFold = fold(id);
+      const labelFold = fold(models[id]?.label || '');
+      const effort = EFFORTS.find((level) => idFold.endsWith(level)) || '';
+      const family = (value) => effort && value.endsWith(effort) ? value.slice(0, -effort.length) : value;
+      return { id, idFold, labelFold, idShort: short(idFold), labelShort: short(labelFold),
+        effort, families: [family(idFold), family(labelFold), short(family(idFold)), short(family(labelFold))] };
+    });
+    const exact = entries.find((entry) => entry.idFold === wanted)
+      || entries.find((entry) => entry.labelFold === wanted)
+      || entries.find((entry) => entry.idShort === wanted)
+      || entries.find((entry) => entry.labelShort === wanted);
+    if (exact) return exact.id;
+    const namedEffort = EFFORTS.find((level) => wanted.endsWith(level)) || '';
+    const base = namedEffort ? wanted.slice(0, -namedEffort.length) : wanted;
+    if (!base) return null;
+    const pick = (list) => {
+      if (namedEffort) {
+        const matching = list.find((entry) => entry.effort === namedEffort);
+        if (matching) return matching.id;
+      }
+      return (list.find((entry) => entry.effort === 'high') || list[0]).id;
+    };
+    // A prefix is how a family is usually shortened: "gemini 4 hy" and "4hy" both start Hydrogen's id or label.
+    const prefixed = entries.filter((entry) => [entry.idFold, entry.labelFold, entry.idShort, entry.labelShort]
+      .some((value) => value.startsWith(base)));
+    if (prefixed.length) return pick(prefixed);
+    // A bare family word is enough when it names one family: "hy" means Hydrogen, "neon" means Neon.
+    if (base.length >= 2) {
+      const words = new Map();
+      for (const entry of entries) {
+        for (const family of entry.families) {
+          const word = family.replace(/^[a-z]+/, '').replace(/^\d+/, '');
+          if (!word.startsWith(base)) continue;
+          if (!words.has(word)) words.set(word, []);
+          if (!words.get(word).includes(entry)) words.get(word).push(entry);
+        }
+      }
+      if (words.size === 1) return pick([...words.values()][0]);
+    }
+    // A small typo or phonetic spelling ("4hydragon" for "4hydrogen") counts only when one family is clearly closest.
+    if (base.length < 5) return null;
+    const distance = (a, b) => {
+      let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+      for (let i = 1; i <= a.length; i += 1) {
+        const current = [i];
+        for (let j = 1; j <= b.length; j += 1) {
+          current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        previous = current;
+      }
+      return previous[b.length];
+    };
+    const families = new Map();
+    for (const entry of entries) {
+      for (const family of entry.families) {
+        if (!family) continue;
+        if (!families.has(family)) families.set(family, []);
+        families.get(family).push(entry);
+      }
+    }
+    const ranked = [...families.entries()].map(([family, list]) => ({ list, distance: distance(base, family) }))
+      .sort((a, b) => a.distance - b.distance);
+    if (ranked[0] && ranked[0].distance <= 2 && ranked[0].distance < (ranked[1]?.distance ?? Infinity)) return pick(ranked[0].list);
+    return null;
   }
 
   // The lead could not decide (unavailable or an unusable reply): every member at work gets the message as
@@ -1136,6 +1219,28 @@ event(task, state, detail) {
     this.save(task, task.state, `${stepId}:steered`);
     this.stepControllers?.get(task.id + ':' + stepId)?.abort(new Error('steered'));
     return this.status(task.id);
+  }
+
+  // Administrator action: change the models of steps that have not started, e.g. after the group's preferred
+  // default changes. Every step and name is checked first, so a typo changes nothing; running steps keep the
+  // model they started with.
+  setStepModels(task, requested) {
+    if (!task || !requested || typeof requested !== 'object' || Array.isArray(requested)) throw new Error('invalid_step_models');
+    const plans = [];
+    for (const [id, name] of Object.entries(requested)) {
+      const step = (task.steps || []).find((item) => item.id === id);
+      if (!step) throw new Error('unknown_step:' + id);
+      if (step.state !== 'queued') throw new Error('step_started:' + id);
+      const model = this.resolveModel(step.role, name);
+      if (!model) throw new Error('unknown_model:' + id);
+      plans.push({ step, model, from: step.model || '' });
+    }
+    for (const { step, model, from } of plans) {
+      step.model = model;
+      if (step.effort && !effortsFor(step.role, this.config.adapters[step.role], model).includes(step.effort)) delete step.effort;
+      this.save(task, task.state, `${step.id}:model_changed`);
+    }
+    return { changed: plans.map(({ step, model, from }) => ({ step: step.id, from, to: model })), status: this.status(task.id) };
   }
 
   // The person stops one step (it looks stuck or wrong); the lead then reassigns it.
@@ -1575,7 +1680,7 @@ event(task, state, detail) {
     // task was put back in line later). Nothing of this task is executing now, so put those steps back in
     // line; otherwise the loop below finds no ready step and fails the whole task with dependency_failed.
     for (const step of task.steps) {
-      if (step.state === 'running') step.state = 'queued';
+      if (step.state === 'running') { step.state = 'queued'; delete step.finishedAt; }
     }
     this.save(task, 'running', 'plan_ready');
     for (;;) {
@@ -1598,7 +1703,7 @@ event(task, state, detail) {
           // once and try again; a dependency that is really failed or replaced still ends the task below.
           const stale = task.steps.filter((step) => step.state === 'running');
           if (!stale.length) throw new Error('dependency_failed');
-          for (const step of stale) step.state = 'queued';
+          for (const step of stale) { step.state = 'queued'; delete step.finishedAt; }
           continue;
         }
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
@@ -1687,7 +1792,7 @@ event(task, state, detail) {
       CAPABILITY_GUIDE,
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
       'Use each integration’s strengths and model-specific profile to choose who does each step (the model itself: newest generation first, see below). These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Claude and Codex quota is the scarcest; Antigravity has by far the most. Give reading, research, review and routine implementation to Antigravity; name codex as the role only for hard, cross-cutting or risky changes. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
-      'Prefer new models: each executor\u2019s newestFirst lists its models from the newest generation down. Give steps to the newest generation by default; use an older model only when the newer ones are unavailable or plainly unsuited, and a small or fast variant of the newest generation for trivial reading. Match the model to how hard the step is; do not put every step on the same model out of habit. ' +
+      'Use each executor\u2019s defaultModel as the person\u2019s preferred model for that role: give steps to it unless the person names another model or the step clearly needs a different size. newestFirst lists the models from the newest generation down; use it only to choose a clearly better size for a step (a small or fast variant for trivial reading, a stronger variant for hard work), not to switch families out of habit. ' +
       'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. When model is omitted the executor\u2019s newest full model is used. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
       'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',
@@ -2007,6 +2112,7 @@ event(task, state, detail) {
       }
       this.checkBudget(task);
       step.state = 'running';
+      delete step.finishedAt;
       step.attempts += 1;
       this.save(task, savedState(), step.id + ':started');
       try {
@@ -2057,6 +2163,7 @@ event(task, state, detail) {
           if (sharedWriter) sharedWriter.supersededBy = step.id;
         }
         step.state = 'completed';
+        step.finishedAt = new Date(this.now()).toISOString();
         this.save(task, savedState(), step.id + ':completed');
         if (verdict) {
           task.reviews ||= {};
@@ -2069,6 +2176,7 @@ event(task, state, detail) {
         if (signal.aborted) throw signal.reason;
         if (error.message.startsWith('executor_waiting:')) {
           step.state = 'queued';
+          delete step.finishedAt;
           throw error;
         }
         await this.collectDeliveries(task, step).catch(() => {});
@@ -2101,6 +2209,7 @@ event(task, state, detail) {
         if (error.message.startsWith('cli_stalled') && this.switchModel(task, step)) continue;
         step.state = 'failed';
         step.error = error.message;
+        step.finishedAt = new Date(this.now()).toISOString();
         this.save(task, savedState(), step.id + ':failed');
         throw error;
       }
@@ -2390,6 +2499,7 @@ event(task, state, detail) {
           if (escalation.reason === 'step_failed') this.reassignStep(task, step, decision);
           step.state = 'queued';
           step.attempts = 0;
+          delete step.finishedAt;
           delete step.error;
           delete step.verdict;
           delete step.output;
@@ -2676,6 +2786,10 @@ event(task, state, detail) {
     if (body.operation === 'revise_plan') {
       if (!owner) throw new Error('task_access_denied');
       return this.revisePlan(task, body.reply);
+    }
+    if (body.operation === 'set_step_models') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.setStepModels(task, body.models);
     }
     if (body.operation === 'steer_step') {
       if (!owner) throw new Error('task_access_denied');
