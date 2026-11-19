@@ -183,6 +183,8 @@ window.__groupReady = (async () => {
     if (!window.confirm(message)) return false;
     groups.delete(id);
     groupNames.delete(id);
+    delete workbench[id];
+    if (!temporary) store.set('groupWorkbench', workbench);
     delete savedByGroup[id];
     lastSeen.delete(id);
     store.set('groupNames', Object.fromEntries(groupNames));
@@ -321,6 +323,16 @@ window.__groupReady = (async () => {
     return records ? [...records.values()].filter((task) => !terminal.has(task.state) || task.state === 'needs_review').length : 0;
   };
 
+  // A group chat is a workbench of its own: switching groups switches everything on the page — the draft,
+  // the recipient and model, the attachments, the lead's effort, the right panel's tab and selected task, the
+  // focused lane and where the conversation was scrolled to. Nothing carries over from one group to another.
+  const workbench = temporary ? {} : store.get('groupWorkbench', {});
+  function saveWorkbench(group) {
+    if (!group || temporary || isExample(group.id)) return;
+    workbench[group.id] = { panel: group.panel, leadEffort: group.leadEffort };
+    store.set('groupWorkbench', workbench);
+  }
+  const leadEffortSelect = () => document.querySelector('#groupLeadEffort');
   function switchGroup(id) {
     if (state.group === id) return;
     const previous = currentGroup();
@@ -329,16 +341,30 @@ window.__groupReady = (async () => {
       previous.draft = input.value;
       previous.provider = provider.value;
       previous.model = model.value;
+      previous.leadEffort = leadEffortSelect()?.value;
+      previous.panel = state.panel;
+      previous.scroll = timeline.scrollTop;
+      previous.atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
+      previous.laneFocus = laneFocus;
+      saveWorkbench(previous);
     }
     const next = groups.get(id);
     if (next) markSeen(next);
     input.value = next?.draft || '';
     provider.value = next?.provider || '';
     model.value = next?.model || '';
+    const effort = next?.leadEffort || workbench[id]?.leadEffort || 'high';   // a new group starts at the default
+    if (leadEffortSelect() && [...leadEffortSelect().options].some((option) => option.value === effort)) leadEffortSelect().value = effort;
+    laneFocus = next?.laneFocus || null;
     filter = 'all';
     filterSelect.value = '';
     focusMember = null;
+    // Back where this group was left; a group opened for the first time starts at its latest message.
     timeline.scrollTop = 0;
+    requestAnimationFrame(() => {
+      if (state.group !== id) return;
+      timeline.scrollTop = next?.scroll === undefined || next.atBottom ? timeline.scrollHeight : next.scroll;
+    });
     setRecipient(next);
     hideSuggestions();
     updateFilters();
@@ -1969,9 +1995,12 @@ window.__groupReady = (async () => {
   });
   const leadEffort = $('#groupLeadEffort');
   if (leadEffort) {
-    const savedEffort = store.get('leadEffort', 'high');
+    const savedEffort = (state.group && workbench[state.group]?.leadEffort) || 'high';
     if ([...leadEffort.options].some((option) => option.value === savedEffort)) leadEffort.value = savedEffort;
-    leadEffort.addEventListener('change', () => store.set('leadEffort', leadEffort.value));
+    leadEffort.addEventListener('change', () => {
+      const group = currentGroup();
+      if (group) { group.leadEffort = leadEffort.value; saveWorkbench(group); }
+    });
   }
 
   // Example groups only: change a task the way a status update would, to preview the board, lights and lanes.
@@ -1983,7 +2012,15 @@ window.__groupReady = (async () => {
     if (state.panelOpen) A.renderPanel();
     return true;
   }
-  window.__group = { demoUpdate, addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+  // The right panel tab this group was left on (lanes for a group opened for the first time).
+  const panelFor = (id) => groups.get(id)?.panel || workbench[id]?.panel || 'lanes';
+  function rememberPanel(id, panel) {
+    const group = groups.get(id);
+    if (!group || !panel) return;
+    group.panel = panel;
+    saveWorkbench(group);
+  }
+  window.__group = { panelFor, rememberPanel, demoUpdate, addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {

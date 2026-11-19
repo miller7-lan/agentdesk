@@ -273,9 +273,10 @@
     if (state.group !== project) {
       rememberConversation();
       if (!state.group) state.directPanel = state.panel;
+      if (state.group) G().rememberPanel?.(state.group, state.panel);
       G().switchGroup(project);
       state.group = project;
-      state.panel = state.groupPanel;
+      state.panel = G().panelFor?.(project) || state.groupPanel;
     }
     state.collapsed.delete(projectIdOf(project));
     renderAll();
@@ -286,6 +287,7 @@
     if (state.group || id !== state.active) rememberConversation();
     if (state.group) {
       state.groupPanel = state.panel;
+      G().rememberPanel?.(state.group, state.panel);
       G().switchGroup(null);
       state.group = null;
       state.panel = state.directPanel;
