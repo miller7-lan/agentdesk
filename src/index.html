@@ -175,6 +175,7 @@
             <button type="button" class="icon-btn group-clear" id="groupClearAll" title="清空全部群聊记录（群聊本身保留）" aria-label="清空全部群聊记录"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
           </div>
         </header>
+        <div class="group-pipeline" id="groupPipeline" aria-label="任务线成员链" hidden></div>
         <div class="group-filters" id="groupFilters" aria-label="消息筛选">
           <button type="button" data-group-filter="all" aria-pressed="true">全部</button>
           <button type="button" data-group-filter="mine" aria-pressed="false">与我相关</button>
@@ -232,6 +233,7 @@
         <button class="icon-btn" id="closePanel" type="button" title="收起面板" data-shortcut-title="收起面板|J" aria-label="收起工作区面板"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div class="panel-tabs">
+        <button class="ptab" data-panel="lanes" data-group-panel hidden>泳道</button>
         <button class="ptab" data-panel="members" data-group-panel hidden>成员</button>
         <button class="ptab" data-panel="tasks" data-group-panel hidden>任务<span class="badge" id="taskBadge"></span></button>
         <button class="ptab active" data-panel="diff" data-direct-panel><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4v16m8-16v16M4 8h8m0 8h8"/></svg>改动<span class="badge" id="diffBadge"></span></button>
@@ -389,6 +391,7 @@
   <script src="worktree-ui.js"></script>
   <script src="stages.js"></script>
   <script src="task-graph.js"></script>
+  <script src="lanes.js"></script>
   <script src="approvals.js"></script>
   <script src="orchestrator.js"></script>
   <script src="agent-threads.js"></script>

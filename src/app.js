@@ -53,7 +53,7 @@
     previousConversation: null,
     panel: 'diff',
     group: null,
-    groupPanel: 'members',
+    groupPanel: 'lanes',
     directPanel: 'diff',
     panelOpen: store.get('panelOpen', true),
     sideOpen: true,
@@ -556,7 +556,7 @@
     $('#panelTitle').textContent = state.group ? '群聊详情' : '检查工作区';
     $$('[data-group-panel]').forEach((tab) => { tab.hidden = !state.group; });
     $$('[data-direct-panel]').forEach((tab) => { tab.hidden = Boolean(state.group); });   // in a group they live under 任务
-    const shownTab = state.group && ['graph', 'lanes', 'diff', 'terminal'].includes(state.panel) ? 'tasks' : state.panel;
+    const shownTab = state.group && ['graph', 'diff', 'terminal'].includes(state.panel) ? 'tasks' : state.panel;
     $$('.ptab').forEach((b) => {
       const active = b.dataset.panel === shownTab;
       b.classList.toggle('active', active);
@@ -649,7 +649,7 @@
   });
 
   /* ---------- 布局与拖拽 ---------- */
-  const defaultWidths = { sideW: 232, panelW: 320 };
+  const defaultWidths = { sideW: 232, panelW: 420 };
   const sideW = store.get('sideW', defaultWidths.sideW), panelW = store.get('panelW', defaultWidths.panelW);
   $('#sidebar').style.width = sideW + 'px';
   $('#panel').style.width = panelW + 'px';

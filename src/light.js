@@ -33,6 +33,8 @@
         // ...and the task's node on the project lanes, when they are open.
         const selector = `[data-flight-to="${CSS.escape(key)}"], [data-flight-task="${CSS.escape(key.split(':')[0])}"]`;
         const targets = document.querySelectorAll(selector);
+        // A node further down the lane tree is brought into view first, so the light lands where it can be seen.
+        targets.forEach((target) => { if (target.closest('.lane-tree')) target.scrollIntoView({ block: 'nearest' }); });
         targets.forEach((_, index) => {
           const find = () => document.querySelectorAll(selector)[index];
           try {
@@ -53,5 +55,16 @@
     setTimeout(() => node.classList.remove('light-arrived'), 1400);
   }
 
-  window.AgentDeskLight = { border, completed, colour, arrive };
+  // One light from an element to another (a list row to its node on the lane tree), then the node lights up.
+  function fly(source, target, color) {
+    if (!source || !target) return;
+    if (!ui || reduce.matches) { arrive(target); return; }
+    layer ||= ui.createLightLayer();
+    try {
+      layer.emit({ id: 'fly:' + Date.now() + Math.random(), source, target, color: color || colour('lead'), duration: 900 })
+        .finished.then((result) => { if (result === 'arrived') arrive(target); });
+    } catch { arrive(target); }
+  }
+
+  window.AgentDeskLight = { border, completed, colour, arrive, fly };
 })();

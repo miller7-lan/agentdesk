@@ -677,6 +677,8 @@ window.__groupReady = (async () => {
     loadLeadThinking(currentGroup(), details.dataset.leadThink);
   }, true);
 
+  const stepProgress = (records) => [...records.values()].flatMap((task) =>
+    (task.steps || []).map((step) => ({ key: task.id + ':' + step.id, state: step.state, role: step.role })));
   function renderTimeline() {
     const group = currentGroup();
     const { records } = group;
@@ -784,14 +786,43 @@ window.__groupReady = (async () => {
       ${records.size ? '' : '<p>组长先确认需求和方案，确认后开始执行。</p>'}
     </div>`);
     if (atBottom && (records.size || group.approvals.size)) timeline.scrollTop = timeline.scrollHeight;
-    // A member that just finished sends a light from its summary to its row on the progress board.
-    window.AgentDeskLight?.completed(timeline, [...records.values()].flatMap((task) =>
-      (task.steps || []).map((step) => ({ key: task.id + ':' + step.id, state: step.state, role: step.role }))));
+    // A member that just finished sends a light from its summary to its row on the progress board (in the lanes
+    // view, from its row in the event list to its node on the lane tree; see renderLanesView).
+    if (!timeline.hidden) window.AgentDeskLight?.completed(timeline, stepProgress(records));
   }
+
+  // Conversation and lanes on one page (like Lancer): the member chains of the active task lines sit above the
+  // conversation, the lane tree is the right panel's first tab, and lights fly from the conversation to it.
+  function applyGroupView() {
+    const strip = document.querySelector('#groupPipeline');
+    const lanes = isExample(state.group) && !currentGroup()?.records.size ? [] : lanesModel(4).filter((lane) => lane.running || lane.waiting);
+    strip.hidden = !lanes.length;
+    if (lanes.length) setHtml(strip, window.AgentDeskLanes.pipeline(lanes, laneHelpers));
+  }
+  function laneClick(event) {
+    const node = event.target.closest('[data-lane-event]')?.dataset.laneEvent;
+    if (node) { laneSelect(node); return true; }
+    const head = event.target.closest('[data-lane-open]');
+    if (!head) return false;
+    const id = head.dataset.laneOpen;
+    if (head.dataset.laneKind === 'chat') { A.openSession(id); return true; }
+    const owner = groupsOf(projectIdOf(state.group)).find(({ id: group }) => groups.get(group)?.records.has(id));
+    if (owner && owner.id !== state.group) A.openGroup(owner.id);
+    selectTask(id, 'graph');
+    return true;
+  }
+  document.querySelector('#groupPipeline').addEventListener('click', (event) => {
+    const row = event.target.closest('[data-lane-pipeline]')?.dataset.lanePipeline;
+    if (!row) return;
+    laneFocus = laneFocus === row ? null : row;
+    A.showPanel('lanes');
+  });
+  document.querySelector('#panelBody').addEventListener('click', (event) => { if (state.group && state.panel === 'lanes') laneClick(event); });
 
   function render() {
     drawRoutes();
     if (!state.group) return;
+    applyGroupView();
     const count = taskCount();
     $('#groupSubtitle').textContent = shownMembers().filter((id) => id !== 'you' && id !== 'local').length + ' 位 AI 成员' + (count ? ' · ' + count + ' 项未结任务' : '');
     $('#taskBadge').textContent = count || '';
@@ -1165,48 +1196,52 @@ window.__groupReady = (async () => {
 
   // The group panel has three tabs: 成员, 任务, 文件. Inside 任务 a switch picks the task's details,
   // its dispatch graph, its changed files or its output, so related views share one tab.
-  const TASK_VIEWS = [['tasks', '详情'], ['graph', '调度图'], ['lanes', '泳道'], ['diff', '改动'], ['terminal', '输出']];
+  const TASK_VIEWS = [['tasks', '详情'], ['graph', '调度图'], ['diff', '改动'], ['terminal', '输出']];
 
-  // Project lanes (after Lancer's GitTree): every group chat and every single chat of this project on its own
-  // lane, its work from left to right. A group lane has one node per task, coloured by state; a chat lane has
-  // one node per turn, a diamond where the turn changed files on this computer, and a merge node when its
-  // worktree was merged back. Clicking a task opens its dispatch graph; clicking a chat opens it.
-  function panelLanes() {
+  // Project lanes after Lancer's "工作树 · 泳道" (src/lanes.js): each group task and each single chat of this
+  // project is a lane; events of every lane are interleaved by time. The right panel shows the tree; the
+  // group's "泳道" view shows the member chains, the interleaved event list and the tree side by side.
+  const laneRole = (role) => role === 'claude' ? 'lead' : role;
+  const laneHelpers = {
+    memberName: (role) => role === 'you' ? '你' : memberName(laneRole(role)),
+    colour: (role) => window.AgentDeskLight?.colour(laneRole(role)) || 'var(--accent)',
+    avatar: (role) => avatars.html(laneRole(role), { size: 16, still: true }),
+  };
+  function lanesModel(limit = 6) {
     const project = projectIdOf(state.group);
-    const laneColour = (role) => window.AgentDeskLight?.colour(role) || 'var(--accent)';
-    const stateClass = (value) => ['awaiting_details', 'awaiting_approval'].includes(value) ? 'needs_review'
-      : ['completed', 'failed', 'cancelled', 'needs_review'].includes(value) ? value
-      : ['running', 'planning', 'applying', 'testing', 'triaging', 'awaiting_acceptance'].includes(value) ? 'running' : 'queued';
-    const groupLanes = groupsOf(project).map(({ id, name }) => {
-      const tasks = [...(groups.get(id)?.records.values() || [])].filter((task) => !isExample(id) || task.id)
-        .sort((a, b) => (Date.parse(a.createdAt || '') || a.time || 0) - (Date.parse(b.createdAt || '') || b.time || 0)).slice(-24);
-      // Each task node takes the colour of the member doing (or that did) the work.
-      const worker = (task) => [...(task.steps || [])].reverse().find((step) => step.role && step.role !== 'claude')?.role || task.provider || 'lead';
-      const nodes = tasks.map((task) => `<button type="button" class="lane-node" style="--lane:${laneColour(worker(task))}" data-lane-group="${esc(id)}" data-lane-task="${esc(task.id)}" data-flight-task="${esc(task.id)}"
-        data-node-state="${stateClass(task.state)}" title="${esc(taskLabel(task) + ' · ' + statusName(task.state) + ' · ' + (task.prompt || '').slice(0, 60))}"></button>`).join('<i class="lane-link"></i>');
-      return `<div class="lane" style="--lane:${laneColour('lead')}"><button type="button" class="lane-head" data-lane-open-group="${esc(id)}"><span class="channel-mark">#</span>${esc(name)}</button>
-        <div class="lane-track">${nodes || '<span class="lane-empty">还没有任务</span>'}</div></div>`;
-    });
-    const chats = A.D.sessions.filter((s) => projectIdOf(s.project) === project && !s.agentThread);
-    const chatLanes = chats.slice(0, 20).map((s) => {
-      const role = s.provider || s.agent || 'codex';
-      const turns = [];
-      for (const item of s.items || []) {
-        if (item.t === 'user') turns.push({ kind: 'turn', text: item.text });
-        else if (item.t === 'checkpoint' && turns.length) turns[turns.length - 1].files = item.files.length;
-      }
-      const nodes = turns.slice(-24).map((turn, i) => `<span class="lane-node${turn.files ? ' delivery' : ''}" data-node-state="completed"
-        title="${esc('第 ' + (i + 1) + ' 轮' + (turn.files ? ` · 改动本机 ${turn.files} 个文件` : '') + ' · ' + String(turn.text || '').slice(0, 60))}"></span>`);
-      if (s.worktree?.mergedAt) nodes.push(`<span class="lane-node merge" data-node-state="completed" title="已合回 ${esc(s.worktree.baseBranch)}"></span>`);
-      if (s.busy) nodes.push('<span class="lane-node" data-node-state="running" title="进行中"></span>');
-      return `<div class="lane" style="--lane:${laneColour(role)}"><button type="button" class="lane-head" data-lane-open-chat="${esc(s.id)}">${avatars.html(role, { size: 18, still: true })}<span>${esc(s.title || '单聊')}</span>${s.worktree ? `<small title="${esc(s.worktree.path)}">⎇ ${esc(s.worktree.branch)}</small>` : ''}</button>
-        <div class="lane-track">${nodes.join('<i class="lane-link"></i>') || '<span class="lane-empty">还没有对话</span>'}</div></div>`;
-    });
-    return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>项目泳道</h3></div>
-      <p class="panel-note">${esc(A.proj(project)?.name || '')}：每条泳道是一个群聊或单聊，从左到右是它的任务和对话。圆点 = 任务或一轮对话，菱形 = 改动了本机文件，双圈 = 工作树已合回。</p>
-      ${groupLanes.length ? '<h4>群聊</h4>' + groupLanes.join('') : ''}${chatLanes.length ? '<h4>单聊</h4>' + chatLanes.join('') : ''}
-      ${groupLanes.length || chatLanes.length ? '' : '<div class="empty-note">这个项目还没有对话。</div>'}</div>`;
+    const tasks = groupsOf(project).flatMap(({ id, name }) => [...(groups.get(id)?.records.values() || [])]
+      .filter((task) => !task.redacted).map((task) => ({ task, groupName: name })));
+    const sessions = A.D.sessions.filter((s) => projectIdOf(s.project) === project && !s.agentThread && (s.items || []).length);
+    return window.AgentDeskLanes.model({ tasks, sessions, ...laneHelpers, limit });
   }
+  let laneFocus = null;     // the lane whose nodes are highlighted
+  function panelLanes() {
+    const width = document.querySelector('#panel')?.offsetWidth || 420;
+    const lanes = lanesModel(width >= 400 ? 4 : width >= 320 ? 3 : 2);
+    return `<div class="project-panel-body lanes-panel"><div class="member-panel-heading"><h3>工作树 · 泳道</h3><small>${lanes.length} 条任务线 · 点节点定位对话</small></div>
+      ${window.AgentDeskLanes.tree(lanes, { ...laneHelpers, focus: laneFocus })}</div>`;
+  }
+  // Clicking a node on the lane tree focuses its lane and finds the conversation it belongs to: a group task
+  // scrolls into view in the conversation and a light flies from the node to it; a single chat opens.
+  function laneSelect(key) {
+    const laneId = key.split(':')[0];
+    laneFocus = laneId;
+    A.renderPanel();
+    requestAnimationFrame(() => {
+      const node = document.querySelector(`[data-lane-event="${CSS.escape(key)}"]`);
+      const message = timeline.querySelector(`[data-message-id="${CSS.escape(laneId)}"]`);
+      window.AgentDeskLight?.arrive(node);
+      if (!message || !node) return;
+      message.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      message.classList.remove('lane-located');
+      void message.offsetWidth;
+      message.classList.add('lane-located');
+      setTimeout(() => window.AgentDeskLight?.fly(node, message, node.style.getPropertyValue('--lane').trim()), 350);
+    });
+  }
+  function renderLanesView() { if (state.panelOpen && state.panel === 'lanes') A.renderPanel(); }
+
+
   function renderPanel(panel, body) {
     const task = getSelected();
     const inTasks = TASK_VIEWS.some(([key]) => key === panel);
