@@ -1296,7 +1296,7 @@ window.__groupReady = (async () => {
   function refreshQuotas() {
     if (!supported || !isLiveGroup() || !connected || quotaCheck || Date.now() < nextQuotaAt) return;
     const current = generation;
-    nextQuotaAt = Date.now() + 60000;
+    nextQuotaAt = Date.now() + 15000;
     quotaCheck = control('quota_status').then((result) => {
       if (current === generation) quotas = result;
     }).catch(() => {

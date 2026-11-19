@@ -321,6 +321,14 @@ class Scheduler {
 
   // Adds what routing makes of each CLI's quota: the percent the router uses (live, or the cached snapshot when
   // the live reading has none), its limits, and whether it is working normally, reserved for its main jobs, or stopped.
+  // The quota page and the status bar poll every few seconds. All of them share one reading that is at most ten
+  // seconds old, so several windows do not each start the Codex App Server, `agy /usage` and the Grok billing call;
+  // the same reading also updates the routing.
+  readQuotaLive(liveOnly = false) {
+    if (liveOnly || this.config.quota === false) return quotaStatus(this.config.adapters, { liveOnly });
+    return this.refreshQuota(10_000);
+  }
+
   decorateQuota(list) {
     list = this.withEstimates(list);
     const cached = this.quotaSnapshot || [];
@@ -2667,14 +2675,12 @@ event(task, state, detail) {
     if (body.operation === 'resource_status' && (route === 'admin' || named)) return hostResources();
     if (body.operation === 'quota_status') {
       if (route === 'admin') {
-        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true }))
-          .then((list) => this.decorateQuota(list));
+        return this.readQuotaLive(body.liveOnly === true).then((list) => this.decorateQuota(list));
       }
       if (named && Array.isArray(this.config.quotaBridges) && this.config.quotaBridges.includes(named)) {
         // Snapshots are included by default: Claude's is rewritten by every turn's rate_limit_event, so it is
         // as current as a live reading, and the desktop needs its windows to draw the quota rings.
-        return this.refreshQuota().then(() => quotaStatus(this.config.adapters, { liveOnly: body.liveOnly === true }))
-          .then((list) => this.decorateQuota(list));
+        return this.readQuotaLive(body.liveOnly === true).then((list) => this.decorateQuota(list));
       }
       throw new Error('quota_access_denied');
     }

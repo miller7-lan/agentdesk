@@ -130,7 +130,7 @@
   async function load() {
     if (loading) return;
     loading = true;
-    render();
+    if (!data) render();
     try {
       if (!api) throw Error('offline');
       const [quotas, routes, resources] = await Promise.all([
@@ -313,7 +313,7 @@
         <li>审查交给与改代码不同的成员（交叉审查），没有别人可用时才由作者自审。</li>
         <li>每种活最后都会自动「补齐」：上面列的成员都接不了（额度、登录、没配置）时，其他能做这种活的成员自动补上；每个成员卡住时，按从新到旧换它的其他模型。只是暂时忙的成员会等它空下来，不会补。</li>
       </ul></section>`;
-    dialog.querySelector('.qv-time').textContent = loading ? '刷新中…' : loadedAt ? '更新于 ' + new Date(loadedAt).toLocaleTimeString() : '';
+    updateTime();
   }
 
   function ensureDialog() {
@@ -345,12 +345,33 @@
     return dialog;
   }
 
+  // Live while the page is open and the window is in view: a new reading every 10 seconds, and the reset
+  // countdowns tick every second in between.
+  const LIVE_MS = 10_000;
+  let ticker = null;
+  function updateTime() {
+    const label = $('#quotaDialog .qv-time');
+    if (!label) return;
+    const age = loadedAt ? Math.round((Date.now() - loadedAt) / 1000) : 0;
+    label.textContent = loading && !data ? '读取中…'
+      : loadedAt ? (data?.live ? '实时 · ' : '') + (age < 2 ? '刚刚更新' : age + ' 秒前更新') + ' · 每 10 秒刷新' : '';
+  }
+  function tick() {
+    const dialog = $('#quotaDialog');
+    if (!dialog?.open) { clearInterval(ticker); ticker = null; return; }
+    if (document.hidden) return;
+    // a dropdown in use (「+ 补充」) is not pulled away by a refresh; the next tick catches up
+    const busy = dialog.contains(document.activeElement) && document.activeElement.tagName === 'SELECT';
+    if (!loading && !busy && Date.now() - loadedAt >= LIVE_MS) load();
+    else updateTime();
+  }
   function open(member) {
     focus = member || null;
     const dialog = ensureDialog();
     if (!dialog.open) dialog.showModal();
     render();
-    if (!data || Date.now() - loadedAt > 20000) load();
+    if (!data || Date.now() - loadedAt > LIVE_MS) load();
+    ticker ||= setInterval(tick, 1000);
   }
 
   // Every quota item in the status bar opens this page.
