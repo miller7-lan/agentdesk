@@ -5,7 +5,7 @@ const { PassThrough } = require('node:stream');
 const { Lines } = require('../orchestrator/transport');
 const { localShellSpec } = require('../orchestrator/windows-local-shell');
 
-async function verifyProvider({ remote, namespacePid, folder, directory, protocol, binding, provider = 'codex', claudeEntry, claudeState, sandboxOnly }) {
+async function verifyProvider({ remote, namespacePid, folder, directory, protocol, binding, provider = 'codex', claudeEntry, claudeState, sandboxOnly, traceFile }) {
   const display = provider === 'codex' ? 'Codex' : 'Claude';
   const marker = 'VERIFIED_NATIVE_' + provider.toUpperCase();
   const compiler = path.join(process.env.SystemRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
@@ -83,14 +83,17 @@ async function verifyProvider({ remote, namespacePid, folder, directory, protoco
     if (frame.error) finish.reject(new Error(frame.error.message));
     else finish.resolve(frame.result);
   });
-  const argv = provider === 'codex' ? ['codex', 'app-server'] :
+  const argv = provider === 'codex' ? [
+    ...(traceFile ? ['strace', '-f', '-tt', '-e', 'trace=%process,mount,umount2,unshare,setns,statfs', '-o', traceFile] : []),
+    'codex', 'app-server',
+  ] :
     ['env', 'AGENTDESK_CHAT_STATE=' + claudeState,
       'AGENTDESK_CHAT_HOME_CLAUDE=/var/lib/agentdesk-orchestrator/homes/claude',
       'AGENTDESK_CHAT_SANDBOX=/usr/bin/bwrap', 'AGENTDESK_CLAUDE_NATIVE_PROJECT=' + folder,
       '/opt/agentdesk-orchestrator/node', claudeEntry, 'claude'];
   const server = remote.request('command/exec', {
     command: ['nsenter', '--mount', '--target', namespacePid, '--', '/bin/bash', '-c',
-      'cd -- "$1"; shift; exec "$@"', 'fixture', folder, ...argv], cwd: '/tmp', timeoutMs: 150_000,
+      'cd -- "$1"; shift; exec "$@"', 'fixture', provider === 'codex' ? '/var/tmp' : folder, ...argv], cwd: '/tmp', timeoutMs: 150_000,
     streamStdin: true, streamStdoutStderr: true, disableOutputCap: true, processId, sandboxPolicy: { type: 'dangerFullAccess' },
   }, { timeoutMs: 155_000 });
   server.then(({ exitCode }) => disconnected(new Error('Native Codex fixture process exited ' + exitCode + ' ' + diagnostics)), disconnected);
@@ -104,19 +107,31 @@ async function verifyProvider({ remote, namespacePid, folder, directory, protoco
     threadId = opened.thread.id;
     console.log(display + ' fixture thread opened in the mounted workspace');
     if (sandboxOnly) {
-      const value = await request('command/exec', {
-        cwd: folder, command: ['python3', '-u', '-c', 'from pathlib import Path; print("started"); p=Path("Program.cs"); text=p.read_text(); print("read"); p.write_text(text.replace("OLD_MARKER","SANDBOX_WRITE")); print("wrote")'],
-        timeoutMs: 20_000, sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false,
-          excludeTmpdirEnvVar: false, excludeSlashTmp: false },
-      });
-      if (value.exitCode !== 0 || !(await fs.readFile(path.join(directory, 'Program.cs'), 'utf8')).includes('SANDBOX_WRITE')) {
-        throw new Error('Codex workspace-write probe exited ' + value.exitCode + ': ' + (value.stderr || value.stdout || 'no output'));
+      const write = { type: 'workspaceWrite', writableRoots: [], networkAccess: false,
+        excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+      for (const [label, cwd, policy] of [
+        ['ordinary cwd / workspace-write', '/var/tmp', write],
+        ['SSHFS cwd / diagnostic full access', folder, { type: 'dangerFullAccess' }],
+        ['SSHFS cwd / workspace-write', folder, { ...write, writableRoots: [folder] }],
+      ]) {
+        const mounted = cwd === folder;
+        const started = Date.now();
+        const value = await request('command/exec', {
+          cwd, command: mounted ? ['python3', '-u', '-c',
+            'from pathlib import Path; print("started"); p=Path("Program.cs"); text=p.read_text(); print("read"); p.write_text(text + "\\n// probe\\n"); print("wrote")']
+            : ['/bin/echo', 'ordinary sandbox ready'],
+          timeoutMs: mounted && policy.type === 'workspaceWrite' ? 75_000 : 25_000, sandboxPolicy: policy,
+        });
+        console.log(label + ': ' + JSON.stringify({ ms: Date.now() - started, code: value.exitCode, stdout: value.stdout, stderr: value.stderr }));
+        if (value.exitCode !== 0) throw new Error('Failed layer: ' + label);
       }
-      console.log('Official Codex workspace-write sandbox modified the Windows fixture');
+      if (!(await fs.readFile(path.join(directory, 'Program.cs'), 'utf8')).includes('// probe')) throw new Error('Windows probe write not visible');
       return;
     }
     await request('turn/start', {
       threadId, cwd: folder,
+      ...(provider === 'codex' && { sandboxPolicy: { type: 'workspaceWrite', writableRoots: [folder], networkAccess: false,
+        excludeTmpdirEnvVar: true, excludeSlashTmp: true } }),
       input: [{ type: 'text', text: `This is a disposable local Windows development fixture. Read Program.cs using your native file tools, then edit OLD_MARKER to ${marker} using your native edit tool. Use local_shell with action run and PowerShell command "& .\\build.ps1" to compile and run the Windows EXE. The project files are mounted from Windows. Run the actual build through local_shell. Report the result.`, text_elements: [] }],
     });
     const turn = await completed;

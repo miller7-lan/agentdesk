@@ -18,10 +18,10 @@ remote.once('codex-ready', async () => {
   let channel;
   let transport;
   const processId = randomUUID();
-  const command = async (command, cwd = '/tmp') => {
+  const command = async (command, cwd = '/tmp', timeoutMs = 35_000) => {
     const reply = await remote.request('command/exec', {
-      command, cwd, timeoutMs: 35_000, sandboxPolicy: { type: 'dangerFullAccess' },
-    }, { timeoutMs: 40_000 });
+      command, cwd, timeoutMs, sandboxPolicy: { type: 'dangerFullAccess' },
+    }, { timeoutMs: timeoutMs + 5000 });
     if (reply.exitCode !== 0) throw new Error(`VPS fixture ${path.basename(command[0])} exited ${reply.exitCode}: ${reply.stderr || reply.stdout || 'no output'}`);
     return reply.stdout;
   };
@@ -81,7 +81,18 @@ remote.once('codex-ready', async () => {
     transport.then(({ exitCode }) => rejectMount(new Error('Mount process closed: ' + exitCode + ' ' + diagnostics)), rejectMount);
     const { namespacePid, folder } = await mounted;
     await command(['sh', '-c', 'test ! -e "$1/readme.txt"', 'fixture', folder]);
-    if (official) {
+    if (sandboxOnly && process.argv.includes('--direct-sandbox')) {
+      const started = Date.now();
+      const result = await command(['nsenter', '--mount', '--target', namespacePid, '--',
+        'codex', 'sandbox', '-P', ':workspace', '-C', folder, '--', 'python3', '-u', '-c',
+        'from pathlib import Path; import time; print("child start", time.time()); f=Path("native-sandbox.txt"); f.write_text("codex sandbox"); print(f.read_text(), time.time())'],
+      '/tmp', 70_000);
+      if (await fs.readFile(path.join(directory, 'native-sandbox.txt'), 'utf8') !== 'codex sandbox') {
+        throw new Error('Direct Codex sandbox write not visible on Windows');
+      }
+      console.log('Native Codex sandbox / SSHFS (' + (Date.now() - started) + ' ms): ' + result.trim());
+    }
+    if (official && !process.argv.includes('--direct-sandbox')) {
       const claudeEntry = state + '/code/chat-server.js';
       const claudeState = state + '/claude-state';
       if (official === 'claude') {
@@ -104,7 +115,8 @@ remote.once('codex-ready', async () => {
         projectRoot: binding.directory, accessMode: 'write',
       });
       await verifyProvider({ remote, namespacePid, folder, directory, binding, protocol,
-        provider: official, sandboxOnly, claudeEntry, claudeState });
+        provider: official, sandboxOnly, claudeEntry, claudeState,
+        traceFile: process.argv.includes('--trace-sandbox') ? state + '/sandbox.trace' : undefined });
     }
     const result = await command(['nsenter', '--mount', '--target', namespacePid, '--', '/bin/bash', '-c',
       'cd -- "$1"; shift; exec "$@"', 'fixture', folder, 'python3', '-u', '-c', `
@@ -140,6 +152,10 @@ print("VPS2 SSHFS read, atomic replacement, binary write, mkdir and rename")
       }
     }
     if (state) {
+      if (process.argv.includes('--trace-sandbox')) {
+        console.log(await command(['bash', '-c',
+          'grep -E "mount[(]|unshare[(]|execve[(]|SIGKILL|exited with" "$1/sandbox.trace" | tail -65; rm -f -- "$1/sandbox.trace"', 'fixture', state]).catch(() => 'Trace unavailable'));
+      }
       // Only remove our empty mount and fixture directories. No recursive deletion under an unverified mount.
       await command(['bash', '-c', 'rm -f -- "$1/project-mount.cjs"; rm -rf -- "$1/code" "$1/claude-state"; rmdir -- "$1/windows-chat-mounts" "$1"', 'fixture', state])
         .catch(error => { console.error(error.message); process.exitCode = 1; });
