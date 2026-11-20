@@ -1,7 +1,7 @@
 const { createInterface } = require('node:readline');
 const { connect } = require('node:net');
 const { appendFileSync } = require('node:fs');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
 const { spec: batchSpec, validate: validateFileBatch, editSpec } = require('./file-batch');
 
@@ -25,6 +25,7 @@ const operations = {
   windows_edit_file: ['edit'],
   windows_read_files_batch: ['read_batch', ['items']],
   windows_write_files_batch: ['write_batch', ['items']],
+  local_desktop: ['desktop', ['tool', 'arguments']],
 };
 
 const descriptions = {
@@ -40,6 +41,7 @@ const descriptions = {
   delete: 'Move a file or folder on the person\'s computer (root "computer") to the trash.',
   commands: 'List the commands the person allows agents to run in their project.',
   run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
+  desktop: 'Operate the authorized local desktop. Start with desktop_screenshot or desktop_snapshot. Use the desktop tool name and its arguments, for example desktop_screenshot with {}.',
 };
 
 const tools = Object.entries(operations).map(([name, [action, required]]) => {
@@ -62,7 +64,7 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
   return {
   name,
   description: descriptions[action],
-  annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete'].includes(action) },
+  annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete', 'desktop'].includes(action) },
   inputSchema: {
     type: 'object',
     properties: {
@@ -72,6 +74,8 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
       ...(action === 'grep' ? { caseSensitive: { type: 'boolean' } } : {}),
       ...(action === 'read' ? { offset: { type: 'integer', minimum: 0 }, version: { type: 'string' } } : {}),
       ...(action === 'run' ? { command: { type: 'string', description: 'A name returned by windows_list_commands.' } } : {}),
+      ...(action === 'desktop' ? { tool: { type: 'string', pattern: '^desktop_[a-z_]+$' },
+        arguments: { type: 'object' } } : {}),
       ...(action === 'write' ? { content: { type: 'string' }, encoding: { type: 'string', enum: ['utf8', 'base64'] }, version: { type: 'string', description: 'Current version from windows_stat_file; omit for a new file.' } } : {}),
       ...(action === 'move' ? { destination: { type: 'string', description: 'Absolute path of the new location.' } } : {}),
     },
@@ -80,6 +84,16 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
   },
   };
 });
+
+function toolsFor(scope) {
+  return tools.filter(({ name }) => {
+    const [operation] = operations[name];
+    if (operation === 'desktop') return scope === 'desktop';
+    if (!scope) return true;
+    if (scope === 'commands') return operation === 'commands' || operation === 'run';
+    return scope === 'files' && operation !== 'commands' && operation !== 'run';
+  });
+}
 
 // Mutations leave a local, verifiable record next to the step log. A step may claim success only when the
 // matching receipt shows the bridge accepted the write and returned the new version.
@@ -133,6 +147,8 @@ function request(socketPath, frame, timeout = 35000, limit) {
 if (require.main === module) {
   const [socketPath = process.env.AGENTDESK_MCP_SOCKET, capability = process.env.AGENTDESK_MCP_CAPABILITY] = process.argv.slice(2);
   if (!socketPath || !capability) process.exit(1);
+  const exposed = toolsFor(process.env.AGENTDESK_MCP_SCOPE);
+  const names = new Set(exposed.map(({ name }) => name));
   const input = createInterface({ input: process.stdin });
   input.on('line', async (line) => {
     let frame;
@@ -145,12 +161,36 @@ if (require.main === module) {
       } else if (frame.method === 'ping') {
         result = {};
       } else if (frame.method === 'tools/list') {
-        result = { tools };
-      } else if (frame.method === 'tools/call' && Object.hasOwn(operations, frame.params.name)) {
+        result = { tools: exposed };
+      } else if (frame.method === 'tools/call' && names.has(frame.params.name)) {
         const [operation] = operations[frame.params.name];
         const args = frame.params.arguments || {};
         const batch = operation === 'read_batch' || operation === 'write_batch';
         if (batch) validateFileBatch(args.items, operation === 'write_batch');
+        if (operation === 'desktop') {
+          const reply = await request(socketPath, { capability, operation, tool: args.tool, arguments: args.arguments }, 55000);
+          const content = [];
+          for (const item of reply.contentItems) {
+            if (item.type === 'text') {
+              content.push(item);
+            } else {
+              const chunks = [];
+              for (let offset = 0; offset < item.size;) {
+                const chunk = await request(socketPath, { capability, operation: 'desktop_image', stream_id: item.stream_id, offset });
+                const bytes = Buffer.from(chunk.data, 'base64');
+                if (!bytes.length || chunk.offset !== offset || offset + bytes.length > item.size) throw new Error('invalid_desktop_image');
+                chunks.push(bytes);
+                offset += bytes.length;
+              }
+              const bytes = Buffer.concat(chunks);
+              if (createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error('invalid_desktop_image');
+              content.push({ type: 'image', mimeType: item.mimeType, data: bytes.toString('base64') });
+            }
+          }
+          result = { isError: !reply.success, content };
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }) + '\n');
+          return;
+        }
         // Forward every argument the service acts on. Dropping content here made every write look empty
         // ("invalid_content") even though the client had listed the write tools.
         try {
@@ -187,4 +227,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { request, toolNames: Object.keys(operations), receiptFor, writeReceipt, MUTATIONS };
+module.exports = { request, toolNames: Object.keys(operations), toolsFor, receiptFor, writeReceipt, MUTATIONS };

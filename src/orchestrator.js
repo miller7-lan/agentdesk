@@ -59,6 +59,12 @@ window.__groupReady = (async () => {
     plan_approved: '方案已确认，等待分派。',
     plan_auto_approved: '方案较小，已自动开始执行；改动应用到本机前仍要你审核。',
     plan_workspace_changed: '工作区版本已变化，请基于当前版本重新规划。',
+    project_snapshot_failed: '读取本机项目快照失败，请检查项目和 Bridge 后重试。',
+    project_snapshot_too_large: '未提交的项目改动超过 8 MiB，请缩小任务范围或先同步项目提交。',
+    project_snapshot_unmerged: '项目有未解决的 Git 合并冲突，请处理后再发起任务。',
+    project_snapshot_submodule: '子模块有改动，请先同步子模块及主项目的提交。',
+    project_snapshot_sensitive_path: '未提交改动包含受限文件，请检查项目中的凭据文件后重试。',
+    project_snapshot_encoding: '未提交改动包含无法安全传输的文本编码，请先同步项目提交。',
     plan_ready: '执行计划已就绪',
     submitted: '任务已进入队列',
     cancelled: '任务已取消',
@@ -669,7 +675,8 @@ window.__groupReady = (async () => {
     const disabled = busy || (!isExample(state.group) && !connected) ? 'disabled' : '';
     return (task.plan?.rounds || []).flatMap((round, index, rounds) => {
       const active = index === rounds.length - 1 && waitingForPlan(task);
-      const steps = round.steps?.map((step) => `<li><strong>${esc(memberName(step.role))}</strong>${typeof step.write === 'boolean' ? (step.write ? '（可生成补丁）' : '（只读）') : ''} ${esc(step.prompt)}</li>`).join('');
+      const localToolLabels = { files: '本机文件', commands: '本机命令', desktop: '本机桌面' };
+      const steps = round.steps?.map((step) => `<li><strong>${esc(memberName(step.role))}</strong>${typeof step.write === 'boolean' ? (step.write ? '（可生成补丁）' : '（只读）') : ''}${Object.hasOwn(localToolLabels, step.localTools) ? ' · ' + localToolLabels[step.localTools] : ''} ${esc(step.prompt)}</li>`).join('');
       const review = active ? `<div class="task-actions">
         <button type="button" class="btn" data-plan-action="reply" data-plan-task="${esc(task.id)}" ${disabled}>${round.questions ? '回答组长' : '要求调整'}</button>
         ${steps ? `<button type="button" class="btn primary" data-plan-action="approve" data-plan-task="${esc(task.id)}" ${disabled}>确认方案并开始</button>` : ''}

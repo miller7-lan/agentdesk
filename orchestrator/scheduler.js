@@ -1,4 +1,4 @@
-const { mkdir, writeFile, readFile, stat } = require('node:fs/promises');
+const { mkdir, writeFile, readFile, stat, unlink } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { randomBytes, randomUUID, createHash } = require('node:crypto');
@@ -130,7 +130,7 @@ function parsePlan(output, availableRoles = roles, router, pick, allowedRole) {
 // Claude is reserved: a plan that tries to hand Claude implementation, review or scouting is rejected.
 function validateSteps(plan, availableRoles, router, pick, allowedRole = () => true) {
   if (!Array.isArray(plan) || plan.length < 1 || plan.length > 12) throw new Error('invalid_plan');
-  const ids = new Set(['planner', 'group-planner']);
+  const ids = new Set(['planner', 'group-planner', 'project-snapshot']);
   const choose = pick || ((capability, exclude) => router.pick(capability, exclude));
   const writers = new Map();   // step id -> member who changes files in it
   return plan.map((step) => {
@@ -165,6 +165,7 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
     return {
       id: step.id, role, ...(capability !== undefined && { capability }), ...(step.role && step.role === role && { named: true }),
       prompt: step.prompt, dependsOn: [...new Set(dependsOn)],
+      ...(['files', 'commands', 'desktop'].includes(step.localTools) && { localTools: step.localTools }),
       write: capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex',
       state: 'queued', attempts: 0,
     };
@@ -1340,6 +1341,7 @@ event(task, state, detail) {
     this.save(task, task.state, `${step.id}:model_switch:${step.role}:${step.model || 'default'}->${next}:stalled`);
     step.model = next;
     delete step.session;
+    delete step.sessionRecovery;
     delete step.error;
     return true;
   }
@@ -1662,6 +1664,22 @@ event(task, state, detail) {
     }
   }
 
+  recoverSession(task, step, error) {
+    if (!task.snapshot || !step.session || step.sessionRecovery ||
+        !/^cli_(?:timeout|stalled|exit_\d+)(?::|$)/.test(error.message) || !this.router.available(step.role)) return false;
+    step.sessionRecovery = true;
+    this.save(task, task.state, step.id + ':resuming_session');
+    return true;
+  }
+
+  recoveryNote(step) {
+    const confirmed = (step.deliveries || []).filter((item) => item.ok)
+      .map(({ operation, path, version }) => ({ operation, path, version }));
+    return '\nResume the existing session in this working tree. Check git status and diff before editing. ' +
+      'Continue only unfinished work. Before retrying a local write, inspect its current state and verify the version. ' +
+      'Confirmed local operations: ' + JSON.stringify(confirmed);
+  }
+
   async invoke(task, step, folder, signal, prompt = step.prompt) {
     const config = this.config.adapters[step.role];
     if (!config) throw new Error(step.role + '_not_configured');
@@ -1671,8 +1689,16 @@ event(task, state, detail) {
     // commands stays off for planning and other read-only steps.
     // Access by duty, not by member or model (DUTY_ACCESS): reading goes to the read-only mount when it is up.
     const access = Scheduler.DUTY_ACCESS[Scheduler.dutyOf(step)] || Scheduler.DUTY_ACCESS.scout;
-    const mount = access.mount && (this.mounts.size || this.config.homeMounts) ? await this.mountFor(task).catch(() => null) : null;
-    const mcp = bridgeTools && (access.mcp === 'always' || !mount) ? this.config.mcp : undefined;
+    const mount = !task.snapshot && access.mount && (this.mounts.size || this.config.homeMounts)
+      ? await this.mountFor(task).catch(() => null) : null;
+    const mcp = bridgeTools && (task.snapshot ? Boolean(step.localTools) : access.mcp === 'always' || !mount)
+      ? this.config.mcp : undefined;
+    if (task.snapshot) {
+      prompt += '\nUse this working tree for all project files. Its base is the fixed snapshot of the requester\'s project. ' +
+        'Edit here and deliver a reviewed patch. ' + (step.localTools === 'files' ? 'Use local file tools only for files outside the project.'
+          : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
+            : step.localTools === 'desktop' ? 'Use local_desktop only for the requested GUI operation. Verify the current screen before repeating any action.' : '');
+    }
     if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp));
     let attachmentDirectory;
     if (task.attachments?.length) {
@@ -1708,11 +1734,15 @@ event(task, state, detail) {
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
-      runCommands: step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
+      localTools: task.snapshot ? step.localTools : undefined,
+      desktopWrite: step.localTools === 'desktop' && Boolean(step.write),
+      runCommands: (!task.snapshot || step.localTools === 'commands') &&
+        step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
       readAnyFolder: true,
-      writeFiles: step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
+      writeFiles: (!task.snapshot || step.localTools === 'files') &&
+        step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
@@ -1728,7 +1758,7 @@ event(task, state, detail) {
         session: step.session, model: step.model,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort &&
           effortsFor(step.role, this.config.adapters[step.role], step.model).includes(task.leadEffort) ? task.leadEffort : undefined),
-        mcp: mcp && { socket: mcp.socket, capability,
+        mcp: mcp && { socket: mcp.socket, capability, ...(task.snapshot && { scope: step.localTools }),
           receipts: path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl') },
         attachmentDirectory,
         readPaths: mount ? [mount.home] : [],
@@ -1766,6 +1796,12 @@ event(task, state, detail) {
     if (readOnlyMode(task.mode)) {
       await this.prepareReadOnly(task, signal);
       if (!task.steps.length) return;
+    }
+    if (!task.base && task.snapshot) {
+      const { head, version } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute',
+        { operation: 'git_project_snapshot_status', workspace: task.workspace }, 120000, signal);
+      if (head !== task.snapshot.head || version !== task.snapshot.version) throw new Error('plan_workspace_changed');
+      task.base = task.snapshot.base;
     }
     if (!task.base) {
       const { head, clean } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
@@ -1911,17 +1947,49 @@ event(task, state, detail) {
     this.save(task, 'completed', 'completed');
   }
 
+  async captureProject(task, repo, root, signal) {
+    const route = this.bridgeRoute(task.workspace);
+    const captured = await this.files.call(route, task.id, 'command.execute',
+      { operation: 'git_project_snapshot', workspace: task.workspace }, 120000, signal).catch((error) => {
+      if (!error.remoteConfirmed || error.message !== 'command_not_authorized') throw error;
+      return null;
+    });
+    const { head, version, artifact } = captured || await this.files.call(route, task.id, 'command.execute',
+      { operation: 'git_baseline', workspace: task.workspace }, 35000, signal);
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) throw new Error('invalid_workspace_baseline');
+    await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
+    if (!captured) {
+      task.groupPlan.base = head;
+      this.save(task, 'planning', 'legacy_project_baseline');
+      return;
+    }
+    const bytes = artifact ? await this.files.download(route, task.id, { operation: 'artifact', ...artifact }, signal) : Buffer.alloc(0);
+    if (createHash('sha256').update(bytes).digest('hex') !== version) throw new Error('project_snapshot_failed');
+    let base = head;
+    if (bytes.length) {
+      const folder = path.join(root, 'project-snapshot');
+      await this.ensureWorktree(repo, folder, { ...task, base: head }, { id: 'project-snapshot' }, signal);
+      await git(folder, ['reset', '--hard', head], signal);
+      const patch = path.join(root, 'project-snapshot.patch');
+      await writeFile(patch, bytes, { mode: 0o600 });
+      try {
+        await git(folder, ['apply', '--index', '--binary', '--whitespace=nowarn', patch], signal);
+      } finally {
+        await unlink(patch);
+      }
+      await git(folder, ['-c', 'user.name=AgentDesk', '-c', 'user.email=agentdesk@example.invalid',
+        'commit', '--no-gpg-sign', '-m', 'AgentDesk project snapshot'], signal);
+      base = (await git(folder, ['rev-parse', 'HEAD'], signal)).trim();
+    }
+    task.snapshot = { head, version, base };
+    task.groupPlan.base = base;
+    this.save(task, 'planning', 'project_snapshot_ready');
+  }
+
   async planGroup(task, repo, root, signal) {
     this.save(task, 'planning', 'planning_started');
     const plan = task.groupPlan;
-    if (!plan.base) {
-      const { head } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
-        operation: 'git_baseline', workspace: task.workspace,
-      });
-      if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error('invalid_workspace_baseline');
-      await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
-      plan.base = head;
-    }
+    if (!plan.base) await this.captureProject(task, repo, root, signal);
     const context = {
       request: task.prompt, preferredExecutor: task.provider, preferredModel: task.model,
       availableExecutors: this.availableRoles(),
@@ -1937,7 +2005,9 @@ event(task, state, detail) {
     };
     const prompt = [
       'You are 组长, the group lead. Stay in read-only planning mode. Inspect the checked-out code when useful.',
-      'The checkout here is a copy on the server. The person\u2019s real project and the folders they authorized (for example their Desktop) are on their computer: call windows_list_locations, then list, read and search there (windows_glob_files by pattern; windows_grep_context for text with line numbers and context) (pass the location id as root). When the computer location is listed, use it read-only to inspect any folder in the person\u2019s home, mounted volumes or temporary folders; system and credential folders are blocked. Members can read there too, and members whose steps change files can create, change, move and delete files there (windows_write_file, windows_edit_file for exact edits, windows_make_directory, windows_move_path, windows_delete_path); plan such work as implement steps and name the folder in the step prompt. Project files are still changed in the task workspace and applied as a reviewed patch. Read what you need before asking; do not ask the person to paste files you can read.',
+      task.snapshot
+        ? 'Inspect the fixed project snapshot in the current working tree. Only for a step explicitly needing a file outside this snapshot, set localTools to "files". For a step explicitly needing commands that must run on the requester\'s computer, set localTools to "commands". For an explicitly requested desktop operation, set localTools to "desktop". Name the exact local action in the step prompt. Separate distinct local tool types into individual steps. Omit localTools for repository reading, edits and checks that can run in the working tree.'
+        : 'The checkout here is a copy on the server. Use windows_list_locations and the read-only file tools to inspect the authorized locations when needed. Project edits are delivered as a reviewed patch.',
       'Reply with the JSON object alone, with no text before or after it and no code fence.',
       'When completedWork is present the person changed direction while the work was under way: that work is done and kept. Plan only what remains under the newest reply, build on the finished work instead of redoing it, and do not depend on its step ids.',
       'Ask the requester every material question you cannot resolve from the repository or the discussion. Ask specific questions and offer options when helpful. Do not re-ask answered questions or ask about details you can determine.',
@@ -1963,7 +2033,11 @@ event(task, state, detail) {
         this.waitForExecutor(task, 'plan');
         return;
       }
-      const step = { id: 'group-planner', role: lead, capability: 'plan', write: false, model: this.leadModelFor(task) };
+      const model = this.leadModelFor(task);
+      const retained = plan.executor;
+      const step = retained?.role === lead && retained.requestedModel === model ? retained
+        : { id: 'group-planner', role: lead, capability: 'plan', write: false, model, requestedModel: model };
+      if (task.snapshot) plan.executor = step;
       const folder = path.join(root, step.id);
       await this.ensureWorktree(repo, folder, { ...task, base: plan.base }, step, signal);
       revision = (plan.rounds.at(-1)?.revision || 0) + 1;
@@ -1973,7 +2047,10 @@ event(task, state, detail) {
       let output = '';
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          ({ output } = await this.execute(task, step, folder, signal, attempt ? prompt + '\n\nYour previous reply could not be used: ' + (result?.problem || 'it was not one JSON object') + '. Reply again with the JSON object alone.' : prompt));
+          const retry = attempt ? '\n\nYour previous reply could not be used: ' + (result?.problem || 'it was not one JSON object') +
+            '. Reply again with the JSON object alone.' : '';
+          ({ output } = await this.execute(task, step, folder, signal, prompt + retry +
+            (step.sessionRecovery ? this.recoveryNote(step) : '')));
           signal.throwIfAborted();
           const parsed = parseJson(output);
           const problem = planProblem(parsed);
@@ -1981,6 +2058,7 @@ event(task, state, detail) {
           result = { problem };
         } catch (error) {
           if (signal.aborted || error.message.startsWith('executor_waiting:')) throw error;
+          if (this.recoverSession(task, step, error)) { attempt -= 1; continue; }
           // The lead's model got stuck: plan again on its next model (newest first, or the person's order).
           if (/^cli_(stalled|timeout)/.test(error.message) && this.switchModel(task, step)) { attempt -= 1; continue; }
           result = { problem: error.message === 'invalid_plan' ? 'it was not valid JSON' : error.message, failed: error.message !== 'invalid_plan' };
@@ -1998,6 +2076,7 @@ event(task, state, detail) {
         return;
       }
       plan.failures = 0;
+      delete step.sessionRecovery;
     }
     if (Array.isArray(result?.questions)) {
       delete plan.pending;
@@ -2047,6 +2126,7 @@ event(task, state, detail) {
   // always (when the client says nothing, e.g. WeChat): every plan waits for the person. small (the desktop's
   // default): a plan that changes no files, or has at most three steps, starts by itself. auto: every plan does.
   autoApproves(task, steps) {
+    if (task.snapshot && steps?.some((step) => step.localTools)) return false;
     const mode = task.approval || 'always';
     if (mode === 'auto') return true;
     if (mode !== 'small' || !steps?.length) return false;
@@ -2301,6 +2381,7 @@ event(task, state, detail) {
         else if (step.capability === 'accept') prompt += '\n\n' + ACCEPTANCE_INSTRUCTION;
         else if (step.capability === 'triage') prompt += '\n\n' + TRIAGE_INSTRUCTION;
         if (continuationNote) prompt += continuationNote;
+        if (task.snapshot && step.session && (step.sessionRecovery || step.attempts > 1)) prompt += this.recoveryNote(step);
         const { output } = await this.execute(task, step, folder, signal, prompt);
         signal.throwIfAborted();
         await this.collectDeliveries(task, step);
@@ -2355,7 +2436,8 @@ event(task, state, detail) {
             continue;
           }
         }
-        if (step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
+        if (this.recoverSession(task, step, error)) continue;
+        if (!task.snapshot && step.attempts < 2 && step.session && error.message.startsWith('cli_exit_')) continue;
         // A stalled step first tries another model of the same member (at most twice) before it goes to the lead.
         // The person steered the step: it continues in the same session with their guidance.
         if (error.message === 'steered') continue;
@@ -2365,7 +2447,8 @@ event(task, state, detail) {
           this.save(task, task.state, step.id + ':revised_out');
           return;
         }
-        if (error.message.startsWith('cli_stalled') && this.switchModel(task, step)) continue;
+        if ((error.message.startsWith('cli_stalled') || (task.snapshot && error.message === 'cli_timeout')) &&
+            this.switchModel(task, step)) continue;
         step.state = 'failed';
         step.error = error.message;
         step.finishedAt = new Date(this.now()).toISOString();
@@ -2478,6 +2561,7 @@ event(task, state, detail) {
     delete step.effort;
     if (typeof effort === 'string' && effortsFor(role, this.config.adapters[role], step.model).includes(effort)) step.effort = effort;
     delete step.session;
+    delete step.sessionRecovery;
     delete step.error;
     delete step.choice;
     step.state = 'queued';
@@ -2901,8 +2985,8 @@ event(task, state, detail) {
       task.pendingRequest = messageId();
       task.pendingKind = 'patch';
       this.save(task, 'applying', 'patch_started');
-      task.applied = await this.files.patch(this.bridgeRoute(task.workspace), task.id, task.workspace, task.base,
-        Buffer.concat(patches), task.pendingRequest, controller.signal);
+      task.applied = await this.files.patch(this.bridgeRoute(task.workspace), task.id, task.workspace, task.snapshot?.head || task.base,
+        Buffer.concat(patches), task.pendingRequest, controller.signal, task.snapshot?.version);
       delete task.pendingRequest;
       delete task.pendingKind;
       if (task.command && !controller.signal.aborted) {

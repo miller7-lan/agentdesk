@@ -12,6 +12,7 @@ const { searchFiles } = require('./file-search');
 
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;
+const MAX_PROJECT_SNAPSHOT = 8 * 1024 * 1024;
 const sha = (data) => createHash('sha256').update(data).digest('hex');
 const validDigest = (value) => /^[a-f0-9]{64}$/.test(value);
 
@@ -229,8 +230,14 @@ class WindowsOperations {
     if (kind === 'file.read') {
       const roots = workspace.readRoots || {};
       const anyFolder = this.config.readAnyFolder === true || workspace.readAnyFolder === true;
+      const project = body.externalOnly && fold(await fs.realpath(workspace.root));
+      const inProject = (filename) => Boolean(project && under(fold(filename), project));
+      const external = (filename) => {
+        if (inProject(filename)) throw new Error('project_snapshot_use_worktree');
+        return filename;
+      };
       if (body.operation === 'locations') return { locations: [
-        { id: 'project', label: '项目' },
+        ...(!project ? [{ id: 'project', label: '项目' }] : []),
         ...(anyFolder ? [{ id: 'computer', label: this.config.writeAnyFolder === true || workspace.writeAnyFolder === true ? '本机（任意文件夹，改文件的步骤可写）' : '本机（只读）' }] : []),
         ...Object.keys(roots).filter((id) => id !== 'project' && id !== 'computer').map((id) => ({ id, label: id === 'desktop' ? '桌面' : id })),
       ] };
@@ -240,19 +247,21 @@ class WindowsOperations {
       if (selected === 'computer') {
         // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it.
         if (!anyFolder || body.anyFolder !== true) throw new Error('read_root_not_authorized');
-        if (body.operation === 'read_batch') return readBatch(body.items, anyPath);
-        if (search) return searchFiles(body, anyPath, grep);
-        return this.readTarget(await anyPath(body.path), body);
+        const resolve = async (filename) => external(await anyPath(filename));
+        if (body.operation === 'read_batch') return readBatch(body.items, resolve);
+        if (search) return searchFiles(body, resolve, grep);
+        return this.readTarget(await resolve(body.path), body, undefined, inProject);
       }
       if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
       const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
-      if (body.operation === 'read_batch') return readBatch(body.items, (filename) => within(readRoot, filename));
+      const locate = async (filename, options) => external(await within(readRoot, filename, options));
+      if (body.operation === 'read_batch') return readBatch(body.items, locate);
       if (search) {
-        const resolve = (filename) => within(readRoot, path.relative(readRoot, filename).split(path.sep).join('/'), { directory: true });
-        const directory = await within(readRoot, body.path, { directory: true });
+        const resolve = (filename) => locate(path.relative(readRoot, filename).split(path.sep).join('/'), { directory: true });
+        const directory = await locate(body.path, { directory: true });
         return searchFiles({ ...body, path: directory }, resolve, grep);
       }
-      return this.read(readRoot, body);
+      return this.readTarget(await locate(body.path, { directory: true }), body, readRoot, inProject);
     }
     if (kind === 'file.write' && body.root === 'computer') {
       // Writing in any folder needs both switches on this computer (readAnyFolder and writeAnyFolder) and the
@@ -411,11 +420,7 @@ class WindowsOperations {
     }
   }
 
-  async read(root, body) {
-    return this.readTarget(await within(root, body.path, { directory: true }), body, root);
-  }
-
-  async readTarget(filename, body, root) {
+  async readTarget(filename, body, root, skip = () => false) {
     if (body.operation === 'stat') return version(filename);
     if (body.operation === 'list' || body.operation === 'search') {
       const items = [];
@@ -426,7 +431,7 @@ class WindowsOperations {
       async function walk(dir, prefix) {
         for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
           if (++visited > 10000 || items.length >= 500 || responseSize >= 12000) return;
-          if (entry.isSymbolicLink() || entry.name.toLowerCase() === '.git') continue;
+          if (entry.isSymbolicLink() || entry.name.toLowerCase() === '.git' || skip(path.join(dir, entry.name))) continue;
           const rel = prefix + entry.name;
           if (!search || rel.toLowerCase().includes(body.query.toLowerCase())) {
             responseSize += rel.length + 35;
@@ -441,7 +446,7 @@ class WindowsOperations {
       return { items, truncated: visited > 10000 || items.length >= 500 || responseSize >= 12000 };
     }
     if (body.operation === 'grep') {
-      return grep(filename, body, root === undefined ? (entry) => !allowedAnywherePath(entry) : undefined);
+      return grep(filename, body, (entry) => skip(entry) || (root === undefined && !allowedAnywherePath(entry)));
     }
     if (body.operation !== 'read') throw new Error('unsupported_file_operation');
     const metadata = await version(filename);
@@ -557,6 +562,38 @@ class WindowsOperations {
     return { head: head.stdout.trim(), clean: !status.stdout };
   }
 
+  async projectSnapshot(root, signal) {
+    const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+    const command = async (args) => {
+      const result = await this.git(root, args, signal, env, MAX_PROJECT_SNAPSHOT + 1);
+      if (result.code !== 0) throw new Error('project_snapshot_failed');
+      if (result.truncated || Buffer.byteLength(result.stdout) > MAX_PROJECT_SNAPSHOT) throw new Error('project_snapshot_too_large');
+      return result.stdout;
+    };
+    const head = (await command(['rev-parse', 'HEAD'])).trim();
+    const diff = ['-c', 'core.quotePath=true', 'diff', '--no-color', '--no-ext-diff', '--no-textconv',
+      '--no-renames', '--ignore-submodules=none'];
+    if (await command(['ls-files', '--unmerged'])) throw new Error('project_snapshot_unmerged');
+    const changed = await command([...diff, '--raw', '-z', head]);
+    const records = changed.split('\0');
+    for (let index = 0; index + 1 < records.length; index += 2) {
+      const [oldMode, newMode] = records[index].split(' ');
+      if (oldMode === ':160000' || newMode === '160000') throw new Error('project_snapshot_submodule');
+      const filename = path.resolve(root, records[index + 1]);
+      // The patch can contain both the old and new contents of a changed file.
+      if (!under(fold(filename), fold(root)) || !allowedAnywherePath(filename) ||
+          /(?:^|[\\/])(?:\.env(?:\..*)?|[^\\/]+\.(?:pem|pfx|p12|key))$/i.test(filename)) {
+        throw new Error('project_snapshot_sensitive_path');
+      }
+    }
+    const patch = await command([...diff, '--binary', head]);
+    if (patch.includes('\ufffd')) throw new Error('project_snapshot_encoding');
+    const bytes = Buffer.from(patch);
+    if ((await command(['rev-parse', 'HEAD'])).trim() !== head ||
+        await command([...diff, '--raw', '-z', head]) !== changed) throw new Error('plan_workspace_changed');
+    return { head, version: sha(bytes), bytes };
+  }
+
   async reviewDiff(root, signal) {
     const { head } = await this.baseline(root, signal);
     const directory = await fs.mkdtemp(path.join(tmpdir(), 'agentdesk-review-'));
@@ -580,18 +617,34 @@ class WindowsOperations {
     const record = this.stream(taskId, body.stream_id);
     if (!record.closed) throw new Error('stream_incomplete');
     const signal = new AbortController().signal;
-    const before = await this.baseline(root, signal);
-    if (!before.clean || before.head !== body.base) throw new Error('version_conflict');
+    const verify = async () => {
+      if (body.snapshotVersion === undefined) {
+        const { clean, head } = await this.baseline(root, signal);
+        if (!clean || head !== body.base) throw new Error('version_conflict');
+      } else {
+        const { head, version } = await this.projectSnapshot(root, signal);
+        if (head !== body.base || version !== body.snapshotVersion) throw new Error('plan_workspace_changed');
+      }
+    };
+    await verify();
     const filename = this.streamPath(body.stream_id);
-    const args = ['apply', '--binary', '--whitespace=nowarn', '--index', filename];
+    const args = ['apply', '--binary', '--whitespace=nowarn', ...(body.snapshotVersion === undefined ? ['--index'] : []), filename];
     if ((await this.git(root, ['apply', '--check', ...args.slice(1)], signal)).code !== 0) throw new Error('patch_conflict');
+    if (body.snapshotVersion !== undefined) await verify();
     if ((await this.git(root, args, signal)).code !== 0) throw new Error('patch_apply_failed');
-    return { applied: true, base: before.head };
+    return { applied: true, base: body.base };
   }
 
   async command(taskId, id, workspace, root, body) {
     const controller = new AbortController();
     if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
+    if (body.operation === 'git_project_snapshot' || body.operation === 'git_project_snapshot_status') {
+      const { head, version, bytes } = await this.projectSnapshot(root, controller.signal);
+      if (body.operation === 'git_project_snapshot_status') return { head, version };
+      const current = await this.projectSnapshot(root, controller.signal);
+      if (current.head !== head || current.version !== version) throw new Error('plan_workspace_changed');
+      return { head, version, artifact: bytes.length ? await this.saveArtifact(taskId, bytes) : null };
+    }
     // Where this workspace sits inside the folder the read-only mount serves (the home folder, "/"-separated),
     // or null when it is outside it.
     if (body.operation === 'mount_info') {
@@ -736,11 +789,12 @@ class RemoteFiles {
     return buffer;
   }
 
-  async patch(route, taskId, workspace, base, bytes, requestId, signal) {
+  async patch(route, taskId, workspace, base, bytes, requestId, signal, snapshotVersion) {
     const id = await this.upload(route, taskId, bytes);
     signal?.throwIfAborted();
     return this.endpoint.request(route, taskId, 'file.patch',
-      { operation: 'apply', workspace, base, stream_id: id }, 90000, requestId, signal);
+      { operation: 'apply', workspace, base, stream_id: id, ...(snapshotVersion !== undefined && { snapshotVersion }) },
+      120000, requestId, signal);
   }
 }
 

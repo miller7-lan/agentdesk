@@ -290,7 +290,27 @@ function start(config) {
         if (!scope) throw new Error('mcp_permission_denied');
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
-        if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep', 'glob', 'grep_context'].includes(frame.operation)) {
+        if (frame.operation === 'desktop' || frame.operation === 'desktop_image') {
+          if (scope.localTools !== 'desktop') throw new Error('mcp_permission_denied');
+          scope.desktopImages ||= new Set();
+          if (frame.operation === 'desktop') {
+            if (!scope.desktopWrite && !['desktop_screenshot', 'desktop_snapshot', 'desktop_find'].includes(frame.tool)) {
+              throw new Error('mcp_permission_denied');
+            }
+            value = await files.call(route, scope.taskId, 'task.request', {
+              operation: 'desktop', workspace: scope.workspace, tool: frame.tool, arguments: frame.arguments,
+            }, 50000, scope.signal);
+            for (const item of value.contentItems) {
+              if (item.type === 'artifact') scope.desktopImages.add(item.stream_id);
+            }
+          } else {
+            if (!scope.desktopImages.has(frame.stream_id)) throw new Error('mcp_permission_denied');
+            value = await files.call(route, scope.taskId, 'file.read', {
+              operation: 'artifact', stream_id: frame.stream_id, offset: frame.offset,
+            }, 30000, scope.signal);
+          }
+        } else if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep', 'glob', 'grep_context'].includes(frame.operation)) {
+          if (scope.localTools && scope.localTools !== 'files') throw new Error('mcp_permission_denied');
           const anyFolder = frame.root === 'computer';
           if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
           if (frame.operation === 'read_batch') validateFileBatch(frame.items, false);
@@ -299,6 +319,7 @@ function start(config) {
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
             ...(['glob', 'grep_context'].includes(frame.operation) && { glob: frame.glob, context: frame.context }),
             ...(anyFolder && { anyFolder: true }),
+            ...(scope.localTools === 'files' && { externalOnly: true }),
             ...(frame.operation === 'read_batch' && { items: frame.items }),
           });
           if (frame.operation === 'locations' && Array.isArray(value?.locations)) {

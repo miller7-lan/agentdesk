@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const Store = require('../orchestrator/store');
 const { Scheduler } = require('../orchestrator/scheduler');
+const { WindowsOperations, RemoteFiles } = require('../orchestrator/windows');
 
 function setup(t, replies) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-plan-'));
@@ -32,13 +33,15 @@ function setup(t, replies) {
     },
     store: new Store(':memory:'),
     files: { endpoint: {} },
-    adapter: async ({ name, prompt, mcp }) => {
+    adapter: async (options) => {
+      const { name, prompt, mcp } = options;
       prompts.push(prompt);
       if (mcp) {
         const scope = capabilities.get(mcp.capability);
         mcps.push({ name, runCommands: scope?.runCommands, readAnyFolder: scope?.readAnyFolder });
       }
       const reply = replies.shift();
+      if (typeof reply === 'function') return reply(options);
       if (reply instanceof Error) throw reply;
       return { output: reply ?? '' };
     },
@@ -46,7 +49,7 @@ function setup(t, replies) {
   t.after(() => scheduler.store.close());
   const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'move my desktop project into the repo' }, true);
   task.groupPlan.base = head;
-  return { scheduler, task, prompts, mcps };
+  return { scheduler, task, prompts, mcps, workspace, git, head };
 }
 
 test('a lead reply with text around fenced JSON and long questions still becomes questions', async (t) => {
@@ -87,4 +90,68 @@ test('a CLI error while planning is explained to the person instead of failing t
   await scheduler.run(task, new AbortController().signal);
   assert.equal(task.state, 'awaiting_details');
   assert.match(task.groupPlan.rounds.at(-1).questions[0], /规划出错了：cli_exit_1/);
+});
+
+test('a new group pins the working project, resumes a stalled writer and checks the version on apply', async (t) => {
+  let writerModel;
+  const content = (cwd, name) => fs.readFileSync(path.join(cwd, name), 'utf8').replace(/\r\n/g, '\n');
+  const { scheduler, task, workspace, git, head, mcps } = setup(t, [
+    ({ cwd, mcp }) => {
+      assert.equal(mcp, undefined);
+      assert.equal(content(cwd, 'README.md'), 'working\n');
+      assert.equal(content(cwd, '加入.txt'), 'new\n');
+      assert.equal(fs.existsSync(path.join(cwd, 'private.txt')), false);
+      return { output: JSON.stringify({ summary: '修改项目', steps: [
+        { id: 'edit', capability: 'implement', prompt: 'edit readme' },
+      ] }) };
+    },
+    ({ cwd, model, onSession }) => {
+      writerModel = model;
+      fs.writeFileSync(path.join(cwd, 'README.md'), 'working\nagent\n');
+      onSession('writer-session');
+      throw new Error('cli_stalled: quiet');
+    },
+    ({ cwd, model, session, prompt }) => {
+      assert.equal(session, 'writer-session');
+      assert.equal(model, writerModel);
+      assert.equal(fs.readFileSync(path.join(cwd, 'README.md'), 'utf8'), 'working\nagent\n');
+      assert.match(prompt, /Continue only unfinished work/);
+      return { output: 'done' };
+    },
+  ]);
+  delete task.groupPlan.base;
+  const readme = path.join(workspace, 'README.md');
+  fs.writeFileSync(readme, 'staged\n');
+  git(workspace, 'add', 'README.md');
+  fs.writeFileSync(readme, 'working\n');
+  fs.writeFileSync(path.join(workspace, '加入.txt'), 'new\n');
+  git(workspace, 'add', '-N', '加入.txt');
+  fs.writeFileSync(path.join(workspace, 'private.txt'), 'untracked\n');
+  const bridge = new WindowsOperations({ store: scheduler.store,
+    config: { stateDir: path.join(path.dirname(workspace), 'bridge'), workspaces: { mac: { root: workspace, write: true } } } });
+  scheduler.files = new RemoteFiles({ request: (_route, taskId, kind, body, _timeout, requestId) =>
+    bridge.call({ task_id: taskId, kind, body, id: requestId }) });
+  const signal = new AbortController().signal;
+  await scheduler.run(task, signal);
+  assert.equal(task.state, 'awaiting_approval', JSON.stringify(task.groupPlan.rounds.at(-1)));
+  assert.equal(task.snapshot.head, head);
+  assert.notEqual(task.snapshot.base, head);
+  scheduler.approveRound(task, task.groupPlan.rounds.at(-1));
+  await scheduler.run(task, signal);
+  assert.deepEqual(mcps, []);
+  assert.equal(task.steps[0].state, 'completed');
+  assert.equal(task.steps[0].attempts, 2);
+  assert.equal(task.detail, 'patches_ready');
+  assert.equal(fs.readFileSync(readme, 'utf8'), 'working\n');
+  const delta = fs.readFileSync(path.join(scheduler.config.stateDir, 'worktrees', task.id, 'edit.patch'));
+  fs.appendFileSync(readme, 'changed after planning\n');
+  await assert.rejects(scheduler.files.patch('unused', task.id, 'mac', task.snapshot.head,
+    delta, randomUUID(), signal, task.snapshot.version), /plan_workspace_changed/);
+  assert.equal(fs.readFileSync(readme, 'utf8'), 'working\nchanged after planning\n');
+  fs.writeFileSync(readme, 'working\n');
+  await scheduler.apply(task);
+  assert.equal(task.state, 'completed');
+  assert.equal(content(workspace, 'README.md'), 'working\nagent\n');
+  assert.equal(git(workspace, 'show', ':README.md'), 'staged');
+  assert.equal(fs.readFileSync(path.join(workspace, 'private.txt'), 'utf8'), 'untracked\n');
 });

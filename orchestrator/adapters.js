@@ -203,6 +203,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   const env = { ...config.env };
   // The MCP server runs as a child of the CLI, so this path reaches it through the environment.
   if (mcp?.receipts) env.AGENTDESK_MCP_RECEIPTS = mcp.receipts;
+  if (mcp?.scope) env.AGENTDESK_MCP_SCOPE = mcp.scope;
   if (effort) {
     if (provider.template) args.unshift(...fill(config.template.effortArgs, {}).map((arg) => arg.replace('{effort}', effort)));
     else if (name === 'codex') args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model_reasoning_effort=' + JSON.stringify(effort));
@@ -231,7 +232,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
         '-c', 'mcp_servers.agentdesk_windows.default_tools_approval_mode="writes"');
     } else if (name === 'claude') {
       args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { agentdesk_windows: server } }),
-        '--allowedTools', claudeMcpAllow('agentdesk_windows', require('./mcp').toolNames).join(','));
+        '--allowedTools', claudeMcpAllow('agentdesk_windows', require('./mcp').toolsFor(mcp.scope).map(({ name }) => name)).join(','));
     } else {
       env.AGENTDESK_MCP_SOCKET = mcp.socket;
       env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
