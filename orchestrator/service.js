@@ -14,6 +14,30 @@ const { validate: validateFileBatch } = require('./file-batch');
 const { commandProgress } = require('./activity');
 const { EFFORT_LEVELS, modelProfiles } = require('./model-profiles');
 
+function intentPathKey(value) {
+  if (typeof value !== 'string') return '';
+  return /^[a-z]:[\\/]/i.test(value) ? path.win32.normalize(value).toLowerCase() : path.posix.normalize(value);
+}
+
+function checkFileIntent(scope, frame, writing) {
+  if (scope.currentPlan && !scope.currentPlan()) throw Error('plan_superseded');
+  if (!scope.fileIntent) return;
+  const action = scope.fileIntent.action;
+  if (action === 'chat' || (writing && (action === 'write' ? !['write', 'edit', 'write_batch'].includes(frame.operation) : frame.operation !== action))) {
+    throw Error('file_action_outside_plan');
+  }
+  if (!writing && frame.operation === 'locations') return;
+  if (frame.root !== 'computer') throw Error('use_absolute_planned_file_path');
+  const target = intentPathKey(scope.intentPath);
+  const names = ['read_batch', 'write_batch'].includes(frame.operation) ? (frame.items || []).map((item) => item.path) : [frame.path];
+  for (const name of names) {
+    const key = intentPathKey(name);
+    const sep = /^[a-z]:/i.test(target) ? '\\' : '/';
+    if (!target || (key !== target && !(action === 'read' && !writing && key.startsWith(target.endsWith(sep) ? target : target + sep)))) throw Error('file_path_outside_plan');
+  }
+  if (frame.operation === 'move' && intentPathKey(frame.destination) !== intentPathKey(scope.intentDestination)) throw Error('file_path_outside_plan');
+}
+
 function relayConfig(config, role) {
   return {
     host: config.host, port: config.port, servername: config.servername, deviceId: config.deviceId, role,
@@ -313,6 +337,7 @@ function start(config) {
             }, 30000, scope.signal);
           }
         } else if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep', 'glob', 'grep_context'].includes(frame.operation)) {
+          checkFileIntent(scope, frame, false);
           if (scope.localTools && scope.localTools !== 'files') throw new Error('mcp_permission_denied');
           const anyFolder = frame.root === 'computer';
           if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
@@ -330,6 +355,7 @@ function start(config) {
           }
         } else if (['write', 'write_batch', 'edit', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
           // Any folder on the person's computer; the project itself only changes through reviewed patches.
+          checkFileIntent(scope, frame, true);
           if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
           if (frame.root !== 'computer') throw new Error('mcp_permission_denied: write with root "computer" and an absolute path; project files are changed in the task workspace');
           if (scope.localDrives) {
@@ -341,7 +367,7 @@ function start(config) {
               throw new Error('mcp_permission_denied: path outside enabled drives');
             }
           }
-          if (!scope.localDrives && scope.deliveryTarget && (!['write', 'edit'].includes(frame.operation) || frame.path !== scope.deliveryTarget)) {
+          if (!scope.fileIntent && !scope.localDrives && scope.deliveryTarget && (!['write', 'edit'].includes(frame.operation) || frame.path !== scope.deliveryTarget)) {
             throw new Error('mcp_permission_denied: this delivery is restricted to its named file');
           }
           const requestId = require('./transport').messageId();
@@ -360,6 +386,7 @@ function start(config) {
             fs.appendFileSync(journal, rows.map((row) => JSON.stringify(row) + '\n').join(''), { mode: 0o600, flush: true });
           };
           const mutate = async (body) => {
+            checkFileIntent(scope, frame, true);
             record('pending');
             mutationStarted = true;
             let result;
@@ -424,7 +451,7 @@ function start(config) {
         if (!socket.destroyed) wire.send({ ok: true, value });
       } catch (error) {
         const active = capabilities.get(frame.capability);
-        if (active?.writeFiles && frame.root === 'computer' && !mutationStarted && ['write','edit','write_batch','mkdir','move','delete'].includes(frame.operation)) {
+        if (error.message !== 'plan_superseded' && active?.writeFiles && frame.root === 'computer' && !mutationStarted && ['write','edit','write_batch','mkdir','move','delete'].includes(frame.operation)) {
           const items = frame.operation === 'write_batch' ? (Array.isArray(frame.items) ? frame.items.slice(0, 32) : []) : [frame];
           const id = require('./transport').messageId();
           const journal = path.join(config.stateDir, 'logs', active.taskId, active.stepId + '.receipts.jsonl');

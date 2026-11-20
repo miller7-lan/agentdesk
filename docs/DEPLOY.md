@@ -336,3 +336,5 @@ ssh -F none -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
 运行版本 `71181c9` 包含主线 `562da84`。本机 Windows 测试 294 项通过，33 项按平台条件跳过。Ubuntu、macOS、Windows 的 Node 测试及 Relay 测试均通过。[三平台 CI](https://github.com/miller7-lan/agentdesk/actions/runs/44774873228)
 
 在 VPS2 以服务账户运行真实 bubblewrap，工作树同时包含已暂存和未暂存的改动，`git status --short` 返回 `MM`，两类 diff 均可读。SSH 网关、主控、Bridge 联调验证了写入前后的回执使用同一请求编号。实际 Windows Bridge 在两块磁盘的临时目录通过创建、读回、编辑、批量版本冲突、移动和回收测试。未使用模型订阅额度。
+
+群聊的文件交付由组长在既有规划轮次解析上下文。方案列出读取、写入或群内回复，文件操作附用户原话和解析后的目的地。改口后重排未完成的文件步骤，主控在发送新写入前校验目标与方案版本。已发往 Bridge 的操作通过回执核对。桌面别名使用工作区的 `deliveryDesktop`；其他位置使用这台电脑的绝对路径。管理端和桌面端沿用既有方案和回执界面。

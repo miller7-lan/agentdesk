@@ -219,6 +219,14 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   assert.equal(journal[0].requestId, journal[1].requestId);
   assert.equal(journal[1].ok, true);
   assert.equal(await fs.readFile(target, 'utf8'), 'report');
+  const probeScope = support.capabilities.get(probe);
+  Object.assign(probeScope, { fileIntent: { action: 'write' }, intentPath: target });
+  await assert.rejects(mcpRequest(support.socket, { capability: probe, operation: 'write', root: 'computer',
+    path: target + '.other', content: 'wrong' }), /file_path_outside_plan/);
+  probeScope.currentPlan = () => false;
+  await assert.rejects(mcpRequest(support.socket, { capability: probe, operation: 'write', root: 'computer',
+    path: target, content: 'stale' }), /plan_superseded/);
+  assert.equal(await fs.readFile(target, 'utf8'), 'report');
   support.capabilities.delete(probe);
   const capability = [...support.capabilities.keys()][0];
   assert.equal((await mcpRequest(support.socket, { capability, operation: 'stat', path: 'README.md' })).type, 'file');

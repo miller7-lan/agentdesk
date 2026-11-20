@@ -326,7 +326,7 @@ test('群聊在已启用的盘符交付，返工继承权限并校验写入回�
   for (const drive of ['C', 'D']) {
     const target = drive + ':/Reports/results.md';
     task.prompt = '把报告写入 ' + target;
-    const step = { id: 'report', write: true, role: 'codex', capability: 'implement', prompt: task.prompt, outputPath: target };
+    const step = { id: 'report', write: true, role: 'codex', capability: 'implement', prompt: task.prompt, fileIntent: { action: 'write', quote: task.prompt, target: { root: 'absolute', path: target } } };
     scheduler.bindLocalAccess(task, step);
     assert.equal(step.localTools, 'files');
     assert.deepEqual(step.localDrives, ['C', 'D']);
@@ -346,18 +346,24 @@ test('群聊在已启用的盘符交付，返工继承权限并校验写入回�
   }
   for (const suffix of ['', '\n\n（上一次没完成：desktop_delivery_outside_request。请组长换个办法重新安排。）']) {
     task.prompt = '找5个不同领域的文章的网站，写出md放在桌上' + suffix;
-    const report = { prompt: '写入桌面报告', desktopOutput: '文章网站.md', write: true };
+    const report = { prompt: '交付文档', fileIntent: { action: 'write', quote: '写出md放在桌上', target: { root: 'desktop', path: '文章网站（终稿）.md' } }, write: true };
     scheduler.bindLocalAccess(task, report);
-    assert.equal(report.deliveryTarget, path.win32.normalize('C:/Users/test/Desktop/文章网站.md'));
+    assert.equal(report.deliveryTarget, path.win32.normalize('C:/Users/test/Desktop/文章网站（终稿）.md'));
   }
-  task.prompt = '找五篇关于桌上游戏的文章，整理成报告';
-  assert.throws(() => scheduler.bindLocalAccess(task, { prompt: '写入桌面报告', desktopOutput: '报告.md', write: true }), /desktop_delivery_outside_request/);
-  task.prompt = '生成报告，但不要放在桌上';
-  assert.throws(() => scheduler.bindLocalAccess(task, { prompt: '交付报告', desktopOutput: '报告.md', write: true }), /desktop_delivery_outside_request/);
-  task.prompt = '保存到桌面';
-  const desktop = { prompt: '生成桌面报告', desktopOutput: '报告.md', write: true };
-  scheduler.bindLocalAccess(task, desktop);
-  assert.equal(desktop.deliveryTarget, path.win32.normalize('C:/Users/test/Desktop/报告.md'));
+  task.prompt = '桌面有参考资料，结论只发群里';
+  const chat = { write: false, fileIntent: { action: 'chat', quote: '结论只发群里' } };
+  scheduler.bindLocalAccess(task, chat);
+  assert.equal(chat.localTools, undefined);
+  const source = { write: false, fileIntent: { action: 'read', quote: '桌面有参考资料', target: { root: 'desktop', path: '' } } };
+  scheduler.bindLocalAccess(task, source);
+  assert.equal(source.localTools, 'files');
+  assert.equal(source.deliveryTarget, undefined);
+  assert.throws(() => scheduler.bindLocalAccess(task, { write: true, desktopOutput: '报告.md' }), /requires_file_intent/);
+  assert.throws(() => scheduler.bindLocalAccess(task, { write: true, fileIntent: { action: 'write', quote: '虚构的授权', target: { root: 'desktop', path: '报告.md' } } }), /source/);
+  task.groupPlan.rounds.push({ reply: '位置改成 D:/资料，文件名不变' });
+  const revised = { write: true, fileIntent: { action: 'write', quote: '位置改成 D:/资料', target: { root: 'absolute', path: 'D:/资料/文章网站（终稿）.md' } } };
+  scheduler.bindLocalAccess(task, revised);
+  assert.equal(revised.deliveryTarget, path.win32.normalize('D:/资料/文章网站（终稿）.md'));
   const repo = { prompt: '修改工作树里的源代码', write: true };
   scheduler.bindLocalAccess(task, repo);
   assert.equal(repo.localTools, undefined);
@@ -384,4 +390,24 @@ test('group delivery reconciles the Bridge journal without repeating a mutation'
   fs.appendFileSync(file, JSON.stringify({ operation: 'move', path: 'D:/a', destination: 'D:/b', ok: false, error: 'version_conflict' }) + '\n');
   await scheduler.collectDeliveries(task, step);
   assert.match(step.writeFailure, /version_conflict/);
+});
+
+test('a single lead turn records a quoted source and a resolved destination in the plan', async (t) => {
+  const request = '做成一份文档搁我平常放快捷方式的地方，名字用周报（终稿）.md';
+  const { scheduler, task, head, prompts } = setup(t, [({ prompt }) => {
+    assert.ok(prompt.includes(request));
+    assert.ok(prompt.includes('fileIntent'));
+    return { output: JSON.stringify({ summary: '整理文档并保存', steps: [{ id: 'report', capability: 'implement',
+      prompt: '整理报告并交付', fileIntent: { action: 'write', quote: '搁我平常放快捷方式的地方',
+        target: { root: 'desktop', path: '周报（终稿）.md' } } }] }) };
+  }]);
+  task.prompt = request;
+  task.snapshot = { base: head, head };
+  scheduler.config.workspaces.mac.deliveryDesktop = 'C:/Users/test/Desktop';
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(prompts.length, 1);
+  assert.equal(task.state, 'awaiting_approval');
+  const round = task.groupPlan.rounds.at(-1);
+  assert.ok(round.summary.includes(path.win32.normalize('C:/Users/test/Desktop/周报（终稿）.md')));
+  assert.equal(round.steps[0].fileIntent.quote, '搁我平常放快捷方式的地方');
 });
