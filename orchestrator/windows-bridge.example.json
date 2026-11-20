@@ -8,6 +8,7 @@
       "root": "D:/Projects/project",
       "desktop": true,
       "write": true,
+      "isolatedCommands": {},
       "commands": {
         "git-status": [
           "git.exe",

@@ -61,7 +61,7 @@ test('a step moves to the next candidate when its CLI is out of quota, and token
     const calls = [];
     const adapter = async ({ name }) => {
       calls.push(name);
-      if (name === 'grok') throw Object.assign(new Error('cli_quota_exhausted'), { usage: { input: 3 } });
+      if (name === 'grok') throw Object.assign(new Error('cli_quota_exhausted: Grok Build usage balance exhausted'), { usage: { input: 3 } });
       return { output: 'ok', usage: { input: 10, output: 2 } };
     };
     const config = { workspaces: {}, adapters: adapters('codex', 'claude', 'grok', 'antigravity'), stateDir: os.tmpdir() };
@@ -86,6 +86,9 @@ test('failure text is classified as a login or quota problem, and usage shapes a
   assert.equal(classifyFailure('Error: Not logged in. Please run login.'), 'cli_auth_required');
   assert.equal(classifyFailure('You have hit your usage limit. Resets at 18:00'), 'cli_quota_exhausted');
   assert.equal(classifyFailure('429 Too Many Requests'), 'cli_quota_exhausted');
+  assert.equal(classifyFailure('402 Payment Required: Grok Build usage balance exhausted'), 'cli_quota_exhausted');
+  assert.equal(classifyFailure('model_not_found'), 'cli_model_unavailable');
+  assert.equal(classifyFailure('ECONNRESET'), 'cli_network_error');
   assert.equal(classifyFailure("You've hit your 5-hour limit · resets 7:20pm (UTC)"), 'cli_quota_exhausted');
   assert.equal(classifyFailure('print timeout after 10m0s with the turn still in progress; the response is partial'), 'cli_print_timeout');
   assert.equal(classifyFailure('TypeError: cannot read properties'), null);

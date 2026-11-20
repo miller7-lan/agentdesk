@@ -4,10 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const Store = require('../orchestrator/store');
 const { Scheduler } = require('../orchestrator/scheduler');
 const { WindowsOperations, RemoteFiles } = require('../orchestrator/windows');
+const { decodeSnapshot } = require('../orchestrator/test-snapshot');
 
 function setup(t, replies) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-plan-'));
@@ -150,6 +151,15 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   assert.deepEqual(mcps.map((entry) => entry.name), ['claude']);
   assert.equal(task.steps[0].state, 'completed');
   assert.equal(task.steps[0].attempts, 2);
+  const checkpoint = task.steps[0].checkpoint;
+  assert.equal(checkpoint.base, task.snapshot.base);
+  assert.equal(checkpoint.head, task.snapshot.base);
+  assert.equal(checkpoint.session, 'writer-session');
+  assert.deepEqual(checkpoint.changedFiles, ['README.md']);
+  assert.match(checkpoint.trackedDiffHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(task.cliCalls.filter((call) => call.stepId === 'edit').map((call) => [call.result, call.resumed]), [
+    ['failed', false], ['completed', true],
+  ]);
   assert.equal(task.detail, 'patches_ready');
   assert.equal(fs.readFileSync(readme, 'utf8'), 'working\n');
   const delta = fs.readFileSync(path.join(scheduler.config.stateDir, 'worktrees', task.id, 'edit.patch'));
@@ -163,4 +173,125 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   assert.equal(content(workspace, 'README.md'), 'working\nagent\n');
   assert.equal(git(workspace, 'show', ':README.md'), 'staged');
   assert.equal(fs.readFileSync(path.join(workspace, 'private.txt'), 'utf8'), 'untracked\n');
+});
+
+test('restart keeps an interrupted local operation for verification and never queues it again', async (t) => {
+  const { scheduler, task, head } = setup(t, []);
+  task.state = 'running';
+  task.snapshot = { base: head };
+  task.steps = [{ id: 'edit', role: 'codex', capability: 'implement', write: true, localTools: 'commands',
+    state: 'running', session: 'original-session' }];
+  task.cliCalls = [{
+    id: randomUUID(), stepId: 'edit', provider: 'codex', result: 'running', startedAt: '2026-11-20T00:00:00Z',
+  }];
+  scheduler.store.put('tasks', task.id, task);
+  const restarted = new Scheduler({ config: scheduler.config, store: scheduler.store, files: scheduler.files });
+  const restored = restarted.tasks.get(task.id);
+  assert.equal(restored.state, 'needs_review');
+  assert.equal(restored.detail, 'local_operation_unknown');
+  assert.equal(restored.steps[0].session, 'original-session');
+  assert.equal(restored.cliCalls[0].result, 'interrupted');
+  assert.equal(restored.cliCalls[0].failureCode, 'service_restarted');
+  assert.equal(restored.cliCalls[0].endedAt, undefined);
+  await assert.rejects(restarted.apply(restored), /patch_not_applicable/);
+});
+
+test('acceptance rework keeps the original writer session for a fixed snapshot', (t) => {
+  const { scheduler, task, head } = setup(t, []);
+  task.snapshot = { base: head };
+  task.steps = [{ id: 'edit', role: 'codex', capability: 'implement', write: true,
+    paths: ['README.md'], state: 'completed', session: 'writer-1' }];
+  assert.equal(scheduler.appendRework(task, { summary: 'fix the failure' }), 'rework');
+  assert.equal(task.steps[1].role, 'codex');
+  assert.equal(task.steps[1].reworkOf, 'edit');
+  assert.equal(task.steps[1].session, 'writer-1');
+});
+
+test('a group builds an isolated Windows project and syncs only the first repair before applying', async (t) => {
+  const compiler = process.platform === 'win32' && path.join(process.env.SystemRoot,
+    'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+  const compileExe = Boolean(compiler && fs.existsSync(compiler));
+  const artifactName = compileExe ? 'build.exe' : 'build.bin';
+  const { scheduler, task, workspace, git } = setup(t, [
+    JSON.stringify({ summary: 'build it', steps: [{ id: 'edit', capability: 'implement', prompt: 'edit source' }] }),
+    ({ cwd, onSession }) => {
+      fs.writeFileSync(path.join(cwd, 'marker.txt'), 'FAIL');
+      fs.writeFileSync(path.join(cwd, 'payload.bin'), Buffer.from([0, 1, 2, 255]));
+      if (compileExe) fs.writeFileSync(path.join(cwd, 'Program.cs'), 'invalid C#');
+      onSession('build-writer');
+      return { output: 'first draft' };
+    },
+    ({ cwd, session, prompt }) => {
+      assert.equal(session, 'build-writer');
+      assert.match(prompt, /Windows test failed/);
+      fs.writeFileSync(path.join(cwd, 'marker.txt'), 'PASS');
+      if (compileExe) fs.writeFileSync(path.join(cwd, 'Program.cs'),
+        'class Program { static void Main() { System.Console.WriteLine("ISOLATED_EXE_OK"); } }');
+      return { output: 'repaired' };
+    },
+    ({ name, prompt }) => {
+      assert.equal(name, 'claude');
+      assert.match(prompt, /"windowsBuild":/);
+      assert.match(prompt, /"code":0/);
+      return { output: JSON.stringify({ verdict: 'accept', summary: 'verified', findings: [] }) };
+    },
+  ]);
+  const stateDir = path.join(path.dirname(workspace), 'bridge-state');
+  fs.mkdirSync(stateDir);
+  delete task.groupPlan.base;
+  task.command = 'compile-fixture';
+  scheduler.config.workspaces.mac.isolatedTests = [task.command];
+  const spec = {
+    runner: compileExe ? [process.execPath, '-e', [
+      "const {spawnSync}=require('node:child_process'), path=require('node:path');",
+      "const build=spawnSync(process.argv[1],['/nologo','/out:build.exe','Program.cs'],{stdio:'inherit'});",
+      "if(build.status!==0)process.exit(build.status||1);",
+      "const app=spawnSync(path.resolve('build.exe'),[],{encoding:'utf8'});",
+      "if(app.status!==0||app.stdout.trim()!=='ISOLATED_EXE_OK')process.exit(2);",
+      "console.log(app.stdout.trim());",
+    ].join('\n'), compiler] :
+      [process.execPath, '-e', "const fs=require('node:fs'); if(fs.readFileSync('marker.txt','utf8')!=='PASS')process.exit(3); fs.writeFileSync('build.bin',fs.readFileSync('payload.bin'));"],
+    artifacts: [artifactName],
+  };
+  const bridge = new WindowsOperations({ store: scheduler.store,
+    config: { stateDir, workspaces: { mac: { root: workspace, write: true, isolatedCommands: { [task.command]: spec } } } } });
+  const tested = [];
+  const syncs = [];
+  scheduler.files = new RemoteFiles({ request: async (_route, taskId, kind, body, _timeout, requestId) => {
+    if (body.operation === 'isolated_test_sync') syncs.push(decodeSnapshot(fs.readFileSync(bridge.streamPath(body.stream_id))));
+    if (body.operation === 'run_isolated_test') tested.push(body.version);
+    return bridge.call({ task_id: taskId, kind, body, message_id: requestId });
+  } });
+  const signal = new AbortController().signal;
+  await scheduler.run(task, signal);
+  assert.equal(task.state, 'awaiting_approval', JSON.stringify(task.groupPlan.rounds.at(-1)));
+  scheduler.approveRound(task, task.groupPlan.rounds.at(-1));
+  await scheduler.run(task, signal);
+  assert.equal(task.detail, 'patches_ready');
+  assert.equal(task.acceptance.verdict, 'accept');
+  assert.equal(tested.length, 2);
+  assert.equal(syncs[0].previous, null);
+  assert.equal(syncs[1].previous, tested[0]);
+  assert.deepEqual([...syncs[1].files.keys()], compileExe ? ['Program.cs', 'marker.txt'] : ['marker.txt']);
+  assert.equal(task.isolatedTest.version, tested[1]);
+  const [artifact] = task.isolatedTest.artifacts;
+  const artifactRef = 'build:' + artifact.stream_id;
+  const control = (body) => scheduler.control({ task_id: task.id, kind: 'task.status', body }, 'admin');
+  assert.equal(control({ operation: 'task_artifacts', artifact: artifactRef }).version, tested[1]);
+  assert.equal((await control({ operation: 'task_artifacts', artifact: artifactRef, offset: 0 })).offset, 0);
+  const bytes = await scheduler.files.download('fixture', task.id, { operation: 'artifact', ...artifact }, signal);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), artifact.sha256);
+  if (compileExe) {
+    assert.equal(bytes.subarray(0, 2).toString(), 'MZ');
+    assert.equal(bytes.subarray(bytes.readUInt32LE(60), bytes.readUInt32LE(60) + 4).toString(), 'PE\0\0');
+    assert.match(task.isolatedTest.stdout, /ISOLATED_EXE_OK/);
+    t.diagnostic('Windows C# compiler produced a verified native executable');
+  } else assert.deepEqual(bytes, Buffer.from([0, 1, 2, 255]));
+  assert.equal(fs.existsSync(path.join(workspace, 'marker.txt')), false);
+  assert.equal(git(workspace, 'status', '--porcelain'), '');
+  await scheduler.apply(task);
+  assert.equal(task.state, 'completed');
+  assert.equal(fs.readFileSync(path.join(workspace, 'marker.txt'), 'utf8'), 'PASS');
+  assert.equal(tested.length, 2);
+  assert.equal(fs.existsSync(path.join(workspace, artifactName)), false);
 });

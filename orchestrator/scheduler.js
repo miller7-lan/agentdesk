@@ -1,4 +1,4 @@
-const { mkdir, writeFile, readFile, stat, unlink } = require('node:fs/promises');
+const { mkdir, writeFile, readFile, stat, unlink, mkdtemp, rm } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { randomBytes, randomUUID, createHash } = require('node:crypto');
@@ -24,6 +24,7 @@ const {
 const { TRIAGE_INSTRUCTION, parseTriageDecision } = require('./triage');
 const { summarize, benchmark, toTable, toCsv } = require('./report');
 const { validateOwnerCaps, allow: ownerAllow, nextReset, ownerUsageReport } = require('./ledger');
+const { collectSnapshot, encodeSnapshot, digest } = require('./test-snapshot');
 
 const roles = ['codex', 'claude', 'grok', 'gemini'];
 const MAX_TRIAGE = 2;
@@ -38,6 +39,8 @@ const teamTimeout = 40 * 60_000;
 // A single CLI turn may run this long before the session is continued. The stall watchdog still stops a CLI
 // that writes nothing for 10 minutes, so a longer turn limit does not leave a hung process running forever.
 const defaultCliTimeoutMs = 45 * 60_000;
+const hasLocalEffects = (step) => (step.write && ['files', 'desktop'].includes(step.localTools)) ||
+  (step.localTools === 'commands' && (step.write || step.capability === 'scout'));
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -234,13 +237,26 @@ class Scheduler {
     this.route = store.get('settings', 'route')?.value || 'ssh';
     this.maintenance = store.get('settings', 'maintenance')?.value || null;
     for (const task of this.tasks.values()) {
+      const openCalls = (task.cliCalls || []).filter((call) => call.result === 'running');
+      for (const call of openCalls) {
+        call.result = 'interrupted';
+        call.failureCode = 'service_restarted';
+        call.observedAt = new Date(this.now()).toISOString();
+      }
+      if (openCalls.length) this.store.put('tasks', task.id, task);
       if (task.state === 'applying' || task.state === 'testing') {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
       } else if (['planning', 'running', 'awaiting_acceptance', 'triaging'].includes(task.state)) {
-        for (const step of task.steps) {
-          if (step.state === 'running') { step.state = 'queued'; delete step.finishedAt; }
+        const active = task.steps.filter((step) => step.state === 'running');
+        const unknown = active.filter((step) => task.snapshot && hasLocalEffects(step));
+        for (const step of active) {
+          step.state = unknown.includes(step) ? 'failed' : 'queued';
+          if (step.state === 'failed') {
+            step.error = 'local_operation_unknown';
+            step.finishedAt = new Date(this.now()).toISOString();
+          } else delete step.finishedAt;
         }
-        this.save(task, 'queued', 'recovered');
+        this.save(task, unknown.length ? 'needs_review' : 'queued', unknown.length ? 'local_operation_unknown' : 'recovered');
       } else if (task.state === 'cancelled') {
         // Older cancellations aborted the CLI but left its step marked running; the process is gone, so
         // settle it here instead of drawing a live node beside a cancelled task.
@@ -270,7 +286,7 @@ class Scheduler {
         return result;
       } catch (error) {
         this.recordUsage(task, step, error.usage);
-        const reason = { cli_quota_exhausted: 'quota', cli_auth_required: 'auth' }[error.message];
+        const reason = { cli_quota_exhausted: 'quota', cli_auth_required: 'auth' }[error.code || error.message?.split(':')[0]];
         if (signal.aborted || !reason) throw error;
         // A quota block lasts until the reset the CLI stated, when it stated one; otherwise the default.
         this.router.block(step.role, reason, reason === 'quota' && error.retryAfterMs ? error.retryAfterMs : undefined);
@@ -562,9 +578,10 @@ event(task, state, detail) {
     const roleCalls = {};
     let reassignments = 0;
     for (const step of task.steps || []) {
-      if (step.role) roleCalls[step.role] = (roleCalls[step.role] || 0) + (step.attempts || 0);
+      if (!task.cliCalls && step.role) roleCalls[step.role] = (roleCalls[step.role] || 0) + (step.attempts || 0);
       reassignments += step.tried?.length || 0;
     }
+    for (const call of task.cliCalls || []) roleCalls[call.provider] = (roleCalls[call.provider] || 0) + 1;
     metrics.stepCount = (task.steps || []).length;
     metrics.roleCalls = roleCalls;
     metrics.reassignments = reassignments;
@@ -616,9 +633,14 @@ event(task, state, detail) {
         (body.via !== undefined && !['desktop', 'wechat'].includes(body.via))) throw new Error('invalid_task');
     groupPlan = mode !== 'edit' && !readOnlyMode(mode) && (groupPlan || mode === 'duo' || mode === 'team');
     const existing = this.tasks.get(id);
+    const workspaceConfig = Object.hasOwn(this.config.workspaces, body.workspace) && this.config.workspaces[body.workspace];
+    const defaultTest = workspaceConfig?.defaultIsolatedTest;
+    const command = body.command ?? (existing ? existing.command :
+      groupPlan && typeof defaultTest === 'string' && Array.isArray(workspaceConfig.isolatedTests) &&
+        workspaceConfig.isolatedTests.includes(defaultTest) ? defaultTest : undefined);
     if (existing) {
       if (Boolean(existing.groupPlan) !== groupPlan || existing.prompt !== body.prompt || existing.workspace !== body.workspace ||
-          existing.command !== body.command || existing.provider !== body.provider || existing.model !== body.model ||
+          existing.command !== command || existing.provider !== body.provider || existing.model !== body.model ||
           (existing.mode || 'normal') !== mode || existing.replyTo !== body.replyTo ||
           existing.via !== body.via || existing.broadcastId !== body.broadcastId || existing.reviewOf !== body.reviewOf ||
           existing.project !== body.project || existing.benchmarkId !== body.benchmarkId || existing.arm !== body.arm ||
@@ -674,7 +696,7 @@ event(task, state, detail) {
     if (body.arm !== undefined && !['single', 'multi', 'manual'].includes(body.arm)) throw new Error('invalid_task');
     if (this.tasks.size >= 10000) throw new Error('task_capacity');
     const normalizedTags = [...new Set(tags.map((tag) => tag.trim()))];
-    const task = { id, workspace: body.workspace, prompt: body.prompt, command: body.command, provider: body.provider, model: body.model, steps: [],
+    const task = { id, workspace: body.workspace, prompt: body.prompt, command, provider: body.provider, model: body.model, steps: [],
       ...(body.attachments && { attachments: body.attachments }),
       owner, tags: normalizedTags, mode, createdAt: new Date(this.now()).toISOString(),
       ...(body.replyTo && { replyTo: body.replyTo }),
@@ -1429,7 +1451,7 @@ event(task, state, detail) {
     const role = step.role;
     const limit = (r) => this.config.cliConcurrency?.[r] ?? 1;
     const busy = (r) => taken.has(r) || (this.cliBusy.get(r) || 0) >= limit(r);
-    if (!busy(role) || !step.capability || step.named || task.provider || step.fixedReview || step.pinnedReadOnly ||
+    if (!busy(role) || step.session || !step.capability || step.named || task.provider || step.fixedReview || step.pinnedReadOnly ||
         LEAD_CAPABILITIES.has(step.capability)) return;
     const authors = step.capability === 'review'
       ? (task.steps || []).filter((other) => step.dependsOn?.includes(other.id) && other.write).map((other) => other.role) : [];
@@ -1448,6 +1470,7 @@ event(task, state, detail) {
   }
 
   async acquireCli(task, step, signal) {
+    signal.throwIfAborted();
     const role = step.role;
     const limit = this.config.cliConcurrency?.[role] ?? 1;
     if ((this.cliBusy.get(role) || 0) >= limit) {
@@ -1675,7 +1698,7 @@ event(task, state, detail) {
 
   recoverSession(task, step, error) {
     if (!task.snapshot || !step.session || step.sessionRecovery ||
-        !/^cli_(?:timeout|stalled|exit_\d+)(?::|$)/.test(error.message) || !this.router.available(step.role)) return false;
+        !/^cli_(?:timeout|stalled|network_error|exit_\d+)(?::|$)/.test(error.message) || !this.router.available(step.role)) return false;
     step.sessionRecovery = true;
     this.save(task, task.state, step.id + ':resuming_session');
     return true;
@@ -1689,10 +1712,28 @@ event(task, state, detail) {
       'Confirmed local operations: ' + JSON.stringify(confirmed);
   }
 
+  async checkpointStep(task, step, folder, signal, failure, changedPaths) {
+    if (!task.snapshot || !step.write) return;
+    const gitEvidence = await Promise.all([
+      git(folder, ['rev-parse', 'HEAD'], signal),
+      git(folder, ['status', '--porcelain=v1', '--no-renames', '-z'], signal),
+      git(folder, ['diff', '--binary', '--no-ext-diff', '--no-textconv', task.base], signal),
+    ]).catch(() => null);
+    const status = gitEvidence?.[1].split('\0').filter(Boolean) || [];
+    step.checkpoint = {
+      provider: step.role, model: step.model, base: task.base, session: step.session,
+      workspace: path.basename(folder), log: step.id + '.log', at: new Date(this.now()).toISOString(),
+      result: failure ? 'failed' : 'completed', ...(failure && { failure: clip(failure, 400) }),
+      ...(gitEvidence && {
+        head: gitEvidence[0].trim(),
+        trackedDiffHash: createHash('sha256').update(gitEvidence[2]).digest('hex'),
+        changedFiles: [...new Set([...(changedPaths || []), ...status.map((entry) => entry.slice(3))])].slice(0, 50),
+        untracked: status.some((entry) => entry.startsWith('?? ')),
+      }),
+    };
+  }
+
   async invoke(task, step, folder, signal, prompt = step.prompt) {
-    const config = this.config.adapters[step.role];
-    if (!config) throw new Error(step.role + '_not_configured');
-    const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
     // Every step, the lead's planning included, may read the person's project and authorized folders on their
     // computer through the Bridge tools; only the lead may also use the read-only computer location. Running
     // commands stays off for planning and other read-only steps.
@@ -1700,22 +1741,12 @@ event(task, state, detail) {
     const access = Scheduler.DUTY_ACCESS[Scheduler.dutyOf(step)] || Scheduler.DUTY_ACCESS.scout;
     const mount = access.mount && (this.mounts.size || this.config.homeMounts)
       ? await this.mountFor(task).catch(() => null) : null;
-    // With a project snapshot, project files come only from the working tree (one version for everyone); the
-    // home mount and the read tools are for what lies outside the project. The lead keeps those read tools, as
-    // the person asked (it reaches folders outside the home folder too); members get them only while the mount
-    // is down; the writer changes the project by patch and gets local tools only when the lead marked the step
-    // (localTools), as does any step that needs commands or the desktop.
-    const leadDuty = LEAD_CAPABILITIES.has(Scheduler.dutyOf(step));
-    const localTools = task.snapshot ? step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
-    const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount)
-      ? this.config.mcp : undefined;
     if (task.snapshot && step.id !== 'group-planner') {
       prompt += '\nUse this working tree for all project files. Its base is the fixed snapshot of the requester\'s project. ' +
         'Edit here and deliver a reviewed patch. ' + (step.localTools === 'files' ? 'Use local file tools only for files outside the project.'
           : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
             : step.localTools === 'desktop' ? 'Use local_desktop only for the requested GUI operation. Verify the current screen before repeating any action.' : '');
     }
-    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp), Boolean(task.snapshot));
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
@@ -1740,6 +1771,19 @@ event(task, state, detail) {
       prompt += attachmentNote(files);
     }
     this.spillOver(task, step);
+    const config = this.config.adapters[step.role];
+    if (!config) throw new Error(step.role + '_not_configured');
+    const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
+    // With a project snapshot, project files come only from the working tree (one version for everyone); the
+    // home mount and the read tools are for what lies outside the project. The lead keeps those read tools, as
+    // the person asked (it reaches folders outside the home folder too); members get them only while the mount
+    // is down; the writer changes the project by patch and gets local tools only when the lead marked the step
+    // (localTools), as does any step that needs commands or the desktop.
+    const leadDuty = LEAD_CAPABILITIES.has(Scheduler.dutyOf(step));
+    const localTools = task.snapshot ? step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
+    const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount)
+      ? this.config.mcp : undefined;
+    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp), Boolean(task.snapshot));
     const release = await this.acquireCli(task, step, signal);
     // A step can be stopped on its own (stall watchdog, or the person) without cancelling the task; the reason
     // becomes the step's error and goes to the lead like any failure.
@@ -1747,9 +1791,10 @@ event(task, state, detail) {
     const stepKey = task.id + ':' + step.id;
     (this.stepControllers ||= new Map()).set(stepKey, stepController);
     const stepSignal = AbortSignal.any([signal, stepController.signal]);
-    this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
+    let call;
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
+      recordMcp: () => { if (call) call.bridgeMcpRequests += 1; },
       localTools,
       desktopWrite: step.localTools === 'desktop' && Boolean(step.write),
       runCommands: (!task.snapshot || step.localTools === 'commands') &&
@@ -1763,6 +1808,16 @@ event(task, state, detail) {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
       const budget = this.cliBudget(task);
+      stepSignal.throwIfAborted();
+      const calls = task.cliCalls ||= [];
+      call = {
+        id: randomUUID(), stepId: step.id, provider: step.role, model: step.model ?? null,
+        capability: step.capability, attempt: 1 + calls.filter((entry) => entry.stepId === step.id).length,
+        startedAt: new Date(this.now()).toISOString(), result: 'running', resumed: Boolean(step.session), bridgeMcpRequests: 0,
+      };
+      calls.push(call);
+      this.save(task, task.state, task.detail, false);
+      this.recordCall(call.provider);
       const result = await run({
         ...(useTeam && {
           taskId: task.id, stepId: step.id, owner: task.owner, project: task.project,
@@ -1786,12 +1841,27 @@ event(task, state, detail) {
           this.save(task, task.state, step.id + ':session');
         },
       });
+      call.result = 'completed';
+      if (result.usage) call.usage = result.usage;
       if (useTeam && result.container) task.container = result.container;
       return result;
+    } catch (error) {
+      if (call) {
+        call.result = stepSignal.aborted ? 'interrupted' : 'failed';
+        const code = error.code || error.message?.split(':')[0];
+        if (/^[a-z0-9_]{1,80}$/i.test(code || '')) call.failureCode = code;
+        if (error.usage) call.usage = error.usage;
+      }
+      throw error;
     } finally {
       mcp?.capabilities.delete(capability);
       this.stepControllers?.delete(stepKey);
       release();
+      if (call) {
+        call.endedAt = new Date(this.now()).toISOString();
+        call.durationMs = Math.max(0, Date.parse(call.endedAt) - Date.parse(call.startedAt));
+        this.save(task, task.state, task.detail, false);
+      }
     }
   }
 
@@ -1903,6 +1973,11 @@ event(task, state, detail) {
           continue;
         }
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
+        signal.throwIfAborted();
+        if (wave.some((step) => step.error === 'local_operation_unknown')) {
+          this.save(task, 'needs_review', 'local_operation_unknown');
+          return;
+        }
         const failed = results.find((result) => result.status === 'rejected');
         if (failed) {
           // Straight to the next model (no lead review) while the group allows it; the lead after three
@@ -1933,6 +2008,11 @@ event(task, state, detail) {
         await this.consumePendingTriage(task, repo, root, signal);
         return;
       }
+      if (this.usesIsolatedTest(task)) {
+        const outcome = await this.verifyIsolatedTest(task, repo, root, signal);
+        if (outcome === 'rework') continue;
+        if (outcome === 'failed') return;
+      }
       const outcome = await this.finalize(task, repo, root, signal);
       if (outcome === 'rework') continue;
       if (outcome !== 'accept') return;
@@ -1955,7 +2035,7 @@ event(task, state, detail) {
       this.save(task, 'needs_review', 'patches_ready');
       return;
     }
-    if (task.command) {
+    if (task.command && !this.usesIsolatedTest(task)) {
       const passed = await this.runTests(task, signal);
       if (!passed) {
         if (task.pendingTriage) await this.consumePendingTriage(task, repo, root, signal);
@@ -2181,6 +2261,7 @@ event(task, state, detail) {
     // A direct edit is reviewed by its owner through the existing patch preview/apply flow.
     if (task.mode === 'edit') return false;
     if (readOnlyMode(task.mode)) return false;
+    if (task.isolatedTestRequired) return true;
     if (task.mode === 'duo') return true;
     if (!this.acceptance.enabled) return false;
     return this.acceptance.mode === 'always' || task.steps.some((step) => step.write) || task.steps.length >= 2;
@@ -2286,13 +2367,16 @@ event(task, state, detail) {
   // One implementation step per rework round. When there is a writer to build on, the rework runs in
   // that writer's worktree and its cumulative patch supersedes the writer's earlier patch.
   appendRework(task, acceptance) {
-    const role = this.pickForTask(task, 'implement');
+    const parent = [...task.steps].reverse()
+      .find((step) => step.write && step.paths?.length && !step.supersededBy);
+    const original = task.snapshot && parent?.session && this.router.canWrite(parent.role) &&
+      this.router.available(parent.role) && this.router.quotaAllows(parent.role, 'implement') &&
+      this.ownerAllows(task, parent.role).allowed ? parent : null;
+    const role = original?.role || this.pickForTask(task, 'implement');
     if (!role) {
       const configured = (this.router.routes.implement || []).filter((candidate) => this.router.configured(candidate));
       throw new Error(configured.length ? 'executor_waiting:implement' : 'no_executor:implement');
     }
-    const parent = [...task.steps].reverse()
-      .find((step) => step.write && step.paths?.length && !step.supersededBy);
     const findings = (acceptance.findings || []).map((finding) =>
       [finding.severity, finding.file, finding.line, finding.issue, finding.suggestion].filter(Boolean).join(': ')).join('\n');
     const step = {
@@ -2302,6 +2386,7 @@ event(task, state, detail) {
         (acceptance.summary ? '\nAcceptance summary: ' + acceptance.summary : '') +
         (findings ? '\nFindings:\n' + findings : ''),
       ...(parent && { reworkOf: parent.id }),
+      ...(original && { session: original.session, model: original.model, effort: original.effort }),
     };
     task.steps.push(step);
     task.reworkRounds = (task.reworkRounds || 0) + 1;
@@ -2345,8 +2430,10 @@ event(task, state, detail) {
     }
     const reviewOnly = task.mode === 'review_only';
     const readonlyStep = step.capability === 'review' && Boolean(sharedWriter || reviewOnly);
-    const folder = path.join(root, sharedWriter?.id || step.id);
-    await this.ensureWorktree(repo, folder, task, sharedWriter || step, signal);
+    const treeStep = step.worktreeStep || sharedWriter?.worktreeStep || sharedWriter?.id || step.id;
+    const folder = path.join(root, treeStep);
+    await this.ensureWorktree(repo, folder, task, { id: treeStep }, signal);
+    if (treeStep !== step.id) step.worktreeStep = treeStep;
     const dependencies = task.steps.filter((dep) => step.dependsOn.includes(dep.id))
       .map((dep) => ({ id: dep.id, output: dep.output?.slice(0, 4000), paths: dep.paths?.slice(0, 50),
         patch: dep.paths?.length ? path.join(root, dep.id + '.patch') : undefined,
@@ -2399,6 +2486,11 @@ event(task, state, detail) {
         if (step.handoverFrom) prompt += '\n\nYou are taking over this step from ' + step.handoverFrom.role + (step.handoverFrom.model ? ' (' + step.handoverFrom.model + ')' : '') +
           ', which stopped: ' + step.handoverFrom.error + '. Its changes so far are already in your working folder (git status and git diff show them)' +
           (step.handoverFrom.output ? '; what it reported: ' + step.handoverFrom.output : '') + '. Check that work, keep what is right, fix what is not, and finish the step.';
+        if (step.handoverFrom && step.checkpoint) {
+          const { provider, base, head, trackedDiffHash, changedFiles, untracked, failure } = step.checkpoint;
+          prompt += '\nWorktree checkpoint: ' + JSON.stringify({ provider, base, head, trackedDiffHash, changedFiles, untracked, failure }) +
+            '. Verify this against the current Worktree, then start with the listed files and unresolved failure.';
+        }
         if (step.guidance?.length) prompt += '\n\nThe person gave this guidance in your conversation while you worked; follow it, it takes priority over the plan where they conflict:\n' +
           step.guidance.map((item) => '- ' + item.text).join('\n');
         if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
@@ -2426,6 +2518,7 @@ event(task, state, detail) {
           // A rework patch is cumulative over its parent, so only the newest patch is applied.
           if (sharedWriter) sharedWriter.supersededBy = step.id;
         }
+        await this.checkpointStep(task, step, folder, signal, null, step.paths);
         step.state = 'completed';
         step.finishedAt = new Date(this.now()).toISOString();
         this.save(task, savedState(), step.id + ':completed');
@@ -2444,6 +2537,15 @@ event(task, state, detail) {
           throw error;
         }
         await this.collectDeliveries(task, step).catch(() => {});
+        await this.checkpointStep(task, step, folder, signal, error.message);
+        if (task.snapshot && hasLocalEffects(step) &&
+            /^cli_(?:print_timeout|timeout|stalled|network_error)(?::|$)/.test(error.message)) {
+          step.state = 'failed';
+          step.error = 'local_operation_unknown';
+          step.finishedAt = new Date(this.now()).toISOString();
+          this.save(task, savedState(), step.id + ':local_operation_unknown');
+          throw error;
+        }
         // The CLI stopped at its own print deadline: the conversation is intact, so continue it instead
         // of paying for the step again. The limit keeps a model that never finishes from running forever.
         if (error.message.startsWith('cli_print_timeout') && step.session) {
@@ -2495,6 +2597,108 @@ event(task, state, detail) {
     delete task.pendingRequest;
     delete task.pendingKind;
     if (task.testResult.code !== 0) throw new Error('windows_test_failed');
+  }
+
+  usesIsolatedTest(task) {
+    const commands = this.config.workspaces[task.workspace]?.isolatedTests;
+    return Boolean(task.snapshot && task.command && Array.isArray(commands) && commands.includes(task.command));
+  }
+
+  async verifyIsolatedTest(task, repo, root, signal) {
+    task.isolatedTestRequired = true;
+    const writers = task.steps.filter((step) => step.write && step.paths?.length && !step.supersededBy);
+    const patchNames = writers.map((step) => path.join(root, step.id + '.patch'));
+    const patches = await Promise.all(patchNames.map((file) => readFile(file)));
+    const patchHash = digest(Buffer.concat(patches));
+    let evidence = task.isolatedTest;
+    if (evidence?.patchHash === patchHash && evidence.base === task.base && evidence.command === task.command) {
+      if (evidence.code === 0) return 'passed';
+      if (Number.isInteger(evidence.code)) {
+        return this.repairIsolatedTest(task, writers, evidence);
+      }
+    }
+    const directory = await mkdtemp(path.join(root, 'validation-'));
+    const manifestFile = path.join(root, 'isolated-test-manifest.json');
+    let snapshot;
+    try {
+      await git(repo, ['worktree', 'add', '--detach', directory, task.base], signal);
+      for (const file of patchNames) await git(directory, ['apply', '--index', '--binary', file], signal);
+      snapshot = await collectSnapshot(directory, task.base, signal);
+    } finally {
+      await git(repo, ['worktree', 'remove', '--force', directory]).catch(() => {});
+      await rm(directory, { force: true, recursive: true });
+    }
+    const prior = await readFile(manifestFile, 'utf8').then(JSON.parse, (error) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    const sync = async (previous) => {
+      const bytes = encodeSnapshot(snapshot, previous);
+      const sha256 = digest(bytes);
+      const previousSync = task.isolatedSync;
+      const streamId = previousSync?.sha256 === sha256 ? previousSync.streamId : randomUUID();
+      task.isolatedSync = { version: snapshot.version, streamId, sha256, bytes: bytes.length };
+      this.save(task, 'running', 'isolated_test_sync');
+      const { version } = await this.files.syncIsolatedTest(this.bridgeRoute(task.workspace), task.id,
+        task.workspace, task.command, bytes, streamId, signal);
+      if (version !== snapshot.version) throw new Error('test_snapshot_checksum');
+      return bytes.length;
+    };
+    let transferred;
+    try { transferred = await sync(prior); }
+    catch (error) {
+      if (!prior || !/^test_snapshot_parent_(?:missing|invalid)$/.test(error.message)) throw error;
+      transferred = await sync();
+    }
+    await writeFile(manifestFile, JSON.stringify({
+      version: snapshot.version, entries: snapshot.entries,
+    }), { mode: 0o600 });
+    delete task.isolatedSync;
+    task.testSyncBytes = (task.testSyncBytes || 0) + transferred;
+
+    task.pendingRequest = messageId();
+    task.pendingKind = 'isolated_test';
+    evidence = task.isolatedTest = {
+      version: snapshot.version, base: task.base, patchHash, command: task.command,
+      transferred, repairRounds: evidence?.repairRounds || 0,
+    };
+    this.save(task, 'testing', 'isolated_test_running');
+    const result = await this.files.runIsolatedTest(() => this.bridgeRoute(task.workspace), task.id, task.workspace,
+      task.command, snapshot.version, { id: task.pendingRequest, signal,
+        onStatus: commandProgress(this.config.stateDir, task.id, 'local-test', { base: task.base, version: snapshot.version }) });
+    if (result.version !== snapshot.version || !Number.isInteger(result.code)) throw new Error('test_result_version_mismatch');
+    delete task.pendingRequest;
+    delete task.pendingKind;
+    Object.assign(evidence, result);
+    task.testResult = { code: result.code, stdout: result.stdout, stderr: result.stderr };
+    if (result.code === 0) {
+      this.save(task, 'running', 'isolated_test_passed');
+      return 'passed';
+    }
+    task.testFailures = (task.testFailures || 0) + 1;
+    return this.repairIsolatedTest(task, writers, evidence);
+  }
+
+  repairIsolatedTest(task, writers, evidence) {
+    if (evidence.repairScheduled) {
+      this.save(task, 'needs_review', 'isolated_test_unchanged_failure');
+      return 'failed';
+    }
+    const limit = this.acceptance.maxRework;
+    if (writers.length === 1 && evidence.repairRounds < limit) {
+      evidence.repairRounds += 1;
+      evidence.repairScheduled = true;
+      const summary = [evidence.stderr, evidence.stdout].filter(Boolean).join('\n');
+      try {
+        return this.appendRework(task, { summary: 'Windows test failed (' + evidence.code + '). ' + clip(summary, 3000) });
+      } catch (error) {
+        delete evidence.repairScheduled;
+        evidence.repairRounds -= 1;
+        throw error;
+      }
+    }
+    this.save(task, 'needs_review', 'isolated_test_failed');
+    return 'failed';
   }
 
   // Runs the task command with one immediate retry. A success clears the consecutive-failure count; two
@@ -3006,6 +3210,10 @@ event(task, state, detail) {
     try {
       const patches = await Promise.all(task.steps.filter((step) => step.write && step.paths?.length && !step.supersededBy)
         .map((step) => readFile(path.join(this.config.stateDir, 'worktrees', task.id, step.id + '.patch'))));
+      const isolated = task.isolatedTestRequired || this.usesIsolatedTest(task);
+      if (isolated && (task.isolatedTest?.code !== 0 ||
+          task.isolatedTest.base !== task.base || task.isolatedTest.command !== task.command ||
+          task.isolatedTest.patchHash !== digest(Buffer.concat(patches)))) throw new Error('isolated_test_patch_mismatch');
       task.pendingRequest = messageId();
       task.pendingKind = 'patch';
       this.save(task, 'applying', 'patch_started');
@@ -3013,7 +3221,7 @@ event(task, state, detail) {
         Buffer.concat(patches), task.pendingRequest, controller.signal, task.snapshot?.version);
       delete task.pendingRequest;
       delete task.pendingKind;
-      if (task.command && !controller.signal.aborted) {
+      if (task.command && !isolated && !controller.signal.aborted) {
         const passed = await this.runTests(task, controller.signal);
         if (!passed) {
           // The patches are already applied. Diagnose the failure before changing anything else; a
@@ -3044,13 +3252,23 @@ event(task, state, detail) {
     });
     if (outcome.state !== 'finished') return outcome;
     const isTest = task.pendingKind === 'test';
+    const isolated = task.pendingKind === 'isolated_test';
+    if (isolated && outcome.kind !== 'error' && (outcome.outcome.value?.version !== task.isolatedTest?.version ||
+        !Number.isInteger(outcome.outcome.value?.code))) throw new Error('test_result_version_mismatch');
     delete task.pendingRequest;
     delete task.pendingKind;
     if (outcome.kind === 'error') {
       const reason = outcome.outcome.error;
       this.save(task, reason === 'command_cancelled' ? 'cancelled' : 'failed', reason);
     }
-    else if (isTest && outcome.outcome.value.code !== 0) {
+    else if (isolated) {
+      const result = outcome.outcome.value;
+      Object.assign(task.isolatedTest, result);
+      task.testResult = { code: result.code, stdout: result.stdout, stderr: result.stderr };
+      if (result.code !== 0) task.testFailures = (task.testFailures || 0) + 1;
+      this.save(task, 'queued', 'isolated_test_confirmed');
+      this.pump();
+    } else if (isTest && outcome.outcome.value.code !== 0) {
       task.testResult = outcome.outcome.value;
       this.save(task, 'failed', 'windows_test_failed');
     } else {
@@ -3148,6 +3366,15 @@ event(task, state, detail) {
     if (['task_diff', 'task_log', 'task_artifacts', 'task_activity'].includes(body.operation)) {
       if (!task || !owner) throw new Error('task_access_denied');
       if (body.operation === 'task_activity') return stepActivity(this.config.stateDir, task, body.stepId);
+      if (body.operation === 'task_artifacts' && typeof body.artifact === 'string' && body.artifact.startsWith('build:')) {
+        const build = task.isolatedTest;
+        const artifact = build?.code === 0 && build.artifacts?.find((item) => 'build:' + item.stream_id === body.artifact);
+        if (!artifact) throw new Error('invalid_artifact');
+        if (body.offset === undefined) return { ...artifact, version: build.version };
+        return this.files.call(this.bridgeRoute(task.workspace), task.id, 'file.read', {
+          operation: 'artifact', stream_id: artifact.stream_id, offset: body.offset,
+        });
+      }
       return taskOutput(this.config.stateDir, task, body);
     }
     if (body.operation === 'status') return owner || route === 'admin' ? this.status(id, body.after) : publicTask(task);

@@ -90,6 +90,10 @@ window.__groupReady = (async () => {
     accepted_with_risk: '组长按风险接受本次结果，补丁仍可人工应用。',
     windows_test_started: '正在本机运行测试。',
     windows_test_failed: '本机测试失败。',
+    isolated_test_not_authorized: '该项目未授权 Windows 隔离测试命令。',
+    isolated_test_patch_mismatch: '补丁和已测试版本不一致，需要重新验收。',
+    isolated_test_unchanged_failure: '修复后补丁没有变化，暂停重复测试。',
+    local_operation_unknown: '本机操作的结果待核对。请检查已运行的命令和实际文件，避免重复执行。',
     dependency_failed: '前置步骤没有正常结束，后面的步骤无法开始，任务已停止。可以让组长重新安排。',
     budget_exceeded: '这项任务的预算（步骤数或 token）已用完，已暂停；确认后可重新发起或调高主控的 taskBudget。',
   };
@@ -876,6 +880,20 @@ window.__groupReady = (async () => {
   const localTests = new Map();
   function localTestActivity(task) {
     const entry = localTests.get(task.id);
+    if (task.detail === 'isolated_test_sync' && task.isolatedSync) {
+      return `<p class="panel-note">正在同步 Windows 测试版本 ${esc(task.isolatedSync.version.slice(0, 12))}</p>`;
+    }
+    if (task.isolatedTest) {
+      const test = task.isolatedTest;
+      const result = Number.isInteger(test.code) ? (test.code === 0 ? '已通过' : '失败，退出码 ' + test.code) : '等待结果';
+      const logs = [test.stdout, test.stderr].filter(Boolean).join('\n');
+      const live = task.state === 'testing' && entry?.activity?.items?.length ? window.__activity.html(entry.activity, {
+        key: 'local-test:' + task.id, running: true, commandScope: { taskId: task.id, stepId: 'local-test' },
+      }) : '';
+      return `<details class="lead-think" data-step="local-test:${esc(task.id)}" data-local-test="${esc(task.id)}"><summary>Windows 隔离测试 · ${esc(result)}</summary>
+        <p class="panel-note">版本 ${esc(test.version.slice(0, 12))} · 传输 ${test.transferred} 字节</p>
+        ${live || (logs ? `<pre>${esc(logs)}</pre>` : '')}</details>`;
+    }
     const body = entry?.activity?.items?.length ? window.__activity.html(entry.activity, {
       key: 'local-test:' + task.id, running: task.state === 'testing',
       commandScope: { taskId: task.id, stepId: 'local-test' },
@@ -1033,7 +1051,7 @@ window.__groupReady = (async () => {
         messages.push(messageRow('lead', '分工进度', board, 'board'));
       }
       if (!task.redacted && !isExample(state.group) && filter !== 'mine' && !filterSelect.value &&
-          (task.state === 'testing' || task.testResult || (task.command && terminal.has(task.state)))) {
+          (task.state === 'testing' || task.detail === 'isolated_test_sync' || task.testResult || (task.command && terminal.has(task.state)))) {
         messages.push(messageRow('local', '本机测试', localTestActivity(task)));
       }
       // What the person said while the work was under way, how the lead applied it, and each member's closing
@@ -2379,6 +2397,14 @@ window.__groupReady = (async () => {
       }
       const artifact = event.target.closest('[data-artifact]');
       if (artifact) {
+        if (artifact.dataset.artifact.startsWith('build:')) {
+          const selected = currentGroup().output;
+          if (selected?.taskId) api.saveBuild({ taskId: selected.taskId, projectId: state.group, artifact: artifact.dataset.artifact })
+            .then((result) => {
+              if (!result.ok) { selected.error = result.error || '构建产物保存失败'; A.renderPanel(); }
+            }).catch(() => { selected.error = '构建产物保存失败'; A.renderPanel(); });
+          return;
+        }
         openTaskOutput('task_artifacts', { artifact: artifact.dataset.artifact });
         return;
       }

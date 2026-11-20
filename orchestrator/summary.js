@@ -145,6 +145,10 @@ function buildAcceptanceBrief(task, options = {}) {
     steps: task.steps.map(stepDigest),
     reviews: reviewDigest(task),
     tests: testDigest(task.testResult),
+    ...(task.isolatedTest?.code === 0 && { windowsBuild: {
+      version: task.isolatedTest.version, command: task.isolatedTest.command,
+      artifacts: (task.isolatedTest.artifacts || []).map(({ name, sha256 }) => ({ name, sha256 })),
+    } }),
     diff: diffStat(task),
     rules: [
       'Judge the summarised results against the request and the plan.',

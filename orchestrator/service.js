@@ -288,6 +288,7 @@ function start(config) {
       try {
         const scope = capabilities.get(frame.capability);
         if (!scope) throw new Error('mcp_permission_denied');
+        scope.recordMcp?.();
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
         if (frame.operation === 'desktop' || frame.operation === 'desktop_image') {
@@ -456,7 +457,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
       try {
         if (operation === 'attachment_state') {
           wire.send({ ok: true, value: config.stateDir });
@@ -486,6 +487,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         if (!channel || (['submit', 'start_plan', 'broadcast'].includes(operation) && !value[active])) throw new Error('bridge_offline');
         const kind = operation === 'submit' ? 'task.request' : 'task.status';
         const body = { operation, route, revision, reply, project, after, stepId, artifact, action, reason, source,
+          ...(operation === 'task_artifacts' && offset !== undefined && { offset }),
           ...(operation === 'handover_choose' && { stop, role, model, effort }),
           ...(operation === 'set_step_models' && { models }) };
         if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {

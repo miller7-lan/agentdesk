@@ -99,6 +99,7 @@
       const detail = {
         patches_ready: '等待你审核并应用补丁',
         interrupted_windows_operation: '等待核对本机操作',
+        local_operation_unknown: '等待核对本机操作',
       }[task.detail];
       const event = task.events?.at(-1);
       const waitingFor = /executor_waiting|owner_quota_cap/.test(task.detail || '');
