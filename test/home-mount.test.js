@@ -78,7 +78,12 @@ test('the Bridge serves the home folder read-only, without credential folders or
   fs.writeFileSync(path.join(home, 'proj', 'src', 'a.js'), 'console.log(1)');
   fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519'), 'SECRET');
   fs.writeFileSync(path.join(home, 'bridge-state', 'key'), 'SECRET');
-  if (process.platform !== 'win32') fs.symlinkSync('/etc', path.join(home, 'proj', 'out'));
+  if (process.platform !== 'win32') {
+    const outside = path.join(fixture, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'note.txt'), 'outside fixture');
+    fs.symlinkSync(outside, path.join(home, 'proj', 'out'));
+  }
   const sftp = client(alias, { hidden: [path.join(alias, 'bridge-state')] });
   const version = await sftp.init();
   assert.equal(version[0], T.VERSION);
@@ -88,7 +93,7 @@ test('the Bridge serves the home folder read-only, without credential folders or
   assert.equal(await sftp.read('/.ssh/id_ed25519'), S.PERMISSION_DENIED);
   assert.equal(await sftp.read('/bridge-state/key'), S.PERMISSION_DENIED);
   assert.equal(await sftp.read('/../../etc/hostname'), S.PERMISSION_DENIED);
-  if (process.platform !== 'win32') assert.equal(await sftp.read('/proj/out/hostname'), S.PERMISSION_DENIED);
+  if (process.platform !== 'win32') assert.equal(await sftp.read('/proj/out/note.txt'), S.PERMISSION_DENIED);
   assert.equal(await sftp.openForWrite('/proj/src/a.js'), S.PERMISSION_DENIED);
   assert.equal(await sftp.remove('/proj/src/a.js'), S.PERMISSION_DENIED);
   assert.equal(fs.readFileSync(path.join(home, 'proj', 'src', 'a.js'), 'utf8'), 'console.log(1)');

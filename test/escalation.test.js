@@ -594,13 +594,29 @@ test('the status says what a running step is doing and what a queued step waits 
   assert.equal(scheduler.status(task.id).live, undefined);   // finished tasks carry no live line
 });
 
-test('a step with no output for its stall time is stopped and goes to the lead, who reassigns it', async (t) => {
+function waitForStop(signal, started) {
+  return new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    started.resolve();
+  });
+}
+
+function checkAfterStallInterval(scheduler) {
+  const now = scheduler.now;
+  try {
+    scheduler.now = () => now() + 1000;
+    scheduler.watchStalls();
+  } finally { scheduler.now = now; }
+}
+
+test('a step with no output for its stall time is stopped and goes to the lead, who reassigns it', { timeout: 10000 }, async (t) => {
   const { dir, head, mirror } = await repository(t);
+  const started = Promise.withResolvers();
   const scheduler = schedulerFor(dir, mirror, async ({ name, signal }) => {
     if (name === 'claude') return { output: decision('retry') };
     if (name === 'gemini') {
       // never writes anything: only the watchdog ends it
-      await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      await waitForStop(signal, started);
     }
     return { output: 'looked' };
   }, { acceptance: { mode: 'off' }, stallTimeoutMs: 50 });
@@ -609,8 +625,8 @@ test('a step with no output for its stall time is stopped and goes to the lead, 
   task.base = head;
   task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
   const run = scheduler.run(task, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  scheduler.watchStalls();
+  await started.promise;
+  checkAfterStallInterval(scheduler);
   await run;
   const events = scheduler.store.events(task.id).map((event) => event.detail);
   assert.ok(events.some((detail) => /^look:stalled:gemini:\d+$/.test(detail)), events.join(','));
@@ -621,15 +637,16 @@ test('a step with no output for its stall time is stopped and goes to the lead, 
   assert.equal(task.steps.find((step) => step.id === 'look').role, 'grok');
 });
 
-test('a stalled step tries another model of the same member before going to the lead', async (t) => {
+test('a stalled step tries another model of the same member before going to the lead', { timeout: 10000 }, async (t) => {
   const { dir, head, mirror } = await repository(t);
+  const started = Promise.withResolvers();
   const config = adapters('codex', 'claude', 'grok', 'gemini');
   config.gemini.profiles = { defaultModel: 'g-high', models: { 'g-high': {}, 'g-low': {} } };
   const runs = [];
   const scheduler = schedulerFor(dir, mirror, async ({ name, model, signal }) => {
     runs.push([name, model]);
     if (name === 'gemini' && model !== 'g-low') {
-      await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      await waitForStop(signal, started);
     }
     return { output: 'looked' };
   }, { acceptance: { mode: 'off' }, stallTimeoutMs: 50, adapters: config });
@@ -638,8 +655,8 @@ test('a stalled step tries another model of the same member before going to the 
   task.base = head;
   task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
   const run = scheduler.run(task, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  scheduler.watchStalls();
+  await started.promise;
+  checkAfterStallInterval(scheduler);
   await run;
   assert.equal(task.state, 'completed');
   assert.equal(task.steps[0].role, 'gemini');        // same member
@@ -648,8 +665,9 @@ test('a stalled step tries another model of the same member before going to the 
   assert.ok(scheduler.store.events(task.id).some((event) => /^look:model_switch:gemini:/.test(event.detail)));
 });
 
-test('the person can guide a working member: the step resumes its session with the guidance', async (t) => {
+test('the person can guide a working member: the step resumes its session with the guidance', { timeout: 10000 }, async (t) => {
   const { dir, head, mirror } = await repository(t);
+  const started = Promise.withResolvers();
   const prompts = [];
   let first = true;
   const scheduler = schedulerFor(dir, mirror, async ({ name, prompt, signal, session, onSession }) => {
@@ -657,7 +675,7 @@ test('the person can guide a working member: the step resumes its session with t
     if (name === 'gemini' && first) {
       first = false;
       onSession('gemini-session');
-      await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      await waitForStop(signal, started);
     }
     return { output: 'done the right way' };
   }, { acceptance: { mode: 'off' } });
@@ -666,7 +684,7 @@ test('the person can guide a working member: the step resumes its session with t
   task.base = head;
   task.planRaw = JSON.stringify([{ id: 'look', capability: 'scout', prompt: 'look around', dependsOn: [] }]);
   const run = scheduler.run(task, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  await started.promise;
   scheduler.steerStep(task, 'look', '只看 src 目录');
   await run;
   assert.equal(task.state, 'completed');
