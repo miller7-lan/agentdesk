@@ -378,6 +378,13 @@ function start(config) {
         }
         if (!socket.destroyed) wire.send({ ok: true, value });
       } catch (error) {
+        // A refusal for lack of access is remembered on the step, so a failure it causes goes to the lead as a
+        // permission question instead of to another model with the same access.
+        if (/^(mcp_permission_denied|command_not_enabled_for_agents|command_not_authorized|path_not_allowed)/.test(error.message || '')) {
+          const scope = capabilities.get(frame.capability);
+          if (scope) scheduler.recordDenial(scope.taskId, scope.stepId, { operation: frame.operation, root: frame.root, path: frame.path,
+            command: frame.command, tool: frame.tool, error: error.message });
+        }
         if (!socket.destroyed) wire.send({ ok: false, error: error.message });
       }
     });
@@ -477,7 +484,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];

@@ -1780,8 +1780,11 @@ event(task, state, detail) {
     // is down; the writer changes the project by patch and gets local tools only when the lead marked the step
     // (localTools), as does any step that needs commands or the desktop.
     const leadDuty = LEAD_CAPABILITIES.has(Scheduler.dutyOf(step));
-    const localTools = task.snapshot ? step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
-    const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount)
+    // Access the person allowed for this step or the whole task (answerPermission) widens the step's tools.
+    const granted = new Set([...(step.extraAccess || []), ...(task.extraAccess || [])]);
+    const grantedTools = granted.has('desktop') ? 'desktop' : granted.has('commands') ? 'commands' : granted.has('files_write') || granted.has('files_read') ? 'files' : undefined;
+    const localTools = task.snapshot ? step.localTools || grantedTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
+    const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount || granted.size > 0)
       ? this.config.mcp : undefined;
     if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp), Boolean(task.snapshot));
     const release = await this.acquireCli(task, step, signal);
@@ -1796,13 +1799,13 @@ event(task, state, detail) {
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
       recordMcp: () => { if (call) call.bridgeMcpRequests += 1; },
       localTools,
-      desktopWrite: step.localTools === 'desktop' && Boolean(step.write),
-      runCommands: (!task.snapshot || step.localTools === 'commands') &&
+      desktopWrite: (step.localTools === 'desktop' || granted.has('desktop')) && Boolean(step.write),
+      runCommands: granted.has('commands') || (!task.snapshot || step.localTools === 'commands') &&
         step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
       readAnyFolder: true,
-      writeFiles: (!task.snapshot || localTools === 'files') &&
+      writeFiles: granted.has('files_write') && !readOnlyMode(task.mode) || (!task.snapshot || localTools === 'files') &&
         step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
@@ -1967,7 +1970,7 @@ event(task, state, detail) {
           // The same staleness can appear while the loop runs if a step was requeued from outside. Reset
           // once and try again; a dependency that is really failed or replaced still ends the task below.
           const stale = task.steps.filter((step) => step.state === 'running');
-          if (!stale.length && task.steps.some((step) => step.state === 'waiting_choice')) break;
+          if (!stale.length && task.steps.some((step) => ['waiting_choice', 'waiting_permission'].includes(step.state))) break;
           if (!stale.length) throw new Error('dependency_failed');
           for (const step of stale) { step.state = 'queued'; delete step.finishedAt; }
           continue;
@@ -1982,6 +1985,7 @@ event(task, state, detail) {
         if (failed) {
           // Straight to the next model (no lead review) while the group allows it; the lead after three
           // handovers; the person's choice after that, or at once when automatic handover is off.
+          if (await this.requestPermission(task, signal)) continue;
           if (this.handOver(task, failed.reason, signal)) continue;
           if (task.autoHandover === false && !signal.aborted && this.awaitChoice(task, failed.reason)) continue;
           if (!this.requestReassign(task, failed.reason, signal)) {
@@ -2001,6 +2005,11 @@ event(task, state, detail) {
       // A failed step waits for the person to pick who takes it over (the failure dialog).
       if (task.steps.some((step) => step.state === 'waiting_choice')) {
         this.save(task, 'awaiting_approval', 'handover_choice');
+        return;
+      }
+      // A step waits for the person to allow the access the lead asked for.
+      if (task.steps.some((step) => step.state === 'waiting_permission')) {
+        this.save(task, 'awaiting_approval', 'permission_request');
         return;
       }
       // Competing review verdicts are escalated before acceptance; the triage may add fix steps.
@@ -2843,6 +2852,107 @@ event(task, state, detail) {
     return true;
   }
 
+  // ---------- temporary access ----------
+  // What a step may get on the person's computer beyond its duty, when the lead asks and the person allows it:
+  // reading folders outside the project and home ("files_read"), changing files outside the project
+  // ("files_write"), running the commands this computer authorized for agents ("commands"), or the desktop
+  // ("desktop"). Never: credential or system folders, changing the project except by the reviewed patch, Claude
+  // doing a member's work, or commands the computer did not authorize — the Bridge and the service refuse those
+  // whatever is granted.
+  static ACCESS_KINDS = { files_read: '读你电脑上项目以外的文件夹', files_write: '改你电脑上项目以外的文件',
+    commands: '运行这台电脑授权给 AI 的命令', desktop: '操作桌面' };
+
+  recordDenial(taskId, stepId, info) {
+    const task = this.tasks.get(taskId);
+    const step = task?.steps?.find((item) => item.id === stepId);
+    if (!step) return;
+    step.denials = [...(step.denials || []), { ...Object.fromEntries(Object.entries(info).filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, typeof value === 'string' ? clip(value, 300) : value])), at: new Date(this.now()).toISOString() }].slice(-10);
+  }
+
+  // A step failed after access was refused: the lead decides which access, if any, the step really needs; the
+  // person then allows it (for the step or the task) or declines. Once per step and kind of access.
+  async requestPermission(task, signal) {
+    const failed = task.steps.filter((step) => step.state === 'failed' && step.denials?.length && !LEAD_CAPABILITIES.has(step.capability));
+    if (!failed.length || signal.aborted) return false;
+    let asked = false;
+    for (const step of failed) {
+      const decision = await this.leadAccessDecision(task, step, signal).catch(() => null);
+      const kind = decision?.grant;
+      if (!kind || !Object.hasOwn(Scheduler.ACCESS_KINDS, kind) || (step.accessAsked || []).includes(kind)) {
+        // The lead sees another way (or none): the step carries on in its session with that advice, once.
+        if (decision?.alternative && !step.accessAdvised) {
+          step.accessAdvised = true;
+          step.guidance = [...(step.guidance || []), { text: clip(String(decision.alternative), 600), at: new Date(this.now()).toISOString() }].slice(-10);
+          this.requeueAfterAccess(task, step, 'advised');
+          asked = true;
+        }
+        continue;
+      }
+      if ((task.extraAccess || []).includes(kind)) {
+        // Already allowed for the whole task: no question, the step simply continues with it.
+        step.extraAccess = [...new Set([...(step.extraAccess || []), kind])];
+        this.requeueAfterAccess(task, step, 'granted_task');
+        asked = true;
+        continue;
+      }
+      step.accessAsked = [...(step.accessAsked || []), kind];
+      step.permissionRequest = { kind, reason: clip(String(decision.reason || ''), 600),
+        denials: (step.denials || []).slice(-3).map((item) => clip(item.error + (item.path ? ' · ' + item.path : item.command ? ' · ' + item.command : ''), 200)) };
+      step.state = 'waiting_permission';
+      this.save(task, task.state, `${step.id}:permission_requested:${kind}`);
+      asked = true;
+    }
+    return asked;
+  }
+
+  async leadAccessDecision(task, step, signal) {
+    const lead = this.pickForTask(task, 'triage');
+    if (!lead) return null;
+    const prompt = [
+      'You are 组长, the group lead. A member\u2019s step failed after the person\u2019s computer refused it some access (denials). Decide whether the step really needs more access to do what the person asked.',
+      'Kinds you may ask the person for, only for this step: files_read (read folders outside the project), files_write (change files outside the project; the project itself only changes by the reviewed patch), commands (run commands this computer authorized for agents), desktop (operate the desktop). Never ask for anything else; credential and system folders stay closed.',
+      'Reply with JSON alone: {"grant":"<kind>","reason":"one sentence for the person, in their language"} when the step needs it, or {"grant":null,"alternative":"how the step can finish without it, in the person\u2019s language"}.',
+      JSON.stringify({ request: clip(task.prompt, 2000), step: { id: step.id, role: step.role, capability: step.capability, prompt: clip(step.prompt, 800), error: clip(step.error || '', 400) },
+        denials: step.denials }),
+    ].join('\n');
+    const decider = { id: 'access-' + step.id + '-' + ((step.accessAsked || []).length + 1), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task, 'triage') };
+    const folder = path.join(this.config.stateDir, 'worktrees', task.id);
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    const { output } = await this.execute(task, decider, folder, signal, prompt);
+    return parseJson(output);
+  }
+
+  requeueAfterAccess(task, step, kind) {
+    delete step.error;
+    delete step.denials;
+    step.state = 'queued';    // the same session continues: what it did so far stays
+    this.save(task, task.state, `${step.id}:access_${kind}`);
+  }
+
+  // The person's answer: allow for this step, allow for the whole task (same kind, until the task ends), or decline
+  // (the step continues without it and says what is missing).
+  answerPermission(task, body) {
+    const step = (task.steps || []).find((item) => item.id === body.stepId);
+    if (!step || step.state !== 'waiting_permission' || !step.permissionRequest) throw new Error('step_not_waiting');
+    const { kind } = step.permissionRequest;
+    if (body.decision === 'step' || body.decision === 'task') {
+      step.extraAccess = [...new Set([...(step.extraAccess || []), kind])];
+      if (body.decision === 'task') task.extraAccess = [...new Set([...(task.extraAccess || []), kind])];
+      delete step.permissionRequest;
+      this.requeueAfterAccess(task, step, body.decision === 'task' ? 'granted_task' : 'granted');
+    } else if (body.decision === 'deny') {
+      delete step.permissionRequest;
+      step.guidance = [...(step.guidance || []), { text: '你没有允许这次申请的权限（' + Scheduler.ACCESS_KINDS[kind] + '）。不用它把能做的做完，并说明还缺什么。', at: new Date(this.now()).toISOString() }].slice(-10);
+      this.requeueAfterAccess(task, step, 'denied');
+    } else throw new Error('invalid_permission_answer');
+    if (!task.steps.some((item) => ['waiting_permission', 'waiting_choice'].includes(item.state)) && !this.running.has(task.id) && !terminal.has(task.state)) {
+      this.save(task, 'queued', 'permission_answered');
+      this.pump();
+    }
+    return this.status(task.id);
+  }
+
   // The person's pick in the failure dialog: a member, one of its models and an effort, or stopping the step.
   chooseHandover(task, body) {
     let step = (task.steps || []).find((item) => item.id === body.stepId);
@@ -3414,6 +3524,11 @@ event(task, state, detail) {
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');
       return this.updatePlan(task, body);
+    }
+    if (body.operation === 'permission_answer') {
+      if (!owner) throw new Error('task_access_denied');
+      if (typeof body.stepId !== 'string' || !/^[\w-]{1,64}$/.test(body.stepId)) throw new Error('invalid_step');
+      return this.answerPermission(task, { stepId: body.stepId, decision: body.reply });
     }
     if (body.operation === 'handover_choose') {
       if (!owner) throw new Error('task_access_denied');
