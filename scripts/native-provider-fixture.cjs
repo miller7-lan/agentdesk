@@ -5,7 +5,7 @@ const { PassThrough } = require('node:stream');
 const { Lines } = require('../orchestrator/transport');
 const { localShellSpec } = require('../orchestrator/windows-local-shell');
 
-async function verifyProvider({ remote, namespacePid, folder, directory, protocol, binding, provider = 'codex', claudeEntry, claudeState, sandboxOnly, traceFile }) {
+async function verifyProvider({ remote, namespacePid, folder, directory, protocol, binding, provider = 'codex', claudeEntry, claudeState, sandboxOnly, traceFile, account }) {
   const display = provider === 'codex' ? 'Codex' : 'Claude';
   const marker = 'VERIFIED_NATIVE_' + provider.toUpperCase();
   const compiler = path.join(process.env.SystemRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
@@ -87,7 +87,8 @@ async function verifyProvider({ remote, namespacePid, folder, directory, protoco
     ...(traceFile ? ['strace', '-f', '-tt', '-e', 'trace=%process,mount,umount2,unshare,setns,statfs', '-o', traceFile] : []),
     'codex', 'app-server',
   ] :
-    ['env', 'AGENTDESK_CHAT_STATE=' + claudeState,
+    ['setpriv', '--reuid', String(account.uid), '--regid', String(account.gid), '--clear-groups',
+      'env', 'AGENTDESK_CHAT_STATE=' + claudeState,
       'AGENTDESK_CHAT_HOME_CLAUDE=/var/lib/agentdesk-orchestrator/homes/claude',
       'AGENTDESK_CHAT_SANDBOX=/usr/bin/bwrap', 'AGENTDESK_CLAUDE_NATIVE_PROJECT=' + folder,
       '/opt/agentdesk-orchestrator/node', claudeEntry, 'claude'];

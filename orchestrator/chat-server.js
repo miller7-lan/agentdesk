@@ -77,7 +77,9 @@ const incoming = new Map();
 const device = process.env.AGENTDESK_CHAT_DEVICE || '';
 if (device && !/^[a-z0-9_]{1,20}$/.test(device)) throw new Error('invalid chat device');
 const instance = device ? `chat-${PROVIDER}-${device}` : `chat-${PROVIDER}`;
-const SOCKET = path.join(STATE_DIR, `${instance}.sock`);
+const runtimeDir = PROVIDER === 'claude' && process.env.AGENTDESK_CLAUDE_NATIVE_PROJECT &&
+  process.env.AGENTDESK_CLAUDE_NATIVE_RUNTIME || STATE_DIR;
+const SOCKET = path.join(runtimeDir, `${instance}.sock`);
 const STATE_FILE = path.join(STATE_DIR, `${instance}.json`);
 // Claude Code reports the account's rate limits on every headless turn. The direct chat writes them where
 // quota_status already reads them (adapters.claude.quotaFile), so the 5-hour and weekly windows stay current.
@@ -797,7 +799,8 @@ function startTurn(turn) {
     // the orchestrator's state (other conversations, other logins, tasks) is hidden.
     const launch = SANDBOX
       ? sandboxCommand(BIN, args, { bin: SANDBOX, cwd: workspace, home: HOME, writable: !turn.readOnly,
-        hide: [STATE_DIR], sockets: [SOCKET], extraReadOnly: turn.attachmentDirectory ? [turn.attachmentDirectory] : [] })
+        hide: [STATE_DIR, ...(NATIVE_PROJECT ? ['/var/lib/agentdesk-orchestrator'] : [])], sockets: [SOCKET],
+        extraReadOnly: turn.attachmentDirectory ? [turn.attachmentDirectory] : [] })
       : { command: BIN, args };
     child = spawn(launch.command, launch.args, {
       cwd: workspace,

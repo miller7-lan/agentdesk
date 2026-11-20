@@ -18,13 +18,29 @@ async function isMounted(directory) {
 // mountpoint from an SSH payload. Create one unique mountpoint and fail closed on channel loss.
 async function mountProject({
   stateDir, input, output, signal, readOnly = false, sshfs = '/usr/bin/sshfs',
-  fusermount = '/usr/bin/fusermount3', spawnProcess = spawn, checkMount = isMounted, unmount,
+  fusermount = '/usr/bin/fusermount3', spawnProcess = spawn, checkMount = isMounted, unmount, account,
 }) {
   signal?.throwIfAborted();
+  if (account) {
+    if (![account.uid, account.gid].every((value) => Number.isSafeInteger(value) && value > 0) ||
+        process.getuid?.() !== 0 ||
+        await fs.readlink('/proc/self/ns/mnt') === await fs.readlink('/proc/1/ns/mnt')) {
+      throw new Error('project_mount_account_requires_private_namespace');
+    }
+    const mountInfo = await fs.readFile('/proc/self/mountinfo', 'utf8');
+    if (mountInfo.split('\n').some((line) => line.split(' - ')[0].split(' ').some((value) => value.startsWith('shared:')))) {
+      throw new Error('project_mount_account_requires_private_namespace');
+    }
+  }
   const root = path.join(stateDir, 'windows-chat-mounts');
-  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  await fs.mkdir(root, { recursive: true, mode: account ? 0o710 : 0o700 });
+  if (account) {
+    await fs.chown(root, 0, account.gid);
+    await fs.chmod(root, 0o710);
+  }
   const directory = await fs.mkdtemp(path.join(root, 'project-'));
   const mountOptions = ['passive', 'idmap=user', 'sshfs_sync', 'direct_io', 'dir_cache=no', 'nodev', 'nosuid',
+    ...(account ? ['allow_other', 'default_permissions', 'uid=' + account.uid, 'gid=' + account.gid, 'umask=0077'] : []),
     ...(readOnly ? ['ro'] : [])];
   let child;
   let cleanup;

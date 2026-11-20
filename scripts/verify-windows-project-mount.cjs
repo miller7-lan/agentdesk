@@ -30,6 +30,14 @@ remote.once('codex-ready', async () => {
     await fs.writeFile(path.join(directory, 'readme.txt'), 'Windows 原文\n');
     state = (await command(['mktemp', '-d', '/var/tmp/ad-project-mount-live-XXXXXX'])).trim();
     if (!/^\/var\/tmp\/ad-project-mount-live-[A-Za-z0-9]+$/.test(state)) throw new Error('Unexpected fixture directory');
+    let account;
+    if (official === 'claude') {
+      const identity = (await command(['stat', '-c', '%u:%g', '/var/lib/agentdesk-orchestrator/homes/claude'])).trim();
+      if (!/^[1-9]\d*:[1-9]\d*$/.test(identity)) throw new Error('Claude profile must belong to its non-root service account');
+      const [uid, gid] = identity.split(':').map(Number);
+      account = { uid, gid };
+      await command(['chown', identity, state]);
+    }
     const source = await fs.readFile(path.join(__dirname, '..', 'orchestrator', 'project-mount.js'));
     await command(['/opt/agentdesk-orchestrator/node', '-e',
       'require("fs").writeFileSync(process.argv[1], Buffer.from(process.argv[2], "base64"), {mode: 0o600})',
@@ -68,13 +76,15 @@ remote.once('codex-ready', async () => {
       const { mountProject } = require(process.argv[1] + '/project-mount.cjs');
       const output = new PassThrough();
       output.pipe(process.stdout, {end:false});
-      mountProject({ stateDir: process.argv[1], input: process.stdin, output }).then((mount) => {
+      mountProject({ stateDir: process.argv[1], input: process.stdin, output,
+        account: JSON.parse(process.argv[2]) || undefined }).then((mount) => {
         console.error('MOUNT ' + process.pid + ' ' + mount.directory);
         process.once('SIGTERM', () => mount.close().then(() => process.exit(0), () => process.exit(1)));
       }, (error) => { console.error(error.message); process.exitCode=1; });
     `;
     transport = remote.request('command/exec', {
-      command: ['unshare', '--mount', '--propagation', 'private', '/opt/agentdesk-orchestrator/node', '-e', mountCode, state],
+      command: ['unshare', '--mount', '--propagation', 'private', '/opt/agentdesk-orchestrator/node', '-e', mountCode, state,
+        JSON.stringify(account || null)],
       cwd: '/tmp', timeoutMs: official ? 200_000 : 80_000,
       streamStdin: true, streamStdoutStderr: true, disableOutputCap: true, processId, sandboxPolicy: { type: 'dangerFullAccess' },
     }, { timeoutMs: official ? 205_000 : 85_000 });
@@ -105,7 +115,7 @@ remote.once('codex-ready', async () => {
           for (const name of fs.readdirSync(installed)) {
             if (name !== 'chat-server.js' && name.endsWith('.js')) fs.symlinkSync(path.join(installed, name), path.join(destination, name));
           }
-          fs.writeFileSync(path.join(destination, 'chat-server.js'), Buffer.from(process.argv[2], 'base64'), {mode: 0o600});
+          fs.writeFileSync(path.join(destination, 'chat-server.js'), Buffer.from(process.argv[2], 'base64'), {mode: 0o644});
         `, state, staged.toString('base64')]);
       }
       const { verifyProvider } = require('./native-provider-fixture.cjs');
@@ -115,7 +125,7 @@ remote.once('codex-ready', async () => {
         projectRoot: binding.directory, accessMode: 'write',
       });
       await verifyProvider({ remote, namespacePid, folder, directory, binding, protocol,
-        provider: official, sandboxOnly, claudeEntry, claudeState,
+        provider: official, sandboxOnly, claudeEntry, claudeState, account,
         traceFile: process.argv.includes('--trace-sandbox') ? state + '/sandbox.trace' : undefined });
     }
     const result = await command(['nsenter', '--mount', '--target', namespacePid, '--', '/bin/bash', '-c',
