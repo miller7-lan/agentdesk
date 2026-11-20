@@ -279,7 +279,7 @@ class WindowsOperations {
       if (selected === 'computer') {
         // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it — or the person
         // granted a folder for this task (read or write), which then opens just that folder.
-        const granted = this.grantsFor(taskId, ['read', 'write']).map((grant) => grant.path);
+        const granted = this.grantsFor(taskId, ['read', 'write'], body.stepId).map((grant) => grant.path);
         if ((!anyFolder && !granted.length) || body.anyFolder !== true) throw new Error('read_root_not_authorized');
         const resolve = async (filename) => {
           const viaGrant = granted.length ? await grantedPath(filename, granted).catch((error) => { if (/denied/.test(error.message)) throw error; return null; }) : null;
@@ -307,7 +307,7 @@ class WindowsOperations {
       // orchestrator's anyFolder mark, which it only sets for steps that change files.
       const writable = (this.config.readAnyFolder === true || workspace.readAnyFolder === true) &&
         (this.config.writeAnyFolder === true || workspace.writeAnyFolder === true);
-      const grantedWrite = this.grantsFor(taskId, ['write']).map((grant) => grant.path);
+      const grantedWrite = this.grantsFor(taskId, ['write'], body.stepId).map((grant) => grant.path);
       if ((!writable && !grantedWrite.length) || body.anyFolder !== true) throw new Error('read_root_readonly');
       const project = await fs.realpath(workspace.root);
       if (!writable) {
@@ -548,7 +548,7 @@ class WindowsOperations {
     const kind = grant?.kind;
     if (!['read', 'write', 'command'].includes(kind) || typeof grant.taskId !== 'string' || !/^[\w-]{1,64}$/.test(grant.taskId)) throw new Error('invalid_grant');
     // Tied to one task of one group chat: it never applies to another group, another task or a single chat.
-    const record = { id: 'g' + randomUUID().slice(0, 8), taskId: grant.taskId, kind, created: Date.now(), expires: Date.now() + WindowsOperations.GRANT_HOURS * 3600_000,
+    const record = { id: 'g' + randomUUID().slice(0, 8), taskId: grant.taskId, ...(grant.stepId && { stepId: grant.stepId }), kind, created: Date.now(), expires: Date.now() + WindowsOperations.GRANT_HOURS * 3600_000,
       ...(typeof grant.group === 'string' && grant.group.length <= 200 && { group: grant.group }) };
     if (kind === 'command') {
       if (!Array.isArray(grant.argv) || !grant.argv.length || grant.argv.length > 40 ||
@@ -565,12 +565,12 @@ class WindowsOperations {
     this.store.put('grants', record.id, record);
     return record;
   }
-  grantsFor(taskId, kinds) {
+  grantsFor(taskId, kinds, stepId) {
     const now = Date.now();
     if (typeof this.store?.all !== 'function') return [];
     return this.store.all('grants').filter((grant) => {
       if (grant.expires <= now) { this.store.delete('grants', grant.id); return false; }
-      return grant.taskId === taskId && kinds.includes(grant.kind);
+      return grant.taskId === taskId && (!grant.stepId || grant.stepId === stepId) && kinds.includes(grant.kind);
     });
   }
   revokeGrants(taskId) {
@@ -823,7 +823,7 @@ class WindowsOperations {
     // Agents see and run only the commands this workspace lists in agentCommands (empty by default).
     const forAgents = Array.isArray(workspace.agentCommands) ? workspace.agentCommands.filter((name) => Array.isArray(workspace.commands?.[name])) : [];
     // Commands the person approved for this task (exact program and arguments) are listed and run like configured ones.
-    const grantedCommands = this.grantsFor(taskId, ['command']).filter((grant) => !grant.workspace || workspace === this.config.workspaces?.[grant.workspace]);
+    const grantedCommands = this.grantsFor(taskId, ['command'], body.stepId).filter((grant) => !grant.workspace || workspace === this.config.workspaces?.[grant.workspace]);
     if (body.operation === 'list_agent_commands') {
       return { commands: [...forAgents.map((name) => ({ name, program: path.basename(workspace.commands[name][0]), args: workspace.commands[name].slice(1, 21) })),
         ...grantedCommands.map((grant) => ({ name: 'granted-' + grant.id, program: path.basename(grant.argv[0]), args: grant.argv.slice(1, 21), temporary: true }))] };
@@ -895,9 +895,9 @@ class RemoteFiles {
     this.endpoint = endpoint;
   }
 
-  call(route, id, kind, body, timeout, signal) {
+  call(route, id, kind, body, timeout, signal, requestId = messageId()) {
     signal?.throwIfAborted();
-    return this.endpoint.request(route, id, kind, body, timeout, messageId(), signal);
+    return this.endpoint.request(route, id, kind, body, timeout, requestId, signal);
   }
 
   async runCommand(route, taskId, body, { id = messageId(), signal, onStatus = () => {} } = {}) {

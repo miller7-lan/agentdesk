@@ -33,6 +33,7 @@ function sandboxCommand(command, args, options) {
   for (const target of options.extraWritable || []) if (exists(target)) argv.push('--bind', real(target), real(target));
   for (const socket of options.sockets || []) if (exists(socket)) argv.push('--bind', real(socket), real(socket));
   argv.push(options.writable === false ? '--ro-bind' : '--bind', cwd, cwd, '--chdir', cwd, '--', command, ...args);
+  if (options.gitView) argv.splice(argv.indexOf('--'), 0, '--ro-bind', options.gitView.directory, options.gitView.target);
   for (const target of options.extraReadOnly || []) {
     if (exists(target)) argv.splice(argv.indexOf('--'), 0, '--ro-bind', real(target), real(target));
   }

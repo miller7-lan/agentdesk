@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Store = require('./store');
+const { receiptFor } = require('./mcp');
 const { Lines, Relay } = require('./transport');
 const { Endpoint, direct, expireMessages } = require('./rpc');
 const { WindowsOperations, RemoteFiles } = require('./windows');
@@ -285,6 +286,7 @@ function start(config) {
     const wire = new Lines(socket);
     wire.on('fault', (error) => console.error('mcp:', error.message));
     wire.once('frame', async (frame) => {
+      let mutationStarted = false;
       try {
         const scope = capabilities.get(frame.capability);
         if (!scope) throw new Error('mcp_permission_denied');
@@ -316,7 +318,7 @@ function start(config) {
           if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
           if (frame.operation === 'read_batch') validateFileBatch(frame.items, false);
           value = await files.call(route, scope.taskId, 'file.read', {
-            operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
+            operation: frame.operation, workspace: scope.workspace, stepId: scope.stepId, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
             ...(['glob', 'grep_context'].includes(frame.operation) && { glob: frame.glob, context: frame.context }),
             ...(anyFolder && { anyFolder: true }),
@@ -342,15 +344,46 @@ function start(config) {
           if (!scope.localDrives && scope.deliveryTarget && (!['write', 'edit'].includes(frame.operation) || frame.path !== scope.deliveryTarget)) {
             throw new Error('mcp_permission_denied: this delivery is restricted to its named file');
           }
-          const target = { workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path };
+          const requestId = require('./transport').messageId();
+          const journal = path.join(config.stateDir, 'logs', scope.taskId, scope.stepId + '.receipts.jsonl');
+          const entries = frame.operation === 'write_batch' ? frame.items : [frame];
+          const record = (phase, value, error) => {
+            const rows = entries.map((item, index) => {
+              const batch = frame.operation === 'write_batch';
+              const result = batch ? value?.results?.[index] : value;
+              const problem = error || (batch && phase === 'finished' && result?.status !== 'written' ? Error(result?.error || 'not_written') : null);
+              return { ...receiptFor(batch ? 'write' : frame.operation, { ...item, root: frame.root }, requestId, result, problem),
+                phase, index, ...(phase === 'pending' && { ok: false }),
+                ...(phase === 'pending' && typeof item.content === 'string' && { contentHash: require('node:crypto')
+                  .createHash('sha256').update(Buffer.from(item.content, item.encoding === 'base64' ? 'base64' : 'utf8')).digest('hex') }) };
+            });
+            fs.appendFileSync(journal, rows.map((row) => JSON.stringify(row) + '\n').join(''), { mode: 0o600, flush: true });
+          };
+          const mutate = async (body) => {
+            record('pending');
+            mutationStarted = true;
+            let result;
+            try {
+              result = await files.call(route, scope.taskId, 'file.write', body, undefined, scope.signal, requestId);
+            } catch (error) {
+              if (error.remoteConfirmed) { record('finished', null, error); throw error; }
+              const status = await files.call(route, scope.taskId, 'task.status', { operation: 'operation_status', request_id: requestId }, 5000).catch(() => null);
+              if (status?.state !== 'finished') throw Error('local_operation_unknown');
+              if (status.kind === 'error') { record('finished', null, Error(status.outcome.error)); throw Error(status.outcome.error); }
+              result = status.outcome.value;
+            }
+            record('finished', result);
+            return result;
+          };
+          const target = { stepId: scope.stepId, workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path };
           if (frame.operation === 'write_batch') {
             validateFileBatch(frame.items, true);
-            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: 'write_batch', items: frame.items });
+            value = await mutate({ ...target, operation: 'write_batch', items: frame.items });
             if (!socket.destroyed) wire.send({ ok: true, value });
             return;
           }
           if (frame.operation === 'edit') {
-            value = await files.call(route, scope.taskId, 'file.write', {
+            value = await mutate({
               ...target, operation: 'edit', oldText: frame.oldText, newText: frame.newText,
               replaceAll: frame.replaceAll, version: frame.version,
             });
@@ -367,9 +400,9 @@ function start(config) {
             if (typeof frame.content !== 'string') throw new Error('invalid_content');
             const bytes = Buffer.from(frame.content, frame.encoding === 'base64' ? 'base64' : 'utf8');
             const stream = await files.upload(route, scope.taskId, bytes);
-            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: 'write', stream_id: stream, version: current ?? null });
+            value = await mutate({ ...target, operation: 'write', stream_id: stream, version: current ?? null });
           } else {
-            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: frame.operation,
+            value = await mutate({ ...target, operation: frame.operation,
               ...(frame.operation !== 'mkdir' && { version: current ?? null }), ...(frame.operation === 'move' && { destination: frame.destination }) });
           }
         } else if (frame.operation === 'commands' || frame.operation === 'run') {
@@ -377,9 +410,9 @@ function start(config) {
           // and only the commands that workspace lists in agentCommands.
           if (!scope.runCommands) throw new Error('mcp_permission_denied: this step cannot run local commands');
           value = frame.operation === 'commands'
-            ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', workspace: scope.workspace })
+            ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', stepId: scope.stepId, workspace: scope.workspace })
             : await files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, {
-              operation: 'run', workspace: scope.workspace, command: frame.command, permission: 'agent', timeout_ms: 300000,
+              operation: 'run', stepId: scope.stepId, workspace: scope.workspace, command: frame.command, permission: 'agent', timeout_ms: 300000,
             }, { signal: scope.signal, onStatus: commandProgress(config.stateDir, scope.taskId, scope.stepId) });
           if (frame.operation === 'run') {
             const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
@@ -390,6 +423,16 @@ function start(config) {
         }
         if (!socket.destroyed) wire.send({ ok: true, value });
       } catch (error) {
+        const active = capabilities.get(frame.capability);
+        if (active && !mutationStarted && ['write','edit','write_batch','mkdir','move','delete'].includes(frame.operation)) {
+          const items = frame.operation === 'write_batch' ? (Array.isArray(frame.items) ? frame.items.slice(0, 32) : []) : [frame];
+          const id = require('./transport').messageId();
+          const journal = path.join(config.stateDir, 'logs', active.taskId, active.stepId + '.receipts.jsonl');
+          try {
+            fs.appendFileSync(journal, items.map((item) => JSON.stringify(receiptFor(frame.operation === 'write_batch' ? 'write' : frame.operation,
+              { ...item, root: frame.root }, id, null, error)) + '\n').join(''), { mode: 0o600, flush: true });
+          } catch (failure) { console.error('receipt:', failure.code); }
+        }
         // A refusal for lack of access is remembered on the step, so a failure it causes goes to the lead as a
         // permission question instead of to another model with the same access.
         if (/^(mcp_permission_denied|command_not_enabled_for_agents|command_not_authorized|path_not_allowed)/.test(error.message || '')) {
@@ -514,7 +557,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         if (operation === 'permission_answer' && ['step', 'task'].includes(reply) && grant && typeof grant === 'object') {
           const kind = { files_read: 'read', files_write: 'write', commands: 'command' }[grant.kind];
           if (kind && (grant.path || grant.argv)) {
-            const record = await operations.addGrant({ kind, taskId, group: typeof group === 'string' ? group : undefined, path: grant.path, argv: grant.argv, workspace: grant.workspace });
+            if (reply === 'step' && !stepId) throw Error('missing_step_id');
+            const record = await operations.addGrant({ kind, taskId, ...(reply === 'step' && { stepId }), group: typeof group === 'string' ? group : undefined, path: grant.path, argv: grant.argv, workspace: grant.workspace });
             body.grant = { kind: grant.kind, id: record.id, ...(record.path && { path: record.path }), ...(record.argv && { argv: record.argv, name: 'granted-' + record.id }) };
           }
         }

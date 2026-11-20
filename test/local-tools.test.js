@@ -86,6 +86,11 @@ test('access the person approved on this computer opens exactly that folder or c
   const ran = await call('t1', 'command.execute', { operation: 'run', command: name, permission: 'agent', timeout_ms: 10000 });
   assert.match(ran.stdout, /granted ok/);
   await assert.rejects(call('t2', 'command.execute', { operation: 'run', command: name, permission: 'agent', timeout_ms: 10000 }), /command_not_enabled_for_agents/);
+  await operations.addGrant({ kind: 'read', taskId: 't2', stepId: 'review', path: data });
+  const scopedRead = (stepId) => call('t2', 'file.read', { operation: 'read', stepId, root: 'computer', anyFolder: true, path: path.join(data, 'report.csv') });
+  await scopedRead('review');
+  await assert.rejects(scopedRead('research'), /read_root_not_authorized/);
+  await assert.rejects(scopedRead(undefined), /read_root_not_authorized/);
   // The task ends: VPS2 removes its grants.
   await call('t1', 'command.execute', { operation: 'grants_revoke' });
   await assert.rejects(read('t1', path.join(data, 'report.csv')), /read_root_not_authorized/);

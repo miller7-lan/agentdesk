@@ -352,3 +352,26 @@ test('群聊在已启用的盘符交付，返工继承权限并校验写入回�
   scheduler.bindLocalAccess(task, repo);
   assert.equal(repo.localTools, undefined);
 });
+
+test('group delivery reconciles the Bridge journal without repeating a mutation', async (t) => {
+  const { scheduler, task } = setup(t, []);
+  const step = { id: 'delivery', deliveryTarget: 'D:/REPORT.md' };
+  const dir = path.join(scheduler.config.stateDir, 'logs', task.id);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'delivery.receipts.jsonl');
+  const pending = { requestId: 'request', index: 0, phase: 'pending', operation: 'write', root: 'computer', path: 'd:/report.md', ok: false };
+  fs.writeFileSync(file, JSON.stringify(pending) + '\n');
+  scheduler.files.call = async (_route, _task, kind, body) => {
+    assert.equal(kind, 'task.status');
+    assert.equal(body.request_id, 'request');
+    return { state: 'finished', kind: 'result', outcome: { value: { version: 'v' } } };
+  };
+  await scheduler.collectDeliveries(task, step);
+  assert.equal(step.writeFailure, undefined);
+  scheduler.files.call = () => assert.fail('already reconciled');
+  await scheduler.collectDeliveries(task, step);
+  assert.equal(step.deliveries.length, 1);
+  fs.appendFileSync(file, JSON.stringify({ operation: 'move', path: 'D:/a', destination: 'D:/b', ok: false, error: 'version_conflict' }) + '\n');
+  await scheduler.collectDeliveries(task, step);
+  assert.match(step.writeFailure, /version_conflict/);
+});

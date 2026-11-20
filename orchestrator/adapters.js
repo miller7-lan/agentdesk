@@ -160,7 +160,7 @@ function errorDetail(text) {
     || '').replace(/\s+/g, ' ').slice(0, 300);
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, readPaths = [], hidePaths = [] }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, gitView, readPaths = [], hidePaths = [] }) {
   if (effort !== undefined && !effortsFor(name, config, model).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
@@ -204,6 +204,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   }
   const env = { ...config.env };
   // The MCP server runs as a child of the CLI, so this path reaches it through the environment.
+  if (gitView) { env.GIT_WORK_TREE = cwd; env.GIT_OPTIONAL_LOCKS = '0'; }
   if (mcp?.receipts) env.AGENTDESK_MCP_RECEIPTS = mcp.receipts;
   if (mcp?.scope) env.AGENTDESK_MCP_SCOPE = mcp.scope;
   if (effort) {
@@ -242,7 +243,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     }
   }
   const launch = sandboxed
-    ? sandboxCommand(config.bin, args, { bin: config.sandbox.bin, cwd, home: env.HOME, writable: !readonly,
+    ? sandboxCommand(config.bin, args, { bin: config.sandbox.bin, cwd, home: env.HOME, gitView, writable: !readonly,
       hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [],
       extraReadOnly: [...(attachmentDirectory ? [attachmentDirectory] : []), ...readPaths], mask: hidePaths })
     : { command: config.bin, args };
@@ -285,7 +286,8 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
       stream.write(channel + ' ' + safe + '\n');
       if (channel === 'stderr' || provider.plain) tail = (tail + safe + '\n').slice(-4000);   // JSON output holds the model's own text
       if (channel === 'stderr' && /permission required:.*was not run.*headless run cannot ask for approval/i.test(safe)) {
-        failure = 'cli_tool_permission_required';
+        failure = /permission required:\s*Fetch\b/i.test(safe) ? 'cli_tool_permission_required:fetch'
+          : /permission required:\s*Execute\b/i.test(safe) ? 'cli_tool_permission_required:shell' : 'cli_tool_permission_required';
       }
       if (channel === 'stderr') return;
       if (provider.plain) {
@@ -316,7 +318,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     const [code] = await once(child, 'close');
     if (stopped) throw stopped;
     if (code !== 0 || failure) {
-      const kind = failure === 'cli_tool_permission_required' ? failure : classifyFailure((failure || '') + '\n' + tail);
+      const kind = failure?.startsWith('cli_tool_permission_required') ? failure : classifyFailure((failure || '') + '\n' + tail);
       const retryAfterMs = kind === 'cli_quota_exhausted' ? resetDelay((failure || '') + '\n' + tail) : null;
       const label = kind || (code !== 0 ? 'cli_exit_' + code : 'cli_reported_error');
       // Keep the raw sentence when it explains the exit code; it is redacted already.

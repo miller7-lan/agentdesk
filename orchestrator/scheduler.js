@@ -5,7 +5,7 @@ const { randomBytes, randomUUID, createHash } = require('node:crypto');
 const { messageId } = require('./transport');
 const { runAdapter, addUsage, EFFORTS, effortsFor } = require('./adapters');
 const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
-const { git, worktree, patchFor } = require('./git');
+const { git, worktree, patchFor, sandboxGit } = require('./git');
 const { modelId, plannerProfiles, newestFirst, preferredModel } = require('./model-profiles');
 const { mountTable } = require('./home-mount');
 const { refreshModelCatalog } = require('./model-catalog');
@@ -1718,7 +1718,33 @@ event(task, state, detail) {
       else delete step.writeFailure;
       return;
     }
-    step.deliveries = receipts.slice(-50).map((receipt) => ({
+    const events = new Map();
+    for (const [index, receipt] of receipts.entries()) events.set(receipt.phase ? receipt.requestId + '/' + receipt.index : 'legacy/' + index, receipt);
+    const statusByRequest = new Map();
+    for (const [key, entry] of events) {
+      if (entry.phase !== 'pending') continue;
+      const route = this.bridgeRoute(task.workspace);
+      if (!statusByRequest.has(entry.requestId)) statusByRequest.set(entry.requestId, await this.files.call(route, task.id, 'task.status',
+        { operation: 'operation_status', request_id: entry.requestId }, 3000).catch(() => null));
+      const status = statusByRequest.get(entry.requestId);
+      let confirmed;
+      if (status?.state === 'finished') {
+        const result = status.outcome?.value;
+        const batch = result?.results?.[entry.index];
+        confirmed = { ok: status.kind !== 'error' && (!result?.results || batch?.status === 'written'),
+          version: batch?.version || result?.version, error: status.outcome?.error || batch?.error };
+      } else if (entry.operation === 'write' && entry.contentHash) {
+        const info = await this.files.call(route, task.id, 'file.read', { workspace: task.workspace, stepId: step.id,
+          operation: 'stat', anyFolder: true, root: entry.root, path: entry.path }, 3000).catch(() => null);
+        if (info?.version === entry.contentHash) confirmed = { ok: true, version: info.version };
+      }
+      if (confirmed) {
+        const row = { ...entry, ...confirmed, phase: 'finished' };
+        await require('node:fs/promises').appendFile(path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl'), JSON.stringify(row) + '\n');
+        events.set(key, row);
+      }
+    }
+    step.deliveries = [...events.values()].slice(-50).map((receipt) => ({
       operation: receipt.operation,
       ...(receipt.root && { root: receipt.root }),
       ...(receipt.path && { path: receipt.path }),
@@ -1730,17 +1756,18 @@ event(task, state, detail) {
       ...(receipt.error && { error: String(receipt.error).slice(0, 200) }),
       ...(receipt.at && { at: receipt.at }),
     }));
+    const keyPath = (value) => typeof value === 'string' && /^[a-z]:[\\/]/i.test(value) ? path.win32.normalize(value).toLowerCase() : value;
+    if ([...events.values()].some((r) => r.phase === 'pending')) { step.writeFailure = 'local_operation_unknown'; return; }
     const latest = new Map();
-    for (const receipt of receipts) {
-      if (receipt.operation !== 'write') continue;
-      latest.set(String(receipt.root || '') + '\0' + String(receipt.path || ''), receipt);
+    for (const receipt of events.values()) {
+      latest.set(JSON.stringify([receipt.root, receipt.operation, keyPath(receipt.path), keyPath(receipt.destination)]), receipt);
     }
     const failed = [...latest.values()].find((receipt) => receipt.ok !== true);
     if (failed) {
       step.writeFailure = 'write_failed:' + (failed.path || 'unknown') +
         (failed.error ? ': ' + String(failed.error).slice(0, 200) : '');
-    } else if (step.deliveryTarget && !receipts.some((r) => r.operation === 'write' && r.ok === true &&
-        r.root === 'computer' && r.path === step.deliveryTarget)) {
+    } else if (step.deliveryTarget && ![...events.values()].some((r) => r.operation === 'write' && r.ok === true &&
+        r.root === 'computer' && keyPath(r.path) === keyPath(step.deliveryTarget))) {
       step.writeFailure = 'missing_delivery_receipt: ' + step.deliveryTarget;
     } else {
       delete step.writeFailure;
@@ -1798,7 +1825,7 @@ event(task, state, detail) {
           : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
             : step.localTools === 'desktop' ? 'Use local_desktop only for the requested GUI operation. Verify the current screen before repeating any action.' : '');
     }
-    if (step.deliveryTarget) prompt += '\nUse windows_write_file with root computer and this exact path: ' +
+    if (step.deliveryTarget) prompt += '\nDeliver with the provided Bridge file tool. Avoid shell payloads or temporary scripts for this delivery. Use windows_write_file with root computer and this exact path: ' +
       JSON.stringify(step.deliveryTarget) + '. A successful write receipt is required for delivery.';
     let attachmentDirectory;
     if (task.attachments?.length) {
@@ -1836,7 +1863,7 @@ event(task, state, detail) {
     // Access the person allowed for this step or the whole task (answerPermission) widens the step's tools.
     const granted = new Set([...(step.extraAccess || []), ...(task.extraAccess || [])]);
     const grantedTools = granted.has('desktop') ? 'desktop' : granted.has('commands') ? 'commands' : granted.has('files_write') || granted.has('files_read') ? 'files' : undefined;
-    const localTools = task.snapshot ? step.localTools || grantedTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
+    const localTools = task.snapshot ? grantedTools || step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
     const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount || granted.size > 0)
       ? this.config.mcp : undefined;
     if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp), Boolean(task.snapshot));
@@ -1881,14 +1908,15 @@ event(task, state, detail) {
           taskId: task.id, stepId: step.id, owner: task.owner, project: task.project,
           repository: this.config.workspaces[task.workspace].repository,
         }),
+        gitView: config.sandbox && step.role !== 'codex' ? await sandboxGit(this.config.workspaces[task.workspace].repository,
+          folder, path.join(this.config.stateDir, 'worktrees', task.id, '.git-views', step.id), stepSignal) : undefined,
         name: step.role, config, cwd: folder, prompt, readonly: !step.write,
         timeout: budget.outer, printTimeoutMs: budget.print, signal: stepSignal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
         session: step.session, model: step.model,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort &&
           effortsFor(step.role, this.config.adapters[step.role], step.model).includes(task.leadEffort) ? task.leadEffort : undefined),
-        mcp: mcp && { socket: mcp.socket, capability, ...(task.snapshot && { scope: localTools }),
-          receipts: path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl') },
+        mcp: mcp && { socket: mcp.socket, capability, ...(task.snapshot && { scope: localTools }) },
         attachmentDirectory,
         readPaths: mount ? [mount.home] : [],
         // the project's live folder on the mount is hidden while the step works on the snapshot
@@ -2041,6 +2069,8 @@ event(task, state, detail) {
           // Straight to the next model (no lead review) while the group allows it; the lead after three
           // handovers; the person's choice after that, or at once when automatic handover is off.
           if (await this.requestPermission(task, signal)) continue;
+          if (wave.some((step) => step.state === 'failed' && step.error?.startsWith('cli_tool_permission_required')) &&
+              this.awaitChoice(task, failed.reason)) continue;
           if (this.handOver(task, failed.reason, signal)) continue;
           if (task.autoHandover === false && !signal.aborted && this.awaitChoice(task, failed.reason)) continue;
           if (!this.requestReassign(task, failed.reason, signal)) {
@@ -2638,8 +2668,10 @@ event(task, state, detail) {
         }
         await this.collectDeliveries(task, step).catch(() => {});
         await this.checkpointStep(task, step, folder, signal, error.message);
-        if (task.snapshot && hasLocalEffects(step) &&
-            /^cli_(?:print_timeout|timeout|stalled|network_error)(?::|$)/.test(error.message)) {
+        if (step.writeFailure === 'local_operation_unknown' || error.message.startsWith('missing_delivery_receipt:') ||
+            (step.deliveryTarget && step.deliveries?.length && !step.writeFailure) ||
+            (task.snapshot && hasLocalEffects(step) &&
+            /^cli_(?:print_timeout|timeout|stalled|network_error)(?::|$)/.test(error.message))) {
           step.state = 'failed';
           step.error = 'local_operation_unknown';
           step.finishedAt = new Date(this.now()).toISOString();

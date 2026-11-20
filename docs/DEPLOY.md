@@ -324,3 +324,9 @@ ssh -F none -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
 在 VPS2 配置的目标工作区设置 `groupLocalDrives` 为 `["C", "D"]`，将 `deliveryDesktop` 填为这台电脑的实际桌面绝对路径（可取 Windows Bridge 的 `workspaces.<工作区>.readRoots.desktop`）。Windows Bridge 需要启用 `readAnyFolder` 与 `writeAnyFolder`。这些机器专属值保存在各端配置。
 
 群聊计划可按步骤申请本机文件工具。指定 C、D 盘路径的本机任务和桌面任务可自动补上文件工具。要交付指定文件，步骤用 `outputPath` 声明 Windows 绝对路径，或用 `desktopOutput` 声明桌面文件名。调度器按 Bridge 写入回执验收，返工沿用目标。规划、资料查找与审查可读取授权位置；方案中明确要求本机检查时，审查、诊断、验收可执行 Bridge 配置的 `agentCommands`。项目改动继续通过工作树和补丁交付。Windows 用户权限、系统与凭据目录保护仍然生效。
+
+### 群聊交付回执与模型接手
+
+主控在转发本机文件改动前记录请求编号，在收到 Bridge 回复后保存每项结果。连接中断时优先查询该编号；写入内容有已知哈希时也可核对落盘版本。移动、删除结果未知时转入人工核对。旧版只有最后文件名且缺少证据的任务，需要核对已有交付后再决定是否重试。Grok 自身的无交互工具授权失败会进入成员选择。组长申请的 Bridge 临时权限在桌面端审批。
+
+部署顺序为 VPS2 主控、Windows 客户端及 Bridge、Mac 客户端及 Bridge。Mac 使用现有群聊部署流程更新后台 Bridge 并重启，再验证仅允许一个步骤的目录或命令在下一步失效。保留每台机器原有连接配置。
