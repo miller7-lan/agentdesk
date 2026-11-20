@@ -2361,7 +2361,27 @@ event(task, state, detail) {
 
   // The person's pick in the failure dialog: a member, one of its models and an effort, or stopping the step.
   chooseHandover(task, body) {
-    const step = (task.steps || []).find((item) => item.id === body.stepId);
+    let step = (task.steps || []).find((item) => item.id === body.stepId);
+    // A step that has not started — queued, or still in a plan the person has not confirmed — can get another
+    // member, model or effort from its node beside the group; running and finished steps cannot.
+    const round = task.groupPlan && !task.groupPlan.approved ? task.groupPlan.rounds.at(-1) : null;
+    if (!step && round) step = (round.steps || []).find((item) => item.id === body.stepId);
+    if (step && (round?.steps?.includes(step) || ['queued', 'proposed'].includes(step.state))) {
+      if (terminal.has(task.state) || body.stop === true) throw new Error('step_finished');
+      if (LEAD_CAPABILITIES.has(step.capability)) throw new Error('invalid_handover');
+      const role = body.role;
+      if (typeof role !== 'string' || role === LEAD_ROLE || !this.router.configured(role) || (step.write && !this.router.canWrite(role))) throw new Error('invalid_handover');
+      if (body.model !== undefined && (typeof body.model !== 'string' || !Object.hasOwn(this.config.adapters[role]?.profiles?.models || {}, body.model))) throw new Error('invalid_handover');
+      if (step.role !== role) delete step.session;
+      step.role = role;
+      step.named = true;   // the person's pick: an idle member does not take it over when this one is busy
+      step.model = body.model || this.defaultModelFor(role);
+      if (!step.model) delete step.model;
+      delete step.effort;
+      if (typeof body.effort === 'string' && effortsFor(role, this.config.adapters[role], step.model).includes(body.effort)) step.effort = body.effort;
+      this.save(task, task.state, `${step.id}:adjusted:${role}${step.model ? '/' + step.model : ''}`);
+      return this.status(task.id);
+    }
     if (!step || step.state !== 'waiting_choice') throw new Error('step_not_waiting');
     if (body.stop === true) {
       step.state = 'skipped';

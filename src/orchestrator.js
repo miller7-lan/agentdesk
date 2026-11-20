@@ -493,6 +493,8 @@ window.__groupReady = (async () => {
     const handed = /^([\w-]+):(handover|chosen):([^/>]+)(?:\/([^>]*))?->([^/]+)(?:\/(.*))?$/.exec(detail || '');
     if (handed) return `${memberName(handed[3])}${handed[4] ? '（' + handed[4] + '）' : ''}没完成，${handed[2] === 'chosen' ? '按你的选择' : '已直接'}交给 ${memberName(handed[5])}${handed[6] ? '（' + handed[6] + '）' : ''} 接着它的改动做。`;
     if (/:needs_choice$/.test(detail || '')) return '这一步没人能完成，请选择接手的模型。';
+    const adjusted = /^([\w-]+):adjusted:([^/]+)(?:\/(.*))?$/.exec(detail || '');
+    if (adjusted) return `你把 ${adjusted[1]} 改由 ${memberName(adjusted[2])}${adjusted[3] ? '（' + adjusted[3] + '）' : ''} 来做。`;
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
@@ -805,6 +807,7 @@ window.__groupReady = (async () => {
         <span class="step-row-what">${esc(what)}</span>
         <span class="step-row-state">${esc(stepStates[shown] || shown || '排队')}</span>
         <span class="step-row-note">${esc(note)}</span>
+        ${['queued', 'proposed', 'waiting_choice'].includes(shown) && step.role !== 'claude' && !['plan', 'triage', 'accept'].includes(step.capability) ? `<span class="step-row-adjust" role="button" tabindex="0" data-step-adjust="${esc(task.id + ':' + step.id)}" title="换成别的成员、模型或思考程度">换模型</span>` : ''}
         ${open ? '<span class="step-row-open">单聊 ›</span>' : ''}
       </${tag}>`;
     }).join('');
@@ -1185,7 +1188,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
@@ -2434,7 +2437,7 @@ window.__groupReady = (async () => {
   function waitingChoices(group) {
     return [...group.records.values()].flatMap((task) => (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => ({ task, step })));
   }
-  function choiceDialog(task, step) {
+  function choiceDialog(task, step, adjust = false) {
     let dialog = document.querySelector('#handoverDialog');
     if (!dialog) {
       dialog = document.createElement('dialog');
@@ -2445,7 +2448,7 @@ window.__groupReady = (async () => {
       dialog.addEventListener('change', (event) => {
         if (!event.target.matches('[name="handoverModel"]')) return;
         const [role, model] = event.target.value.split('|');
-        const efforts = routeState.modelProfiles?.[role]?.models?.[model]?.efforts || [];
+        const efforts = (dialog.profiles || routeState.modelProfiles)?.[role]?.models?.[model]?.efforts || [];
         const select = dialog.querySelector('#handoverEffort');
         select.replaceChildren(new Option('默认', ''), ...efforts.map((level) => new Option(EFFORT_NAMES[level] || level, level)));
         select.disabled = !efforts.length;
@@ -2454,6 +2457,7 @@ window.__groupReady = (async () => {
         event.preventDefault();
         const { taskId, stepId } = dialog.dataset;
         const stop = event.submitter?.dataset.handoverStop === '1';
+        const adjusting = dialog.dataset.adjust === '1';
         const picked = dialog.querySelector('[name="handoverModel"]:checked')?.value;
         if (!stop && !picked) { A.toast('先选一个接手的模型'); return; }
         const [role, model] = (picked || '|').split('|');
@@ -2462,33 +2466,50 @@ window.__groupReady = (async () => {
         const ok = await run(async () => {
           const answer = isExample(group.id) ? null : await control('handover_choose', { taskId, stepId, ...(stop ? { stop: true } : { role, model: model || undefined, effort }) });
           if (answer) updateTask(group, taskId, answer, true);
+          if (isExample(group.id) && adjusting) {
+            const task = group.records.get(taskId);
+            const target = [...(task?.steps || []), ...(task?.plan?.rounds?.at(-1)?.steps || [])].find((item) => item.id === stepId);
+            if (target) Object.assign(target, { role, model: model || undefined, effort });
+          }
         }, group);
-        if (ok) { dialog.close(); A.toast(stop ? '已停止这一步' : `已交给 ${memberName(role)} 接着做`); render(); }
+        if (ok) { dialog.close(); A.toast(stop ? '已停止这一步' : adjusting ? `这一步改由 ${memberName(role)} 做` : `已交给 ${memberName(role)} 接着做`); render(); }
       });
     }
     const write = Boolean(step.write);
-    const roles = (routeState.team?.configured || Object.keys(routeState.modelProfiles || {})).filter((role) => role !== 'claude' &&
-      (!write || (routeState.writeProviders || []).includes(role)));
+    // Example groups have no orchestrator: a sample list, so the dialog can be tried offline.
+    const sample = isExample(state.group) && !routeState.modelProfiles;
+    const profiles = sample ? { codex: { models: { 'gpt-5.5': { label: 'GPT-5.5', efforts: ['low', 'medium', 'high', 'xhigh'] }, 'gpt-5.4': { label: 'GPT-5.4', efforts: ['low', 'medium', 'high'] } } },
+      grok: { models: { 'grok-4.7': { efforts: ['low', 'high'] } } }, antigravity: { models: { 'gemini-4-hydrogen': {}, 'gemini-3.8-flash-medium': {} } } } : routeState.modelProfiles || {};
+    const roles = (sample ? Object.keys(profiles) : routeState.team?.configured || Object.keys(profiles)).filter((role) => role !== 'claude' &&
+      (!write || sample || (routeState.writeProviders || []).includes(role)));
     const rows = roles.map((role) => {
-      const models = newestFirst(Object.keys(routeState.modelProfiles?.[role]?.models || {}));
+      const models = newestFirst(Object.keys(profiles[role]?.models || {}));
       const options = (models.length ? models : ['']).map((model) => {
-        const label = model ? (routeState.modelProfiles[role].models[model]?.label || window.AgentDeskLanes?.modelShort?.(model) || model) : '默认模型';
+        const label = model ? (profiles[role].models[model]?.label || window.AgentDeskLanes?.modelShort?.(model) || model) : '默认模型';
         const same = role === step.role && (model || undefined) === (step.model || undefined);
-        return `<label class="handover-option${same ? ' failed' : ''}"><input type="radio" name="handoverModel" value="${esc(role)}|${esc(model)}" />${esc(label)}${same ? '<small>刚失败</small>' : ''}</label>`;
+        return `<label class="handover-option${same && !adjust ? ' failed' : ''}"><input type="radio" name="handoverModel" value="${esc(role)}|${esc(model)}" ${same && adjust ? 'checked' : ''} />${esc(label)}${same ? (adjust ? '<small class="now">现在</small>' : '<small>刚失败</small>') : ''}</label>`;
       }).join('');
       return `<div class="handover-member">${avatars.html(role, { size: 20, still: true })}<b>${esc(memberName(role))}</b><div class="handover-models">${options}</div></div>`;
     }).join('');
     dialog.dataset.taskId = task.id;
     dialog.dataset.stepId = step.id;
-    dialog.innerHTML = `<form method="dialog"><header><h3>这一步需要你选接手的模型</h3><button type="button" class="qv-close" data-handover-close aria-label="关闭">×</button></header>
-      <p class="handover-why"><b>${esc(memberName(step.role))}${step.model ? '（' + esc(step.model) + '）' : ''}</b> 没完成：${esc(failureText(step.choice?.error || step.error || ''))}</p>
+    dialog.dataset.adjust = adjust ? '1' : '';
+    dialog.profiles = profiles;
+    const what = capabilityLabels[step.capability] || (write ? '改代码' : '只读');
+    dialog.innerHTML = `<form method="dialog"><header><h3>${adjust ? '调整这一步的模型' : '这一步需要你选接手的模型'}</h3><button type="button" class="qv-close" data-handover-close aria-label="关闭">×</button></header>
+      ${adjust ? `<p class="handover-why">${esc(step.id)} · ${esc(what)} · 现在是 <b>${esc(memberName(step.role))}${step.model ? '（' + esc(step.model) + '）' : ''}</b>${step.effort ? ' · 思考 ' + esc(EFFORT_NAMES[step.effort] || step.effort) : ''}</p>
+        <p class="handover-note">还没开始，换成你选的成员、模型和思考程度来做。</p>`
+      : `<p class="handover-why"><b>${esc(memberName(step.role))}${step.model ? '（' + esc(step.model) + '）' : ''}</b> 没完成：${esc(failureText(step.choice?.error || step.error || ''))}</p>
       ${step.choice?.tried?.length ? `<p class="handover-tried">已经试过：${esc(step.choice.tried.join('、'))}</p>` : ''}
-      <p class="handover-note">选中的模型会接着上一个的改动继续做（${write ? '改代码' : '只读'}）。</p>
+      <p class="handover-note">选中的模型会接着上一个的改动继续做（${esc(what)}）。</p>`}
       <div class="handover-list">${rows || '<p>现在没有能接这种活的成员。</p>'}</div>
       <label class="handover-effort">思考程度 <select id="handoverEffort" disabled><option value="">默认</option></select></label>
-      <footer><button type="submit" class="btn" data-handover-stop="1">停止这一步</button><span class="grow"></span>
-        <button type="button" class="btn" data-handover-close>稍后</button><button type="submit" class="btn primary">接手并继续</button></footer></form>`;
+      <footer>${adjust ? '' : '<button type="submit" class="btn" data-handover-stop="1">停止这一步</button>'}<span class="grow"></span>
+        <button type="button" class="btn" data-handover-close>${adjust ? '取消' : '稍后'}</button><button type="submit" class="btn primary">${adjust ? '确定' : '接手并继续'}</button></footer></form>`;
     if (!dialog.open) dialog.showModal();
+    // the current model's thinking levels, when it is preselected
+    dialog.querySelector('[name="handoverModel"]:checked')?.dispatchEvent(new Event('change', { bubbles: true }));
+    if (adjust && step.effort) dialog.querySelector('#handoverEffort').value = step.effort;
   }
   const failureText = (error) => window.__providerDirect?.errors?.[error] || ({ cli_exit_1: 'CLI 异常退出', cli_timeout: '超时', cli_stalled: '长时间没有输出' })[String(error).split(':')[0]] || String(error).slice(0, 300);
   function offerChoices() {
@@ -2502,6 +2523,18 @@ window.__groupReady = (async () => {
       return;
     }
   }
+  // 「换模型」on a node beside the group or on a progress row: steps not started yet and steps waiting for a choice.
+  document.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-step-adjust]');
+    if (!chip) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const group = currentGroup();
+    const [taskId, stepId] = chip.dataset.stepAdjust.split(':');
+    const task = group?.records.get(taskId);
+    const step = task && [...(task.steps || []), ...(task.plan?.rounds?.at(-1)?.steps || [])].find((item) => item.id === stepId);
+    if (step) choiceDialog(task, step, step.state !== 'waiting_choice');
+  }, true);
   timeline.addEventListener('click', (event) => {
     const button = event.target.closest('[data-handover-open]');
     if (!button) return;

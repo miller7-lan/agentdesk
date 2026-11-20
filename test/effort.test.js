@@ -242,3 +242,32 @@ test('work is spread by quota left; Antigravity keeps its flash default for rout
   assert.equal(S.defaultModelFor.call(self, 'antigravity'), 'gemini-3.8-flash-medium');
   assert.equal(S.defaultModelFor.call(self, 'codex'), 'gpt-5.5');
 });
+
+test('a step not started yet can get another member, model and effort from its node; running and lead steps cannot', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  const events = [];
+  const self = {
+    config: { adapters: { codex: { profiles: { defaultModel: 'gpt-5.5', models: { 'gpt-5.5': {}, 'gpt-5.4': {} } } }, grok: { profiles: { models: { 'grok-4.7': {} } } } } },
+    router: { configured: () => true, canWrite: () => true }, running: new Map(),
+    save: (task, state, detail) => events.push(detail), status: (id) => ({ id }), pump() {},
+  };
+  self.defaultModelFor = S.defaultModelFor.bind(self);
+  const choose = (task, body) => S.chooseHandover.call(self, task, body);
+  const task = { id: 't', state: 'running', steps: [
+    { id: 'edit', role: 'grok', capability: 'implement', write: true, state: 'queued', session: 's' },
+    { id: 'look', role: 'grok', capability: 'scout', state: 'running' },
+    { id: 'accept-1', role: 'claude', capability: 'accept', state: 'queued' },
+  ] };
+  choose(task, { stepId: 'edit', role: 'codex', model: 'gpt-5.4', effort: 'high' });
+  const edit = task.steps[0];
+  assert.deepEqual([edit.role, edit.model, edit.named, edit.session, edit.state], ['codex', 'gpt-5.4', true, undefined, 'queued']);
+  assert.equal(events.at(-1), 'edit:adjusted:codex/gpt-5.4');
+  assert.throws(() => choose(task, { stepId: 'look', role: 'codex' }), /step_not_waiting/);        // running: not offered
+  assert.throws(() => choose(task, { stepId: 'accept-1', role: 'codex' }), /invalid_handover/);    // the lead's work stays the lead's
+  assert.throws(() => choose(task, { stepId: 'edit', role: 'codex', model: 'gpt-9' }), /invalid_handover/);
+  // A step in a plan not confirmed yet.
+  const planned = { id: 'p', state: 'awaiting_approval', steps: [], groupPlan: { rounds: [{ revision: 1, steps: [{ id: 'fix', role: 'codex', capability: 'implement', write: true, state: 'queued' }] }] } };
+  choose(planned, { stepId: 'fix', role: 'grok' });
+  assert.equal(planned.groupPlan.rounds[0].steps[0].role, 'grok');
+});

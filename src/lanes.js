@@ -434,7 +434,8 @@
           <b>${esc(node.stepId || node.label)}</b><i class="sg-state"></i></span>
         <span class="sg-node-detail">${esc(detail)}</span>
         <span class="sg-node-meta">${esc(meta)}</span>
-        ${note ? `<span class="sg-node-note">${esc(note)}</span>` : ''}</button>`;
+        ${note ? `<span class="sg-node-note">${esc(note)}</span>` : ''}
+        ${node.stepId && node.role !== 'claude' && ['queued', 'proposed', 'waiting_choice'].includes(node.state) ? `<span class="sg-adjust" role="button" tabindex="0" data-step-adjust="${esc(task.id + ':' + node.stepId)}" title="换成别的成员、模型或思考程度">换模型</span>` : ''}</button>`;
     }).join('');
     const prompt = String(task.prompt || '任务').replace(/\s+/g, ' ');
     const taskHead = `<div class="sg-task" data-flight-task="${esc(task.id)}">

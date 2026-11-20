@@ -777,3 +777,8 @@ button.lane-node { cursor: pointer; }
 .handover-effort { font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; }
 .handover-dialog footer { display: flex; gap: 8px; align-items: center; }
 .group-recipient select { max-width: 132px; }
+/* 节点上的「换模型」：还没开始和等你选接手的步骤 */
+.sg-adjust, .step-row-adjust { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 10px; border: 1px dashed var(--accent); color: var(--accent); font-size: 11px; cursor: pointer; background: transparent; white-space: nowrap; }
+.sg-adjust { position: absolute; right: 6px; bottom: 6px; }
+.sg-adjust:hover, .step-row-adjust:hover { background: var(--accent-soft); }
+.handover-option small.now { color: var(--accent); }
