@@ -438,8 +438,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   let mountDelay = 2000;
   const serveSftp = config.mountHome === true && config.ssh && require('./sftp-readonly').createReadOnlySftp({
     root: config.mountRoot || os.homedir(),
-    // the Bridge's own state (keys, database) and its SSH key are never served
-    hidden: [config.stateDir, config.ssh.key, config.ssh.certificate].filter(Boolean),
+    // the Bridge's own state (keys, database), its SSH key, and the AgentDesk key/config folder are never served
+    hidden: [config.stateDir, config.ssh.key, config.ssh.certificate, path.join(os.homedir(), '.agentdesk')].filter(Boolean),
   });
   function connectMount() {
     if (stopped || !serveSftp) return;
