@@ -128,7 +128,7 @@ test('reading goes by duty: with the mount up, read duties read it directly and 
     mounts: new Map([['mac', { path: '/state/mounts/mac' }]]),
     files: { call: async () => ({ relative: 'work/proj' }) },
     bridgeRoute: () => 'ssh:mac', spillOver() {}, acquireCli: async () => () => {}, recordCall() {}, recordUsage() {}, cliBudget: () => ({}),
-    save() {}, adapter: async (options) => { calls.push(options); return { output: 'ok' }; },
+    now: Date.now, save() {}, adapter: async (options) => { calls.push(options); return { output: 'ok' }; },
   });
   const task = { id: 't', workspace: 'mac', steps: [] };
   const run = (step) => S.invoke.call(self, task, step, '/tmp', new AbortController().signal, 'do it');

@@ -715,6 +715,11 @@ test('a failed step goes straight to the next model, which continues from its wo
   assert.equal(calls.filter((call) => call.name === 'claude').length, 0);        // no lead review
   const [first, second] = calls;
   assert.notEqual(first.name + first.model, second.name + second.model);      // another member or model took it over
+  const savedCalls = scheduler.store.get('tasks', task.id).cliCalls;
+  assert.deepEqual(savedCalls.map(({ provider, result, attempt }) => [provider, result, attempt]), [
+    [first.name, 'failed', 1], [second.name, 'completed', 2],
+  ]);
+  assert.deepEqual(task.metrics.roleCalls, first.name === second.name ? { [first.name]: 2 } : { [first.name]: 1, [second.name]: 1 });
   assert.match(second.prompt, /You are taking over this step from .*which stopped: cli_exit_1/);
   assert.ok(scheduler.store.events(task.id).some((event) => /^look:handover:/.test(event.detail)));
 

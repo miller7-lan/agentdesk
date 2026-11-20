@@ -90,6 +90,7 @@ window.__groupReady = (async () => {
     accepted_with_risk: '组长按风险接受本次结果，补丁仍可人工应用。',
     windows_test_started: '正在本机运行测试。',
     windows_test_failed: '本机测试失败。',
+    local_operation_unknown: '本机操作的结果待核对。请检查已运行的命令和实际文件，避免重复执行。',
     dependency_failed: '前置步骤没有正常结束，后面的步骤无法开始，任务已停止。可以让组长重新安排。',
     budget_exceeded: '这项任务的预算（步骤数或 token）已用完，已暂停；确认后可重新发起或调高主控的 taskBudget。',
   };

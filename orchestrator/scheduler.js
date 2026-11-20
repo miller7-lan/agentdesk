@@ -38,6 +38,8 @@ const teamTimeout = 40 * 60_000;
 // A single CLI turn may run this long before the session is continued. The stall watchdog still stops a CLI
 // that writes nothing for 10 minutes, so a longer turn limit does not leave a hung process running forever.
 const defaultCliTimeoutMs = 45 * 60_000;
+const hasLocalEffects = (step) => (step.write && ['files', 'desktop'].includes(step.localTools)) ||
+  (step.localTools === 'commands' && (step.write || step.capability === 'scout'));
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -232,13 +234,26 @@ class Scheduler {
     this.route = store.get('settings', 'route')?.value || 'ssh';
     this.maintenance = store.get('settings', 'maintenance')?.value || null;
     for (const task of this.tasks.values()) {
+      const openCalls = (task.cliCalls || []).filter((call) => call.result === 'running');
+      for (const call of openCalls) {
+        call.result = 'interrupted';
+        call.failureCode = 'service_restarted';
+        call.observedAt = new Date(this.now()).toISOString();
+      }
+      if (openCalls.length) this.store.put('tasks', task.id, task);
       if (task.state === 'applying' || task.state === 'testing') {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
       } else if (['planning', 'running', 'awaiting_acceptance', 'triaging'].includes(task.state)) {
-        for (const step of task.steps) {
-          if (step.state === 'running') { step.state = 'queued'; delete step.finishedAt; }
+        const active = task.steps.filter((step) => step.state === 'running');
+        const unknown = active.filter((step) => task.snapshot && hasLocalEffects(step));
+        for (const step of active) {
+          step.state = unknown.includes(step) ? 'failed' : 'queued';
+          if (step.state === 'failed') {
+            step.error = 'local_operation_unknown';
+            step.finishedAt = new Date(this.now()).toISOString();
+          } else delete step.finishedAt;
         }
-        this.save(task, 'queued', 'recovered');
+        this.save(task, unknown.length ? 'needs_review' : 'queued', unknown.length ? 'local_operation_unknown' : 'recovered');
       } else if (task.state === 'cancelled') {
         // Older cancellations aborted the CLI but left its step marked running; the process is gone, so
         // settle it here instead of drawing a live node beside a cancelled task.
@@ -268,7 +283,7 @@ class Scheduler {
         return result;
       } catch (error) {
         this.recordUsage(task, step, error.usage);
-        const reason = { cli_quota_exhausted: 'quota', cli_auth_required: 'auth' }[error.message];
+        const reason = { cli_quota_exhausted: 'quota', cli_auth_required: 'auth' }[error.code || error.message?.split(':')[0]];
         if (signal.aborted || !reason) throw error;
         // A quota block lasts until the reset the CLI stated, when it stated one; otherwise the default.
         this.router.block(step.role, reason, reason === 'quota' && error.retryAfterMs ? error.retryAfterMs : undefined);
@@ -560,9 +575,10 @@ event(task, state, detail) {
     const roleCalls = {};
     let reassignments = 0;
     for (const step of task.steps || []) {
-      if (step.role) roleCalls[step.role] = (roleCalls[step.role] || 0) + (step.attempts || 0);
+      if (!task.cliCalls && step.role) roleCalls[step.role] = (roleCalls[step.role] || 0) + (step.attempts || 0);
       reassignments += step.tried?.length || 0;
     }
+    for (const call of task.cliCalls || []) roleCalls[call.provider] = (roleCalls[call.provider] || 0) + 1;
     metrics.stepCount = (task.steps || []).length;
     metrics.roleCalls = roleCalls;
     metrics.reassignments = reassignments;
@@ -1427,7 +1443,7 @@ event(task, state, detail) {
     const role = step.role;
     const limit = (r) => this.config.cliConcurrency?.[r] ?? 1;
     const busy = (r) => taken.has(r) || (this.cliBusy.get(r) || 0) >= limit(r);
-    if (!busy(role) || !step.capability || step.named || task.provider || step.fixedReview || step.pinnedReadOnly ||
+    if (!busy(role) || step.session || !step.capability || step.named || task.provider || step.fixedReview || step.pinnedReadOnly ||
         LEAD_CAPABILITIES.has(step.capability)) return;
     const authors = step.capability === 'review'
       ? (task.steps || []).filter((other) => step.dependsOn?.includes(other.id) && other.write).map((other) => other.role) : [];
@@ -1446,6 +1462,7 @@ event(task, state, detail) {
   }
 
   async acquireCli(task, step, signal) {
+    signal.throwIfAborted();
     const role = step.role;
     const limit = this.config.cliConcurrency?.[role] ?? 1;
     if ((this.cliBusy.get(role) || 0) >= limit) {
@@ -1673,7 +1690,7 @@ event(task, state, detail) {
 
   recoverSession(task, step, error) {
     if (!task.snapshot || !step.session || step.sessionRecovery ||
-        !/^cli_(?:timeout|stalled|exit_\d+)(?::|$)/.test(error.message) || !this.router.available(step.role)) return false;
+        !/^cli_(?:timeout|stalled|network_error|exit_\d+)(?::|$)/.test(error.message) || !this.router.available(step.role)) return false;
     step.sessionRecovery = true;
     this.save(task, task.state, step.id + ':resuming_session');
     return true;
@@ -1687,10 +1704,28 @@ event(task, state, detail) {
       'Confirmed local operations: ' + JSON.stringify(confirmed);
   }
 
+  async checkpointStep(task, step, folder, signal, failure, changedPaths) {
+    if (!task.snapshot || !step.write) return;
+    const gitEvidence = await Promise.all([
+      git(folder, ['rev-parse', 'HEAD'], signal),
+      git(folder, ['status', '--porcelain=v1', '--no-renames', '-z'], signal),
+      git(folder, ['diff', '--binary', '--no-ext-diff', '--no-textconv', task.base], signal),
+    ]).catch(() => null);
+    const status = gitEvidence?.[1].split('\0').filter(Boolean) || [];
+    step.checkpoint = {
+      provider: step.role, model: step.model, base: task.base, session: step.session,
+      workspace: path.basename(folder), log: step.id + '.log', at: new Date(this.now()).toISOString(),
+      result: failure ? 'failed' : 'completed', ...(failure && { failure: clip(failure, 400) }),
+      ...(gitEvidence && {
+        head: gitEvidence[0].trim(),
+        trackedDiffHash: createHash('sha256').update(gitEvidence[2]).digest('hex'),
+        changedFiles: [...new Set([...(changedPaths || []), ...status.map((entry) => entry.slice(3))])].slice(0, 50),
+        untracked: status.some((entry) => entry.startsWith('?? ')),
+      }),
+    };
+  }
+
   async invoke(task, step, folder, signal, prompt = step.prompt) {
-    const config = this.config.adapters[step.role];
-    if (!config) throw new Error(step.role + '_not_configured');
-    const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
     // Every step, the lead's planning included, may read the person's project and authorized folders on their
     // computer through the Bridge tools; only the lead may also use the read-only computer location. Running
     // commands stays off for planning and other read-only steps.
@@ -1698,15 +1733,12 @@ event(task, state, detail) {
     const access = Scheduler.DUTY_ACCESS[Scheduler.dutyOf(step)] || Scheduler.DUTY_ACCESS.scout;
     const mount = !task.snapshot && access.mount && (this.mounts.size || this.config.homeMounts)
       ? await this.mountFor(task).catch(() => null) : null;
-    const mcp = bridgeTools && (task.snapshot ? Boolean(step.localTools) : access.mcp === 'always' || !mount)
-      ? this.config.mcp : undefined;
     if (task.snapshot && step.id !== 'group-planner') {
       prompt += '\nUse this working tree for all project files. Its base is the fixed snapshot of the requester\'s project. ' +
         'Edit here and deliver a reviewed patch. ' + (step.localTools === 'files' ? 'Use local file tools only for files outside the project.'
           : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
             : step.localTools === 'desktop' ? 'Use local_desktop only for the requested GUI operation. Verify the current screen before repeating any action.' : '');
     }
-    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp));
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
@@ -1731,6 +1763,12 @@ event(task, state, detail) {
       prompt += attachmentNote(files);
     }
     this.spillOver(task, step);
+    const config = this.config.adapters[step.role];
+    if (!config) throw new Error(step.role + '_not_configured');
+    const bridgeTools = config.template ? step.role === 'antigravity' : ['codex', 'claude', 'grok'].includes(step.role);
+    const mcp = bridgeTools && (task.snapshot ? Boolean(step.localTools) : access.mcp === 'always' || !mount)
+      ? this.config.mcp : undefined;
+    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp));
     const release = await this.acquireCli(task, step, signal);
     // A step can be stopped on its own (stall watchdog, or the person) without cancelling the task; the reason
     // becomes the step's error and goes to the lead like any failure.
@@ -1738,7 +1776,6 @@ event(task, state, detail) {
     const stepKey = task.id + ':' + step.id;
     (this.stepControllers ||= new Map()).set(stepKey, stepController);
     const stepSignal = AbortSignal.any([signal, stepController.signal]);
-    this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
       localTools: task.snapshot ? step.localTools : undefined,
@@ -1750,10 +1787,21 @@ event(task, state, detail) {
       readAnyFolder: true,
       writeFiles: (!task.snapshot || step.localTools === 'files') &&
         step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
+    let call;
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
       const run = useTeam || this.adapter;
       const budget = this.cliBudget(task);
+      stepSignal.throwIfAborted();
+      const calls = task.cliCalls ||= [];
+      call = {
+        id: randomUUID(), stepId: step.id, provider: step.role, model: step.model ?? null,
+        capability: step.capability, attempt: 1 + calls.filter((entry) => entry.stepId === step.id).length,
+        startedAt: new Date(this.now()).toISOString(), result: 'running', resumed: Boolean(step.session),
+      };
+      calls.push(call);
+      this.save(task, task.state, task.detail, false);
+      this.recordCall(call.provider);
       const result = await run({
         ...(useTeam && {
           taskId: task.id, stepId: step.id, owner: task.owner, project: task.project,
@@ -1775,12 +1823,27 @@ event(task, state, detail) {
           this.save(task, task.state, step.id + ':session');
         },
       });
+      call.result = 'completed';
+      if (result.usage) call.usage = result.usage;
       if (useTeam && result.container) task.container = result.container;
       return result;
+    } catch (error) {
+      if (call) {
+        call.result = stepSignal.aborted ? 'interrupted' : 'failed';
+        const code = error.code || error.message?.split(':')[0];
+        if (/^[a-z0-9_]{1,80}$/i.test(code || '')) call.failureCode = code;
+        if (error.usage) call.usage = error.usage;
+      }
+      throw error;
     } finally {
       mcp?.capabilities.delete(capability);
       this.stepControllers?.delete(stepKey);
       release();
+      if (call) {
+        call.endedAt = new Date(this.now()).toISOString();
+        call.durationMs = Math.max(0, Date.parse(call.endedAt) - Date.parse(call.startedAt));
+        this.save(task, task.state, task.detail, false);
+      }
     }
   }
 
@@ -1892,6 +1955,11 @@ event(task, state, detail) {
           continue;
         }
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
+        signal.throwIfAborted();
+        if (wave.some((step) => step.error === 'local_operation_unknown')) {
+          this.save(task, 'needs_review', 'local_operation_unknown');
+          return;
+        }
         const failed = results.find((result) => result.status === 'rejected');
         if (failed) {
           // Straight to the next model (no lead review) while the group allows it; the lead after three
@@ -2269,13 +2337,16 @@ event(task, state, detail) {
   // One implementation step per rework round. When there is a writer to build on, the rework runs in
   // that writer's worktree and its cumulative patch supersedes the writer's earlier patch.
   appendRework(task, acceptance) {
-    const role = this.pickForTask(task, 'implement');
+    const parent = [...task.steps].reverse()
+      .find((step) => step.write && step.paths?.length && !step.supersededBy);
+    const original = task.snapshot && parent?.session && this.router.canWrite(parent.role) &&
+      this.router.available(parent.role) && this.router.quotaAllows(parent.role, 'implement') &&
+      this.ownerAllows(task, parent.role).allowed ? parent : null;
+    const role = original?.role || this.pickForTask(task, 'implement');
     if (!role) {
       const configured = (this.router.routes.implement || []).filter((candidate) => this.router.configured(candidate));
       throw new Error(configured.length ? 'executor_waiting:implement' : 'no_executor:implement');
     }
-    const parent = [...task.steps].reverse()
-      .find((step) => step.write && step.paths?.length && !step.supersededBy);
     const findings = (acceptance.findings || []).map((finding) =>
       [finding.severity, finding.file, finding.line, finding.issue, finding.suggestion].filter(Boolean).join(': ')).join('\n');
     const step = {
@@ -2285,6 +2356,7 @@ event(task, state, detail) {
         (acceptance.summary ? '\nAcceptance summary: ' + acceptance.summary : '') +
         (findings ? '\nFindings:\n' + findings : ''),
       ...(parent && { reworkOf: parent.id }),
+      ...(original && { session: original.session, model: original.model, effort: original.effort }),
     };
     task.steps.push(step);
     task.reworkRounds = (task.reworkRounds || 0) + 1;
@@ -2382,6 +2454,11 @@ event(task, state, detail) {
         if (step.handoverFrom) prompt += '\n\nYou are taking over this step from ' + step.handoverFrom.role + (step.handoverFrom.model ? ' (' + step.handoverFrom.model + ')' : '') +
           ', which stopped: ' + step.handoverFrom.error + '. Its changes so far are already in your working folder (git status and git diff show them)' +
           (step.handoverFrom.output ? '; what it reported: ' + step.handoverFrom.output : '') + '. Check that work, keep what is right, fix what is not, and finish the step.';
+        if (step.handoverFrom && step.checkpoint) {
+          const { provider, base, head, trackedDiffHash, changedFiles, untracked, failure } = step.checkpoint;
+          prompt += '\nWorktree checkpoint: ' + JSON.stringify({ provider, base, head, trackedDiffHash, changedFiles, untracked, failure }) +
+            '. Verify this against the current Worktree, then start with the listed files and unresolved failure.';
+        }
         if (step.guidance?.length) prompt += '\n\nThe person gave this guidance in your conversation while you worked; follow it, it takes priority over the plan where they conflict:\n' +
           step.guidance.map((item) => '- ' + item.text).join('\n');
         if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
@@ -2409,6 +2486,7 @@ event(task, state, detail) {
           // A rework patch is cumulative over its parent, so only the newest patch is applied.
           if (sharedWriter) sharedWriter.supersededBy = step.id;
         }
+        await this.checkpointStep(task, step, folder, signal, null, step.paths);
         step.state = 'completed';
         step.finishedAt = new Date(this.now()).toISOString();
         this.save(task, savedState(), step.id + ':completed');
@@ -2427,6 +2505,15 @@ event(task, state, detail) {
           throw error;
         }
         await this.collectDeliveries(task, step).catch(() => {});
+        await this.checkpointStep(task, step, folder, signal, error.message);
+        if (task.snapshot && hasLocalEffects(step) &&
+            /^cli_(?:print_timeout|timeout|stalled|network_error)(?::|$)/.test(error.message)) {
+          step.state = 'failed';
+          step.error = 'local_operation_unknown';
+          step.finishedAt = new Date(this.now()).toISOString();
+          this.save(task, savedState(), step.id + ':local_operation_unknown');
+          throw error;
+        }
         // The CLI stopped at its own print deadline: the conversation is intact, so continue it instead
         // of paying for the step again. The limit keeps a model that never finishes from running forever.
         if (error.message.startsWith('cli_print_timeout') && step.session) {

@@ -137,7 +137,9 @@ function classifyFailure(text) {
   // valid, so the controller may continue the same conversation instead of starting the step over.
   if (/print[ -]?timeout|turn (?:is )?still in progress/i.test(text)) return 'cli_print_timeout';
   if (/not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|(?:token|session|credentials?) (?:has )?expired|IneligibleTierError|UNSUPPORTED_CLIENT|client is no longer supported/i.test(text)) return 'cli_auth_required';
-  if (/usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|hit your \d+[ -]hour limit|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
+  if (/usage limit|rate[ _-]?limit|quota|too many requests|\b429\b|credit balance|usage balance exhausted|limit (?:reached|exceeded)|hit your \d+[ -]hour limit|out of (?:credits|messages)/i.test(text)) return 'cli_quota_exhausted';
+  if (/model[_ -]not[_ -]found|unsupported model|(?:requested )?model .{0,120}(?:not available|does not exist)/i.test(text)) return 'cli_model_unavailable';
+  if (/\b(?:ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN)\b|connection (?:reset|closed) by peer|network is unreachable/i.test(text)) return 'cli_network_error';
   return null;
 }
 
@@ -320,7 +322,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
       // Keep the raw sentence when it explains the exit code; it is redacted already.
       const detail = failure && failure !== label ? failure.trim() : errorDetail(tail);
       throw Object.assign(new Error(detail && detail !== label ? label + ': ' + detail.slice(0, 300) : label),
-        { provider: name, usage, ...(retryAfterMs && { retryAfterMs }) });
+        { code: label, provider: name, usage, ...(retryAfterMs && { retryAfterMs }) });
     }
     return { output, usage };
   } finally {

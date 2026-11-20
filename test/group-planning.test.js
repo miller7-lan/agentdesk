@@ -141,6 +141,15 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   assert.deepEqual(mcps, []);
   assert.equal(task.steps[0].state, 'completed');
   assert.equal(task.steps[0].attempts, 2);
+  const checkpoint = task.steps[0].checkpoint;
+  assert.equal(checkpoint.base, task.snapshot.base);
+  assert.equal(checkpoint.head, task.snapshot.base);
+  assert.equal(checkpoint.session, 'writer-session');
+  assert.deepEqual(checkpoint.changedFiles, ['README.md']);
+  assert.match(checkpoint.trackedDiffHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(task.cliCalls.filter((call) => call.stepId === 'edit').map((call) => [call.result, call.resumed]), [
+    ['failed', false], ['completed', true],
+  ]);
   assert.equal(task.detail, 'patches_ready');
   assert.equal(fs.readFileSync(readme, 'utf8'), 'working\n');
   const delta = fs.readFileSync(path.join(scheduler.config.stateDir, 'worktrees', task.id, 'edit.patch'));
@@ -154,4 +163,36 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   assert.equal(content(workspace, 'README.md'), 'working\nagent\n');
   assert.equal(git(workspace, 'show', ':README.md'), 'staged');
   assert.equal(fs.readFileSync(path.join(workspace, 'private.txt'), 'utf8'), 'untracked\n');
+});
+
+test('restart keeps an interrupted local operation for verification and never queues it again', async (t) => {
+  const { scheduler, task, head } = setup(t, []);
+  task.state = 'running';
+  task.snapshot = { base: head };
+  task.steps = [{ id: 'edit', role: 'codex', capability: 'implement', write: true, localTools: 'commands',
+    state: 'running', session: 'original-session' }];
+  task.cliCalls = [{
+    id: randomUUID(), stepId: 'edit', provider: 'codex', result: 'running', startedAt: '2026-11-20T00:00:00Z',
+  }];
+  scheduler.store.put('tasks', task.id, task);
+  const restarted = new Scheduler({ config: scheduler.config, store: scheduler.store, files: scheduler.files });
+  const restored = restarted.tasks.get(task.id);
+  assert.equal(restored.state, 'needs_review');
+  assert.equal(restored.detail, 'local_operation_unknown');
+  assert.equal(restored.steps[0].session, 'original-session');
+  assert.equal(restored.cliCalls[0].result, 'interrupted');
+  assert.equal(restored.cliCalls[0].failureCode, 'service_restarted');
+  assert.equal(restored.cliCalls[0].endedAt, undefined);
+  await assert.rejects(restarted.apply(restored), /patch_not_applicable/);
+});
+
+test('acceptance rework keeps the original writer session for a fixed snapshot', (t) => {
+  const { scheduler, task, head } = setup(t, []);
+  task.snapshot = { base: head };
+  task.steps = [{ id: 'edit', role: 'codex', capability: 'implement', write: true,
+    paths: ['README.md'], state: 'completed', session: 'writer-1' }];
+  assert.equal(scheduler.appendRework(task, { summary: 'fix the failure' }), 'rework');
+  assert.equal(task.steps[1].role, 'codex');
+  assert.equal(task.steps[1].reworkOf, 'edit');
+  assert.equal(task.steps[1].session, 'writer-1');
 });
