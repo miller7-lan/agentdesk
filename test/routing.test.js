@@ -49,7 +49,7 @@ test('plans that name a capability are assigned by the router; only implement st
     { id: 'check', capability: 'review', role: 'grok', prompt: 'review', dependsOn: ['edit'] },
     { id: 'look', capability: 'research', role: 'codex', prompt: 'look up', dependsOn: [] },
   ]), router.availableRoles(), router);
-  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['antigravity', true], ['grok', false], ['antigravity', false]]);   // Antigravity implements and researches
+  assert.deepEqual(steps.map((step) => [step.role, step.write]), [['antigravity', false], ['codex', true], ['grok', false], ['antigravity', false]]);   // Codex writes; Antigravity reads and researches
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'deploy', prompt: 'x', dependsOn: [] }]), router.availableRoles(), router), /invalid_plan/);
   assert.throws(() => parsePlan(JSON.stringify([{ id: 'a', capability: 'implement', role: 'claude', prompt: 'x', dependsOn: [] }]),
     router.availableRoles(), router), /invalid_plan:lead_capability/);
@@ -216,9 +216,9 @@ test('quota decides who works: Claude and Codex step back early and keep their q
     provider, buckets: [{ fiveHour: { usedPercent: 10 }, weekly: { usedPercent: percent } }] })));
   quota({ claude: 70, codex: 80 });
   assert.equal(router.pick('plan'), 'claude');                 // above 60%: still plans
-  assert.equal(router.pick('implement'), 'antigravity');                    // Antigravity has the most quota
-  assert.equal(router.pick('implement', ['antigravity']), 'codex');          // above 70%: Codex still implements
-  assert.equal(router.pick('implement', ['antigravity', 'codex']), 'grok');
+  assert.equal(router.pick('implement'), 'codex');                          // above 70%: Codex still implements (its main job)
+  assert.equal(router.pick('implement', ['codex']), 'antigravity');          // Codex cannot: the next writer
+  assert.equal(router.pick('implement', ['codex', 'antigravity']), 'grok');
   assert.equal(router.pick('implement', ['antigravity', 'codex', 'grok']), null);   // never Claude
   assert.equal(router.pick('accept', ['claude']), null);       // nor Codex acceptance work
   assert.equal(router.pick('review'), 'antigravity');
@@ -249,9 +249,14 @@ test('a task is charged the quota each CLI used between its start and end', () =
 test('a review goes to a different member than the one who wrote the change', () => {
   const router = new Router({ adapters: adapters('codex', 'claude', 'grok', 'antigravity') });
   const plan = (steps) => parsePlan(JSON.stringify(steps), router.availableRoles(), router).map((step) => step.role);
-  // Antigravity writes, so the review that would have gone to Antigravity goes to Grok Build.
+  // Codex writes by default; Antigravity, first in line for review, reviews it.
   assert.deepEqual(plan([
     { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
+    { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
+  ]), ['codex', 'antigravity']);
+  // Antigravity writes (named by the lead), so the review that would have gone to it goes to Grok Build.
+  assert.deepEqual(plan([
+    { id: 'edit', capability: 'implement', role: 'antigravity', prompt: 'change', dependsOn: [] },
     { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
   ]), ['antigravity', 'grok']);
   // The lead names Codex for a hard change; Antigravity, first in line for review, reviews it.
@@ -262,7 +267,7 @@ test('a review goes to a different member than the one who wrote the change', ()
   // Nobody else can review: the author's own review is kept rather than none.
   router.block('grok', 'quota', 60_000);
   assert.deepEqual(plan([
-    { id: 'edit', capability: 'implement', prompt: 'change', dependsOn: [] },
+    { id: 'edit', capability: 'implement', role: 'antigravity', prompt: 'change', dependsOn: [] },
     { id: 'check', capability: 'review', prompt: 'review', dependsOn: ['edit'] },
   ]), ['antigravity', 'antigravity']);
 });

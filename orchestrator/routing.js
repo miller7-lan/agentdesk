@@ -30,7 +30,7 @@ const DEFAULT_ROUTES = {
   plan: ['claude', 'codex'],
   triage: ['claude'],
   scout: ['antigravity', 'gemini', 'grok'],
-  implement: ['antigravity', 'codex', 'grok'],
+  implement: ['codex', 'antigravity', 'grok'],   // one writer by default: Codex; the others only when it cannot
   review: ['antigravity', 'grok', 'gemini'],
   research: ['antigravity', 'grok', 'gemini'],   // Antigravity searches with Google and has the largest quota
   accept: ['claude'],

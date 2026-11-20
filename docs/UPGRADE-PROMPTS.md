@@ -38,7 +38,7 @@
 4. 确认 /usr/bin/bwrap 存在（沙盒运行命令需要它）。没有的话先问我，再执行 apt-get install -y bubblewrap。
 5. 确认 pdftotext 存在（PDF 附件提取文字需要它）。没有的话先问我，再执行 apt-get install -y poppler-utils。
 6. 按 UPGRADE-2026-11.md 第 1 节逐项对照 orchestrator/vps2.example.json，用 sudoedit 改 /etc/agentdesk-orchestrator/config.json：
-   - routing：改代码用 antigravity、codex、grok；审查和查资料用 antigravity、grok。没有自定义需求就整个删掉，用代码默认值。
+   - routing：改代码用 codex、antigravity、grok（改代码默认只给 Codex，配置里如果还是 antigravity 排第一，要改过来）；审查和查资料用 antigravity、grok。没有自定义需求就整个删掉，用代码默认值。
    - writeProviders 设为 ["codex","claude","grok","antigravity"]；删掉 gemini（这台服务器的 Gemini CLI 确实还能用就保留）。
    - adapters.grok、adapters.antigravity、adapters.claude 加 "sandbox": true，并加上 callLimits（数字先用样例值，告诉我让我确认）。
    - adapters.claude.defaultModel 设为最新 Opus，并确认它在 models 里；models 里列出所有可用的 Claude 模型（Opus、Sonnet、Haiku 等），群聊的「组长模型」下拉框就是从这里来的。可选：adapters.claude.leadModel 指定默认组长模型（不填就用最新的 Opus）。

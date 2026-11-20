@@ -29,7 +29,7 @@
    - 确认 `/usr/bin/bwrap` 存在（没有就 `apt-get install -y bubblewrap`，先告诉用户）。
    - 确认 `pdftotext` 存在（PDF 附件提取文字用；没有就 `apt-get install -y poppler-utils`，先告诉用户）。
 4. 用 `sudoedit` 改配置，逐项对照 `orchestrator/vps2.example.json`：
-   - `routing.implement` 改成 `["antigravity", "codex", "grok"]`，`routing.review` 和 `routing.research` 都改成 `["antigravity", "grok"]`。整个 `routing` 都没有自定义需求的，直接删掉，用代码里的默认值。
+   - `routing.implement` 改成 `["codex", "antigravity", "grok"]`（改代码默认只给 Codex），`routing.review` 和 `routing.research` 都改成 `["antigravity", "grok"]`。整个 `routing` 都没有自定义需求的，直接删掉，用代码里的默认值。
    - 给 `adapters.grok` 和 `adapters.antigravity` 加上 `callLimits`（样例：Grok 每 5 小时 60 次、每周 600 次；Antigravity 每 5 小时 300 次、每周 3000 次），额度页才会显示它们的估算用量。数字请用户按套餐确认。
    - `adapters.antigravity.models` 按样例写入 Gemini 4 的三档模型和各自擅长说明，`defaultModel` 设为 Hydrogen；模型 ID 以 `agy models` 的实际输出为准。
    - 删掉 `adapters.gemini`（Gemini CLI 已停用），并从 `routing` 各列表和 `writeProviders` 里去掉 `gemini`。如果这台服务器上的 Gemini CLI 确实还能用，这一项跳过。
@@ -122,6 +122,7 @@
 - **Antigravity 真实额度**：主控用 `agy -p /usage --output-format json` 读 Gemini 组的 5 小时和每周剩余比例，读到就用真实值；读不到才按 `callLimits` 调用次数估算（额度卡片标「估算」）。看到「估算」时，在 VPS2 上以主控服务账户运行这条命令看报错。
 - **额度实时查看**：「额度与分工」打开时每 10 秒自动刷新（窗口在后台时暂停），标题旁显示「实时 · N 秒前更新」；群聊成员面板和状态栏改为每 15 秒刷新。主控端所有窗口共用一份最多 10 秒前的读数，不再每次请求都重新启动 Codex App Server、`agy /usage` 和 Grok 账单查询。
 - **Claude 实时额度**：主控用 VPS2 上 Claude CLI 登录的账号令牌（`$HOME/.claude/.credentials.json`，只在 VPS2 本机读取，只发给 api.anthropic.com）读取 `https://api.anthropic.com/api/oauth/usage`，拿到 5 小时和每周的实时用量，和 Claude Code 自己的 `/usage` 同源。这个接口 Anthropic 没有公开文档，可能变化；读不到时（用 API key 而不是账号登录、长期 setup token 权限不够、接口变化）回退到每轮对话结束时记录的用量，额度卡片会注明。
+- **改代码默认只给 Codex**：默认分工改为 `implement: ["codex", "antigravity", "grok"]`，改代码不按额度均衡；组长把一项任务里所有改文件的步骤都交给 Codex、用同一个 Codex 模型。Codex 接不了（额度、登录）或你点名别人时才换。侦察、审查、查资料仍按额度均衡。**VPS2 配置里 `routing.implement` 若是 antigravity 排第一，要改成 codex 排第一或删掉这一项。**
 - **改方向不丢半成品**：任务进行中在群里说话，组长先逐步判断（新操作 `revise_plan` 后台判断，`approve_addition` 确认新增步骤）：不受影响的继续；需要的补一句指导，在原会话里接着做；方向变了的才停下；需要时新增步骤，按「方案确认」设置决定是否等你确认。组长没法判断时，把你的话作为指导发给正在做的成员。没有成员在做时，仍按原来的方式重新规划剩下的部分。
 - 去掉群聊的「执行者」下拉框：要指定成员就在消息开头写 `@Codex …`（输入 @ 会弹出成员列表），只对这一条消息生效。
 - 升级 VPS2 后重启主控服务；Windows、Mac 端更新桌面端即可。

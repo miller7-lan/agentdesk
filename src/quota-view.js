@@ -98,7 +98,7 @@
         buckets: [{ fiveHour: { usedPercent: 12, resetsAt: now(4) }, weekly: { usedPercent: 9, resetsAt: now(130) } }] },
     ],
     team: {
-      routes: { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'], implement: ['antigravity', 'codex', 'grok'],
+      routes: { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'], implement: ['codex', 'antigravity', 'grok'],
         review: ['antigravity', 'grok'], research: ['antigravity', 'grok'], accept: ['claude'] },
       configured: ['claude', 'codex', 'grok', 'antigravity'], authRequired: [], blocked: {},
       quotaPolicy: { claude: { soft: 60, hard: 95, keepFor: ['plan', 'triage', 'accept'] }, codex: { soft: 70, hard: 95, keepFor: ['implement'] },
@@ -308,7 +308,8 @@
         <li>额度按 5 小时窗口和每周窗口里<b>用得多的那个</b>算。</li>
         <li>过了软线只接自己的主业，过了硬线不再派活；Claude 只当组长（规划、诊断、验收），配置也改不了。</li>
         <li>CLI 报额度用尽会冷却 30 分钟，报登录失效会停 6 小时，到时自动恢复。</li>
-        <li>能做同一种活的成员按额度均衡：额度用得明显少的（差一档，20 个百分点）排到前面，比如 Antigravity 用了 70%、Codex 用了 20%，改代码和审查会先给 Codex；你自己调过顺序的那种活按你的顺序。永不派给 Claude；困难的改动由组长点名 Codex。</li>
+        <li>改代码默认只给一个成员：Codex，同一项任务用同一个 Codex 模型，改动都在它手里；Codex 接不了（额度、登录）或你点名别人时才换。永不派给 Claude。</li>
+        <li>侦察、审查、查资料按额度均衡：额度用得明显少的（差一档，20 个百分点）排到前面；你自己调过顺序的那种活按你的顺序。</li>
         <li>Antigravity 的常规步骤用配置里的默认档（flash），组长只在难的步骤点名更重的模型；其他成员默认用最新一代的模型。</li>
         <li>你调整和补充的顺序保存在这台电脑上，随你发出的群聊任务一起发给主控：自动派活、降级、重新分配和卡住换模型都按你的顺序，排在前面的具体模型先用；组长也会参考，确有更合适的成员时会说明原因。可以补充主控已配置的任何成员和它的任何模型；规划、诊断、验收只能补充 Claude 的模型（组长始终是 Claude）。不影响别人发的任务。</li>
         <li>审查交给与改代码不同的成员（交叉审查），没有别人可用时才由作者自审。</li>

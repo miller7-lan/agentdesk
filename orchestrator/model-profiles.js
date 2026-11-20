@@ -5,7 +5,7 @@ const modelId = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$/;
 const EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 const abilities = {
-  codex: 'Strongest implementer for hard, cross-cutting or risky changes; repository navigation, debugging and verification in a sandbox that can run tests; also routine implementation and review when it has more quota left.',
+  codex: 'The default implementer: every file change in a task goes to Codex on one model, routine or hard; repository navigation, debugging and verification in a sandbox that can run tests.',
   claude: 'Independent design and code review, reasoning about edge cases, and synthesizing findings.',
   grok: 'Code review from a different vendor, research with web search, quick second opinions. Runs shell commands and tests when the server sandboxes it.',
   gemini: 'Read-only repository investigation, comparison, and synthesis in group collaboration.',

@@ -231,13 +231,14 @@ test('work is spread by quota left; Antigravity keeps its flash default for rout
   const self = { router: { quota: { antigravity: 72, codex: 18, grok: 65 } }, orderEntries: () => [],
     config: { adapters: { antigravity: { profiles: { defaultModel: 'gemini-3.8-flash-medium', models: { 'gemini-3.8-flash-high': {}, 'gemini-3.8-flash-medium': {}, 'gemini-4-pro': {} } } },
       codex: { profiles: { defaultModel: 'gpt-5.4', models: { 'gpt-5.4': {}, 'gpt-5.5': {} } } } } } };
-  const balanced = (list, task = {}) => S.balanced.call(self, task, 'implement', list);
+  const balanced = (list, task = {}) => S.balanced.call(self, task, 'review', list);
+  assert.deepEqual(S.balanced.call(self, {}, 'implement', ['codex', 'antigravity']), ['codex', 'antigravity']);   // the writer is not spread
   assert.deepEqual(balanced(['antigravity', 'codex', 'grok']), ['codex', 'antigravity', 'grok']);   // 18% goes first; 72 and 65 share a band
   self.router.quota = { antigravity: 30, codex: 22 };
   assert.deepEqual(balanced(['antigravity', 'codex']), ['antigravity', 'codex']);                  // close: the configured order stays
   self.router.quota = { codex: 10 };
   assert.deepEqual(balanced(['antigravity', 'codex', 'grok']), ['antigravity', 'codex', 'grok']);  // unknown quota keeps its place
-  assert.deepEqual(S.balanced.call({ ...self, orderEntries: () => [{ role: 'antigravity' }] }, {}, 'implement', ['antigravity', 'codex']), ['antigravity', 'codex']);   // the person's order wins
+  assert.deepEqual(S.balanced.call({ ...self, orderEntries: () => [{ role: 'antigravity' }] }, {}, 'review', ['antigravity', 'codex']), ['antigravity', 'codex']);   // the person's order wins
   assert.equal(S.defaultModelFor.call(self, 'antigravity'), 'gemini-3.8-flash-medium');
   assert.equal(S.defaultModelFor.call(self, 'codex'), 'gpt-5.5');
 });
