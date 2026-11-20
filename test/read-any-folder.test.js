@@ -36,6 +36,22 @@ test('the computer location is listed only when the bridge allows it', async (t)
   await assert.rejects(on.call('file.read', { operation: 'list', root: 'computer', path: on.outside }), /read_root_not_authorized/);
 });
 
+test('batch operations obey Bridge permissions and reject writing any item inside the project', async (t) => {
+  const { outside, project, call } = await setup(t, { readAnyFolder: true, writeAnyFolder: true });
+  const common = { root: 'computer', anyFolder: true };
+  const items = [{ path: path.join(outside, 'new.txt'), version: null, content: 'hello' },
+    { path: path.join(project, 'new.txt'), version: null, content: 'blocked' }];
+  const denied = await call('file.write', { ...common, operation: 'write_batch', items });
+  assert.equal(denied.phase, 'preflight');
+  assert.match(denied.results[1].error, /project_write_denied/);
+  await assert.rejects(fs.stat(items[0].path), { code: 'ENOENT' });
+  await assert.rejects(call('file.write', { root: 'computer', operation: 'write_batch', items: items.slice(0, 1) }), /read_root_readonly/);
+  assert.equal((await call('file.write', { ...common, operation: 'write_batch', items: items.slice(0, 1) })).results[0].status, 'written');
+  const read = await call('file.read', { ...common, operation: 'read_batch', items: [{ path: items[0].path }, { path: path.join(outside, '.npmrc') }] });
+  assert.equal(read.results[0].content, 'hello');
+  assert.match(read.results[1].error, /credential_path_denied/);
+});
+
 test('the lead can list, search, grep and read folders outside the project read-only', async (t) => {
   const { outside, call } = await setup(t, { readAnyFolder: true });
   const common = { root: 'computer', anyFolder: true };

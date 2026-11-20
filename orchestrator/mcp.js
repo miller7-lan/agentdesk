@@ -3,6 +3,7 @@ const { connect } = require('node:net');
 const { appendFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
+const { spec: batchSpec, validate: validateFileBatch } = require('./file-batch');
 
 const operations = {
   windows_list_locations: ['locations', []],
@@ -17,6 +18,8 @@ const operations = {
   windows_delete_path: ['delete', ['path']],
   windows_list_commands: ['commands', []],
   windows_run_command: ['run', ['command']],
+  windows_read_files_batch: ['read_batch', ['items']],
+  windows_write_files_batch: ['write_batch', ['items']],
 };
 
 const descriptions = {
@@ -34,7 +37,20 @@ const descriptions = {
   run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
 };
 
-const tools = Object.entries(operations).map(([name, [action, required]]) => ({
+const tools = Object.entries(operations).map(([name, [action, required]]) => {
+  if (action === 'read_batch' || action === 'write_batch') {
+    const write = action === 'write_batch';
+    const tool = batchSpec(name, write);
+    delete tool.type;
+    tool.annotations = { readOnlyHint: !write };
+    tool.inputSchema.properties.root = {
+      type: 'string', description: write ? 'Use computer with absolute paths outside the project.' : 'Location id; project is the default.',
+      ...(write && { enum: ['computer'] }),
+    };
+    if (write) tool.inputSchema.required.push('root');
+    return tool;
+  }
+  return {
   name,
   description: descriptions[action],
   annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete'].includes(action) },
@@ -53,7 +69,8 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => ({
     required,
     additionalProperties: false,
   },
-}));
+  };
+});
 
 // Mutations leave a local, verifiable record next to the step log. A step may claim success only when the
 // matching receipt shows the bridge accepted the write and returned the new version.
@@ -123,16 +140,30 @@ if (require.main === module) {
       } else if (frame.method === 'tools/call' && Object.hasOwn(operations, frame.params.name)) {
         const [operation] = operations[frame.params.name];
         const args = frame.params.arguments || {};
+        const batch = operation === 'read_batch' || operation === 'write_batch';
+        if (batch) validateFileBatch(args.items, operation === 'write_batch');
         // Forward every argument the service acts on. Dropping content here made every write look empty
         // ("invalid_content") even though the client had listed the write tools.
         try {
           const value = await request(socketPath, { capability, operation, root: args.root, path: args.path, query: args.query, offset: args.offset,
             version: args.version, caseSensitive: args.caseSensitive, command: args.command,
-            content: args.content, encoding: args.encoding, destination: args.destination }, operation === 'run' ? 320000 : 35000);
+            content: args.content, encoding: args.encoding, destination: args.destination,
+            ...(batch && { items: args.items }) }, operation === 'run' ? 320000 : 35000);
           if (MUTATIONS.has(operation)) writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS, receiptFor(operation, args, frame.id, value));
-          result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
+          const failedBatch = operation === 'write_batch' && value.results.some(({ status }) => status !== 'written');
+          if (operation === 'write_batch') value.results.forEach((item, index) => {
+            if (item.status === 'not_run') return;
+            const error = item.status === 'written' ? null : new Error(item.error);
+            writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS,
+              receiptFor('write', { ...args.items[index], root: args.root }, frame.id, item, error));
+          });
+          result = { ...(failedBatch && { isError: true }), content: [{ type: 'text', text: JSON.stringify(value) }] };
         } catch (error) {
           if (MUTATIONS.has(operation)) writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS, receiptFor(operation, args, frame.id, null, error));
+          if (operation === 'write_batch') for (const item of args.items) {
+            writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS,
+              receiptFor('write', { ...item, root: args.root }, frame.id, null, error));
+          }
           throw error;
         }
       } else {

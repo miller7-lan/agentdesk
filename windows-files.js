@@ -1,5 +1,6 @@
 const { constants, realpath } = require('node:fs');
 const fs = require('node:fs/promises');
+const { spec: batchSpec, readBatch, writeBatch } = require('./orchestrator/file-batch');
 const { promisify } = require('node:util');
 const path = require('node:path').win32;
 const nativePath = promisify(realpath.native);
@@ -66,6 +67,8 @@ const operation = (name, description, required, optional = []) => ({
 });
 
 const specs = [
+  batchSpec('windows_file_read_batch', false),
+  batchSpec('windows_file_write_batch', true),
   operation('list', 'List up to 250 entries in a local Windows directory. Available in AgentDesk Full Access mode.', ['path'], ['offset']),
   operation('read', 'Read up to 64 KiB of a local Windows file as UTF-8 text or base64 (use base64 for binary data); continue from nextOffset for the rest. Available in AgentDesk Full Access mode.', ['path'], ['encoding', 'offset']),
   operation('write', 'Write UTF-8 or base64 data to a local Windows file. Can create a file or replace it with overwrite=true. Available in AgentDesk Full Access mode.', ['path', 'content'], ['encoding', 'overwrite']),
@@ -87,8 +90,13 @@ function argsFor(tool, values) {
   return values;
 }
 
-async function call(tool, values, trash) {
+async function call(tool, values, trash, aroundBatchWrite) {
   try {
+    if (tool === 'windows_file_read_batch') return result(true, await readBatch(values?.items, existing));
+    if (tool === 'windows_file_write_batch') {
+      const value = await writeBatch(values?.items, destination, aroundBatchWrite);
+      return result(value.results.every(({ status }) => status === 'written'), value);
+    }
     const args = argsFor(tool, values);
     let output;
     switch (tool) {

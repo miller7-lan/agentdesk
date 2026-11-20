@@ -409,10 +409,12 @@
     if (m.method === 'item/tool/requestApproval') {
       const tool = String(p.tool || '').replace(/^agentdesk_file_/, '');
       const raw = p.arguments || {};
+      const batchPaths = tool === 'write_batch' && Array.isArray(raw.items)
+        ? raw.items.map(({ path }) => String(path).replace(/[\r\n]/g, ' ')) : [];
       card = { ...base, sessionable: true,
-        title: `请求修改本机文件（${agentName(agent)}）`,
+        title: batchPaths.length ? `请求批量写入 ${batchPaths.length} 个本机文件（${agentName(agent)}）` : `请求修改本机文件（${agentName(agent)}）`,
         desc: `AI 想在本机（${s.localRoot || localRoot}）上执行：${tool}`,
-        cmd: String(raw.path || raw.destination || JSON.stringify(raw, null, 2)).slice(0, 1500) };
+        cmd: batchPaths.length ? batchPaths.join('\n') : String(raw.path || raw.destination || JSON.stringify(raw, null, 2)).slice(0, 1500) };
     } else if (m.method === 'mcpServer/elicitation/request') {
       const meta = p._meta || {}; const tp = meta.tool_params || {}; const win = p.serverName === 'ssh';
       card = { ...base, sessionable: false,

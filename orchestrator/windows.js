@@ -6,6 +6,7 @@ const { homedir, tmpdir } = require('node:os');
 const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
 const { attachmentRoot, idPattern } = require('./attachments');
+const { readBatch, writeBatch } = require('./file-batch');
 
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;
@@ -268,10 +269,12 @@ class WindowsOperations {
       if (selected === 'computer') {
         // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it.
         if (!anyFolder || body.anyFolder !== true) throw new Error('read_root_not_authorized');
+        if (body.operation === 'read_batch') return readBatch(body.items, anyPath);
         return this.readTarget(await anyPath(body.path), body);
       }
       if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
       const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
+      if (body.operation === 'read_batch') return readBatch(body.items, (filename) => within(readRoot, filename));
       return this.read(readRoot, body);
     }
     if (kind === 'file.write' && body.root === 'computer') {
@@ -280,7 +283,11 @@ class WindowsOperations {
       const writable = (this.config.readAnyFolder === true || workspace.readAnyFolder === true) &&
         (this.config.writeAnyFolder === true || workspace.writeAnyFolder === true);
       if (!writable || body.anyFolder !== true) throw new Error('read_root_readonly');
-      return this.writeAnywhere(taskId, await fs.realpath(workspace.root), body);
+      const project = await fs.realpath(workspace.root);
+      if (body.operation === 'write_batch') {
+        return writeBatch(body.items, (filename) => this.anyWritePath(project, filename));
+      }
+      return this.writeAnywhere(taskId, project, body);
     }
     if (body.root !== undefined && body.root !== 'project') throw new Error('read_root_readonly');
     const root = await fs.realpath(workspace.root);
@@ -459,8 +466,7 @@ class WindowsOperations {
   // (system, credential and .git paths refused; links resolved first) apply to the target and to its folder,
   // which must exist. The project folder itself only changes through reviewed patches. Overwrites name the
   // version they replace; deletions go to the trash.
-  async writeAnywhere(taskId, project, body) {
-    const place = async (value, { existing = false } = {}) => {
+  async anyWritePath(project, value, { existing = false } = {}) {
       if (typeof value !== 'string' || value.length > 1024 || /[\x00-\x1f]/.test(value)) throw new Error('invalid_path');
       let requested = value;
       if (/^~[\\/]/.test(requested)) requested = path.join(HOME, requested.slice(2));
@@ -468,11 +474,15 @@ class WindowsOperations {
       const target = existing ? await anyPath(requested) : path.join(await anyPath(path.dirname(path.resolve(requested))), path.basename(requested));
       allowedAnywhere(target);
       if (/^\.{1,2}$/.test(path.basename(target))) throw new Error('invalid_path');
-      if (target === project || target.startsWith(project + path.sep)) {
+      const relative = path.relative(project, target);
+      if (relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) {
         throw new Error('project_write_denied: change project files in the task workspace; they are applied as a reviewed patch');
       }
       return target;
-    };
+  }
+
+  async writeAnywhere(taskId, project, body) {
+    const place = (value, options) => this.anyWritePath(project, value, options);
     const key = 'any:' + body.path;
     if (this.busy.has(key)) throw new Error('workspace_busy');
     this.busy.add(key);

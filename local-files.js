@@ -3,6 +3,7 @@
 // 凭据目录和 .git 写入；所有写操作都先解析父目录的真实路径，避免符号链接逃逸。
 const { constants, realpath } = require('node:fs');
 const fs = require('node:fs/promises');
+const { spec: batchSpec, readBatch, writeBatch } = require('./orchestrator/file-batch');
 const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path').posix;
@@ -107,6 +108,8 @@ const operation = (name, description, required, optional = []) => ({
 });
 
 const specs = [
+  batchSpec('agentdesk_file_read_batch', false),
+  batchSpec('agentdesk_file_write_batch', true),
   operation('list', 'List up to 250 entries in a local macOS directory. Available in AgentDesk Full Access mode.', ['path'], ['offset']),
   operation('read', 'Read up to 64 KiB of a local macOS file as UTF-8 text or base64 (use base64 for binary data); continue from nextOffset for the rest. Available in AgentDesk Full Access mode.', ['path'], ['encoding', 'offset']),
   operation('write', 'Write UTF-8 or base64 data to a local macOS file. Can create a file or replace it with overwrite=true. Available in AgentDesk Full Access mode.', ['path', 'content'], ['encoding', 'overwrite']),
@@ -116,7 +119,7 @@ const specs = [
   operation('trash', 'Move a local macOS file or directory to the Trash. Available in AgentDesk Full Access mode.', ['path']),
 ];
 
-const WRITE_TOOLS = new Set(['agentdesk_file_write', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash']);
+const WRITE_TOOLS = new Set(['agentdesk_file_write', 'agentdesk_file_write_batch', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash']);
 const isWriteTool = (name) => WRITE_TOOLS.has(name);
 
 function argsFor(tool, values) {
@@ -165,8 +168,13 @@ async function writeAtomic(target, bytes, overwrite) {
   }
 }
 
-async function call(tool, values, trash) {
+async function call(tool, values, trash, aroundBatchWrite) {
   try {
+    if (tool === 'agentdesk_file_read_batch') return result(true, await readBatch(values?.items, existing));
+    if (tool === 'agentdesk_file_write_batch') {
+      const value = await writeBatch(values?.items, destination, aroundBatchWrite);
+      return result(value.results.every(({ status }) => status === 'written'), value);
+    }
     const args = argsFor(tool, values);
     let output;
     switch (tool) {

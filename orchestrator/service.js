@@ -9,6 +9,7 @@ const { Endpoint, direct, expireMessages } = require('./rpc');
 const { WindowsOperations, RemoteFiles } = require('./windows');
 const { Scheduler } = require('./scheduler');
 const { sweepAttachments } = require('./attachments');
+const { validate: validateFileBatch } = require('./file-batch');
 const { EFFORT_LEVELS, modelProfiles } = require('./model-profiles');
 
 function relayConfig(config, role) {
@@ -288,22 +289,30 @@ function start(config) {
         if (!scope) throw new Error('mcp_permission_denied');
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
-        if (['locations', 'read', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+        if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
           const anyFolder = frame.root === 'computer';
           if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
+          if (frame.operation === 'read_batch') validateFileBatch(frame.items, false);
           value = await files.call(route, scope.taskId, 'file.read', {
             operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
             ...(anyFolder && { anyFolder: true }),
+            ...(frame.operation === 'read_batch' && { items: frame.items }),
           });
           if (frame.operation === 'locations' && Array.isArray(value?.locations)) {
             value = { ...value, locations: value.locations.filter((location) => location?.id !== 'computer' || scope.readAnyFolder === true) };
           }
-        } else if (['write', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
+        } else if (['write', 'write_batch', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
           // Any folder on the person's computer; the project itself only changes through reviewed patches.
           if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
           if (frame.root !== 'computer') throw new Error('mcp_permission_denied: write with root "computer" and an absolute path; project files are changed in the task workspace');
           const target = { workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path };
+          if (frame.operation === 'write_batch') {
+            validateFileBatch(frame.items, true);
+            value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: 'write_batch', items: frame.items });
+            if (!socket.destroyed) wire.send({ ok: true, value });
+            return;
+          }
           let current = frame.version;
           if (current === undefined && frame.operation !== 'mkdir') {
             // The model did not say which version it replaces: use the one there now (or none for a new file).

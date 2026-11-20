@@ -57,7 +57,7 @@ function finishCheckpoint(turnId) {
   checkpoints().finish(turnId).then((summary) => { if (summary) toUi('checkpoint:ready', summary); })
     .catch((error) => logger?.log('checkpoint_failed', { status: 'failed', error: error.message }));
 }
-const fullAccessThreads = new Set();
+const filePolicies = new Map();
 // Claude / Grok / Antigravity 单聊：线程在 VPS 上，工具调用回到本机执行
 const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent })]));
 const chatThreads = new Map();
@@ -438,7 +438,8 @@ remote.on('server-request', (m) => {
     const params = m.params || {};
     const command = !enrollment && typeof params.tool === 'string' && localCommands.isCommandTool(params.tool);
     if (command) {
-      const allowedTurn = !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId;
+      const turn = fileTurns.get(params.turnId);
+      const allowedTurn = !params.namespace && turn?.policy === 'full' && turn.threadId === params.threadId;
       const connection = remote.codexProc;
       (allowedTurn
         ? localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: localRootFor(appConfig?.active?.id) })
@@ -448,16 +449,29 @@ remote.on('server-request', (m) => {
     }
     const winFile = !mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
     const macFile = mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('agentdesk_file_');
-    const allowed = !params.namespace && fileTurns.has(params.turnId) && fileTurns.get(params.turnId) === params.threadId;
-    const task = winFile || macFile
-      ? allowed
-        ? winFile
-          ? checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
-            () => windowsFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)))
-          : checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
-            () => localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)))
-        : Promise.resolve((winFile ? windowsFiles : localFiles).result(false, { error: '本机文件工具需要处于完全访问模式的活动轮次' }))
-      : desktop.call(params);
+    const turn = fileTurns.get(params.turnId);
+    const active = !params.namespace && turn && turn.threadId === params.threadId;
+    const batch = /_file_(?:read|write)_batch$/.test(params.tool || '');
+    const batchRead = batch && params.tool.endsWith('_read_batch');
+    const allowed = active && (turn.policy === 'full' || (batch && (batchRead || turn.policy === 'ask')));
+    const trackBatch = (filename, run) => checkpoints().around(params.turnId, params.threadId, params.tool.replace(/_batch$/, ''), { path: filename }, run);
+    const task = (async () => {
+      if (!winFile && !macFile) return desktop.call(params);
+      const files = winFile ? windowsFiles : localFiles;
+      if (!allowed) return files.result(false, { error: '当前轮次没有本机文件权限' });
+      if (batch && !batchRead && turn.policy === 'ask') {
+        try { require('./orchestrator/file-batch').validate(params.arguments?.items, true); }
+        catch (error) { return files.result(false, { error: error.message }); }
+        const paths = params.arguments.items.map(({ path: filename }) => filename.replace(/[\r\n]/g, ' '));
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'question', message: `Codex 请求批量写入 ${paths.length} 个本机文件`,
+          detail: paths.join('\n'), buttons: ['取消', '允许这一次'], defaultId: 0, cancelId: 0,
+        });
+        if (response !== 1 || fileTurns.get(params.turnId) !== turn) return files.result(false, { error: '批量写入未获批准' });
+      }
+      return checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
+        () => files.call(params.tool, params.arguments, (target) => shell.trashItem(target), trackBatch));
+    })();
     task.then((result) => {
       if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result);
     }).catch(() => {});
@@ -470,15 +484,15 @@ remote.on('notification', ({ method, params }) => {
   if (method === 'turn/started' && desktopThreads.has(params.threadId)) {
     desktop.active.set(params.turn.id, params.threadId);
   }
-  if (method === 'turn/started' && fullAccessThreads.has(params.threadId)) {
-    fileTurns.set(params.turn.id, params.threadId);
+  if (method === 'turn/started' && filePolicies.has(params.threadId)) {
+    fileTurns.set(params.turn.id, { threadId: params.threadId, policy: filePolicies.get(params.threadId) });
   }
   if (method === 'turn/completed') {
     desktop.active.delete(params.turn.id);
     desktopThreads.delete(params.threadId);
     fileTurns.delete(params.turn.id);
     finishCheckpoint(params.turn.id);
-    fullAccessThreads.delete(params.threadId);
+    filePolicies.delete(params.threadId);
   } else if (method === 'serverRequest/resolved') {
     remote.pendingReqs.delete(params.requestId);
   }
@@ -494,7 +508,7 @@ remote.on('codex-ready', (info) => toUi('codex:ready', info));
 remote.on('codex-down', () => toUi('codex:down', null));
 function clearLocalTools() {
   desktopThreads.clear();
-  fullAccessThreads.clear();
+  filePolicies.clear();
   fileTurns.clear();
   desktop.stop();
 }
@@ -706,17 +720,14 @@ ipcMain.handle('codex:request', async (event, method, params) => {
       } else {
         desktopThreads.delete(params.threadId);
       }
-      if (params.approvalPolicy === 'never' && params.sandboxPolicy?.type === 'dangerFullAccess') {
-        fullAccessThreads.add(params.threadId);
-      } else {
-        fullAccessThreads.delete(params.threadId);
-      }
+      const fullAccess = params.approvalPolicy === 'never' && params.sandboxPolicy?.type === 'dangerFullAccess';
+      filePolicies.set(params.threadId, readOnly ? 'read' : fullAccess ? 'full' : 'ask');
     }
     return { ok: true, result: await remote.request(method, params) };
   } catch (e) {
     if (method === 'turn/start') {
       desktopThreads.delete(params?.threadId);
-      fullAccessThreads.delete(params?.threadId);
+      filePolicies.delete(params?.threadId);
     }
     return { ok: false, error: String(e.message || e) };
   }
@@ -797,8 +808,9 @@ async function chatToolTask(agent, params) {
   }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
   const tool = chatFileTools === windowsFiles ? params.tool.replace(/^agentdesk_file_/, 'windows_file_') : params.tool;
+  const trackBatch = (filename, run) => checkpoints().around(params.turnId, params.threadId, tool.replace(/_batch$/, ''), { path: filename }, run);
   return checkpoints().around(params.turnId, params.threadId, tool, params.arguments,
-    () => chatFileTools.call(tool, params.arguments, (target) => shell.trashItem(target)));
+    () => chatFileTools.call(tool, params.arguments, (target) => shell.trashItem(target), trackBatch));
 }
 
 for (const [agent, link] of chatLinks) {
