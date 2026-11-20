@@ -344,6 +344,16 @@ test('群聊在已启用的盘符交付，返工继承权限并校验写入回�
     assert.equal(task.steps[1].deliveryTarget, step.deliveryTarget);
     assert.deepEqual(task.steps[1].localDrives, step.localDrives);
   }
+  for (const suffix of ['', '\n\n（上一次没完成：desktop_delivery_outside_request。请组长换个办法重新安排。）']) {
+    task.prompt = '找5个不同领域的文章的网站，写出md放在桌上' + suffix;
+    const report = { prompt: '写入桌面报告', desktopOutput: '文章网站.md', write: true };
+    scheduler.bindLocalAccess(task, report);
+    assert.equal(report.deliveryTarget, path.win32.normalize('C:/Users/test/Desktop/文章网站.md'));
+  }
+  task.prompt = '找五篇关于桌上游戏的文章，整理成报告';
+  assert.throws(() => scheduler.bindLocalAccess(task, { prompt: '写入桌面报告', desktopOutput: '报告.md', write: true }), /desktop_delivery_outside_request/);
+  task.prompt = '生成报告，但不要放在桌上';
+  assert.throws(() => scheduler.bindLocalAccess(task, { prompt: '交付报告', desktopOutput: '报告.md', write: true }), /desktop_delivery_outside_request/);
   task.prompt = '保存到桌面';
   const desktop = { prompt: '生成桌面报告', desktopOutput: '报告.md', write: true };
   scheduler.bindLocalAccess(task, desktop);

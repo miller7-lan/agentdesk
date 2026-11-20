@@ -1675,7 +1675,10 @@ event(task, state, detail) {
     const workspace = this.config.workspaces[task.workspace];
     const drives = (workspace?.groupLocalDrives || []).filter((drive) => /^[A-Z]$/.test(drive));
     const referencesDrive = (text) => [...String(text).matchAll(/\b([a-z]):[\\/]|([a-z])\s*盘/gi)].some((m) => drives.includes((m[1] || m[2]).toUpperCase()));
-    const mentionsDesktop = (text) => /桌面|\bdesktop\b/i.test(text);
+    const mentionsDesktop = (text) => /桌面|\bdesktop\b/i.test(text) ||
+      !/(?:不要|不用|无需|别|禁止|不能|请勿|勿)[^，。；\n]{0,20}桌上/u.test(text) &&
+      /(?:放|存|保存|写入|导出|输出)\s*(?:在|到|至)?\s*(?:我的|电脑的|电脑)?桌上/u.test(text) &&
+      /(?:文件|文档|报告|清单|附件|markdown|md\b|\.txt\b|\.pdf\b)/iu.test(text);
     const wantsLocal = (referencesDrive(request) && referencesDrive(step.prompt)) ||
       (mentionsDesktop(request) && mentionsDesktop(step.prompt));
     if (drives.length && (wantsLocal || step.localTools === 'files')) {
