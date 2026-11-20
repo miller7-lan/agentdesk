@@ -214,14 +214,14 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   }
   // The attachments sit outside the step's working folder; Claude Code reads outside it only from added folders.
   if (attachmentDirectory && name === 'claude' && !provider.template) args.unshift('--add-dir', attachmentDirectory);
+  if (name === 'antigravity' && provider.template && mcp) {
+    env.AGENTDESK_MCP_SOCKET = mcp.socket;
+    env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
+  }
   if (name === 'antigravity' && provider.template && sandboxed && attachmentDirectory) {
     // Inside the sandbox the attachment folder is mounted read-only, so reading files there is safe.
     args.unshift('--settings', JSON.stringify({ permissions: { allow: [...(mcp ? ['mcp(agentdesk_windows/*)'] : []), 'command(*)', 'read_file(*)'] } }));
   } else if (name === 'antigravity' && provider.template && (mcp || sandboxed)) {
-    if (mcp) {
-      env.AGENTDESK_MCP_SOCKET = mcp.socket;
-      env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
-    }
     const allow = [...(mcp ? ['mcp(agentdesk_windows/*)'] : []), ...(sandboxed ? ['command(*)'] : [])];
     args.unshift('--settings', JSON.stringify({ permissions: { allow } }));
   }

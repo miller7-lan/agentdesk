@@ -317,3 +317,38 @@ test('a local commit VPS2 does not have yet is brought over from the Bridge as a
   assert.equal(task.state, 'awaiting_details');
   assert.ok(scheduler.store.events(task.id).some((event) => String(event.detail).startsWith('mirror_synced:' + local.slice(0, 12))));
 });
+
+test('群聊在已启用的盘符交付，返工继承权限并校验写入回执', async (t) => {
+  const { scheduler, task } = setup(t, []);
+  scheduler.config.workspaces.mac.groupLocalDrives = ['C', 'D'];
+  scheduler.config.workspaces.mac.deliveryDesktop = 'C:/Users/test/Desktop';
+  task.snapshot = { base: 'snapshot' };
+  for (const drive of ['C', 'D']) {
+    const target = drive + ':/Reports/results.md';
+    task.prompt = '把报告写入 ' + target;
+    const step = { id: 'report', write: true, role: 'codex', capability: 'implement', prompt: task.prompt, outputPath: target };
+    scheduler.bindLocalAccess(task, step);
+    assert.equal(step.localTools, 'files');
+    assert.deepEqual(step.localDrives, ['C', 'D']);
+    assert.equal(step.deliveryTarget, path.win32.normalize(target));
+    await scheduler.collectDeliveries(task, step);
+    assert.match(step.writeFailure, /missing_delivery_receipt/);
+    const dir = path.join(scheduler.config.stateDir, 'logs', task.id);
+    fs.mkdirSync(dir, { recursive: true });
+    const receipt = { operation: 'write', root: 'computer', path: step.deliveryTarget, ok: true };
+    fs.writeFileSync(path.join(dir, 'report.receipts.jsonl'), JSON.stringify(receipt));
+    await scheduler.collectDeliveries(task, step);
+    assert.equal(step.writeFailure, undefined);
+    task.steps = [step];
+    scheduler.appendRework(task, { summary: '补充验收结果' });
+    assert.equal(task.steps[1].deliveryTarget, step.deliveryTarget);
+    assert.deepEqual(task.steps[1].localDrives, step.localDrives);
+  }
+  task.prompt = '保存到桌面';
+  const desktop = { prompt: '生成桌面报告', desktopOutput: '报告.md', write: true };
+  scheduler.bindLocalAccess(task, desktop);
+  assert.equal(desktop.deliveryTarget, path.win32.normalize('C:/Users/test/Desktop/报告.md'));
+  const repo = { prompt: '修改工作树里的源代码', write: true };
+  scheduler.bindLocalAccess(task, repo);
+  assert.equal(repo.localTools, undefined);
+});

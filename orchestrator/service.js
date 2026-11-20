@@ -330,6 +330,18 @@ function start(config) {
           // Any folder on the person's computer; the project itself only changes through reviewed patches.
           if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
           if (frame.root !== 'computer') throw new Error('mcp_permission_denied: write with root "computer" and an absolute path; project files are changed in the task workspace');
+          if (scope.localDrives) {
+            if (frame.operation === 'write_batch') validateFileBatch(frame.items, true);
+            const targets = frame.operation === 'write_batch' ? frame.items.map((item) => item.path)
+              : frame.operation === 'move' ? [frame.path, frame.destination] : [frame.path];
+            if (!targets.every((target) => typeof target === 'string' &&
+                /^[a-z]:[\\/]/i.test(target) && scope.localDrives.includes(target[0].toUpperCase()))) {
+              throw new Error('mcp_permission_denied: path outside enabled drives');
+            }
+          }
+          if (!scope.localDrives && scope.deliveryTarget && (!['write', 'edit'].includes(frame.operation) || frame.path !== scope.deliveryTarget)) {
+            throw new Error('mcp_permission_denied: this delivery is restricted to its named file');
+          }
           const target = { workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path };
           if (frame.operation === 'write_batch') {
             validateFileBatch(frame.items, true);

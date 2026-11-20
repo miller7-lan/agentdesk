@@ -318,3 +318,9 @@ ssh -F none -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
 - 真实 IP、SSH 私钥、Relay 令牌、登记密码只放在各端的配置或 GitHub secret 里。仓库只放 `*.example.json`；`agentdesk-server.json`、`agentdesk-enrollment.json`、`remote.json` 都在 `.gitignore` 里。
 - VPS 上动手（重启服务、改配置、改 sshd 和防火墙）之前先告诉用户要做什么；涉及 SSH 和防火墙的改动，先确认自己的管理员登录在改完后仍然可用，再断开当前会话（见 `docs/SECURITY_REVIEW.md` §3）。
 - 一次只部署一端，确认生效后再动下一端，出问题时能知道是哪一步引起的。
+
+### 群聊访问 Windows 本机磁盘
+
+在 VPS2 配置的目标工作区设置 `groupLocalDrives` 为 `["C", "D"]`，将 `deliveryDesktop` 填为这台电脑的实际桌面绝对路径（可取 Windows Bridge 的 `workspaces.<工作区>.readRoots.desktop`）。Windows Bridge 需要启用 `readAnyFolder` 与 `writeAnyFolder`。这些机器专属值保存在各端配置。
+
+群聊计划可按步骤申请本机文件工具。指定 C、D 盘路径的本机任务和桌面任务可自动补上文件工具。要交付指定文件，步骤用 `outputPath` 声明 Windows 绝对路径，或用 `desktopOutput` 声明桌面文件名。调度器按 Bridge 写入回执验收，返工沿用目标。规划、资料查找与审查可读取授权位置；方案中明确要求本机检查时，审查、诊断、验收可执行 Bridge 配置的 `agentCommands`。项目改动继续通过工作树和补丁交付。Windows 用户权限、系统与凭据目录保护仍然生效。
