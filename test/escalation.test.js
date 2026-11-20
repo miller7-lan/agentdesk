@@ -42,7 +42,7 @@ function decision(value, extra = {}) {
 function schedulerFor(dir, mirror, adapter, config = {}) {
   return new Scheduler({
     config: {
-      stateDir: dir, quota: false,
+      stateDir: dir, quota: false, handoverLimit: 0,   // these tests cover the lead's part, after the automatic handovers
       adapters: adapters('codex', 'claude', 'grok', 'gemini'),
       workspaces: { mac: { repository: mirror } },
       ...config,
@@ -398,7 +398,10 @@ test('each step is handed back to the lead at most three times, then the task fa
   }
   assert.equal(leadCalls, 3);
   assert.equal(task.steps.find((step) => step.id === 'look').reassigns, 3);
-  assert.equal(task.state, 'failed');
+  // After the lead, the step waits for the person's pick in the failure dialog instead of failing the task.
+  assert.equal(task.state, 'awaiting_approval');
+  assert.equal(task.detail, 'handover_choice');
+  assert.equal(task.steps.find((step) => step.id === 'look').state, 'waiting_choice');
   assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'reassign_limit:look'));
 });
 
@@ -673,4 +676,43 @@ test('the person can guide a working member: the step resumes its session with t
   assert.equal(task.steps[0].guidance[0].text, '只看 src 目录');
   assert.ok(scheduler.store.events(task.id).some((event) => event.detail === 'look:steered'));
   assert.throws(() => scheduler.steerStep(task, 'look', '再改改'), /step_finished/);
+});
+
+test('a failed step goes straight to the next model, which continues from its work; the person picks when automatic handover is off', async (t) => {
+  const { dir, head, mirror } = await repository(t);
+  const calls = [];
+  const scheduler = schedulerFor(dir, mirror, async ({ name, model, prompt }) => {
+    calls.push({ name, model, prompt });
+    if (name === 'claude') return { output: decision('retry') };
+    if (calls.filter((call) => call.name !== 'claude').length === 1) throw new Error('cli_exit_1');   // the first member fails
+    return { output: 'done' };
+  }, { acceptance: { mode: 'off' }, handoverLimit: 3 });
+  t.after(() => scheduler.store.close());
+  const task = failingScoutTask(scheduler, head);
+  await scheduler.run(task, new AbortController().signal);
+  const look = task.steps.find((step) => step.id === 'look');
+  assert.equal(look.state, 'completed');
+  assert.equal(look.handovers, 1);
+  assert.equal(calls.filter((call) => call.name === 'claude').length, 0);        // no lead review
+  const [first, second] = calls;
+  assert.notEqual(first.name + first.model, second.name + second.model);      // another member or model took it over
+  assert.match(second.prompt, /You are taking over this step from .*which stopped: cli_exit_1/);
+  assert.ok(scheduler.store.events(task.id).some((event) => /^look:handover:/.test(event.detail)));
+
+  // Automatic handover off: the failed step waits for the person, who picks a member and model.
+  calls.length = 0;
+  const manual = failingScoutTask(scheduler, head);
+  manual.autoHandover = false;
+  await scheduler.run(manual, new AbortController().signal);
+  const step = manual.steps.find((item) => item.id === 'look');
+  assert.equal(step.state, 'waiting_choice');
+  assert.equal(manual.state, 'awaiting_approval');
+  assert.equal(manual.detail, 'handover_choice');
+  assert.match(step.choice.error, /cli_exit_1/);
+  assert.throws(() => scheduler.chooseHandover(manual, { stepId: 'look', role: 'claude' }), /invalid_handover/);   // never the lead
+  scheduler.running.set(manual.id, new AbortController());     // keep pump from starting it here
+  scheduler.chooseHandover(manual, { stepId: 'look', role: 'codex' });
+  assert.equal(step.state, 'queued');
+  assert.equal(step.role, 'codex');
+  assert.equal(step.handoverFrom.error.includes('cli_exit_1'), true);
 });

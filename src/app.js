@@ -515,6 +515,7 @@
   $('#modeSelect').addEventListener('change', (e) => {
     const s = sess(state.active);
     if (s && s.live) s.mode = e.target.value;
+    try { store.set('lastPermissionMode', e.target.value); } catch { /* storage may be unavailable */ }
     $('#sbMode').textContent = e.target.selectedOptions[0].text;
     toast('权限模式：' + e.target.selectedOptions[0].text);
   });

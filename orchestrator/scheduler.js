@@ -591,6 +591,8 @@ event(task, state, detail) {
         (body.leadEffort !== undefined && !EFFORTS.claude.includes(body.leadEffort)) ||
         // approval: whether the person confirms each plan (always), only bigger ones (small) or none (auto).
         (body.approval !== undefined && !['always', 'small', 'auto'].includes(body.approval)) ||
+        // autoHandover: a failed step goes straight to the next model (true, the default) or waits for the person.
+        (body.autoHandover !== undefined && typeof body.autoHandover !== 'boolean') ||
         // leadModel: which of the lead's models plans, diagnoses and accepts; the person may pick any of them.
         (body.leadModel !== undefined && (typeof body.leadModel !== 'string' ||
           !Object.hasOwn(this.config.adapters[LEAD_ROLE]?.profiles?.models || {}, body.leadModel))) ||
@@ -667,6 +669,7 @@ event(task, state, detail) {
       ...(body.leadEffort && { leadEffort: body.leadEffort }),
       ...(body.leadModel && { leadModel: body.leadModel }),
       ...(body.approval && { approval: body.approval }),
+      ...(body.autoHandover === false && { autoHandover: false }),
       ...(body.routeOrder && Object.keys(body.routeOrder).length && { routeOrder: body.routeOrder }),
       ...(body.broadcastId && { broadcastId: body.broadcastId }),
       ...(body.reviewOf && { reviewOf: body.reviewOf }),
@@ -1707,6 +1710,7 @@ event(task, state, detail) {
           // The same staleness can appear while the loop runs if a step was requeued from outside. Reset
           // once and try again; a dependency that is really failed or replaced still ends the task below.
           const stale = task.steps.filter((step) => step.state === 'running');
+          if (!stale.length && task.steps.some((step) => step.state === 'waiting_choice')) break;
           if (!stale.length) throw new Error('dependency_failed');
           for (const step of stale) step.state = 'queued';
           continue;
@@ -1714,7 +1718,14 @@ event(task, state, detail) {
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
         const failed = results.find((result) => result.status === 'rejected');
         if (failed) {
-          if (!this.requestReassign(task, failed.reason, signal)) throw failed.reason;
+          // Straight to the next model (no lead review) while the group allows it; the lead after three
+          // handovers; the person's choice after that, or at once when automatic handover is off.
+          if (this.handOver(task, failed.reason, signal)) continue;
+          if (task.autoHandover === false && !signal.aborted && this.awaitChoice(task, failed.reason)) continue;
+          if (!this.requestReassign(task, failed.reason, signal)) {
+            if (this.awaitChoice(task, failed.reason)) continue;
+            throw failed.reason;
+          }
           await this.consumePendingTriage(task, repo, root, signal);
           return;
         }
@@ -1723,6 +1734,11 @@ event(task, state, detail) {
       // Steps the lead added after a change of direction and the person has not confirmed yet: the task waits.
       if (task.steps.some((step) => step.state === 'proposed')) {
         this.save(task, 'awaiting_approval', 'revise_needs_approval');
+        return;
+      }
+      // A failed step waits for the person to pick who takes it over (the failure dialog).
+      if (task.steps.some((step) => step.state === 'waiting_choice')) {
+        this.save(task, 'awaiting_approval', 'handover_choice');
         return;
       }
       // Competing review verdicts are escalated before acceptance; the triage may add fix steps.
@@ -2142,6 +2158,9 @@ event(task, state, detail) {
           prompt = step.prompt + '\n\nBrief (summaries only, not raw logs): ' + JSON.stringify(brief);
         }
         // What the person said to this member in its own conversation, newest last; it takes priority.
+        if (step.handoverFrom) prompt += '\n\nYou are taking over this step from ' + step.handoverFrom.role + (step.handoverFrom.model ? ' (' + step.handoverFrom.model + ')' : '') +
+          ', which stopped: ' + step.handoverFrom.error + '. Its changes so far are already in your working folder (git status and git diff show them)' +
+          (step.handoverFrom.output ? '; what it reported: ' + step.handoverFrom.output : '') + '. Check that work, keep what is right, fix what is not, and finish the step.';
         if (step.guidance?.length) prompt += '\n\nThe person gave this guidance in your conversation while you worked; follow it, it takes priority over the plan where they conflict:\n' +
           step.guidance.map((item) => '- ' + item.text).join('\n');
         if (step.capability === 'review') prompt += '\n\n' + REVIEW_INSTRUCTION;
@@ -2277,6 +2296,88 @@ event(task, state, detail) {
     task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => role !== LEAD_ROLE), this.config.adapters);
     task.pendingTriage ||= { reason: 'step_failed', applied: Boolean(task.applied) };
     return true;
+  }
+
+  // The next member and model for a failed step, along its duty's order: the person's listed models first, then
+  // every member that can do the work now with its models newest first; never one this step already used.
+  nextModel(task, step) {
+    const capability = step.capability;
+    const tried = new Set([...(step.handoverTried || []), step.role + '@' + (step.model || '')]);
+    const pairs = [];
+    for (const entry of this.orderEntries(task, capability)) if (entry.model) pairs.push([entry.role, entry.model]);
+    for (const role of this.candidatesFor(task, capability, [], true)) {
+      const models = Object.keys(this.config.adapters[role]?.profiles?.models || {});
+      const preferred = this.defaultModelFor(role);
+      for (const model of [...new Set([preferred, ...newestFirst(models)])].filter(Boolean)) pairs.push([role, model]);
+      if (!models.length) pairs.push([role, '']);
+    }
+    return pairs.find(([role, model]) => !tried.has(role + '@' + model) && role !== LEAD_ROLE &&
+      (!step.write || this.router.canWrite(role)) && this.ownerAllows(task, role).allowed) || null;
+  }
+
+  // A failed step goes straight to the next model, which continues from the previous one's changes (its worktree
+  // is kept) with what it reported and why it stopped. At most three handovers per step; then the lead.
+  handOver(task, error, signal) {
+    if (signal.aborted || task.autoHandover === false || !error || error.message?.startsWith('executor_waiting:') ||
+        error.message?.startsWith('budget_exceeded:')) return false;
+    const failed = task.steps.filter((step) => step.state === 'failed' && step.capability && !LEAD_CAPABILITIES.has(step.capability));
+    const limit = this.config.handoverLimit ?? 3;
+    if (!failed.length || failed.some((step) => (step.handovers || 0) >= limit)) return false;
+    const moves = failed.map((step) => [step, this.nextModel(task, step)]);
+    if (moves.some(([, next]) => !next)) return false;
+    for (const [step, [role, model]] of moves) this.moveStep(task, step, role, model, undefined, 'handover');
+    return true;
+  }
+  moveStep(task, step, role, model, effort, kind) {
+    const from = step.role + (step.model ? '/' + step.model : '');
+    step.handoverTried = [...new Set([...(step.handoverTried || []), step.role + '@' + (step.model || '')])];
+    step.history = [...(step.history || []), { role: step.role, model: step.model, error: clip(step.error || '', 200) }];
+    step.handoverFrom = { role: step.role, model: step.model, error: clip(step.error || 'it stopped', 400), output: clip(step.output || '', 600) };
+    if (kind === 'handover') step.handovers = (step.handovers || 0) + 1;
+    step.role = role;
+    if (model) step.model = model; else delete step.model;
+    delete step.effort;
+    if (typeof effort === 'string' && effortsFor(role, this.config.adapters[role], step.model).includes(effort)) step.effort = effort;
+    delete step.session;
+    delete step.error;
+    delete step.choice;
+    step.state = 'queued';
+    this.save(task, task.state, `${step.id}:${kind}:${from}->${role}${model ? '/' + model : ''}`);
+  }
+
+  // Nobody could finish the step (three handovers and the lead), or automatic handover is off: the step waits
+  // for the person to pick a member, model and effort in the failure dialog. Other steps go on.
+  awaitChoice(task, error) {
+    const failed = task.steps.filter((step) => step.state === 'failed' && step.capability && !LEAD_CAPABILITIES.has(step.capability));
+    if (!failed.length || error?.message?.startsWith('budget_exceeded:')) return false;
+    for (const step of failed) {
+      step.state = 'waiting_choice';
+      step.choice = { error: clip(step.error || error?.message || '', 600), role: step.role, model: step.model,
+        tried: (step.history || []).map(({ role, model }) => role + (model ? '/' + model : '')).slice(-8) };
+      this.save(task, task.state, step.id + ':needs_choice');
+    }
+    return true;
+  }
+
+  // The person's pick in the failure dialog: a member, one of its models and an effort, or stopping the step.
+  chooseHandover(task, body) {
+    const step = (task.steps || []).find((item) => item.id === body.stepId);
+    if (!step || step.state !== 'waiting_choice') throw new Error('step_not_waiting');
+    if (body.stop === true) {
+      step.state = 'skipped';
+      delete step.choice;
+      this.save(task, task.state, step.id + ':stopped_by_person');
+    } else {
+      const role = body.role;
+      if (typeof role !== 'string' || role === LEAD_ROLE || !this.router.configured(role) || (step.write && !this.router.canWrite(role))) throw new Error('invalid_handover');
+      if (body.model !== undefined && (typeof body.model !== 'string' || !Object.hasOwn(this.config.adapters[role]?.profiles?.models || {}, body.model))) throw new Error('invalid_handover');
+      this.moveStep(task, step, role, body.model, body.effort, 'chosen');
+    }
+    if (!task.steps.some((item) => item.state === 'waiting_choice') && !this.running.has(task.id) && !terminal.has(task.state)) {
+      this.save(task, 'queued', 'handover_chosen');
+      this.pump();
+    }
+    return this.status(task.id);
   }
 
   // The executor the lead named, when it can take this capability now; otherwise undefined.
@@ -2785,6 +2886,11 @@ event(task, state, detail) {
     if (body.operation === 'plan_reply' || body.operation === 'plan_approve') {
       if (!owner) throw new Error('task_access_denied');
       return this.updatePlan(task, body);
+    }
+    if (body.operation === 'handover_choose') {
+      if (!owner) throw new Error('task_access_denied');
+      if (typeof body.stepId !== 'string' || !/^[\w-]{1,64}$/.test(body.stepId)) throw new Error('invalid_step');
+      return this.chooseHandover(task, body);
     }
     if (body.operation === 'approve_addition') {
       if (!owner) throw new Error('task_access_denied');

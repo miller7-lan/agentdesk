@@ -847,7 +847,9 @@
     ta.title = chat ? '@ 引用本机文件 · Enter 发送 · Shift+Enter 换行' : '/ 命令 · $ 技能 · @ 文件';
     const modeSel = $('#modeSelect');
     if (s && modeSel) {
-      const mode = s.mode || 'ask';
+      // A conversation without its own choice starts in the mode last chosen (kept across restarts).
+      const mode = s.mode || (() => { try { return window.__desk?.store?.get('lastPermissionMode', 'ask') || 'ask'; } catch { return 'ask'; } })();
+      if (!s.mode && s.live) s.mode = mode;
       if (modeSel.value !== mode) {
         modeSel.value = mode;
         $('#sbMode').textContent = modeSel.selectedOptions[0]?.text || '';

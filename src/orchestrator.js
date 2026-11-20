@@ -49,6 +49,8 @@ window.__groupReady = (async () => {
     plan_reply_received: '组长正在根据你的回复调整方案。',
     plan_revise_requested: '你改了方向：组长保留已完成的部分，按你的话重新规划剩下的，新方案出来后请确认。',
     revise_deciding: '组长正在判断你的话影响哪些步骤：不受影响的继续，需要的补一句指导接着做，方向变了的才停下。',
+    handover_choice: '有一步换了几个模型都没完成，等你选择接手的模型。',
+    handover_chosen: '你选好了接手的模型，继续执行。',
     revise_decided: '组长已按你的话调整了正在做的步骤。',
     revise_needs_approval: '组长按你的话新增了步骤，请确认后开始。',
     revise_approved: '你确认了新增的步骤。',
@@ -488,6 +490,9 @@ window.__groupReady = (async () => {
     if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
     if (/:steered$/.test(detail || '')) return '你在成员的单聊里给了指导，它正按你的话继续。';
     if (/:revised_out$/.test(detail || '')) return '有一步按你的新方向停下了。';
+    const handed = /^([\w-]+):(handover|chosen):([^/>]+)(?:\/([^>]*))?->([^/]+)(?:\/(.*))?$/.exec(detail || '');
+    if (handed) return `${memberName(handed[3])}${handed[4] ? '（' + handed[4] + '）' : ''}没完成，${handed[2] === 'chosen' ? '按你的选择' : '已直接'}交给 ${memberName(handed[5])}${handed[6] ? '（' + handed[6] + '）' : ''} 接着它的改动做。`;
+    if (/:needs_choice$/.test(detail || '')) return '这一步没人能完成，请选择接手的模型。';
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
     if (stepFailed) return `${memberName(stepFailed[2])} 的步骤失败，交给组长诊断后再决定重试还是改派。`;
     const round = /^reassign_started:([\w-]+):(\d+)\/(\d+)$/.exec(detail || '');
@@ -746,7 +751,7 @@ window.__groupReady = (async () => {
   const threadRoles = new Set(['codex', 'grok', 'gemini', 'antigravity']);   // members only; the lead works in the group itself
   const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败',
-    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止', proposed: '待你确认' };
+    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止', proposed: '待你确认', waiting_choice: '等你选接手' };
   const terminalTask = new Set(['completed', 'failed', 'cancelled']);
   // A step still marked running or queued under a task that has already ended was cut off; show that
   // instead of a live state that contradicts the task.
@@ -903,7 +908,7 @@ window.__groupReady = (async () => {
         ].filter(Boolean).join(' · '))}</span>
         ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
-      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
+      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => `<div class="task-addition"><p>${esc(memberName(step.role))} 这一步没完成，等你选接手的模型。</p><div class="task-actions"><button type="button" class="btn primary" data-handover-open="${esc(task.id + ':' + step.id)}">选择接手的模型</button></div></div>`).join('') : ''}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
         <p><b>为什么失败：</b>${esc(failureReason(task))}</p>
         <div class="task-actions"><button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>
         <button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="terminal">看输出 ${svg('chev')}</button></div></div>` : ''}`;
@@ -1035,6 +1040,7 @@ window.__groupReady = (async () => {
   function render() {
     drawRoutes();
     if (!state.group) return;
+    setTimeout(offerChoices, 0);
     const count = taskCount();
     $('#groupSubtitle').textContent = shownMembers().filter((id) => id !== 'you' && id !== 'local').length + ' 位 AI 成员' + (count ? ' · ' + count + ' 项未结任务' : '');
     $('#taskBadge').textContent = count || '';
@@ -1179,7 +1185,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
@@ -1938,6 +1944,7 @@ window.__groupReady = (async () => {
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         leadModel: $('#groupLeadModel')?.value || undefined,
         approval: $('#groupApproval')?.value || undefined,
+        autoHandover: $('#groupAutoHandover') ? $('#groupAutoHandover').checked : undefined,
         provider: recipient || undefined,
         // The person's member order from the quota page (only the kinds of work they reordered).
         ...(!['broadcast', 'compact'].includes(kind) && personRouteOrder()),
@@ -2389,6 +2396,15 @@ window.__groupReady = (async () => {
       if (group) { group.leadEffort = leadEffort.value; saveWorkbench(group); }
     });
   }
+  // 自动接手 is one setting for all groups, kept as last left (like 完全访问 in single chats).
+  const autoHandover = $('#groupAutoHandover');
+  if (autoHandover) {
+    autoHandover.checked = store.get('groupAutoHandover', true) !== false;
+    autoHandover.addEventListener('change', () => {
+      store.set('groupAutoHandover', autoHandover.checked);
+      A.toast(autoHandover.checked ? '自动接手：失败后按顺序直接换模型接着做' : '失败时弹窗，由你选择接手的模型');
+    });
+  }
   const approvalPick = $('#groupApproval');
   if (approvalPick) {
     approvalPick.value = (state.group && workbench[state.group]?.approval) || 'small';
@@ -2407,6 +2423,93 @@ window.__groupReady = (async () => {
   }
 
   // Example groups only: change a task the way a status update would, to preview the board, lights and lanes.
+  // The failure dialog: a step nobody could finish (or any failed step while 自动接手 is off) waits for the person
+  // to pick who takes it over — every member that can do this kind of work, each of its models (newest first)
+  // and a thinking level — or to stop the step. It opens once per waiting step; a card in the conversation
+  // opens it again.
+  const shownChoices = new Set();
+  const versionOf = (id) => (/(\d+(?:[.-]\d+)*)/.exec(id)?.[1] || '').split(/[.-]/).map(Number).filter((n) => n <= 999);
+  const newestFirst = (ids) => [...ids].sort((a, b) => { const x = versionOf(a), y = versionOf(b); for (let i = 0; i < Math.max(x.length, y.length); i += 1) { const d = (y[i] ?? -1) - (x[i] ?? -1); if (d) return d; } return 0; });
+  const EFFORT_NAMES = { minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' };
+  function waitingChoices(group) {
+    return [...group.records.values()].flatMap((task) => (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => ({ task, step })));
+  }
+  function choiceDialog(task, step) {
+    let dialog = document.querySelector('#handoverDialog');
+    if (!dialog) {
+      dialog = document.createElement('dialog');
+      dialog.id = 'handoverDialog';
+      dialog.className = 'handover-dialog';
+      document.body.appendChild(dialog);
+      dialog.addEventListener('click', (event) => { if (event.target === dialog || event.target.closest('[data-handover-close]')) dialog.close(); });
+      dialog.addEventListener('change', (event) => {
+        if (!event.target.matches('[name="handoverModel"]')) return;
+        const [role, model] = event.target.value.split('|');
+        const efforts = routeState.modelProfiles?.[role]?.models?.[model]?.efforts || [];
+        const select = dialog.querySelector('#handoverEffort');
+        select.replaceChildren(new Option('默认', ''), ...efforts.map((level) => new Option(EFFORT_NAMES[level] || level, level)));
+        select.disabled = !efforts.length;
+      });
+      dialog.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const { taskId, stepId } = dialog.dataset;
+        const stop = event.submitter?.dataset.handoverStop === '1';
+        const picked = dialog.querySelector('[name="handoverModel"]:checked')?.value;
+        if (!stop && !picked) { A.toast('先选一个接手的模型'); return; }
+        const [role, model] = (picked || '|').split('|');
+        const effort = dialog.querySelector('#handoverEffort').value || undefined;
+        const group = currentGroup();
+        const ok = await run(async () => {
+          const answer = isExample(group.id) ? null : await control('handover_choose', { taskId, stepId, ...(stop ? { stop: true } : { role, model: model || undefined, effort }) });
+          if (answer) updateTask(group, taskId, answer, true);
+        }, group);
+        if (ok) { dialog.close(); A.toast(stop ? '已停止这一步' : `已交给 ${memberName(role)} 接着做`); render(); }
+      });
+    }
+    const write = Boolean(step.write);
+    const roles = (routeState.team?.configured || Object.keys(routeState.modelProfiles || {})).filter((role) => role !== 'claude' &&
+      (!write || (routeState.writeProviders || []).includes(role)));
+    const rows = roles.map((role) => {
+      const models = newestFirst(Object.keys(routeState.modelProfiles?.[role]?.models || {}));
+      const options = (models.length ? models : ['']).map((model) => {
+        const label = model ? (routeState.modelProfiles[role].models[model]?.label || window.AgentDeskLanes?.modelShort?.(model) || model) : '默认模型';
+        const same = role === step.role && (model || undefined) === (step.model || undefined);
+        return `<label class="handover-option${same ? ' failed' : ''}"><input type="radio" name="handoverModel" value="${esc(role)}|${esc(model)}" />${esc(label)}${same ? '<small>刚失败</small>' : ''}</label>`;
+      }).join('');
+      return `<div class="handover-member">${avatars.html(role, { size: 20, still: true })}<b>${esc(memberName(role))}</b><div class="handover-models">${options}</div></div>`;
+    }).join('');
+    dialog.dataset.taskId = task.id;
+    dialog.dataset.stepId = step.id;
+    dialog.innerHTML = `<form method="dialog"><header><h3>这一步需要你选接手的模型</h3><button type="button" class="qv-close" data-handover-close aria-label="关闭">×</button></header>
+      <p class="handover-why"><b>${esc(memberName(step.role))}${step.model ? '（' + esc(step.model) + '）' : ''}</b> 没完成：${esc(failureText(step.choice?.error || step.error || ''))}</p>
+      ${step.choice?.tried?.length ? `<p class="handover-tried">已经试过：${esc(step.choice.tried.join('、'))}</p>` : ''}
+      <p class="handover-note">选中的模型会接着上一个的改动继续做（${write ? '改代码' : '只读'}）。</p>
+      <div class="handover-list">${rows || '<p>现在没有能接这种活的成员。</p>'}</div>
+      <label class="handover-effort">思考程度 <select id="handoverEffort" disabled><option value="">默认</option></select></label>
+      <footer><button type="submit" class="btn" data-handover-stop="1">停止这一步</button><span class="grow"></span>
+        <button type="button" class="btn" data-handover-close>稍后</button><button type="submit" class="btn primary">接手并继续</button></footer></form>`;
+    if (!dialog.open) dialog.showModal();
+  }
+  const failureText = (error) => window.__providerDirect?.errors?.[error] || ({ cli_exit_1: 'CLI 异常退出', cli_timeout: '超时', cli_stalled: '长时间没有输出' })[String(error).split(':')[0]] || String(error).slice(0, 300);
+  function offerChoices() {
+    const group = currentGroup();
+    if (!group || document.hidden) return;
+    for (const { task, step } of waitingChoices(group)) {
+      const key = task.id + ':' + step.id + ':' + (step.history?.length || 0);
+      if (shownChoices.has(key)) continue;
+      shownChoices.add(key);
+      choiceDialog(task, step);
+      return;
+    }
+  }
+  timeline.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-handover-open]');
+    if (!button) return;
+    const group = currentGroup();
+    const found = waitingChoices(group).find(({ task, step }) => task.id + ':' + step.id === button.dataset.handoverOpen);
+    if (found) choiceDialog(found.task, found.step);
+  });
+
   function demoUpdate(id, patch) {
     const group = currentGroup();
     if (!group || !isExample(group.id) || !group.records.has(id)) return false;

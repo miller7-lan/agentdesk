@@ -753,3 +753,27 @@ button.lane-node { cursor: pointer; }
 .qv-drop:hover { color: var(--danger); }
 .qv-add { width: auto; max-width: 112px; flex: none; margin-left: 6px; height: 26px; padding: 0 6px; border: 1px dashed var(--border); border-radius: 13px; background: transparent; color: var(--accent); font-size: 12px; cursor: pointer; }
 .qv-member.qv-fill { outline: 1px dotted var(--border); outline-offset: -1px; color: var(--muted); font-weight: 500; }
+/* 失败接手：输入框里的「自动接手」和选择接手模型的弹窗 */
+.group-auto { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; flex: none; }
+.group-auto input { margin: 0; width: 14px; height: 14px; flex: none; }
+.handover-dialog { width: min(640px, calc(100vw - 32px)); max-height: min(80vh, 720px); padding: 0; border: 0; border-radius: 18px; color: var(--text);
+  background: rgba(255, 255, 255, .92); -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%); box-shadow: 0 24px 60px rgba(20, 40, 70, .25); }
+:root[data-theme="dark"] .handover-dialog { background: rgba(28, 32, 38, .94); }
+.handover-dialog::backdrop { background: rgba(10, 16, 28, .35); }
+.handover-dialog form { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; max-height: inherit; }
+.handover-dialog header { display: flex; align-items: center; justify-content: space-between; }
+.handover-dialog h3 { margin: 0; font-size: 15px; }
+.handover-why, .handover-tried, .handover-note { margin: 0; font-size: 12.5px; color: var(--muted); }
+.handover-why b { color: var(--text); }
+.handover-list { display: grid; gap: 8px; overflow: auto; min-height: 0; }
+.handover-member { display: grid; grid-template-columns: 22px 92px 1fr; align-items: start; gap: 6px; }
+.handover-member b { font-size: 12.5px; line-height: 22px; }
+.handover-models { display: flex; flex-wrap: wrap; gap: 6px; }
+.handover-option { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 12px; font-size: 12px; cursor: pointer; }
+.handover-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.handover-option input { margin: 0; }
+.handover-option.failed { opacity: .6; }
+.handover-option small { color: var(--danger); font-size: 10.5px; }
+.handover-effort { font-size: 12.5px; display: inline-flex; gap: 6px; align-items: center; }
+.handover-dialog footer { display: flex; gap: 8px; align-items: center; }
+.group-recipient select { max-width: 132px; }
