@@ -3,16 +3,17 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { PassThrough } = require('node:stream');
 const { once } = require('node:events');
-const { NativeChannel, VERSION } = require('./native-channel');
+const { NativeChannel, VERSION, NATIVE_PROVIDERS } = require('./native-channel');
 const { mountProject } = require('./project-mount');
 const { sandboxCommand } = require('./sandbox');
 
-const CLAUDE_HOME = '/var/lib/agentdesk-orchestrator/homes/claude';
 const HOST_STATE = '/var/lib/agentdesk-orchestrator';
-const billingOverrides = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY'];
+const profileNames = { claude: 'claude', grok: 'grok-chat', antigravity: 'antigravity' };
+const billingOverrides = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY',
+  'GROK_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'];
 
 async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HOST_STATE, input = process.stdin, output = process.stdout }) {
-  if (!['claude', 'codex'].includes(provider) || !['write', 'read'].includes(mode) ||
+  if (!NATIVE_PROVIDERS.includes(provider) || !['write', 'read'].includes(mode) ||
       process.getuid?.() !== 0 ||
       await fs.readlink('/proc/self/ns/mnt') === await fs.readlink('/proc/1/ns/mnt')) throw new Error('native_session_requires_private_namespace');
   const mountInfo = await fs.readFile('/proc/self/mountinfo', 'utf8');
@@ -47,25 +48,27 @@ async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HO
   sftpOut.on('data', (data) => send('s', data));
   try {
     let account;
-    if (provider === 'claude') {
-      const { uid, gid } = await fs.stat(CLAUDE_HOME);
-      if (!uid || !gid) throw new Error('native_claude_profile_requires_service_account');
+    let profile;
+    if (provider !== 'codex') {
+      profile = path.join(HOST_STATE, 'homes', profileNames[provider]);
+      const { uid, gid } = await fs.stat(profile);
+      if (!uid || !gid) throw new Error('native_provider_profile_requires_service_account');
       account = { uid, gid };
       await fs.chown(stateDir, uid, gid);
     }
     mounted = await mountProject({ stateDir, input: sftpIn, output: sftpOut, account, readOnly: mode === 'read', signal: stop.signal });
-    let claudeState = path.join(stateDir, 'claude-state');
-    if (provider === 'claude' && sessionKey) {
+    let providerState = path.join(stateDir, 'provider-state');
+    if (provider !== 'codex' && sessionKey) {
       const persistent = path.join(historyRoot, 'windows-native-chat');
       await fs.mkdir(persistent, { recursive: true, mode: 0o700 });
       await fs.chown(persistent, 0, account.gid);
       await fs.chmod(persistent, 0o710);
-      claudeState = path.join(persistent, sessionKey);
-      await fs.mkdir(claudeState, { mode: 0o700 }).catch((error) => {
+      providerState = path.join(persistent, sessionKey);
+      await fs.mkdir(providerState, { mode: 0o700 }).catch((error) => {
         if (error.code !== 'EEXIST') throw error;
       });
-      if (!(await fs.lstat(claudeState)).isDirectory()) throw new Error('invalid_native_claude_state');
-      await fs.chown(claudeState, account.uid, account.gid);
+      if (!(await fs.lstat(providerState)).isDirectory()) throw new Error('invalid_native_provider_state');
+      await fs.chown(providerState, account.uid, account.gid);
     }
     // The host also pumps SFTP. A synchronous stat/realpath/chdir into its own mount would
     // wait for this event loop to deliver the reply. Only the child may resolve the mount.
@@ -73,11 +76,11 @@ async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HO
     const command = provider === 'codex' ? 'codex' : '/usr/bin/setpriv';
     const args = provider === 'codex' ? ['app-server'] :
       ['--reuid', String(account.uid), '--regid', String(account.gid), '--clear-groups', '--',
-        process.execPath, path.join(__dirname, 'chat-server.js'), 'claude'];
+        process.execPath, path.join(__dirname, 'chat-server.js'), provider];
     const env = provider === 'codex' ? { ...process.env } : {
-      ...process.env, HOME: CLAUDE_HOME, AGENTDESK_CHAT_HOME_CLAUDE: CLAUDE_HOME,
-      AGENTDESK_CHAT_STATE: claudeState, AGENTDESK_CHAT_SANDBOX: '/usr/bin/bwrap',
-      AGENTDESK_CLAUDE_NATIVE_PROJECT: mounted.directory, AGENTDESK_CLAUDE_NATIVE_RUNTIME: stateDir,
+      ...process.env, HOME: profile, [`AGENTDESK_CHAT_HOME_${provider.toUpperCase()}`]: profile,
+      AGENTDESK_CHAT_STATE: providerState, AGENTDESK_CHAT_SANDBOX: '/usr/bin/bwrap',
+      AGENTDESK_NATIVE_PROJECT: mounted.directory, AGENTDESK_NATIVE_RUNTIME: stateDir,
     };
     for (const key of billingOverrides) delete env[key];
     let launch = { command, args };

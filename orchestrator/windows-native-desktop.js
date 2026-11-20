@@ -3,9 +3,10 @@ const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { createWorkerClient, createSecret } = require('./windows-chat-worker');
 const { openWindowsNativeSeat } = require('./windows-native-seat');
+const { NATIVE_PROVIDERS } = require('./native-channel');
 
 const HOST = '/opt/agentdesk-orchestrator/native-project-session-host.js';
-const supported = new Set(['codex', 'claude']);
+const supported = new Set(NATIVE_PROVIDERS);
 
 function sameRoot(left, right) {
   try { return fs.realpathSync.native(left).toLowerCase() === fs.realpathSync.native(right).toLowerCase(); }

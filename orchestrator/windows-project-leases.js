@@ -2,8 +2,9 @@ const fs = require('node:fs/promises');
 const disk = require('node:fs');
 const path = require('node:path');
 const { randomBytes } = require('node:crypto');
+const { NATIVE_PROVIDERS } = require('./native-channel');
 
-const providers = new Set(['codex', 'claude']);
+const providers = new Set(NATIVE_PROVIDERS);
 const overlap = (a, b) => a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep);
 
 // Authority is issued by the authenticated device and checked again on every local operation.

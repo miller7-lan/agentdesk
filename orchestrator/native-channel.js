@@ -2,6 +2,7 @@ const { EventEmitter } = require('node:events');
 
 const LIMIT = 64 * 1024;
 const VERSION = 1;
+const NATIVE_PROVIDERS = Object.freeze(['codex', 'claude', 'grok', 'antigravity']);
 const channelTypes = new Set(['s', 'p', 'c']);
 
 // SFTP and provider JSON-RPC are separate byte streams. Frames never contain an operating-system
@@ -46,4 +47,4 @@ class NativeChannel extends EventEmitter {
   }
 }
 
-module.exports = { NativeChannel, VERSION };
+module.exports = { NativeChannel, VERSION, NATIVE_PROVIDERS };

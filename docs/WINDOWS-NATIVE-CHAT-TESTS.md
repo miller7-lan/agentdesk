@@ -1,5 +1,22 @@
 # Windows 单聊原生开发模式测试记录
 
+## 第三阶段验收
+
+Windows 原生单聊通过 VPS2 的官方 CLI 访问私有 SSHFS 项目挂载。真实 Windows 命令通过同一个独立 Worker 执行。模型验收使用临时 C# 工程，不改真实项目。
+
+| 单聊 | VPS2 与 Windows 真机结果 |
+| --- | --- |
+| Codex | 官方 App Server 成功创建线程，`workspaceWrite` 探针写入真实 Windows 文件。模型轮次遇到刷新令牌冲突，用户确认额度已耗尽，模型发起的编辑、编译和续聊待验收。 |
+| Claude | 官方模型使用原生文件工具改源文件，通过 `local_shell` 编译并运行 EXE。断开后能查到原 `runId` 的输出和退出码，恢复同一线程。 |
+| Antigravity | 官方模型使用原生文件工具改源文件，通过 `local_shell` 编译并运行 EXE。断开后能查到原 `runId` 的输出和退出码，恢复同一线程。 |
+| Grok Build | 真机夹具连接了 native seat 与 Windows Worker。断开后能查到原 `runId` 的输出和退出码，并恢复 AgentDesk 线程。官方 CLI 实测返回 `402 Payment Required`，提示用量耗尽。模型驱动的编辑、编译和供应商上下文续聊待验收。 |
+
+Claude、Antigravity 的 EXE 均核对了 Windows 源文件、PE 文件头、运行输出与退出码。重连测试要求挂载租约推进代际。跨供应商的并发写入仲裁在自动化中验证。当前机器缺少 VPS1 跳板配置，真实备用线路切换与打包版 GUI 验收仍待完成。模型级性能对比尚未采集。
+
+复测命令、安装和回滚流程见 [Windows 原生单聊部署与验收](WINDOWS-NATIVE-CHAT-DEPLOY.md)。
+
+## 第二阶段记录
+
 2026-11-20。开发基线为 `65da1ea`。本记录对应可写项目 SFTP、VPS2 SSHFS 挂载和 Windows 本机命令这三个已实现的组件。产品单聊接入有单独的验收项。
 
 全量回归包含 310 项。Windows 通过 278 项、跳过 32 项。Ubuntu/WSL 通过 304 项、跳过 6 项。两端均无失败。

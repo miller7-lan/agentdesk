@@ -1,5 +1,5 @@
-const VERSION = 1;
-const providers = new Set(['codex', 'claude']);
+const { VERSION, NATIVE_PROVIDERS } = require('./native-channel');
+const providers = new Set(NATIVE_PROVIDERS);
 const projectOperations = new Set(['project.acquire', 'project.status', 'project.suspend', 'project.reconcile', 'project.release']);
 const shellOperations = new Set(['local_shell.run', 'local_shell.status', 'local_shell.stop', 'local_shell.list']);
 const mountOperations = new Set(['project.mount', 'project.mountStatus', 'project.unmount']);

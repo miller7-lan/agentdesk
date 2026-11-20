@@ -1,6 +1,6 @@
 # Windows 原生单聊部署与验收
 
-本流程适用于在 Windows 应用里通过 VPS2 官方 CLI 开发真实项目。Windows 全访问单聊使用已经配置为可写的 Bridge 项目。项目路径由当前 Windows 配置解析，只有本机项目目录与 Bridge 根目录一致、SSH 主机和端口匹配时才进入原生链路。VPS2 启动器未安装时，现有客户端仍可使用旧链路。
+本流程适用于在 Windows 应用里通过 VPS2 的 Codex、Claude、Grok Build 和 Antigravity CLI 开发真实项目。Windows 全访问单聊使用已经配置为可写的 Bridge 项目。项目路径由当前 Windows 配置解析，只有本机项目目录与 Bridge 根目录一致、SSH 主机和端口匹配时才进入原生链路。VPS2 启动器未安装时，现有客户端仍可使用旧链路。
 
 ## 已验证的故障与修复
 
@@ -10,21 +10,26 @@
 - **Codex 模型额度。** 官方 App Server 的线程与沙箱已经分别验证。真实模型轮次仍需有效订阅认证和可用额度。现有轮次曾报告刷新令牌已被使用。需要时在实际服务账户下运行 `codex login --device-auth` 并完成网页授权，待额度恢复后再运行模型验收。
 - **Codex 会话边界。** 官方 API 会在首轮前分配线程 ID。无首轮记录的测试线程重连会返回 `no rollout found`，程序会尝试释放这个空会话的租约，保留错误供用户查看。已有模型历史的 Codex 续跑仍待验收。当前安装版本的 `review/start` API 不接收沙箱策略，原生项目审查通过只读规划发起。
 - **Claude 断线恢复。** 使用原生启动器与独立 Worker，关掉连接后重新查到了原 `runId` 的输出和退出码。核对 Windows 文件后推进租约代际，并成功恢复同一个 Claude 线程。当前测试机没有配置 VPS1 跳板，真机线路切换仍需在已配置跳板的设备验收。
-- **自动化回归。** Windows 284 项通过、32 项跳过，Ubuntu/WSL 308 项通过、8 项跳过，均无失败。包括群聊只读挂载、工作树、补丁和调度回归。
+- **Antigravity CLI。** 使用服务账户原有配置的订阅登录和会话目录。只在沙箱中覆盖 MCP 配置文件，保留 Antigravity 自己的配置目录写入权限。真机夹具通过了原生编辑、`local_shell` 编译和运行 Windows EXE，以及断线后恢复原线程和后台命令编号。
+- **Grok Build。** 使用原有 Grok 单聊订阅目录，为每个原生轮次隔离 MCP 配置文件和 CLI leader socket。真机夹具通过了 Windows Worker 连接、断线后恢复原 AgentDesk 线程和后台命令编号。官方 CLI 返回 `402 Payment Required` 并提示 Grok Build 用量耗尽。模型原生编辑、触发 EXE 编译和供应商上下文续聊要等订阅额度恢复后验收。
+- **自动化回归。** Windows 284 项通过、33 项跳过，Ubuntu/WSL 309 项通过、8 项跳过，均无失败。包括群聊只读挂载、工作树、补丁、调度和 Grok 额度错误提示。
 
 ## 部署前验收
 
-在 Windows 的开发分支上连接具备管理命令权限的 VPS2 夹具账户。夹具使用临时项目和私有挂载。Claude 命令包含真实模型调用。Codex 的模型版本在额度可用时运行。
+在 Windows 的开发分支上连接具备管理命令权限的 VPS2 夹具账户。夹具使用临时项目和私有挂载。带 `--model` 的命令调用对应供应商的真实模型，请在该订阅额度可用时运行。
 
 ```powershell
 node scripts/verify-windows-project-mount.cjs --codex-sandbox
 node scripts/verify-windows-native-seat.cjs
 node scripts/verify-windows-native-seat.cjs --claude --model --reconnect
+node scripts/verify-windows-native-seat.cjs --grok --reconnect
+node scripts/verify-windows-native-seat.cjs --grok --model --reconnect
+node scripts/verify-windows-native-seat.cjs --antigravity --model --reconnect
 node scripts/verify-windows-native-seat.cjs --model
 npm test
 ```
 
-上线前还需用对应分支的安装包打开 AgentDesk，选择已配置的临时项目，分别从 GUI 发起 Codex 和 Claude 的构建请求。核对 Windows 磁盘内容、EXE 标头、退出码、日志、相同项目的第二个写者是否被拒绝，以及关闭并重开窗口后是否仍能查询原 `runId`。VPS1 切换需使用已登记跳板的测试机，验证换线路后继续同一会话。生产配置和真实项目不作为试验对象。
+上线前还需用对应分支的安装包打开 AgentDesk，选择已配置的临时项目，分别从 GUI 发起四个模型的构建请求。核对 Windows 磁盘内容、EXE 标头、退出码、日志、相同项目的第二个写者是否被拒绝，以及关闭并重开窗口后是否仍能查询原 `runId`。VPS1 切换需使用已登记跳板的测试机，验证换线路后继续同一会话。生产配置和真实项目不作为试验对象。
 
 ## 更新顺序
 

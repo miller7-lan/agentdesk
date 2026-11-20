@@ -77,8 +77,9 @@ const incoming = new Map();
 const device = process.env.AGENTDESK_CHAT_DEVICE || '';
 if (device && !/^[a-z0-9_]{1,20}$/.test(device)) throw new Error('invalid chat device');
 const instance = device ? `chat-${PROVIDER}-${device}` : `chat-${PROVIDER}`;
-const runtimeDir = PROVIDER === 'claude' && process.env.AGENTDESK_CLAUDE_NATIVE_PROJECT &&
-  process.env.AGENTDESK_CLAUDE_NATIVE_RUNTIME || STATE_DIR;
+const nativeProject = process.env.AGENTDESK_NATIVE_PROJECT ||
+  (PROVIDER === 'claude' && process.env.AGENTDESK_CLAUDE_NATIVE_PROJECT);
+const runtimeDir = nativeProject && (process.env.AGENTDESK_NATIVE_RUNTIME || process.env.AGENTDESK_CLAUDE_NATIVE_RUNTIME) || STATE_DIR;
 const SOCKET = path.join(runtimeDir, `${instance}.sock`);
 const STATE_FILE = path.join(STATE_DIR, `${instance}.json`);
 // Claude Code reports the account's rate limits on every headless turn. The direct chat writes them where
@@ -107,7 +108,7 @@ const EFFORTS = {
 // in this conversation's VPS workspace, as Codex does in its sandbox. Without it those stay off.
 const SANDBOX = process.env.AGENTDESK_CHAT_SANDBOX || '';
 // Only the VPS2-side launcher sets this. Renderer/RPC fields never select the mount.
-const NATIVE_PROJECT = PROVIDER === 'claude' && process.env.AGENTDESK_CLAUDE_NATIVE_PROJECT;
+const NATIVE_PROJECT = nativeProject;
 if (NATIVE_PROJECT && (!SANDBOX || !path.isAbsolute(NATIVE_PROJECT) || !fs.readFileSync('/proc/self/mountinfo', 'utf8')
   .split('\n').some((line) => line.split(' ')[4] === NATIVE_PROJECT && line.includes(' - fuse.sshfs ')))) {
   throw new Error('native_project_mount_unavailable');
@@ -557,7 +558,7 @@ function tomlString(value) {
 
 function writeMcpConfig(turn, workspace) {
   if (PROVIDER === 'grok') {
-    const folder = path.join(workspace, '.grok');
+    const folder = NATIVE_PROJECT ? runtimeDir : path.join(workspace, '.grok');
     fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
     const server = mcpDefinition(turn);
     const body = `[mcp_servers.${turn.serverName}]\n`
@@ -565,10 +566,27 @@ function writeMcpConfig(turn, workspace) {
       + 'args = [\n'
       + server.args.map((arg) => `    ${tomlString(arg)},\n`).join('')
       + ']\nenabled = true\n';
-    fs.writeFileSync(path.join(folder, 'config.toml'), body, { mode: 0o600 });
+    const filename = path.join(folder, NATIVE_PROJECT ? turn.id + '.toml' : 'config.toml');
+    if (NATIVE_PROJECT) {
+      const target = path.join(HOME, '.grok', 'config.toml');
+      if (fs.realpathSync(target) !== target || !fs.statSync(target).isFile()) throw new Error('native_grok_config_unavailable');
+      turn.nativeGrokConfig = { source: filename, target };
+      turn.nativeGrokLeader = fs.mkdtempSync(path.join(runtimeDir, 'grok-leader-'));
+    }
+    fs.writeFileSync(filename, body, { mode: 0o600 });
   } else if (PROVIDER === 'antigravity') {
     // Antigravity reads MCP servers from the user home, not the project folder.
     const folder = path.join(HOME, '.gemini', 'config');
+    if (NATIVE_PROJECT) {
+      const target = path.join(folder, 'mcp_config.json');
+      if (fs.realpathSync(target) !== target || !fs.statSync(target).isFile()) throw new Error('native_antigravity_config_unavailable');
+      const source = path.join(runtimeDir, turn.id + '.agy-mcp.json');
+      turn.nativeAntigravityConfig = { source, target };
+      fs.writeFileSync(source, JSON.stringify({
+        mcpServers: { [turn.serverName]: { ...mcpDefinition(turn), disabled: false } },
+      }), { mode: 0o600 });
+      return;
+    }
     fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
     const file = path.join(folder, 'mcp_config.json');
     const backup = file + '.agentdesk-backup';
@@ -601,6 +619,18 @@ function writeMcpConfig(turn, workspace) {
 }
 
 function cleanupConfigs(turn) {
+  if (NATIVE_PROJECT) {
+    if (turn.nativeGrokConfig) {
+      try { fs.unlinkSync(turn.nativeGrokConfig.source); } catch {}
+      if (turn.nativeGrokLeader) {
+        try { fs.rmSync(turn.nativeGrokLeader, { recursive: true, force: true }); } catch {}
+      }
+    }
+    if (turn.nativeAntigravityConfig) {
+      try { fs.unlinkSync(turn.nativeAntigravityConfig.source); } catch {}
+    }
+    return;
+  }
   const workspace = workspaceFor(turn.threadId);
   for (const file of [
     path.join(workspace, '.grok', 'config.toml'),
@@ -701,7 +731,8 @@ function providerArgs(turn, workspace) {
   }
   if (PROVIDER === 'grok') {
     const args = [
-      '--trust', '--no-auto-update', '--output-format', 'streaming-messages-json', '--include-partial-messages',
+      ...(NATIVE_PROJECT ? ['--leader-socket', path.join(turn.nativeGrokLeader, 'grok.sock')] : ['--trust']),
+      '--no-auto-update', '--output-format', 'streaming-messages-json', '--include-partial-messages',
       '--permission-mode', 'dontAsk', '--no-subagents',
       '--tools', ['todo_write', ...GROK_WEB, ...(SANDBOX ? [...GROK_SHELL_READ, ...(turn.readOnly ? [] : GROK_SHELL_WRITE)] : [])].join(','),
       '--allow', `MCPTool(${turn.serverName}__*)`, '--allow', 'WebSearch', '--allow', 'WebFetch',
@@ -711,7 +742,7 @@ function providerArgs(turn, workspace) {
       '--rules', instructions(turn),
     ];
     if (turn.model) args.push('--model', turn.model);
-if (turn.effort) args.push('--effort', turn.effort);
+    if (turn.effort) args.push('--effort', turn.effort);
     if (session && first) args.push('--session-id', session);
     else if (session) { args.push('--resume', session); turn.resumeAttempt = true; }
     args.push('-p', turnText(turn));
@@ -730,7 +761,7 @@ if (turn.effort) args.push('--effort', turn.effort);
     ask: [],
   };
   const args = [
-    '--output-format', 'stream-json', '--mode', 'accept-edits',
+    '--output-format', 'stream-json', '--mode', NATIVE_PROJECT && turn.readOnly ? 'plan' : 'accept-edits',
     '--settings', JSON.stringify({ permissions }), '--disable-slash-commands',
   ];
   if (turn.model) args.push('--model', turn.model);
@@ -749,16 +780,21 @@ if (turn.effort) args.push('--effort', turn.effort);
   return args;
 }
 
-function childEnvironment() {
+function childEnvironment(turn) {
   const env = { ...process.env, NO_COLOR: '1', TERM: 'dumb' };
   if (fs.existsSync(HOME)) env.HOME = HOME;
   env.AGENTDESK_CHAT_SOCKET = SOCKET;
   env.AGENTDESK_CHAT_PROVIDER = PROVIDER;
+  if (turn.nativeGrokConfig) {
+    delete env.GROK_HOME;
+    delete env.GROK_CONFIG;
+    delete env.GROK_CONFIG_PATH;
+  }
   return env;
 }
 
 function syncGrokAuth() {
-  if (PROVIDER !== 'grok') return;
+  if (PROVIDER !== 'grok' || NATIVE_PROJECT) return;
   const source = path.join(STATE_DIR, 'homes', 'grok', '.grok', 'auth.json');
   const target = path.join(HOME, '.grok', 'auth.json');
   try {
@@ -800,11 +836,17 @@ function startTurn(turn) {
     const launch = SANDBOX
       ? sandboxCommand(BIN, args, { bin: SANDBOX, cwd: workspace, home: HOME, writable: !turn.readOnly,
         hide: [STATE_DIR, ...(NATIVE_PROJECT ? ['/var/lib/agentdesk-orchestrator'] : [])], sockets: [SOCKET],
+        extraWritable: turn.nativeGrokLeader ? [turn.nativeGrokLeader] : [],
         extraReadOnly: turn.attachmentDirectory ? [turn.attachmentDirectory] : [] })
       : { command: BIN, args };
+    const privateMcpConfig = turn.nativeAntigravityConfig || turn.nativeGrokConfig;
+    if (privateMcpConfig) {
+      const { source, target } = privateMcpConfig;
+      launch.args.splice(launch.args.indexOf('--chdir'), 0, '--ro-bind', source, target);
+    }
     child = spawn(launch.command, launch.args, {
       cwd: workspace,
-      env: { ...childEnvironment(), ...(PROVIDER === 'claude' && turn.effort && { CLAUDE_CODE_EFFORT_LEVEL: turn.effort }) },
+      env: { ...childEnvironment(turn), ...(PROVIDER === 'claude' && turn.effort && { CLAUDE_CODE_EFFORT_LEVEL: turn.effort }) },
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -927,7 +969,8 @@ function handleResult(turn, event) {
   turn.usage = normalizeUsage(event.usage) || turn.usage;
   const reported = typeof event.result === 'string' ? event.result : '';
   if (event.is_error === true || event.subtype === 'error') {
-    turn.resultError = reported || event.subtype || 'cli_reported_error';
+    const errors = Array.isArray(event.errors) ? event.errors.filter((message) => typeof message === 'string') : [];
+    turn.resultError = reported || errors.join('\n') || event.subtype || 'cli_reported_error';
     return;
   }
   if (!reported) return;
@@ -998,7 +1041,7 @@ function normalizeUsage(raw) {
 
 /* ---------- 轮次收尾 ---------- */
 const AUTH_FAILURE = /not logged in|log ?in required|please (?:log|sign) ?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|invalid api key|oauth|eligibility check failed|permission_denied|not authenticated/i;
-const QUOTA_FAILURE = /usage limit|rate[ -]?limit|quota|too many requests|\b429\b|credit balance|limit (?:reached|exceeded)|out of (?:credits|messages)/i;
+const QUOTA_FAILURE = /usage limit|rate[ -]?limit|quota|too many requests|\b(?:402|429)\b|credit balance|usage balance exhausted|limit (?:reached|exceeded)|out of (?:credits|messages)/i;
 const RESUME_FAILURE = /no conversation|conversation.*(?:not found|does not exist|invalid)|session.*(?:not found|does not exist|invalid|unknown)|could not resume|resume.*failed/i;
 
 function failureMessage(turn, code) {

@@ -72,6 +72,11 @@ test('native protocol arbitrates writers and requires trusted review of unknown 
   assert.equal(results.find((item) => !item.ok).error.code, 'LEASE_BUSY');
   const owner = results[0].ok ? codex : claude;
   const lease = results.find((item) => item.ok).value;
+  for (const provider of ['grok', 'antigravity']) {
+    const sameProject = { ...owner, provider, threadId: provider + '-thread' };
+    assert.equal((await call(sameProject, 'project.acquire')).error.code, 'LEASE_BUSY');
+    assert.equal((await call({ ...sameProject, accessMode: 'read' }, 'project.acquire')).ok, true);
+  }
   assert.equal((await call(owner, 'project.acquire')).value.leaseId, lease.leaseId);
   const reader = { ...owner, threadId: 'reader', accessMode: 'read' };
   assert.equal((await call(reader, 'project.acquire')).ok, true);

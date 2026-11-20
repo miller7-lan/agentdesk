@@ -7,11 +7,15 @@ const { Remote } = require('../remote');
 const { createWorkerClient } = require('../orchestrator/windows-chat-worker');
 const { openWindowsNativeSeat } = require('../orchestrator/windows-native-seat');
 
-const provider = process.argv.includes('--claude') ? 'claude' : 'codex';
+const provider = ['claude', 'grok', 'antigravity'].find((name) => process.argv.includes('--' + name)) || 'codex';
 const useModel = process.argv.includes('--model');
 const checkResume = process.argv.includes('--reconnect');
-const remote = new Remote({ timing: { heartbeat: 240_000 } });
-const limit = setTimeout(() => process.exit(2), 200_000);
+const traceEvents = process.argv.includes('--trace-events');
+const remote = new Remote({ timing: { heartbeat: 360_000 } });
+const limit = setTimeout(() => {
+  console.error('Native seat fixture deadline exceeded');
+  process.exit(2);
+}, useModel ? 330_000 : 150_000);
 
 remote.once('codex-ready', async () => {
   let windows;
@@ -62,6 +66,9 @@ remote.once('codex-ready', async () => {
     let finishTurn;
     const completion = new Promise((resolve) => { finishTurn = resolve; });
     seat = await openWindowsNativeSeat({ ...seatOptions, worker: connection, identity, binding, onNotification: (frame) => {
+        if (traceEvents && ['turn/started', 'turn/completed', 'item/mcpToolCall/progress', 'item/completed', 'error'].includes(frame.method)) {
+          console.log('event', frame.method, frame.params?.item?.type || frame.params?.turn?.status || frame.params?.error?.code || '');
+        }
         if (frame.method === 'turn/completed') finishTurn(frame.params.turn);
       } });
     const opened = await seat.request('thread/start');
@@ -74,7 +81,7 @@ remote.once('codex-ready', async () => {
         { type: 'text', text: 'This is a disposable Windows development fixture. Use your native file tools to read Program.cs and replace OLD_SEAT_MARKER with VERIFIED_NATIVE_SEAT. Invoke local_shell with action run and PowerShell command "& .\\build.ps1". Verify that the Windows EXE prints VERIFIED_NATIVE_SEAT.', text_elements: [] },
       ] });
       const done = await completion;
-      if (done.status !== 'completed') throw new Error('Model turn did not complete: ' + (done.error?.message || done.status));
+      if (done.status !== 'completed') throw new Error('Model turn did not complete: ' + (done.error?.message || done.error?.code || done.status));
       const exe = await fs.readFile(path.join(project, 'NativeSeat.exe'));
       const source = await fs.readFile(path.join(project, 'Program.cs'), 'utf8');
       const results = await connection.request('shell', { binding: { ...identity, ...bound, threadId: opened.thread.id }, args: { action: 'list' } });

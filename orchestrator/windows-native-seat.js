@@ -52,9 +52,10 @@ async function openWindowsNativeSeat({
     for (const call of pending.values()) call.reject(reason);
     pending.clear();
     if (threadId && turnId) {
+      const code = /^[a-z0-9_]{2,80}$/i.test(reason?.message || '') ? reason.message : 'native_bridge_disconnected';
       onNotification({ method: 'error', params: { threadId, willRetry: false,
-        error: { message: '连接已中断，请先核对 Windows 文件与后台命令的状态。' } } });
-      onNotification({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted' } } });
+        error: { code, message: '连接已中断，请先核对 Windows 文件与后台命令的状态。' } } });
+      onNotification({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted', error: { code } } } });
     }
     seatClosed.emit('close');
   };
@@ -186,7 +187,7 @@ async function openWindowsNativeSeat({
         value.sandbox = mode === 'write' ? 'workspace-write' : 'read-only';
         if (method === 'thread/start') value.ephemeral = false;
       }
-      if (launch || (method === 'turn/start' && provider === 'claude')) value.dynamicTools = toolSet;
+      if (launch || (method === 'turn/start' && provider !== 'codex')) value.dynamicTools = toolSet;
       if (method === 'skills/list') value.cwds = [folder];
       if (isTurn) { startingTurn = true; turnWritable = activeMode === 'write'; }
       let reply;

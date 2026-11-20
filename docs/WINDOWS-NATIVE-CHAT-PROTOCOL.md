@@ -1,6 +1,6 @@
 # Windows 原生单聊协议 v1
 
-适用于 Windows 的 Codex 和 Claude 单聊。接口、租约、SFTP、挂载生命周期和 Shell 组件可独立测试。第三阶段已接入桌面入口，启动器与独立 Worker 已通过隔离夹具验证。最新真机结果和正式部署门槛见 [Windows 原生单聊部署与验收](WINDOWS-NATIVE-CHAT-DEPLOY.md)。
+适用于 Windows 的 Codex、Claude、Grok Build 和 Antigravity 单聊。接口、租约、SFTP、挂载生命周期和 Shell 组件可独立测试。第三阶段已接入桌面入口，启动器与独立 Worker 已通过隔离夹具验证。最新真机结果和正式部署门槛见 [Windows 原生单聊部署与验收](WINDOWS-NATIVE-CHAT-DEPLOY.md)。
 
 ## 请求边界
 
@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `protocolVersion` | 整数 | 本版为 1。其他版本返回 `INVALID_REQUEST` |
 | `deviceId` | 字符串 | 传输层已认证的 Windows 设备 |
-| `provider` | 字符串 | `codex` 或 `claude` |
+| `provider` | 字符串 | `codex`、`claude`、`grok` 或 `antigravity` |
 | `threadId` | 字符串 | 经会话启动器确认的官方会话标识 |
 | `projectId` | 字符串 | 本机已绑定项目标识 |
 | `projectRoot` | Windows 绝对路径 | 仅在可信上下文中使用。工作区路径由 Bridge 配置解析 |

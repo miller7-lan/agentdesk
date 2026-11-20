@@ -268,6 +268,13 @@ test('initialize, thread/start and a streaming turn', async (t) => {
   assert.equal(stored.threads[threadId].provider, 'claude');
 });
 
+test('Grok Build reports an exhausted subscription as a quota failure', async (t) => {
+  const client = await new ChatClient(t, 'grok', temporary(t)).start();
+  const { completed } = await runTurn(client, await thread(client), 'QUOTA');
+  assert.equal(completed.turn.status, 'failed');
+  assert.match(completed.turn.error.message, /额度或频率限制.*Grok Build usage balance exhausted/);
+});
+
 test('Claude rate limits from a direct turn refresh the quota snapshot', async (t) => {
   const dir = temporary(t);
   const client = await new ChatClient(t, 'claude', dir).start();
