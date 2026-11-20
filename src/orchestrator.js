@@ -965,7 +965,9 @@ window.__groupReady = (async () => {
             revision.guided?.length ? '补一句指导接着做：' + names(revision.guided) : '',
             revision.continued?.length ? '不受影响，继续：' + names(revision.continued) : '',
             revision.stopped?.length ? '方向变了，停下：' + names(revision.stopped) : '',
-            revision.added?.length ? '新增：' + names(revision.added) : ''].filter(Boolean);
+            revision.added?.length ? '新增：' + names(revision.added) : '',
+            revision.remodeled?.length ? '已换模型：' + revision.remodeled.map((item) => `${item.step} → ${item.to}`).join('、') : '',
+            revision.modelFallbacks?.length ? '模型名无法识别，实际使用：' + revision.modelFallbacks.map((item) => `${item.step}「${item.requested}」→ ${item.used}`).join('、') : ''].filter(Boolean);
         const waiting = (task.steps || []).some((step) => step.state === 'proposed') && revision === task.revisions.at(-1);
         messages.push(messageRow('lead', '调整', lines.map((line) => `<p>${esc(line)}</p>`).join('') + (waiting
           ? `<div class="task-addition"><p>新增的步骤要你确认后才开始（这个群聊的「方案确认」设置）。</p><div class="task-actions"><button type="button" class="btn primary" data-approve-addition="${esc(task.id)}">确认新增的步骤</button></div></div>` : '')));

@@ -238,6 +238,17 @@ class Scheduler {
           if (step.state === 'running') step.state = 'queued';
         }
         this.save(task, 'queued', 'recovered');
+      } else if (task.state === 'cancelled') {
+        // Older cancellations aborted the CLI but left its step marked running; the process is gone, so
+        // settle it here instead of drawing a live node beside a cancelled task.
+        let changed = false;
+        for (const step of task.steps || []) {
+          if (step.state !== 'running') continue;
+          step.state = 'cancelled';
+          step.finishedAt ||= new Date(this.now()).toISOString();
+          changed = true;
+        }
+        if (changed) this.save(task, 'cancelled', 'cancelled_steps_recovered');
       }
     }
   }
@@ -911,16 +922,20 @@ event(task, state, detail) {
     const steps = (task.steps || []).filter((step) => !this.isAcceptStep(step));
     const context = {
       request: clip(task.prompt, 4000), planSummary: task.groupPlan?.rounds?.at(-1)?.summary, newMessage: text,
-      steps: steps.map(({ id, role, capability, state, prompt, output, dependsOn }) => ({ id, role, capability, state,
-        prompt: clip(prompt, 600), ...(output && { output: clip(output, 600) }), dependsOn })),
+      steps: steps.map(({ id, role, capability, state, prompt, output, dependsOn, model, effort }) => ({ id, role, capability, state,
+        prompt: clip(prompt, 600), ...(output && { output: clip(output, 600) }), dependsOn,
+        ...(model && { model }), ...(effort && { effort }) })),
       capabilities: Object.fromEntries(Object.entries(this.router.routes)
         .map(([name, list]) => [name, this.ordered(task, name, list.filter((role) => this.router.available(role)))])),
+      models: plannerProfiles(this.availableRoles(), this.config.adapters, task.provider, task.model),
     };
     const prompt = [
       'You are 组长, the group lead. While the members were working, the person sent a new message about this task (newMessage).',
       'Decide for every step that is queued or running: "continue" when the message does not affect it, "guide" when it should take the message into account and carry on with the work it has done (give a short instruction in the person’s language), "stop" only when the step is now pointless or wrong. Prefer guide over stop: stopping throws away half-done work.',
       'If the message needs work no step covers, add steps in "add" with the same fields as a plan step (id, capability, prompt, optional role, model, effort, dependsOn); dependsOn may name existing steps.',
-      'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"..."}},"add":[]}.',
+      'Each step in steps shows the exact model it runs on (model). When the person changes a model, read their words against models: the id and label carry the family and the effort. Shorthand such as "gemini 4 hy", "4hy" or "4hydragon" means the Hydrogen family; when no effort is named use the high variant. A queued step can switch model in place: set its action to "continue" and give model (an exact id) on that step, and the scheduler will change only its model. A running step cannot switch model; stop it and add the same work again with the chosen model.',
+      'In add, model must be an exact id listed under models for that role (never a label, a family name or the person’s shorthand), and effort one of that model’s efforts; leave either out to use the member’s default. Without a model from the person, use that role’s defaultModel — it is their preferred model. Use another model only when the person names one or the step clearly needs a different size.',
+      'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"...","model":"exact id"}},"add":[]}.',
       JSON.stringify(context),
     ].join('\n');
     const step = { id: 'revise-' + ((task.revisions || []).length), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task) };
@@ -934,10 +949,24 @@ event(task, state, detail) {
     if (terminal.has(task.state)) return;
     const record = task.revisions?.at(-1);
     const actions = decision.steps && typeof decision.steps === 'object' ? decision.steps : {};
-    const outcome = { continued: [], guided: [], stopped: [], added: [] };
+    const outcome = { continued: [], guided: [], stopped: [], added: [], remodeled: [], modelFallbacks: [] };
     for (const item of steps) {
       if (!['running', 'queued'].includes(item.state)) continue;
       const choice = actions[item.id] || {};
+      // A queued step has not started, so its model can change in place. This keeps a model change from turning
+      // into a stop plus a duplicate step and is the case the person usually means by "改模型".
+      const requested = typeof choice.model === 'string' ? choice.model.trim() : '';
+      if (requested && item.state === 'queued' && choice.action !== 'stop') {
+        const from = item.model || '';
+        const resolved = this.resolveModel(item.role, requested);
+        if (resolved) {
+          item.model = resolved;
+          if (item.effort && !effortsFor(item.role, this.config.adapters[item.role], resolved).includes(item.effort)) delete item.effort;
+          outcome.remodeled.push({ step: item.id, from, to: resolved });
+        } else {
+          outcome.modelFallbacks.push({ step: item.id, requested: clip(requested, 80), used: from || '(default)' });
+        }
+      }
       if (choice.action === 'stop') {
         item.revisedOut = true;
         if (item.state === 'queued') { item.state = 'skipped'; this.save(task, task.state, item.id + ':revised_out'); }
@@ -964,10 +993,9 @@ event(task, state, detail) {
       }
       const ask = !this.autoApproves(task, added);
       added.forEach((item, index) => {
-        const models = this.config.adapters[item.role]?.profiles?.models || {};
-        const model = raw[index]?.model;
-        item.model = typeof model === 'string' && Object.hasOwn(models, model) ? model
-          : this.orderModels(task, item.capability, item.role)[0] || this.defaultModelFor(item.role);
+        const requestedModel = raw[index]?.model;
+        const resolvedModel = typeof requestedModel === 'string' ? this.resolveModel(item.role, requestedModel) : null;
+        item.model = resolvedModel || this.orderModels(task, item.capability, item.role)[0] || this.defaultModelFor(item.role);
         const effort = raw[index]?.effort;
         if (typeof effort === 'string' && effortsFor(item.role, this.config.adapters[item.role], item.model).includes(effort)) item.effort = effort;
         item.dependsOn = [...outside[index], ...item.dependsOn.map((id) => renamed.get(id) || id)];
@@ -976,6 +1004,11 @@ event(task, state, detail) {
         item.addedBy = 'revision';
         task.steps.push(item);
         outcome.added.push(item.id);
+        // A name the lead invented (often the person's shorthand) is not silently swapped for the default: say so
+        // in the revision record, so the group chat can show which model the added steps really run on.
+        if (typeof requestedModel === 'string' && requestedModel.trim() && !resolvedModel) {
+          outcome.modelFallbacks.push({ step: item.id, requested: clip(requestedModel.trim(), 80), used: item.model || '(default)' });
+        }
       });
     }
     if (record) Object.assign(record, { state: 'decided', summary: clip(String(decision.summary || ''), 600), ...outcome });
@@ -986,6 +1019,86 @@ event(task, state, detail) {
         proposed ? 'revise_needs_approval' : 'revise_decided');
       this.pump();
     } else this.save(task, task.state, proposed ? 'revise_needs_approval' : 'revise_decided');
+  }
+
+  // The lead names a model for an added step: accept an exact id, the same id ignoring case and punctuation, a
+  // profile's display label, or a shorthand the person actually types ("gemini 4 hy", "4hy", "4hydragon"). A name
+  // without an effort resolves to the high variant of that family. Anything else is a miss; the caller falls back
+  // to the member's default and records it.
+  resolveModel(role, requested) {
+    if (typeof requested !== 'string' || !requested.trim()) return null;
+    const models = this.config.adapters[role]?.profiles?.models || {};
+    if (Object.hasOwn(models, requested)) return requested;
+    const fold = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const wanted = fold(requested);
+    if (!wanted) return null;
+    const EFFORTS = ['minimal', 'medium', 'xhigh', 'high', 'low', 'max'];
+    const short = (value) => value.replace(/^(google|gemini|openai|gpt|anthropic|claude|xai|grok)/, '');
+    const entries = Object.keys(models).map((id) => {
+      const idFold = fold(id);
+      const labelFold = fold(models[id]?.label || '');
+      const effort = EFFORTS.find((level) => idFold.endsWith(level)) || '';
+      const family = (value) => effort && value.endsWith(effort) ? value.slice(0, -effort.length) : value;
+      return { id, idFold, labelFold, idShort: short(idFold), labelShort: short(labelFold),
+        effort, families: [family(idFold), family(labelFold), short(family(idFold)), short(family(labelFold))] };
+    });
+    const exact = entries.find((entry) => entry.idFold === wanted)
+      || entries.find((entry) => entry.labelFold === wanted)
+      || entries.find((entry) => entry.idShort === wanted)
+      || entries.find((entry) => entry.labelShort === wanted);
+    if (exact) return exact.id;
+    const namedEffort = EFFORTS.find((level) => wanted.endsWith(level)) || '';
+    const base = namedEffort ? wanted.slice(0, -namedEffort.length) : wanted;
+    if (!base) return null;
+    const pick = (list) => {
+      if (namedEffort) {
+        const matching = list.find((entry) => entry.effort === namedEffort);
+        if (matching) return matching.id;
+      }
+      return (list.find((entry) => entry.effort === 'high') || list[0]).id;
+    };
+    // A prefix is how a family is usually shortened: "gemini 4 hy" and "4hy" both start Hydrogen's id or label.
+    const prefixed = entries.filter((entry) => [entry.idFold, entry.labelFold, entry.idShort, entry.labelShort]
+      .some((value) => value.startsWith(base)));
+    if (prefixed.length) return pick(prefixed);
+    // A bare family word is enough when it names one family: "hy" means Hydrogen, "neon" means Neon.
+    if (base.length >= 2) {
+      const words = new Map();
+      for (const entry of entries) {
+        for (const family of entry.families) {
+          const word = family.replace(/^[a-z]+/, '').replace(/^\d+/, '');
+          if (!word.startsWith(base)) continue;
+          if (!words.has(word)) words.set(word, []);
+          if (!words.get(word).includes(entry)) words.get(word).push(entry);
+        }
+      }
+      if (words.size === 1) return pick([...words.values()][0]);
+    }
+    // A small typo or phonetic spelling ("4hydragon" for "4hydrogen") counts only when one family is clearly closest.
+    if (base.length < 5) return null;
+    const distance = (a, b) => {
+      let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+      for (let i = 1; i <= a.length; i += 1) {
+        const current = [i];
+        for (let j = 1; j <= b.length; j += 1) {
+          current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        previous = current;
+      }
+      return previous[b.length];
+    };
+    const families = new Map();
+    for (const entry of entries) {
+      for (const family of entry.families) {
+        if (!family) continue;
+        if (!families.has(family)) families.set(family, []);
+        families.get(family).push(entry);
+      }
+    }
+    const ranked = [...families.entries()].map(([family, list]) => ({ list, distance: distance(base, family) }))
+      .sort((a, b) => a.distance - b.distance);
+    if (ranked[0] && ranked[0].distance <= 2 && ranked[0].distance < (ranked[1]?.distance ?? Infinity)) return pick(ranked[0].list);
+    return null;
   }
 
   // The lead could not decide (unavailable or an unusable reply): every member at work gets the message as
@@ -1113,7 +1226,7 @@ event(task, state, detail) {
         return { home: mount.path, project: null };
       }
     }
-    return { home: mount.path, project: task.mountProject === null ? null : path.join(mount.path, task.mountProject) };
+    return { home: mount.path, project: task.mountProject === null ? null : path.posix.join(mount.path, task.mountProject) };
   }
 
   // The model a member uses when nobody named one: its newest full model; Antigravity keeps its configured
@@ -1244,6 +1357,28 @@ event(task, state, detail) {
     this.save(task, task.state, `${stepId}:steered`);
     this.stepControllers?.get(task.id + ':' + stepId)?.abort(new Error('steered'));
     return this.status(task.id);
+  }
+
+  // Administrator action: change the models of steps that have not started, e.g. after the group's preferred
+  // default changes. Every step and name is checked first, so a typo changes nothing; running steps keep the
+  // model they started with.
+  setStepModels(task, requested) {
+    if (!task || !requested || typeof requested !== 'object' || Array.isArray(requested)) throw new Error('invalid_step_models');
+    const plans = [];
+    for (const [id, name] of Object.entries(requested)) {
+      const step = (task.steps || []).find((item) => item.id === id);
+      if (!step) throw new Error('unknown_step:' + id);
+      if (step.state !== 'queued') throw new Error('step_started:' + id);
+      const model = this.resolveModel(step.role, name);
+      if (!model) throw new Error('unknown_model:' + id);
+      plans.push({ step, model, from: step.model || '' });
+    }
+    for (const { step, model, from } of plans) {
+      step.model = model;
+      if (step.effort && !effortsFor(step.role, this.config.adapters[step.role], model).includes(step.effort)) delete step.effort;
+      this.save(task, task.state, `${step.id}:model_changed`);
+    }
+    return { changed: plans.map(({ step, model, from }) => ({ step: step.id, from, to: model })), status: this.status(task.id) };
   }
 
   // The person stops one step (it looks stuck or wrong); the lead then reassigns it.
@@ -2919,6 +3054,10 @@ event(task, state, detail) {
     if (body.operation === 'revise_plan') {
       if (!owner) throw new Error('task_access_denied');
       return this.revisePlan(task, body.reply);
+    }
+    if (body.operation === 'set_step_models') {
+      if (!owner) throw new Error('task_access_denied');
+      return this.setStepModels(task, body.models);
     }
     if (body.operation === 'steer_step') {
       if (!owner) throw new Error('task_access_denied');
