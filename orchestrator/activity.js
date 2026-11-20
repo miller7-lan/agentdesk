@@ -42,7 +42,7 @@ const unwrapTool = (name, input) => {
 
 // Names CLIs use for tools that run a shell command or change a file.
 const SHELL = /^(bash|shell|run_shell_command|run_command|windows_run_command|windows_run_shell_command|exec(_command)?|terminal)$/i;
-const EDIT = /^(edit|write|multiedit|notebookedit|write_file|write_to_file|windows_write_file|replace|replace_file_content|multi_replace_file_content|windows_replace_file_content|edit_file|sed_file|apply_patch|windows_apply_patch|str_replace\w*)$/i;
+const EDIT = /^(edit|write|multiedit|notebookedit|write_file|write_to_file|windows_write_file|windows_edit_file|replace|replace_file_content|multi_replace_file_content|windows_replace_file_content|edit_file|sed_file|apply_patch|windows_apply_patch|str_replace\w*)$/i;
 
 class Record {
   constructor() {

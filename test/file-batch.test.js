@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { readBatch, writeBatch } = require('../orchestrator/file-batch');
+const { readBatch, writeBatch, editFile } = require('../orchestrator/file-batch');
 const { Checkpoints } = require('../checkpoints');
 
 async function setup(t) {
@@ -11,6 +11,27 @@ async function setup(t) {
   t.after(() => fs.rm(folder, { recursive: true, force: true }));
   return (filename) => path.join(folder, filename);
 }
+
+test('precise edit preserves CRLF, rejects missing or ambiguous text, and records an undo', async (t) => {
+  const resolve = await setup(t);
+  const original = 'first\r\nmarker\r\nmarker\r\n';
+  await fs.writeFile(resolve('a'), original);
+  const { results: [{ version }] } = await readBatch([{ path: 'a' }], resolve);
+  const args = { path: 'a', oldText: 'marker', newText: '$&', version };
+  await assert.rejects(editFile(args, resolve), /edit_text_not_unique/);
+  await assert.rejects(editFile({ ...args, oldText: 'no such text' }, resolve), /edit_text_not_found/);
+  assert.equal(await fs.readFile(resolve('a'), 'utf8'), original);
+
+  const checkpoints = new Checkpoints(resolve('checkpoints'), { trash: (name) => fs.unlink(name) });
+  const around = (name, run) => checkpoints.around('turn', 'thread', 'windows_file_write', { path: name }, run);
+  const result = await editFile({ ...args, replaceAll: true }, resolve, around);
+  assert.equal(result.replacements, 2);
+  assert.equal(await fs.readFile(resolve('a'), 'utf8'), 'first\r\n$&\r\n$&\r\n');
+  await assert.rejects(editFile(args, resolve), /version_conflict/);
+  assert.equal((await checkpoints.finish('turn')).files.length, 1);
+  await checkpoints.undo('turn');
+  assert.equal(await fs.readFile(resolve('a'), 'utf8'), original);
+});
 
 test('batch read returns content, pagination and versions and batch write rejects a stale version before any change', async (t) => {
   const resolve = await setup(t);

@@ -1,6 +1,6 @@
 const { constants, realpath } = require('node:fs');
 const fs = require('node:fs/promises');
-const { spec: batchSpec, readBatch, writeBatch } = require('./orchestrator/file-batch');
+const { spec: batchSpec, readBatch, writeBatch, editSpec, editFile } = require('./orchestrator/file-batch');
 const { promisify } = require('node:util');
 const path = require('node:path').win32;
 const nativePath = promisify(realpath.native);
@@ -66,7 +66,12 @@ const operation = (name, description, required, optional = []) => ({
   },
 });
 
+const { searchSpec, searchFiles } = require('./orchestrator/file-search');
+
 const specs = [
+  searchSpec('windows_file_glob', false),
+  searchSpec('windows_file_grep', true),
+  editSpec('windows_file_edit'),
   batchSpec('windows_file_read_batch', false),
   batchSpec('windows_file_write_batch', true),
   operation('list', 'List up to 250 entries in a local Windows directory. Available in AgentDesk Full Access mode.', ['path'], ['offset']),
@@ -92,6 +97,10 @@ function argsFor(tool, values) {
 
 async function call(tool, values, trash, aroundBatchWrite) {
   try {
+    if (tool === 'windows_file_glob' || tool === 'windows_file_grep') {
+      return result(true, await searchFiles(values, existing, tool.endsWith('_grep')));
+    }
+    if (tool === 'windows_file_edit') return result(true, await editFile(values, destination, aroundBatchWrite));
     if (tool === 'windows_file_read_batch') return result(true, await readBatch(values?.items, existing));
     if (tool === 'windows_file_write_batch') {
       const value = await writeBatch(values?.items, destination, aroundBatchWrite);

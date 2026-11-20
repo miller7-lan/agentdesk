@@ -111,6 +111,26 @@ async function checkedFile(resolve, item) {
   return { filename, mode: current?.mode ?? 0o600 };
 }
 
+async function writeChecked(resolve, item, prepared, around) {
+  const { filename, mode, bytes } = prepared;
+  const temp = path.join(path.dirname(filename), '.agentdesk-batch-' + randomUUID());
+  let created = false;
+  try {
+    await around(filename, async () => {
+      const latest = await checkedFile(resolve, item);
+      if (latest.filename !== filename) throw new Error('version_conflict');
+      const handle = await fs.open(temp, 'wx', mode);
+      created = true;
+      try { await handle.writeFile(bytes); } finally { await handle.close(); }
+      const check = await checkedFile(resolve, item);
+      if (check.filename !== filename) throw new Error('version_conflict');
+      if (item.version === null) await fs.link(temp, filename);
+      else await fs.rename(temp, filename);
+    });
+    return { status: 'written', version: digest(bytes), bytes: bytes.length };
+  } finally { if (created) await fs.unlink(temp).catch(() => {}); }
+}
+
 async function writeBatch(items, resolve, around = (_filename, run) => run()) {
   validate(items, true);
   const prepared = [];
@@ -128,29 +148,52 @@ async function writeBatch(items, resolve, around = (_filename, run) => run()) {
     } catch (error) { results[index] = { status: 'failed', error: String(error.message).slice(0, 160) }; }
   }
   if (results.some(({ status }) => status === 'failed')) return { phase: 'preflight', results };
-  for (const [index, { filename, mode, bytes }] of prepared.entries()) {
-    const item = items[index];
-    const temp = path.join(path.dirname(filename), '.agentdesk-batch-' + randomUUID());
-    let created = false;
+  for (const [index, entry] of prepared.entries()) {
     try {
-      await around(filename, async () => {
-        const latest = await checkedFile(resolve, item);
-        if (latest.filename !== filename) throw new Error('version_conflict');
-        const handle = await fs.open(temp, 'wx', mode);
-        created = true;
-        try { await handle.writeFile(bytes); } finally { await handle.close(); }
-        const check = await checkedFile(resolve, item);
-        if (check.filename !== filename) throw new Error('version_conflict');
-        if (item.version === null) await fs.link(temp, filename);
-        else await fs.rename(temp, filename);
-      });
-      results[index] = { status: 'written', version: digest(bytes), bytes: bytes.length };
+      results[index] = await writeChecked(resolve, items[index], entry, around);
     } catch (error) {
       results[index] = { status: 'failed', error: String(error.message).slice(0, 160) };
       break;
-    } finally { if (created) await fs.unlink(temp).catch(() => {}); }
+    }
   }
   return { phase: 'write', results };
 }
 
-module.exports = { spec, readBatch, writeBatch, validate };
+function editSpec(name) {
+  return {
+    type: 'function', name,
+    description: 'Replace exact text in a local UTF-8 file. Read the file first. The old text must match once unless replaceAll is set.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['path', 'oldText', 'newText'],
+      properties: { path: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' },
+        replaceAll: { type: 'boolean' }, version: { type: 'string', description: 'Optional expected SHA-256 from batch read' } } },
+  };
+}
+
+async function editFile(args, resolve, around = (_filename, run) => run()) {
+  const { path: pathname, oldText, newText, replaceAll = false, version } = args || {};
+  if (typeof pathname !== 'string' || typeof oldText !== 'string' || !oldText || typeof newText !== 'string' ||
+      typeof replaceAll !== 'boolean' || (version !== undefined && (typeof version !== 'string' || !versionPattern.test(version))) ||
+      Buffer.byteLength(encode({ pathname, oldText, newText })) > MAX_REQUEST) throw new Error('invalid_edit');
+  const filename = await resolve(pathname);
+  const snapshotBefore = await snapshot(filename);
+  const expected = digest(snapshotBefore.bytes);
+  if (version !== undefined && version !== expected) throw new Error('version_conflict');
+  const text = snapshotBefore.bytes.toString('utf8');
+  if (text.includes('\0') || !Buffer.from(text).equals(snapshotBefore.bytes)) throw new Error('edit_requires_utf8');
+  const first = text.indexOf(oldText);
+  if (first < 0) throw new Error('edit_text_not_found');
+  if (!replaceAll && text.indexOf(oldText, first + 1) >= 0) throw new Error('edit_text_not_unique');
+  let occurrences = 1;
+  if (replaceAll) {
+    for (let index = first; (index = text.indexOf(oldText, index + oldText.length)) >= 0;) occurrences++;
+  }
+  if (Buffer.byteLength(text) + occurrences * (Buffer.byteLength(newText) - Buffer.byteLength(oldText)) > MAX_FILE) {
+    throw new Error('edit_file_too_large');
+  }
+  const edited = replaceAll ? text.replaceAll(oldText, () => newText) : text.slice(0, first) + newText + text.slice(first + oldText.length);
+  const result = await writeChecked(resolve, { path: pathname, version: expected },
+    { filename, mode: snapshotBefore.mode, bytes: Buffer.from(edited) }, around);
+  return { ...result, replacements: occurrences };
+}
+
+module.exports = { spec, readBatch, writeBatch, validate, editSpec, editFile };

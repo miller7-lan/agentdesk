@@ -3,7 +3,9 @@ const { connect } = require('node:net');
 const { appendFileSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
-const { spec: batchSpec, validate: validateFileBatch } = require('./file-batch');
+const { spec: batchSpec, validate: validateFileBatch, editSpec } = require('./file-batch');
+
+const { searchSpec } = require('./file-search');
 
 const operations = {
   windows_list_locations: ['locations', []],
@@ -18,6 +20,9 @@ const operations = {
   windows_delete_path: ['delete', ['path']],
   windows_list_commands: ['commands', []],
   windows_run_command: ['run', ['command']],
+  windows_glob_files: ['glob'],
+  windows_grep_context: ['grep_context'],
+  windows_edit_file: ['edit'],
   windows_read_files_batch: ['read_batch', ['items']],
   windows_write_files_batch: ['write_batch', ['items']],
 };
@@ -38,9 +43,10 @@ const descriptions = {
 };
 
 const tools = Object.entries(operations).map(([name, [action, required]]) => {
-  if (action === 'read_batch' || action === 'write_batch') {
-    const write = action === 'write_batch';
-    const tool = batchSpec(name, write);
+  if (['read_batch', 'write_batch', 'glob', 'grep_context', 'edit'].includes(action)) {
+    const write = action === 'write_batch' || action === 'edit';
+    const tool = action === 'edit' ? editSpec(name) : action.endsWith('_batch')
+      ? batchSpec(name, write) : searchSpec(name, action === 'grep_context');
     delete tool.type;
     tool.annotations = { readOnlyHint: !write };
     tool.inputSchema.properties.root = {
@@ -48,6 +54,9 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
       ...(write && { enum: ['computer'] }),
     };
     if (write) tool.inputSchema.required.push('root');
+    if (action === 'glob' || action === 'grep_context') {
+      tool.inputSchema.properties.path.description = 'Directory relative to the selected root. Use an empty string for the root or an absolute path with root computer.';
+    }
     return tool;
   }
   return {
@@ -74,14 +83,14 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
 
 // Mutations leave a local, verifiable record next to the step log. A step may claim success only when the
 // matching receipt shows the bridge accepted the write and returned the new version.
-const MUTATIONS = new Set(['write', 'mkdir', 'move', 'delete']);
+const MUTATIONS = new Set(['write', 'edit', 'mkdir', 'move', 'delete']);
 
 function receiptFor(operation, args, requestId, value, error) {
   const text = (field) => typeof field === 'string' ? field : undefined;
   return {
     id: randomUUID(),
     requestId,
-    operation,
+    operation: operation === 'edit' ? 'write' : operation,
     at: new Date().toISOString(),
     root: text(args.root),
     path: text(args.path),
@@ -148,6 +157,8 @@ if (require.main === module) {
           const value = await request(socketPath, { capability, operation, root: args.root, path: args.path, query: args.query, offset: args.offset,
             version: args.version, caseSensitive: args.caseSensitive, command: args.command,
             content: args.content, encoding: args.encoding, destination: args.destination,
+            ...(operation === 'edit' && { oldText: args.oldText, newText: args.newText, replaceAll: args.replaceAll }),
+            ...(['glob', 'grep_context'].includes(operation) && { glob: args.glob, context: args.context }),
             ...(batch && { items: args.items }) }, operation === 'run' ? 320000 : 35000);
           if (MUTATIONS.has(operation)) writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS, receiptFor(operation, args, frame.id, value));
           const failedBatch = operation === 'write_batch' && value.results.some(({ status }) => status !== 'written');

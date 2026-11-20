@@ -451,23 +451,30 @@ remote.on('server-request', (m) => {
     const macFile = mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('agentdesk_file_');
     const turn = fileTurns.get(params.turnId);
     const active = !params.namespace && turn && turn.threadId === params.threadId;
-    const batch = /_file_(?:read|write)_batch$/.test(params.tool || '');
-    const batchRead = batch && params.tool.endsWith('_read_batch');
-    const allowed = active && (turn.policy === 'full' || (batch && (batchRead || turn.policy === 'ask')));
-    const trackBatch = (filename, run) => checkpoints().around(params.turnId, params.threadId, params.tool.replace(/_batch$/, ''), { path: filename }, run);
+    const scopedRead = /_file_(?:list|read|read_batch|glob|grep)$/.test(params.tool || '');
+    const scopedWrite = /_file_(?:write_batch|edit)$/.test(params.tool || '');
+    const allowed = active && (turn.policy === 'full' || scopedRead || (scopedWrite && turn.policy === 'ask'));
+    const trackBatch = (filename, run) => checkpoints().around(params.turnId, params.threadId, params.tool.replace(/(?:write_batch|edit)$/, 'write'), { path: filename }, run);
     const task = (async () => {
       if (!winFile && !macFile) return desktop.call(params);
       const files = winFile ? windowsFiles : localFiles;
       if (!allowed) return files.result(false, { error: '当前轮次没有本机文件权限' });
-      if (batch && !batchRead && turn.policy === 'ask') {
-        try { require('./orchestrator/file-batch').validate(params.arguments?.items, true); }
-        catch (error) { return files.result(false, { error: error.message }); }
-        const paths = params.arguments.items.map(({ path: filename }) => filename.replace(/[\r\n]/g, ' '));
+      if (scopedWrite && turn.policy === 'ask') {
+        const edit = params.tool.endsWith('_edit');
+        let paths;
+        if (edit) {
+          if (typeof params.arguments?.path !== 'string') return files.result(false, { error: 'invalid_edit' });
+          paths = [params.arguments.path];
+        } else {
+          try { require('./orchestrator/file-batch').validate(params.arguments?.items, true); }
+          catch (error) { return files.result(false, { error: error.message }); }
+          paths = params.arguments.items.map((item) => item.path);
+        }
         const { response } = await dialog.showMessageBox(win, {
-          type: 'question', message: `Codex 请求批量写入 ${paths.length} 个本机文件`,
-          detail: paths.join('\n'), buttons: ['取消', '允许这一次'], defaultId: 0, cancelId: 0,
+          type: 'question', message: edit ? 'Codex 请求替换本机文件中的文本' : `Codex 请求批量写入 ${paths.length} 个本机文件`,
+          detail: paths.map((filename) => filename.replace(/[\r\n]/g, ' ')).join('\n'), buttons: ['取消', '允许这一次'], defaultId: 0, cancelId: 0,
         });
-        if (response !== 1 || fileTurns.get(params.turnId) !== turn) return files.result(false, { error: '批量写入未获批准' });
+        if (response !== 1 || fileTurns.get(params.turnId) !== turn) return files.result(false, { error: '本机文件修改未获批准' });
       }
       return checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
         () => files.call(params.tool, params.arguments, (target) => shell.trashItem(target), trackBatch));
@@ -808,7 +815,7 @@ async function chatToolTask(agent, params) {
   }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
   const tool = chatFileTools === windowsFiles ? params.tool.replace(/^agentdesk_file_/, 'windows_file_') : params.tool;
-  const trackBatch = (filename, run) => checkpoints().around(params.turnId, params.threadId, tool.replace(/_batch$/, ''), { path: filename }, run);
+  const trackBatch = (filename, run) => checkpoints().around(params.turnId, params.threadId, tool.replace(/(?:write_batch|edit)$/, 'write'), { path: filename }, run);
   return checkpoints().around(params.turnId, params.threadId, tool, params.arguments,
     () => chatFileTools.call(tool, params.arguments, (target) => shell.trashItem(target), trackBatch));
 }

@@ -87,10 +87,10 @@ const TURN_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TURN_TIMEOUT || 30 * 60_0
 const OUTPUT_LIMIT = Number(process.env.AGENTDESK_CHAT_OUTPUT_LIMIT || 4 * 1024 * 1024);
 const TOOL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TOOL_TIMEOUT || 65_000);
 const APPROVAL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_APPROVAL_TIMEOUT || 60_000);
-const READ_ONLY_TOOLS = new Set(['agentdesk_file_list', 'agentdesk_file_read', 'agentdesk_file_read_batch', 'agentdesk_command_list']);
+const READ_ONLY_TOOLS = new Set(['agentdesk_file_list', 'agentdesk_file_read', 'agentdesk_file_read_batch', 'agentdesk_file_glob', 'agentdesk_file_grep', 'agentdesk_command_list']);
 // Running one of the person's authorized commands on their computer asks for approval, like a file change.
 const WRITE_TOOLS = new Set([
-  'agentdesk_file_write', 'agentdesk_file_write_batch', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash',
+  'agentdesk_file_edit', 'agentdesk_file_write', 'agentdesk_file_write_batch', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash',
   'agentdesk_command_run',
 ]);
 const CHAT_TOOL = /^(?:agentdesk_(?:file|command)_[a-z]+|agentdesk_file_(?:read|write)_batch|desktop_[a-z_]+)$/;
@@ -632,6 +632,7 @@ ${vps}
 - 用户电脑上授权过的命令：先用 agentdesk_command_list 查看，再用 agentdesk_command_run 运行；按当前权限模式审批。
 - 你运行在一台 VPS 上，但用户的真实文件在 ${computer} 上，项目路径是：${root}
 - 读写用户文件只能调用 MCP 工具 agentdesk_file_list/read/write/mkdir/copy/move/trash（服务器名 ${turn.serverName}）。
+- 在本机查找文件时优先用 agentdesk_file_glob 传路径和通配符，查找文本用 agentdesk_file_grep，可传 context 查看上下文。局部改动优先用 agentdesk_file_edit，传入唯一匹配的原文和新文。
 - 同时处理多个本机文件时，优先用 agentdesk_file_read_batch 和 agentdesk_file_write_batch。写入用读到的版本，创建用 null。检查逐项结果再决定是否重试。
 - 本机路径必须是 ${computer} 的绝对路径，例如 ${root}/note.txt；不要使用 VPS 的 shell 或内置 Read/Write/Bash 工具操作本机文件。
 - 可用的 desktop_* 工具在用户电脑上截图、点击或输入；只有在本机桌面开启且本轮可操作时才会提供。

@@ -94,6 +94,8 @@ Antigravity 没有内置适配器，用 `adapters.antigravity.template` 描述�
 
 ### 单聊通道（Claude / Grok / Antigravity）
 
+单聊查找本机文件时可用 `*_file_glob` 按通配符找文件、`*_file_grep` 按字面文本搜索并显示行号和上下文。`*_file_edit` 只替换匹配的 UTF-8 文本，默认要求原文只出现一次，可用批量读文件得到的版本防止覆盖外部改动。单聊定点编辑可以通过该轮的文件检查点撤销。群聊可用 `windows_glob_files` 和 `windows_grep_context` 搜索、`windows_edit_file` 精确编辑已授权的项目外文件。群聊项目内的改动经过任务工作区和补丁审阅。
+
 三家都和 Codex 一样能联网搜索、读网页。装有 bubblewrap（`/usr/bin/bwrap`，Codex 的沙盒也要用它）时，`agent-chat.sh` 让 CLI 在沙盒里运行，并开放它自己的 shell 和读写工具：只作用于这个会话在 VPS 上的工作目录（只读轮次连它也只读），看不到其他会话、其他 CLI 的登录、任务数据库和主控配置。用户电脑上的文件仍只能通过 `agentdesk_file_*` 工具，写操作需要批准；用户授权过的本机命令通过 `agentdesk_command_list` / `agentdesk_command_run` 运行，同样需要批准。命令只来自 Bridge 配置里该项目工作区的 `commands` 和 `agentCommands`（Windows 读 `remote.json` 的 `orchestratorBridge`；Mac 在 `mac-remote.json` 写 `agentCommandsFile` 指向 Mac Bridge 的配置），按固定的程序和参数直接执行、不经过 shell，在项目目录运行，5 分钟超时。Codex 单聊在完全访问模式下也提供这两个工具。设 `AGENTDESK_CHAT_SANDBOX=off` 可关闭沙盒，此时 shell 和自带文件工具也一并关闭。
 
 群聊派活同理：在 `adapters.<cli>.sandbox` 设为 `true`（样例已为 Grok、Antigravity、Claude 打开），这些 CLI 改代码时可以运行命令、跑测试，范围限于该步骤的工作副本（只读步骤只读），看不到其他任务、其他 CLI 的登录和 `/etc/agentdesk-*`。Codex 用它自带的沙盒，不受此项影响。

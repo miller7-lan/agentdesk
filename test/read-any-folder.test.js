@@ -52,6 +52,23 @@ test('batch operations obey Bridge permissions and reject writing any item insid
   assert.match(read.results[1].error, /credential_path_denied/);
 });
 
+test('group Bridge supports glob and context search but only edits authorized files outside the project', async (t) => {
+  const { outside, project, call } = await setup(t, { readAnyFolder: true, writeAnyFolder: true });
+  const scope = { root: 'computer', anyFolder: true };
+  const projectFile = path.join(project, 'test.txt');
+  await fs.writeFile(projectFile, 'secret');
+  const glob = await call('file.read', { operation: 'glob', path: '', glob: '*.txt' });
+  assert.deepEqual(glob.matches, [{ path: 'test.txt' }]);
+  const grep = { operation: 'grep_context', path: outside, query: 'secret', context: 1 };
+  await assert.rejects(call('file.read', { ...grep, root: 'computer' }), /read_root_not_authorized/);
+  assert.deepEqual((await call('file.read', { ...grep, ...scope })).matches[0].after, ['last line']);
+  const edit = { operation: 'edit', oldText: 'secret', newText: 'public' };
+  await assert.rejects(call('file.write', { ...scope, ...edit, path: projectFile }), /project_write_denied/);
+  const outsideFile = path.join(outside, 'folder', 'needle.txt');
+  assert.equal((await call('file.write', { ...scope, ...edit, path: outsideFile })).replacements, 1);
+  assert.equal(await fs.readFile(outsideFile, 'utf8'), 'first line\npublic value\nlast line\n');
+});
+
 test('the lead can list, search, grep and read folders outside the project read-only', async (t) => {
   const { outside, call } = await setup(t, { readAnyFolder: true });
   const common = { root: 'computer', anyFolder: true };

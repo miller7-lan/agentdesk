@@ -6,7 +6,8 @@ const { homedir, tmpdir } = require('node:os');
 const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
 const { attachmentRoot, idPattern } = require('./attachments');
-const { readBatch, writeBatch } = require('./file-batch');
+const { readBatch, writeBatch, editFile } = require('./file-batch');
+const { searchFiles } = require('./file-search');
 
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;
@@ -266,15 +267,23 @@ class WindowsOperations {
         ...Object.keys(roots).filter((id) => id !== 'project' && id !== 'computer').map((id) => ({ id, label: id === 'desktop' ? '桌面' : id })),
       ] };
       const selected = body.root ?? 'project';
+      const search = body.operation === 'glob' || body.operation === 'grep_context';
+      const grep = body.operation === 'grep_context';
       if (selected === 'computer') {
         // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it.
         if (!anyFolder || body.anyFolder !== true) throw new Error('read_root_not_authorized');
         if (body.operation === 'read_batch') return readBatch(body.items, anyPath);
+        if (search) return searchFiles(body, anyPath, grep);
         return this.readTarget(await anyPath(body.path), body);
       }
       if (selected !== 'project' && (typeof selected !== 'string' || !Object.hasOwn(roots, selected))) throw new Error('read_root_not_authorized');
       const readRoot = await fs.realpath(selected === 'project' ? workspace.root : roots[selected]);
       if (body.operation === 'read_batch') return readBatch(body.items, (filename) => within(readRoot, filename));
+      if (search) {
+        const resolve = (filename) => within(readRoot, path.relative(readRoot, filename).split(path.sep).join('/'), { directory: true });
+        const directory = await within(readRoot, body.path, { directory: true });
+        return searchFiles({ ...body, path: directory }, resolve, grep);
+      }
       return this.read(readRoot, body);
     }
     if (kind === 'file.write' && body.root === 'computer') {
@@ -286,6 +295,10 @@ class WindowsOperations {
       const project = await fs.realpath(workspace.root);
       if (body.operation === 'write_batch') {
         return writeBatch(body.items, (filename) => this.anyWritePath(project, filename));
+      }
+      if (body.operation === 'edit') {
+        const result = await editFile(body, (filename) => this.anyWritePath(project, filename));
+        return { ...result, type: 'file', size: result.bytes };
       }
       return this.writeAnywhere(taskId, project, body);
     }

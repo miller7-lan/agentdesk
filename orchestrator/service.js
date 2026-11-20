@@ -97,8 +97,8 @@ function providerSettings(settings, name, home) {
     // The MCP server enforces per-step write permission; the client list must include the write tools or a
     // member can see the Desktop but never change it. Existing installs are migrated, not only fresh ones.
     const tools = ['windows_list_locations', 'windows_list_directory', 'windows_stat_file',
-      'windows_search_files', 'windows_grep_files', 'windows_read_file_chunk',
-      'windows_write_file', 'windows_make_directory', 'windows_move_path', 'windows_delete_path'];
+      'windows_search_files', 'windows_grep_files', 'windows_glob_files', 'windows_grep_context', 'windows_read_file_chunk',
+      'windows_write_file', 'windows_edit_file', 'windows_read_files_batch', 'windows_write_files_batch', 'windows_make_directory', 'windows_move_path', 'windows_delete_path'];
     const server = existing.mcpServers.agentdesk_windows;
     const before = JSON.stringify(server?.enabledTools);
     if (!server) {
@@ -289,20 +289,21 @@ function start(config) {
         if (!scope) throw new Error('mcp_permission_denied');
         const route = scheduler.bridgeRoute(scope.workspace);
         let value;
-        if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep'].includes(frame.operation)) {
+        if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep', 'glob', 'grep_context'].includes(frame.operation)) {
           const anyFolder = frame.root === 'computer';
           if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
           if (frame.operation === 'read_batch') validateFileBatch(frame.items, false);
           value = await files.call(route, scope.taskId, 'file.read', {
             operation: frame.operation, workspace: scope.workspace, root: frame.root, path: frame.path,
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
+            ...(['glob', 'grep_context'].includes(frame.operation) && { glob: frame.glob, context: frame.context }),
             ...(anyFolder && { anyFolder: true }),
             ...(frame.operation === 'read_batch' && { items: frame.items }),
           });
           if (frame.operation === 'locations' && Array.isArray(value?.locations)) {
             value = { ...value, locations: value.locations.filter((location) => location?.id !== 'computer' || scope.readAnyFolder === true) };
           }
-        } else if (['write', 'write_batch', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
+        } else if (['write', 'write_batch', 'edit', 'mkdir', 'move', 'delete'].includes(frame.operation)) {
           // Any folder on the person's computer; the project itself only changes through reviewed patches.
           if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
           if (frame.root !== 'computer') throw new Error('mcp_permission_denied: write with root "computer" and an absolute path; project files are changed in the task workspace');
@@ -310,6 +311,14 @@ function start(config) {
           if (frame.operation === 'write_batch') {
             validateFileBatch(frame.items, true);
             value = await files.call(route, scope.taskId, 'file.write', { ...target, operation: 'write_batch', items: frame.items });
+            if (!socket.destroyed) wire.send({ ok: true, value });
+            return;
+          }
+          if (frame.operation === 'edit') {
+            value = await files.call(route, scope.taskId, 'file.write', {
+              ...target, operation: 'edit', oldText: frame.oldText, newText: frame.newText,
+              replaceAll: frame.replaceAll, version: frame.version,
+            });
             if (!socket.destroyed) wire.send({ ok: true, value });
             return;
           }
