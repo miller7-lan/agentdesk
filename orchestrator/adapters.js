@@ -8,9 +8,10 @@ const { captureClaudeRateLimitEvent } = require('./quotas');
 
 const providers = {
   codex: {
+    // --search is a global flag (it must precede `exec`): live web search stays on without a per-call approval.
     args: (prompt, readonly, session) => session
-      ? ['exec', 'resume', '--json', '-c', 'sandbox_mode=' + JSON.stringify(readonly ? 'read-only' : 'workspace-write'), session, '-']
-      : ['exec', '--json', '--sandbox', readonly ? 'read-only' : 'workspace-write', '-'],
+      ? ['--search', 'exec', 'resume', '--json', '-c', 'sandbox_mode=' + JSON.stringify(readonly ? 'read-only' : 'workspace-write'), session, '-']
+      : ['--search', 'exec', '--json', '--sandbox', readonly ? 'read-only' : 'workspace-write', '-'],
     session: (event) => event.thread_id,
     output: (event) => event.item?.type === 'agent_message' && event.item.text,
     usage: (event) => event.type === 'turn.completed' && event.usage,
@@ -21,6 +22,8 @@ const providers = {
     args: (_prompt, readonly, session) => [
       '-p', '--verbose', '--output-format', 'stream-json',
       '--permission-mode', readonly ? 'plan' : 'acceptEdits',
+      // Web access is read-only, so every step gets it; the plan mode keeps editing tools out of read-only steps.
+      '--allowedTools', 'WebSearch,WebFetch,Read,Glob,Grep',
       ...(readonly ? ['--disallowedTools', 'Bash,Write,Edit,NotebookEdit'] : []),
       ...(session ? ['--resume', session] : []),
     ],
@@ -32,7 +35,7 @@ const providers = {
   grok: {
     args: (prompt, readonly, session) => [
       '--no-auto-update', '--output-format', 'plain', '--permission-mode', readonly ? 'dontAsk' : 'acceptEdits',
-      '--allow', 'Read', '--allow', 'Grep', '--allow', 'WebSearch',
+      '--allow', 'Read', '--allow', 'Grep', '--allow', 'WebSearch', '--allow', 'WebFetch', '--allow', 'Fetch',
       ...(readonly ? ['--deny', 'Edit'] : ['--allow', 'Edit']), '--deny', 'Bash', '--session-id', session, '-p', prompt,
     ],
     plain: true,
@@ -70,6 +73,21 @@ const effortsFor = (name, config, model) => {
 // exact tool names still match, so all three forms are given.
 function claudeMcpAllow(server, names = []) {
   return ['mcp__' + server, 'mcp__' + server + '__*', ...names.map((name) => 'mcp__' + server + '__' + name)];
+}
+
+// Some Claude Code builds replace rather than extend the list when --allowedTools is repeated. Merge every rule
+// into one flag so web access, the sandbox shell and the MCP server's tools stay allowed together.
+function addClaudeAllow(args, tools) {
+  const at = args.indexOf('--allowedTools');
+  if (at < 0 || at + 1 >= args.length) { args.push('--allowedTools', tools.join(',')); return; }
+  const rules = String(args[at + 1] || '').split(',').filter(Boolean);
+  args[at + 1] = [...new Set([...rules, ...tools])].join(',');
+}
+
+// Codex keeps global flags before `exec`; model, effort and MCP settings go after `exec` (or `exec resume`).
+function codexSettingsIndex(args) {
+  const exec = args.indexOf('exec');
+  return exec + (args[exec + 1] === 'resume' ? 2 : 1);
 }
 
 const field = (value, dotted) => dotted && String(dotted).split('.').reduce((node, key) => node?.[key], value);
@@ -187,7 +205,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     const deny = args.findIndex((arg, index) => arg === 'Bash' && args[index - 1] === '--deny');
     if (deny > 0) args.splice(deny - 1, 2, '--allow', 'Bash');
   }
-  if (sandboxed && name === 'claude' && !provider.template && !readonly) args.push('--allowedTools', 'Bash');
+  if (sandboxed && name === 'claude' && !provider.template && !readonly) addClaudeAllow(args, ['Bash']);
   // Folders the CLI reads besides its working folder (the person's home, mounted read-only): Claude Code reads
   // outside its working folder only where it is told to.
   if (name === 'claude' && !provider.template) for (const folder of readPaths) args.push('--add-dir', folder);
@@ -197,7 +215,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   }
   if (model && !provider.template) {
     if (name === 'codex') {
-      args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model=' + JSON.stringify(model));
+      args.splice(codexSettingsIndex(args), 0, '-c', 'model=' + JSON.stringify(model));
     } else {
       args.unshift('--model', model);
     }
@@ -209,7 +227,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   if (mcp?.scope) env.AGENTDESK_MCP_SCOPE = mcp.scope;
   if (effort) {
     if (provider.template) args.unshift(...fill(config.template.effortArgs, {}).map((arg) => arg.replace('{effort}', effort)));
-    else if (name === 'codex') args.splice(args[1] === 'resume' ? 2 : 1, 0, '-c', 'model_reasoning_effort=' + JSON.stringify(effort));
+    else if (name === 'codex') args.splice(codexSettingsIndex(args), 0, '-c', 'model_reasoning_effort=' + JSON.stringify(effort));
     else if (name === 'claude') env.CLAUDE_CODE_EFFORT_LEVEL = effort;
     else if (name === 'grok') args.unshift('--effort', effort);
   }
@@ -219,23 +237,33 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     env.AGENTDESK_MCP_SOCKET = mcp.socket;
     env.AGENTDESK_MCP_CAPABILITY = mcp.capability;
   }
-  if (name === 'antigravity' && provider.template && sandboxed && attachmentDirectory) {
-    // Inside the sandbox the attachment folder is mounted read-only, so reading files there is safe.
-    args.unshift('--settings', JSON.stringify({ permissions: { allow: [...(mcp ? ['mcp(agentdesk_windows/*)'] : []), 'command(*)', 'read_file(*)'] } }));
-  } else if (name === 'antigravity' && provider.template && (mcp || sandboxed)) {
-    const allow = [...(mcp ? ['mcp(agentdesk_windows/*)'] : []), ...(sandboxed ? ['command(*)'] : [])];
-    args.unshift('--settings', JSON.stringify({ permissions: { allow } }));
+  if (name === 'antigravity' && provider.template) {
+    // The same permission set as a single chat: web reading is always on, the CLI's own file and shell tools are
+    // on only inside the sandbox, and writing is allowed only for a write step. execute_url stays denied.
+    const allow = [
+      ...(mcp ? ['mcp(agentdesk_windows/*)',
+        ...require('./mcp').toolsFor(mcp.scope).map(({ name }) => `mcp(agentdesk_windows/${name})`)] : []),
+      'read_url(*)', 'search_web(*)',
+      ...(sandboxed ? ['read_file(*)', 'command(*)'] : []),
+      ...(sandboxed && !readonly ? ['write_file(*)'] : []),
+    ];
+    const deny = [
+      'execute_url(*)',
+      ...(sandboxed ? [] : ['read_file(*)', 'command(*)']),
+      ...(readonly ? ['write_file(*)'] : []),
+    ];
+    args.unshift('--settings', JSON.stringify({ permissions: { allow, deny, ask: [] } }));
   }
   if (mcp && !provider.template && name !== 'gemini') {
     const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
     if (name === 'codex') {
-      args.splice(args[1] === 'resume' ? 2 : 1, 0,
+      args.splice(codexSettingsIndex(args), 0,
         '-c', 'mcp_servers.agentdesk_windows.command=' + JSON.stringify(server.command),
         '-c', 'mcp_servers.agentdesk_windows.args=' + JSON.stringify(server.args),
         '-c', 'mcp_servers.agentdesk_windows.default_tools_approval_mode="writes"');
     } else if (name === 'claude') {
-      args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { agentdesk_windows: server } }),
-        '--allowedTools', claudeMcpAllow('agentdesk_windows', require('./mcp').toolsFor(mcp.scope).map(({ name }) => name)).join(','));
+      args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { agentdesk_windows: server } }));
+      addClaudeAllow(args, claudeMcpAllow('agentdesk_windows', require('./mcp').toolsFor(mcp.scope).map(({ name }) => name)));
     } else {
       env.AGENTDESK_MCP_SOCKET = mcp.socket;
       env.AGENTDESK_MCP_CAPABILITY = mcp.capability;

@@ -114,8 +114,11 @@ test('Codex JSON errors classify quota exhaustion without treating recovered ret
     "  process.exitCode = 1;",
     "}",
   ].join('\n'));
+  // The adapter runs Codex with the global --search flag before `exec`; the stand-in ignores the flags.
+  const bin = path.join(dir, 'codex');
+  await fs.writeFile(bin, `#!${process.execPath}\nrequire(${JSON.stringify(path.join(dir, 'exec'))});\n`, { mode: 0o700 });
   const run = (result) => runAdapter({
-    name: 'codex', config: { bin: process.execPath, env: { ...process.env, MOCK_CODEX_RESULT: result } },
+    name: 'codex', config: { bin, env: { ...process.env, MOCK_CODEX_RESULT: result } },
     cwd: dir, readonly: true, signal: new AbortController().signal, timeout: 5000,
     prompt: 'hello', log: path.join(dir, result + '.log'), onSession() {},
   });
@@ -140,7 +143,12 @@ test('a CLI described by template runs with its flags, and an exhausted quota is
     timeout: 10000, printTimeoutMs: 870000, signal: new AbortController().signal, log: path.join(dir, 'log'), model: 'fast' };
   let session;
   const result = await runAdapter({ ...base, prompt: 'scan repo', onSession: (id) => { session = id; } });
-  assert.equal(result.output, 'brief: --read-only --model fast --print-timeout 14m30s -p scan repo');
+  const match = /^brief: --settings (\S+) --read-only --model fast --print-timeout 14m30s -p scan repo$/.exec(result.output);
+  assert.ok(match, result.output);
+  const permissions = JSON.parse(match[1]).permissions;
+  assert.ok(permissions.allow.includes('read_url(*)') && permissions.allow.includes('search_web(*)'));
+  // Without a sandbox the CLI's own file and shell tools stay denied, and a read-only step cannot write.
+  assert.deepEqual(permissions.deny, ['execute_url(*)', 'read_file(*)', 'command(*)', 'write_file(*)']);
   assert.deepEqual(result.usage, { input: 9, output: 4 });
   assert.equal(session, 's-1');
   await assert.rejects(runAdapter({ ...base, prompt: 'quota-test', onSession() {} }), /cli_quota_exhausted/);
@@ -201,10 +209,18 @@ test('Antigravity streaming results preserve responses, sessions, usage and auth
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const fixture = path.join(dir, 'fixture.js');
   await fs.writeFile(fixture, `const bad=process.argv[2]==='fail'; console.log(JSON.stringify({event:'result',result:{conversation_id:'agy-session',response:bad?'':'connected',usage:{input_tokens:5,output_tokens:2},...(bad?{error:'authentication required'}:{})}}));`);
+  // The adapter prepends Antigravity's --settings; the stand-in takes the prompt after the fixture path.
+  const bin = path.join(dir, 'agy');
+  await fs.writeFile(bin, `#!${process.execPath}
+const args = process.argv.slice(2);
+const at = args.indexOf(${JSON.stringify(fixture)});
+process.argv = [process.argv[0], ${JSON.stringify(fixture)}, ...args.slice(at + 1)];
+require(${JSON.stringify(fixture)});
+`, { mode: 0o700 });
   const template = { ...require('../orchestrator/vps2.example.json').adapters.antigravity.template,
     args: [fixture, '{prompt}'], readonlyArgs: [], writeArgs: [], resumeArgs: [] };
   let session;
-  const run = prompt => runAdapter({ name:'antigravity', config:{bin:process.execPath,env:process.env,template},
+  const run = prompt => runAdapter({ name:'antigravity', config:{bin,env:process.env,template},
     cwd:dir, prompt, readonly:true, signal:new AbortController().signal, timeout:5000,
     log:path.join(dir,'result.log'), onSession:id=>{session=id;} });
   assert.deepEqual(await run('ok'), { output:'connected', usage:{input:5,output:2} });

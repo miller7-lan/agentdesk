@@ -489,6 +489,7 @@ test('Grok and Antigravity use their own event formats and session flags', async
   // Web search is on, as for Codex; without the sandbox the shell stays off.
   assert.ok(!grokReport1.args.includes('--disable-web-search'));
   assert.match(grokReport1.args[grokReport1.args.indexOf('--tools') + 1], /web_search/);
+  assert.ok(grokReport1.args.some((arg, i) => arg === '--allow' && grokReport1.args[i + 1] === 'Fetch'));
   assert.match(grokReport1.args[grokReport1.args.indexOf('--disallowed-tools') + 1], /run_terminal_command/);
   const grokStored = JSON.parse(fs.readFileSync(path.join(grokDir, 'chat-grok.json'), 'utf8'));
   const grokSession = grokStored.threads[grokThread].sessionId;

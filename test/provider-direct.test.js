@@ -64,12 +64,57 @@ test('Gemini edit permission does not change its read-only invocation', () => {
   assert.equal(write[write.indexOf('--approval-mode') + 1], 'auto_edit');
 });
 
+test('Gemini policies allow web reading in every step and writing only when the step may write', async (t) => {
+  const { providerSettings } = require('../orchestrator/service');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-gemini-policy-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const settings = { bin: process.execPath, sandbox: true, allowWrites: true };
+  const adapter = providerSettings(settings, 'gemini', path.join(dir, 'home'));
+  const review = await fs.readFile(adapter.reviewPolicy, 'utf8');
+  const write = await fs.readFile(adapter.writePolicy, 'utf8');
+  for (const policy of [review, write]) {
+    for (const tool of ['google_web_search', 'web_fetch', 'read_file', 'read_many_files', 'run_shell_command']) {
+      assert.ok(policy.includes('"' + tool + '"'), tool);
+    }
+  }
+  assert.ok(!review.includes('"write_file"'));
+  assert.ok(write.includes('"write_file"') && write.includes('"replace"'));
+});
+
+test('Codex enables live web search before exec for fresh and resumed, read and write steps', () => {
+  for (const readonly of [true, false]) {
+    for (const session of [undefined, 'session']) {
+      const args = providers.codex.args('hello', readonly, session);
+      assert.equal(args[0], '--search');
+      assert.equal(args[1], 'exec');
+      if (session) assert.equal(args[2], 'resume');
+    }
+  }
+});
+
+test('Claude steps can search and fetch the web while read-only steps still deny editing tools', () => {
+  for (const readonly of [true, false]) {
+    const args = providers.claude.args('hello', readonly);
+    const allowed = args[args.indexOf('--allowedTools') + 1].split(',');
+    for (const tool of ['WebSearch', 'WebFetch', 'Read', 'Glob', 'Grep']) assert.ok(allowed.includes(tool), tool);
+    if (readonly) {
+      const denied = args[args.indexOf('--disallowedTools') + 1].split(',');
+      for (const tool of ['Bash', 'Write', 'Edit', 'NotebookEdit']) assert.ok(denied.includes(tool), tool);
+    }
+  }
+});
+
 test('Grok headless edits receive an explicit Edit allow rule while read-only mode denies it', () => {
   const read = providers.grok.args('hello', true, 'session');
   const write = providers.grok.args('hello', false, 'session');
   assert.ok(read.some((arg, i) => arg === '--deny' && read[i + 1] === 'Edit'));
   assert.ok(write.some((arg, i) => arg === '--allow' && write[i + 1] === 'Edit'));
   assert.ok(write.some((arg, i) => arg === '--deny' && write[i + 1] === 'Bash'));
+  for (const args of [read, write]) {
+    assert.ok(args.some((arg, i) => arg === '--allow' && args[i + 1] === 'WebSearch'));
+    assert.ok(args.some((arg, i) => arg === '--allow' && args[i + 1] === 'WebFetch'));
+    assert.ok(args.some((arg, i) => arg === '--allow' && args[i + 1] === 'Fetch'));
+  }
 });
 
 test('explicit direct edits can use reserved Claude quota but cannot bypass the hard quota limit', () => {

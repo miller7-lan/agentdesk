@@ -142,6 +142,11 @@ function providerSettings(settings, name, home) {
   }
   if (name !== 'gemini' || adapter.template) return adapter;
   fs.accessSync(settings.bin, fs.constants.X_OK);
+  // The policy engine's tool names. Web reading is always on; the shell is allowed only inside the sandbox,
+  // where it cannot write outside the step's worktree.
+  const readTools = ['read_file', 'read_many_files', 'list_directory', 'glob', 'grep_search', 'search_file_content',
+    'google_web_search', 'web_fetch'];
+  const shellTools = settings.sandbox ? ['run_shell_command'] : [];
   const reviewPolicy = path.join(home, 'agentdesk-review.toml');
   fs.writeFileSync(reviewPolicy, `[[rule]]
 toolName = "*"
@@ -149,7 +154,7 @@ decision = "deny"
 priority = 980
 
 [[rule]]
-toolName = ["read_file", "list_directory", "glob", "grep_search"]
+toolName = ${JSON.stringify([...readTools, ...shellTools])}
 decision = "allow"
 priority = 990
 `, { mode: 0o600 });
@@ -160,7 +165,7 @@ decision = "deny"
 priority = 980
 
 [[rule]]
-toolName = ["read_file", "list_directory", "glob", "grep_search", "write_file", "replace"]
+toolName = ${JSON.stringify([...readTools, ...shellTools, 'write_file', 'replace'])}
 decision = "allow"
 priority = 990
 `, { mode: 0o600 });

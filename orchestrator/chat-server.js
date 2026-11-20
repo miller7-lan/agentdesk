@@ -735,7 +735,7 @@ function providerArgs(turn, workspace) {
       '--no-auto-update', '--output-format', 'streaming-messages-json', '--include-partial-messages',
       '--permission-mode', 'dontAsk', '--no-subagents',
       '--tools', ['todo_write', ...GROK_WEB, ...(SANDBOX ? [...GROK_SHELL_READ, ...(turn.readOnly ? [] : GROK_SHELL_WRITE)] : [])].join(','),
-      '--allow', `MCPTool(${turn.serverName}__*)`, '--allow', 'WebSearch', '--allow', 'WebFetch',
+      '--allow', `MCPTool(${turn.serverName}__*)`, '--allow', 'WebSearch', '--allow', 'WebFetch', '--allow', 'Fetch',
       ...(SANDBOX ? ['--allow', 'Bash', '--allow', 'Read', '--allow', 'Grep', ...(turn.readOnly ? [] : ['--allow', 'Edit'])] : []),
       '--disallowed-tools', [...GROK_DISALLOWED, ...(SANDBOX ? [] : GROK_SHELL_READ),
         ...(SANDBOX && !turn.readOnly ? [] : GROK_SHELL_WRITE)].join(','),

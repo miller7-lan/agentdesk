@@ -70,11 +70,14 @@ test('a model profile narrows the effort levels it accepts', async (t) => {
 test('an exit code keeps the CLI line that explains it', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-error-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const bin = path.join(dir, 'bad-cli.js');
-  await fs.writeFile(bin, `#!${process.execPath}
+  const script = path.join(dir, 'bad-cli.js');
+  await fs.writeFile(script, `#!${process.execPath}
 process.stderr.write('error: invalid model selection (--model "gemini-4-hydrogen" --effort "medium"): --effort is not supported for model "gemini-4-hydrogen"\\n');
 process.exit(1);
 `, { mode: 0o755 });
+  // The adapter passes Codex's global --search flag before exec; the stand-in ignores its arguments.
+  const bin = path.join(dir, 'codex');
+  await fs.writeFile(bin, `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`, { mode: 0o700 });
   const { runAdapter } = require('../orchestrator/adapters');
   await assert.rejects(runAdapter({ name: 'codex', config: { bin, env: { PATH: process.env.PATH } }, cwd: dir, prompt: 'p',
     readonly: true, timeout: 10000, signal: new AbortController().signal, log: path.join(dir, 'error.log'), onSession() {} }),
