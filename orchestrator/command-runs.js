@@ -6,11 +6,12 @@ const path = require('node:path');
 const COMMAND_TIMEOUT = 300_000;
 const COMMAND_REPLY_TIMEOUT = COMMAND_TIMEOUT + 15_000;
 
-function execute(root, binary, args, timeout, signal, env = process.env, outputLimit = 16000, onOutput = () => {}) {
+function execute(root, binary, args, timeout, signal, env = process.env, outputLimit = 16000, onOutput = () => {}, options = {}) {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
       cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32',
+      windowsVerbatimArguments: options.windowsVerbatimArguments === true,
     });
     let failure;
     const stop = (reason) => {
@@ -25,17 +26,19 @@ function execute(root, binary, args, timeout, signal, env = process.env, outputL
         try { process.kill(-child.pid, 'SIGKILL'); } catch {}
       }
     };
-    const timer = setTimeout(() => stop(new Error('command_timeout')), timeout);
+    const timer = timeout === null ? undefined : setTimeout(() => stop(new Error('command_timeout')), timeout);
     const abort = () => stop(signal.reason || new Error('command_cancelled'));
     const output = { stdout: '', stderr: '' };
+    const offsets = { stdout: 0, stderr: 0 };
     let truncated = false;
     signal.addEventListener('abort', abort, { once: true });
     for (const channel of Object.keys(output)) {
       child[channel].setEncoding('utf-8').on('data', (chunk) => {
         const combined = output[channel] + chunk;
         if (combined.length > outputLimit) truncated = true;
+        offsets[channel] += chunk.length;
         output[channel] = combined.slice(-outputLimit);
-        onOutput({ ...output, truncated });
+        onOutput({ ...output, truncated }, offsets);
       });
     }
     child.once('error', (error) => {
@@ -92,12 +95,13 @@ class CommandRuns {
     } finally { try { fs.unlinkSync(temp); } catch {} }
   }
 
-  start({ scope, key, turnId, itemId, name, argv, cwd, timeout = COMMAND_TIMEOUT, limit = 16_000 }) {
+  start({ scope, key, turnId, itemId, name, argv, cwd, timeout = COMMAND_TIMEOUT, limit = 16_000, native }) {
     this.load();
     this.prune();
     const existing = this.keys.get(key);
     if (existing) {
-      if (existing.scope !== scope || existing.name !== name || existing.cwd !== cwd || existing.turnId !== turnId) {
+      if (existing.scope !== scope || existing.name !== name || existing.cwd !== cwd || existing.turnId !== turnId ||
+          existing.snapshot.fingerprint !== native?.fingerprint) {
         throw new Error('command_run_conflict');
       }
       return existing.done;
@@ -106,7 +110,7 @@ class CommandRuns {
     const id = randomUUID();
     const controller = new AbortController();
     const snapshot = { id, name, cwd, state: 'running', startedAt: Date.now(), sequence: 0, stdout: '', stderr: '',
-      ...(turnId && { turnId }), ...(itemId && { itemId }) };
+      ...(turnId && { turnId }), ...(itemId && { itemId }), ...(native && { fingerprint: native.fingerprint, cursor: { stdout: 0, stderr: 0 } }) };
     const entry = { scope, key, name, cwd, turnId, controller, snapshot };
     this.keys.set(key, entry);
     this.runs.set(id, entry);
@@ -117,12 +121,19 @@ class CommandRuns {
     }
     let update;
     const emit = () => this.notify(scope, { ...snapshot });
-    const onOutput = (output) => {
+    const onOutput = (output, offsets) => {
       Object.assign(snapshot, output, { sequence: snapshot.sequence + 1 });
+      if (native) snapshot.cursor = { ...offsets };
       update ??= setTimeout(() => { update = null; emit(); }, 100);
     };
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/KEY|TOKEN|SECRET|PASSWORD/i.test(name)));
-    entry.done = execute(cwd, argv[0], argv.slice(1), timeout, controller.signal, env, limit, onOutput).then(
+    for (const [name, value] of Object.entries(native?.env || {})) {
+      // Replace case-insensitive names on Windows rather than passing two spellings of PATH.
+      const old = process.platform === 'win32' ? Object.keys(env).find((key) => key.toLowerCase() === name.toLowerCase()) : name;
+      if (old) delete env[old];
+      if (value !== null) env[name] = value;
+    }
+    entry.done = execute(cwd, argv[0], argv.slice(1), timeout, controller.signal, env, limit, onOutput, native).then(
       (result) => Object.assign(snapshot, result, { state: result.code === 0 ? 'completed' : 'failed' }),
       (error) => Object.assign(snapshot, { code: null, state: error.message === 'command_timeout' ? 'timed_out'
         : controller.signal.aborted ? 'cancelled' : 'failed', error: error.code || error.message }),
@@ -139,7 +150,14 @@ class CommandRuns {
   }
 
   byKey(scope, key) {
+    this.load();
     const item = this.keys.get(key);
+    return item?.scope === scope ? { ...item.snapshot } : null;
+  }
+
+  status(scope, id) {
+    this.load();
+    const item = this.runs.get(id);
     return item?.scope === scope ? { ...item.snapshot } : null;
   }
 
