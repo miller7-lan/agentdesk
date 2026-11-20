@@ -63,6 +63,14 @@ class WindowsProjectLeases {
       state: this.reconciling.has(lease.id) ? 'reconciling' : lease.suspended ? 'suspended' : 'active' };
   }
 
+  lookup(identity) {
+    for (const lease of this.leases.values()) {
+      if (['device', 'provider', 'threadId', 'projectId'].every((key) => lease[key] === identity[key]) &&
+          lease.key === identity.root?.toLowerCase() && lease.fullAccess === identity.fullAccess) return this.view(lease);
+    }
+    return null;
+  }
+
   get(binding, { writable = false, allowSuspended = false, current = false } = {}) {
     const lease = this.leases.get(binding?.id);
     if (!lease || ['device', 'provider', 'threadId', 'projectId'].some((key) => binding[key] !== lease[key])) {
@@ -80,6 +88,19 @@ class WindowsProjectLeases {
     lease.suspended = true;
     this.channels.get(lease.id)?.close();
     this.save();
+    return this.view(lease);
+  }
+
+  promote(binding, threadId) {
+    const lease = this.get(binding, { current: true });
+    if (!lease.threadId.startsWith('pending-') || !/^[a-z0-9][a-z0-9-]{15,100}$/i.test(threadId)) {
+      throw new Error('invalid_native_chat_binding');
+    }
+    const scope = JSON.stringify([lease.device, lease.provider, threadId, ...(lease.projectId ? [lease.projectId] : [])]);
+    if ([...this.leases.values()].some((other) => other !== lease && other.scope === scope)) throw new Error('native_chat_already_bound');
+    const old = { threadId: lease.threadId, scope: lease.scope };
+    Object.assign(lease, { threadId, scope });
+    try { this.save(); } catch (error) { Object.assign(lease, old); throw error; }
     return this.view(lease);
   }
 
@@ -115,11 +136,12 @@ class WindowsProjectLeases {
     if (this.channels.has(lease.id)) throw new Error('native_project_mount_exists');
     const { createProjectSftp } = require('./sftp-project-write');
     let wrote = false;
+    let clean = false;
     const channel = createProjectSftp({
       root: lease.directory,
       authorize: (write) => {
-        try { this.get(binding, { writable: write, current: true }); }
-        catch (error) { throw Object.assign(error, { code: 'EACCES' }); }
+        if (this.leases.get(lease.id) !== lease || lease.generation !== binding.generation || lease.suspended ||
+            (write && !lease.fullAccess)) throw Object.assign(new Error('native_chat_lease_denied'), { code: 'EACCES' });
         if (!write) return () => {};
         lease.fileOperation = true;
         this.save();
@@ -132,15 +154,28 @@ class WindowsProjectLeases {
     })(input, output);
     const done = channel.done.finally(() => {
       this.channels.delete(lease.id);
-      if (wrote || lease.fileOperation) lease.unknownFiles = true;
+      if ((wrote && !clean) || lease.fileOperation) lease.unknownFiles = true;
       lease.fileOperation = false;
       lease.suspended = true;
       this.save();
     });
     done.catch(() => {});
-    const mounted = { ...channel, done };
+    const mounted = { ...channel, done, verifiedClose: () => {
+      if (lease.fileOperation) throw new Error('native_chat_reconcile_required');
+      clean = true;
+      channel.close();
+    } };
     this.channels.set(lease.id, mounted);
     return mounted;
+  }
+
+  async completeSftp(binding) {
+    const lease = this.get(binding, { current: true });
+    const channel = this.channels.get(lease.id);
+    if (!channel) return false;
+    channel.verifiedClose();
+    await channel.done;
+    return true;
   }
 }
 

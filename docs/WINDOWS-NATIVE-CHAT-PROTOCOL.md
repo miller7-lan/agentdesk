@@ -1,6 +1,6 @@
 # Windows 原生单聊协议 v1
 
-第二阶段开发协议，适用于 Windows 的 Codex 和 Claude 单聊。下面的协议处理器、租约、SFTP、挂载生命周期和 Shell 组件可独立测试。现有桌面端的单聊入口仍需连接生产会话启动器和已认证 Bridge，不能用组件测试代替正式接入验收。
+适用于 Windows 的 Codex 和 Claude 单聊。接口、租约、SFTP、挂载生命周期和 Shell 组件可独立测试。第三阶段已接入桌面入口，启动器与独立 Worker 已通过隔离夹具验证。最新真机结果和正式部署门槛见 [Windows 原生单聊部署与验收](WINDOWS-NATIVE-CHAT-DEPLOY.md)。
 
 ## 请求边界
 
@@ -82,7 +82,7 @@ node scripts/verify-windows-project-mount.cjs --claude
 
 后四条使用 Windows 和 VPS2 真机夹具。夹具占用临时项目和隔离挂载命名空间，验证外部进程看不到项目文件。`--codex` 和 `--claude` 还需要 VPS2 上的对应订阅登录。这些命令无须修改运行中的主控、用户项目或 SSH 登录配置。
 
-2026-11-20 验证结果：
+2026-11-20 第二阶段验证结果，保留作故障基线：
 
 - Windows 全量测试 282 项通过、32 项跳过，Ubuntu/WSL 全量测试 306 项通过、8 项跳过，两端均无失败。覆盖了重叠写入租约、旧 SFTP 连接失效、人工核对、UTF-8 日志游标和群聊原有行为。
 - VPS2 私有命名空间中的 SSHFS 实测通过。命名空间外看不到夹具文件。Windows 实际收到文件替换和二进制写入。
@@ -90,4 +90,4 @@ node scripts/verify-windows-project-mount.cjs --claude
 - Claude 夹具启动了挂载工作目录和隔离沙箱。Claude Code 返回未登录，未完成模型原生读写和 `local_shell` 调用。
 - Windows Shell 组件实测构建并运行了临时 EXE。两个官方模型均未完成发起构建、核对产物和断线后续跑的验收。
 
-生产启用前需要完成桌面端与 Bridge 会话绑定、挂载启动器、原线程断线续跑和真实模型构建验收。届时依照 [部署说明](DEPLOY.md) 备份 VPS2 服务文件和配置，再在测试设备更新 Windows 安装包和 Worker。回滚恢复原服务文件和安装包，保留用户工作区、认证和会话数据。现阶段只在开发分支和隔离夹具中验证。
+生产启用前仍需通过安装包 GUI 验收、Codex 真实模型构建和备用线路切换测试。依照 [原生单聊部署说明](WINDOWS-NATIVE-CHAT-DEPLOY.md) 备份 VPS2 服务文件，再在测试设备更新 Windows 安装包和 Worker。回滚恢复原服务文件和安装包，保留用户工作区、认证和会话数据。
