@@ -112,6 +112,24 @@ function allowedAnywhere(candidate) {
 
 const allowedAnywherePath = (value) => { try { allowedAnywhere(value); return true; } catch { return false; } };
 
+// Inside a folder the person granted for a task (see WindowsOperations.addGrant): the configured limits (allowed
+// roots, system folders, the any-folder switches) do not apply there, but credential folders and files and .git
+// never open. Symbolic links are resolved first, so they cannot lead outside the granted folder.
+async function grantedPath(value, folders, { create = false } = {}) {
+  if (typeof value !== 'string' || value.length > 1024 || /[\x00-\x1f]/.test(value)) throw new Error('invalid_path');
+  let requested = value;
+  if (/^~[\\/]/.test(requested)) requested = path.join(HOME, requested.slice(2));
+  if (!path.isAbsolute(requested)) throw new Error('invalid_path');
+  const normalized = path.resolve(requested);
+  const real = create ? path.join(await fs.realpath(path.dirname(normalized)), path.basename(normalized)) : await fs.realpath(normalized);
+  const value_ = fold(real);
+  if (!folders.some((folder) => under(value_, fold(folder)))) return null;
+  if (HOME_DENY.some((rootPath) => under(value_, fold(rootPath)))) throw new Error('credential_path_denied');
+  if (DENY_FILES.has(path.basename(real).toLowerCase())) throw new Error('credential_path_denied');
+  if (real.split(path.sep).some((part) => part.toLowerCase() === '.git')) throw new Error('git_path_denied');
+  return real;
+}
+
 // Absolute paths for the computer location: "" or "~" means the home folder, "~/..." is expanded, and
 // symbolic links are resolved before the allow/deny checks so they cannot reach a forbidden location.
 async function anyPath(value) {
@@ -259,9 +277,16 @@ class WindowsOperations {
       const search = body.operation === 'glob' || body.operation === 'grep_context';
       const grep = body.operation === 'grep_context';
       if (selected === 'computer') {
-        // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it.
-        if (!anyFolder || body.anyFolder !== true) throw new Error('read_root_not_authorized');
-        const resolve = async (filename) => external(await anyPath(filename));
+        // The orchestrator only sets anyFolder for the lead; the bridge config must also allow it — or the person
+        // granted a folder for this task (read or write), which then opens just that folder.
+        const granted = this.grantsFor(taskId, ['read', 'write']).map((grant) => grant.path);
+        if ((!anyFolder && !granted.length) || body.anyFolder !== true) throw new Error('read_root_not_authorized');
+        const resolve = async (filename) => {
+          const viaGrant = granted.length ? await grantedPath(filename, granted).catch((error) => { if (/denied/.test(error.message)) throw error; return null; }) : null;
+          if (viaGrant) return external(viaGrant);
+          if (!anyFolder) throw new Error('read_root_not_authorized');
+          return external(await anyPath(filename));
+        };
         if (body.operation === 'read_batch') return readBatch(body.items, resolve);
         if (search) return searchFiles(body, resolve, grep);
         return this.readTarget(await resolve(body.path), body, undefined, inProject);
@@ -282,8 +307,33 @@ class WindowsOperations {
       // orchestrator's anyFolder mark, which it only sets for steps that change files.
       const writable = (this.config.readAnyFolder === true || workspace.readAnyFolder === true) &&
         (this.config.writeAnyFolder === true || workspace.writeAnyFolder === true);
-      if (!writable || body.anyFolder !== true) throw new Error('read_root_readonly');
+      const grantedWrite = this.grantsFor(taskId, ['write']).map((grant) => grant.path);
+      if ((!writable && !grantedWrite.length) || body.anyFolder !== true) throw new Error('read_root_readonly');
       const project = await fs.realpath(workspace.root);
+      if (!writable) {
+        // Only the folders the person granted for writing in this task.
+        const locate = async (filename) => {
+          const target = await grantedPath(filename, grantedWrite, { create: true });
+          if (!target) throw new Error('path_not_allowed');
+          const relative = path.relative(project, target);
+          if (relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) {
+            throw new Error('project_write_denied: change project files in the task workspace; they are applied as a reviewed patch');
+          }
+          return target;
+        };
+        if (body.operation === 'write_batch') return writeBatch(body.items, locate);
+        if (body.operation === 'edit') {
+          const result = await editFile(body, locate);
+          return { ...result, type: 'file', size: result.bytes };
+        }
+        if (body.operation === 'write') {
+          const target = await locate(body.path);
+          await fs.writeFile(target, Buffer.from(String(body.content ?? ''), body.encoding === 'base64' ? 'base64' : 'utf8'));
+          const stat = await fs.stat(target);
+          return { path: target, size: stat.size, version: stat.mtimeMs + ':' + stat.size };
+        }
+        throw new Error('read_root_readonly');
+      }
       if (body.operation === 'write_batch') {
         return writeBatch(body.items, (filename) => this.anyWritePath(project, filename));
       }
@@ -489,6 +539,45 @@ class WindowsOperations {
   // (system, credential and .git paths refused; links resolved first) apply to the target and to its folder,
   // which must exist. The project folder itself only changes through reviewed patches. Overwrites name the
   // version they replace; deletions go to the trash.
+  // ---------- access the person approved on this computer ----------
+  // Recorded only from the desktop's local control socket when the person clicks「允许」(service.js startBridge),
+  // never from VPS2: VPS2 can only remove grants (when a task ends). Kinds: "read" and "write" a folder, or
+  // "command" (an exact program and arguments, run in the project folder without a shell).
+  static GRANT_HOURS = 6;
+  async addGrant(grant) {
+    const kind = grant?.kind;
+    if (!['read', 'write', 'command'].includes(kind) || typeof grant.taskId !== 'string' || !/^[\w-]{1,64}$/.test(grant.taskId)) throw new Error('invalid_grant');
+    // Tied to one task of one group chat: it never applies to another group, another task or a single chat.
+    const record = { id: 'g' + randomUUID().slice(0, 8), taskId: grant.taskId, kind, created: Date.now(), expires: Date.now() + WindowsOperations.GRANT_HOURS * 3600_000,
+      ...(typeof grant.group === 'string' && grant.group.length <= 200 && { group: grant.group }) };
+    if (kind === 'command') {
+      if (!Array.isArray(grant.argv) || !grant.argv.length || grant.argv.length > 40 ||
+          grant.argv.some((arg) => typeof arg !== 'string' || !arg || arg.length > 1000 || /[\x00]/.test(arg))) throw new Error('invalid_grant');
+      record.argv = grant.argv;
+      record.workspace = typeof grant.workspace === 'string' ? grant.workspace : undefined;
+    } else {
+      if (typeof grant.path !== 'string' || !path.isAbsolute(grant.path)) throw new Error('invalid_grant');
+      const folder = await fs.realpath(path.resolve(grant.path));
+      if (!(await fs.stat(folder)).isDirectory()) throw new Error('invalid_grant');
+      if (HOME_DENY.some((rootPath) => under(fold(folder), fold(rootPath))) || folder === path.parse(folder).root) throw new Error('credential_path_denied');
+      record.path = folder;
+    }
+    this.store.put('grants', record.id, record);
+    return record;
+  }
+  grantsFor(taskId, kinds) {
+    const now = Date.now();
+    if (typeof this.store?.all !== 'function') return [];
+    return this.store.all('grants').filter((grant) => {
+      if (grant.expires <= now) { this.store.delete('grants', grant.id); return false; }
+      return grant.taskId === taskId && kinds.includes(grant.kind);
+    });
+  }
+  revokeGrants(taskId) {
+    if (typeof this.store?.all !== 'function') return;
+    for (const grant of this.store.all('grants')) if (grant.taskId === taskId) this.store.delete('grants', grant.id);
+  }
+
   async anyWritePath(project, value, { existing = false } = {}) {
       if (typeof value !== 'string' || value.length > 1024 || /[\x00-\x1f]/.test(value)) throw new Error('invalid_path');
       let requested = value;
@@ -714,6 +803,7 @@ class WindowsOperations {
     // VPS2's mirror lacks the commit this project is on (a local commit not pushed yet): pack only what is missing
     // into a Git bundle — the mirror names the commits it already has — for VPS2 to fetch.
     if (body.operation === 'git_sync_bundle') return this.syncBundle(taskId, root, body, controller.signal);
+    if (body.operation === 'grants_revoke') { this.revokeGrants(taskId); return { revoked: true }; }
     if (body.operation === 'git_project_snapshot' || body.operation === 'git_project_snapshot_status') {
       const { head, version, bytes, skipped } = await this.projectSnapshot(root, controller.signal);
       if (body.operation === 'git_project_snapshot_status') return { head, version };
@@ -732,11 +822,16 @@ class WindowsOperations {
     if (body.operation === 'git_review_diff') return this.reviewDiff(root, controller.signal);
     // Agents see and run only the commands this workspace lists in agentCommands (empty by default).
     const forAgents = Array.isArray(workspace.agentCommands) ? workspace.agentCommands.filter((name) => Array.isArray(workspace.commands?.[name])) : [];
+    // Commands the person approved for this task (exact program and arguments) are listed and run like configured ones.
+    const grantedCommands = this.grantsFor(taskId, ['command']).filter((grant) => !grant.workspace || workspace === this.config.workspaces?.[grant.workspace]);
     if (body.operation === 'list_agent_commands') {
-      return { commands: forAgents.map((name) => ({ name, program: path.basename(workspace.commands[name][0]), args: workspace.commands[name].slice(1, 21) })) };
+      return { commands: [...forAgents.map((name) => ({ name, program: path.basename(workspace.commands[name][0]), args: workspace.commands[name].slice(1, 21) })),
+        ...grantedCommands.map((grant) => ({ name: 'granted-' + grant.id, program: path.basename(grant.argv[0]), args: grant.argv.slice(1, 21), temporary: true }))] };
     }
-    if (body.permission === 'agent' && !forAgents.includes(body.command)) throw new Error('command_not_enabled_for_agents');
-    const spec = Object.hasOwn(workspace.commands || {}, body.command) && workspace.commands[body.command];
+    const grantedCommand = typeof body.command === 'string' && body.command.startsWith('granted-') &&
+      grantedCommands.find((grant) => 'granted-' + grant.id === body.command);
+    if (body.permission === 'agent' && !forAgents.includes(body.command) && !grantedCommand) throw new Error('command_not_enabled_for_agents');
+    const spec = grantedCommand ? grantedCommand.argv : Object.hasOwn(workspace.commands || {}, body.command) && workspace.commands[body.command];
     if (body.operation !== 'run' || !['development', 'agent'].includes(body.permission) || !Array.isArray(spec) ||
         !spec.length || spec.some((arg) => typeof arg !== 'string') ||
         !Number.isSafeInteger(body.timeout_ms) || body.timeout_ms < 1 || body.timeout_ms > 900000) {

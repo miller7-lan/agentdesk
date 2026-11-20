@@ -476,7 +476,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
       try {
         if (operation === 'attachment_state') {
           wire.send({ ok: true, value: config.stateDir });
@@ -509,6 +509,15 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           ...(operation === 'task_artifacts' && offset !== undefined && { offset }),
           ...(operation === 'handover_choose' && { stop, role, model, effort }),
           ...(operation === 'set_step_models' && { models }) };
+        // The person allowed access beyond this computer's configuration: it is recorded here, on their computer,
+        // before VPS2 hears of it — VPS2 cannot create such a grant by itself.
+        if (operation === 'permission_answer' && ['step', 'task'].includes(reply) && grant && typeof grant === 'object') {
+          const kind = { files_read: 'read', files_write: 'write', commands: 'command' }[grant.kind];
+          if (kind && (grant.path || grant.argv)) {
+            const record = await operations.addGrant({ kind, taskId, group: typeof group === 'string' ? group : undefined, path: grant.path, argv: grant.argv, workspace: grant.workspace });
+            body.grant = { kind: grant.kind, id: record.id, ...(record.path && { path: record.path }), ...(record.argv && { argv: record.argv, name: 'granted-' + record.id }) };
+          }
+        }
         if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
           body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
           const workspaces = config.controlWorkspaces || {};

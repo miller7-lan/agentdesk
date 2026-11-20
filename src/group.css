@@ -784,3 +784,5 @@ button.lane-node { cursor: pointer; }
 .handover-option small.now { color: var(--accent); }
 .permission-kind { margin: 0; font-size: 13px; }
 .permission-kind b { color: var(--accent); }
+.permission-target { margin: 0; font-size: 12.5px; }
+.permission-target code { padding: 1px 6px; border-radius: 6px; background: var(--hover); }

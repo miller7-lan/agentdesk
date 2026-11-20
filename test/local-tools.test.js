@@ -54,3 +54,40 @@ test('agents see and run only the commands listed in agentCommands; none by defa
   const own = await open.call('command.execute', { operation: 'run', command: 'deploy', permission: 'development', timeout_ms: 10000 });
   assert.match(own.stdout, /deployed/);
 });
+
+test('access the person approved on this computer opens exactly that folder or command, for that task only', async (t) => {
+  const Store = require('../orchestrator/store');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-grant-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const root = path.join(base, 'project');
+  const data = path.join(base, 'data');
+  const other = path.join(base, 'other');
+  for (const folder of [root, data, other]) fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(data, 'report.csv'), 'a,b\n');
+  fs.writeFileSync(path.join(other, 'secret.txt'), 'no\n');
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  // A computer that allows nothing beyond its project: no any-folder switches, no agent commands.
+  const operations = new WindowsOperations({ config: { workspaces: { p: { root, commands: {} } } }, store });
+  const call = (task, kind, body) => operations.call({ task_id: task, message_id: 'm' + Math.random(), kind, body: { workspace: 'p', ...body } });
+  const read = (task, file) => call(task, 'file.read', { operation: 'read', root: 'computer', anyFolder: true, path: file });
+  await assert.rejects(read('t1', path.join(data, 'report.csv')), /read_root_not_authorized/);
+  await operations.addGrant({ kind: 'write', taskId: 't1', group: 'g1', path: data });
+  await operations.addGrant({ kind: 'command', taskId: 't1', group: 'g1', argv: [process.execPath, '-e', "console.log('granted ok')"] });
+  assert.equal(Buffer.from((await read('t1', path.join(data, 'report.csv'))).data, 'base64').toString(), 'a,b\n');
+  await assert.rejects(read('t1', path.join(other, 'secret.txt')), /read_root_not_authorized|path_not_allowed/);   // only that folder
+  await assert.rejects(read('t2', path.join(data, 'report.csv')), /read_root_not_authorized/);                     // only that task
+  const written = await call('t1', 'file.write', { operation: 'write', root: 'computer', anyFolder: true, path: path.join(data, 'out.txt'), content: 'done' });
+  assert.equal(fs.readFileSync(path.join(data, 'out.txt'), 'utf8'), 'done');
+  assert.ok(written.version);
+  await assert.rejects(call('t1', 'file.write', { operation: 'write', root: 'computer', anyFolder: true, path: path.join(other, 'x.txt'), content: 'x' }), /path_not_allowed/);
+  const listed = await call('t1', 'command.execute', { operation: 'list_agent_commands' });
+  const name = listed.commands.find((command) => command.temporary).name;
+  const ran = await call('t1', 'command.execute', { operation: 'run', command: name, permission: 'agent', timeout_ms: 10000 });
+  assert.match(ran.stdout, /granted ok/);
+  await assert.rejects(call('t2', 'command.execute', { operation: 'run', command: name, permission: 'agent', timeout_ms: 10000 }), /command_not_enabled_for_agents/);
+  // The task ends: VPS2 removes its grants.
+  await call('t1', 'command.execute', { operation: 'grants_revoke' });
+  await assert.rejects(read('t1', path.join(data, 'report.csv')), /read_root_not_authorized/);
+  await assert.rejects(operations.addGrant({ kind: 'read', taskId: 't1', path: path.join(os.homedir(), '.ssh') }), /credential_path_denied|ENOENT/);
+});

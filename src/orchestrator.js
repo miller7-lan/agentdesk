@@ -814,8 +814,8 @@ window.__groupReady = (async () => {
   const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败',
     replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止', proposed: '待你确认', waiting_choice: '等你选接手', waiting_permission: '等你批权限' };
   // The kinds of temporary access the lead may ask for (scheduler ACCESS_KINDS); credential and system folders never.
-  const ACCESS_NAMES = { files_read: '读你电脑上的任意文件夹（项目以外）', files_write: '改你电脑上任意文件夹里的文件（项目以外）',
-    commands: '运行这台电脑授权给 AI 的命令', desktop: '操作桌面' };
+  const ACCESS_NAMES = { files_read: '读你电脑上的一个文件夹', files_write: '改你电脑上一个文件夹里的文件（项目以外）',
+    commands: '在你电脑上运行一条命令', desktop: '操作桌面' };
   const terminalTask = new Set(['completed', 'failed', 'cancelled']);
   // A step still marked running or queued under a task that has already ended was cut off; show that
   // instead of a live state that contradicts the task.
@@ -2696,7 +2696,9 @@ window.__groupReady = (async () => {
         const answer = button.dataset.permissionAnswer;
         const ok = await run(async () => {
           if (isExample(group.id)) return;
-          updateTask(group, taskId, await control('permission_answer', { taskId, stepId, reply: answer }), true);
+          const request = group.records.get(taskId)?.steps?.find((item) => item.id === stepId)?.permissionRequest || {};
+          const grant = answer !== 'deny' && (request.path || request.argv) ? { kind: request.kind, path: request.path, argv: request.argv, workspace: request.workspace } : undefined;
+          updateTask(group, taskId, await control('permission_answer', { taskId, stepId, reply: answer, group: group.id, ...(grant && { grant }) }), true);
         }, group);
         if (ok) { dialog.close(); A.toast({ step: '已允许这一步', task: '已允许这项任务里同类的权限', deny: '已拒绝，这一步会不用它把能做的做完' }[answer]); render(); }
       });
@@ -2707,9 +2709,11 @@ window.__groupReady = (async () => {
     dialog.innerHTML = `<form method="dialog"><header><h3>组长申请临时权限</h3><button type="button" class="qv-close" data-permission-close aria-label="关闭">×</button></header>
       <p class="handover-why"><b>${esc(memberName(step.role))}${step.model ? '（' + esc(step.model) + '）' : ''}</b> 在 ${esc(step.id)} 这一步因为权限不够没做完。</p>
       <p class="permission-kind">申请：<b>${esc(ACCESS_NAMES[request.kind] || request.kind || '')}</b></p>
+      ${request.path ? `<p class="permission-target">文件夹：<code>${esc(request.path)}</code></p>` : ''}
+      ${request.argv ? `<p class="permission-target">命令：<code>${esc(request.argv.join(' '))}</code>（在项目文件夹里运行，不经过 shell）</p>` : ''}
       ${request.reason ? `<p class="handover-note">组长的理由：${esc(request.reason)}</p>` : ''}
       ${request.denials?.length ? `<p class="handover-tried">被拒绝的操作：${esc(request.denials.join('；'))}</p>` : ''}
-      <p class="handover-note">只给这一步（或这项任务）用，结束就收回。凭据和系统目录、绕过补丁直接改项目，无论怎样都不会开。</p>
+      <p class="handover-note">${request.path || request.argv ? '这可能超出这台电脑配置允许的范围，由你在这台电脑上批准；只给这项任务用，任务结束或 6 小时后收回。' : '只给这一步（或这项任务）用，结束就收回。'}凭据目录、.git、绕过补丁直接改项目，无论怎样都不会开。</p>
       <footer><button type="button" class="btn" data-permission-answer="deny">拒绝</button><span class="grow"></span>
         <button type="button" class="btn" data-permission-answer="task">这项任务都允许</button><button type="button" class="btn primary" data-permission-answer="step">允许这一步</button></footer></form>`;
     if (!dialog.open) dialog.showModal();

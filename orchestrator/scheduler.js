@@ -556,6 +556,10 @@ event(task, state, detail) {
   }
 
   save(task, state, detail, record = true, data) {
+    // Access the person granted on their computer ends with the task.
+    if (task.bridgeGrants && terminal.has(state) && !terminal.has(task.state)) {
+      this.files?.call?.(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'grants_revoke', workspace: task.workspace }, 30000)?.catch?.(() => {});
+    }
     task.state = state;
     task.detail = detail;
     if (record) task.updatedAt = new Date(this.now()).toISOString();
@@ -2951,7 +2955,10 @@ event(task, state, detail) {
         continue;
       }
       step.accessAsked = [...(step.accessAsked || []), kind];
-      step.permissionRequest = { kind, reason: clip(String(decision.reason || ''), 600),
+      const target = kind === 'commands' && Array.isArray(decision.argv) && decision.argv.length && decision.argv.every((arg) => typeof arg === 'string' && arg.length <= 1000)
+        ? { argv: decision.argv.slice(0, 40) }
+        : ['files_read', 'files_write'].includes(kind) && typeof decision.path === 'string' && decision.path.length <= 1024 ? { path: decision.path } : {};
+      step.permissionRequest = { kind, ...target, workspace: task.workspace, reason: clip(String(decision.reason || ''), 600),
         denials: (step.denials || []).slice(-3).map((item) => clip(item.error + (item.path ? ' · ' + item.path : item.command ? ' · ' + item.command : ''), 200)) };
       step.state = 'waiting_permission';
       this.save(task, task.state, `${step.id}:permission_requested:${kind}`);
@@ -2965,8 +2972,8 @@ event(task, state, detail) {
     if (!lead) return null;
     const prompt = [
       'You are 组长, the group lead. A member\u2019s step failed after the person\u2019s computer refused it some access (denials). Decide whether the step really needs more access to do what the person asked.',
-      'Kinds you may ask the person for, only for this step: files_read (read folders outside the project), files_write (change files outside the project; the project itself only changes by the reviewed patch), commands (run commands this computer authorized for agents), desktop (operate the desktop). Never ask for anything else; credential and system folders stay closed.',
-      'Reply with JSON alone: {"grant":"<kind>","reason":"one sentence for the person, in their language"} when the step needs it, or {"grant":null,"alternative":"how the step can finish without it, in the person\u2019s language"}.',
+      'Kinds you may ask the person for, only for this step: files_read (read a folder), files_write (change files in a folder outside the project; the project itself only changes by the reviewed patch), commands (run a command on their computer), desktop (operate the desktop). These may go beyond what the computer is configured to allow — the person approves each one. Name exactly what is needed: "path" (one absolute folder) for files_read and files_write, "argv" (program and arguments, no shell) for commands. Credential folders and .git never open.',
+      'Reply with JSON alone: {"grant":"<kind>","path":"...","argv":["..."],"reason":"one sentence for the person, in their language"} when the step needs it, or {"grant":null,"alternative":"how the step can finish without it, in the person\u2019s language"}.',
       JSON.stringify({ request: clip(task.prompt, 2000), step: { id: step.id, role: step.role, capability: step.capability, prompt: clip(step.prompt, 800), error: clip(step.error || '', 400) },
         denials: step.denials }),
     ].join('\n');
@@ -2999,6 +3006,13 @@ event(task, state, detail) {
     const { kind } = step.permissionRequest;
     if (body.decision === 'step' || body.decision === 'task') {
       this.grantAccess(task, step, kind);
+      const granted = body.grant && typeof body.grant === 'object' ? body.grant : null;
+      if (granted) {
+        task.bridgeGrants = (task.bridgeGrants || 0) + 1;
+        const what = granted.name ? `运行本机命令 ${granted.name}（${(granted.argv || []).join(' ')}），用运行本机命令的工具调用这个名字`
+          : granted.path ? `${granted.kind === 'files_write' ? '读写' : '读取'}文件夹 ${granted.path}（root 用 computer）` : '';
+        if (what) step.guidance = [...(step.guidance || []), { text: '你现在可以' + what + '。这是这项任务的临时权限。', at: new Date(this.now()).toISOString() }].slice(-10);
+      }
       if (body.decision === 'task') task.extraAccess = [...new Set([...(task.extraAccess || []), kind])];
       delete step.permissionRequest;
       this.requeueAfterAccess(task, step, body.decision === 'task' ? 'granted_task' : 'granted');
@@ -3593,7 +3607,7 @@ event(task, state, detail) {
     if (body.operation === 'permission_answer') {
       if (!owner) throw new Error('task_access_denied');
       if (typeof body.stepId !== 'string' || !/^[\w-]{1,64}$/.test(body.stepId)) throw new Error('invalid_step');
-      return this.answerPermission(task, { stepId: body.stepId, decision: body.reply });
+      return this.answerPermission(task, { stepId: body.stepId, decision: body.reply, grant: body.grant });
     }
     if (body.operation === 'handover_choose') {
       if (!owner) throw new Error('task_access_denied');
