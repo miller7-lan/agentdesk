@@ -39,7 +39,7 @@ function temporary(t, prefix = 'agentdesk-chat-') {
 }
 
 class ChatClient extends EventEmitter {
-  constructor(t, provider, stateDir) {
+  constructor(t, provider, stateDir, toolTimeout = 4000) {
     super();
     this.provider = provider;
     this.stateDir = stateDir;
@@ -63,7 +63,7 @@ class ChatClient extends EventEmitter {
         AGENTDESK_CHAT_HOME_CLAUDE: path.join(homes, 'claude'),
         AGENTDESK_CHAT_HOME_GROK: path.join(homes, 'grok-chat'),
         AGENTDESK_CHAT_HOME_ANTIGRAVITY: path.join(homes, 'antigravity'),
-        AGENTDESK_CHAT_TOOL_TIMEOUT: '4000',
+        AGENTDESK_CHAT_TOOL_TIMEOUT: String(toolTimeout),
         AGENTDESK_CHAT_APPROVAL_TIMEOUT: '4000',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -342,6 +342,35 @@ test('Claude tool roundtrip through the capability socket', async (t) => {
   assert.equal(state.calls.length, 1);
   const toolStart = client.notifications('item/started').find((params) => params.item?.type === 'mcpToolCall');
   assert.equal(toolStart.item.server, 'agentdesk');
+});
+
+test('a local command can finish after the ordinary tool deadline', async (t) => {
+  const delayMs = Number(process.env.AGENTDESK_QA_COMMAND_DELAY_MS) || 700;
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir, delayMs > 65000 ? 65000 : 200).start();
+  const threadId = await thread(client, {
+    approvalPolicy: 'on-request',
+    dynamicTools: [{ name: 'agentdesk_command_run', description: 'Run a local command',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' } } } }],
+  });
+  let approvalItem;
+  let callItem;
+  client.serverHandler = async ({ method, params }) => {
+    if (method === 'item/tool/requestApproval') {
+      approvalItem = params.itemId;
+      return { result: { decision: 'accept' } };
+    }
+    callItem = params.itemId;
+    assert.equal(params.requiresApproval, true);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return { result: { success: true, contentItems: [{ type: 'inputText', text: 'local command finished' }] } };
+  };
+  const started = await client.request('turn/start', { threadId, input: [{ type: 'text', text: 'SCENARIO:TOOL_COMMAND' }] });
+  const completed = await client.waitFor('turn/completed', (params) => params.turn?.id === started.turn.id, delayMs + 12000);
+  assert.equal(completed.turn.status, 'completed');
+  assert.ok(approvalItem);
+  assert.equal(approvalItem, callItem);
+  assert.equal(reportOf(agentText(client, started.turn.id)).call.value.content[0].text, 'local command finished');
 });
 
 test('read-only turn only exposes read tools and rejects writes without approval', async (t) => {

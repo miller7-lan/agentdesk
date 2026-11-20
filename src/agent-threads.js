@@ -350,7 +350,7 @@ window.__agentThreadsReady = (async () => {
   // The member's work in the look of a single chat (like a Grok Bot teammate's own thread): the lead's brief
   // and the person's guidance as messages, then thinking blocks, command and file rows, and the member's replies.
   const md = (text) => window.__live?.md ? window.__live.md(text) : `<p>${esc(text)}</p>`;
-  function chatWork(activity, key, s, running) {
+  function chatWork(activity, key, s, running, scope) {
     const role = s?.provider || 'codex';
     const opened = (id, fallback) => s?.actOpen?.has(id) ? s.actOpen.get(id) : fallback;
     const row = (id, kind, icon, arg, meta, body, open, failed) => `<div class="tool ${open ? 'open' : ''} ${failed ? 'err' : ''}" data-act-toggle="${esc(id)}">
@@ -373,9 +373,10 @@ window.__agentThreadsReady = (async () => {
           return `<div class="msg-assist"><span class="direct-avatar">${avatars.html(role, { size: 32, still: true })}</span><div class="msg-body">${md(item.text)}</div></div>`;
         case 'command': {
           const failed = item.status === 'failed' || (Number.isFinite(item.exitCode) && item.exitCode !== 0);
-          const meta = item.status === 'in_progress' || item.status === 'running' ? (running ? '运行中' : '')
-            : Number.isFinite(item.exitCode) ? '退出码 ' + item.exitCode : '';
-          return row(id, '运行命令', 'term', item.command, meta, `<div class="io-label">输出</div><pre class="io">${esc(item.output || '（没有输出）')}</pre>`,
+          const meta = window.__activity.commandState(item, running, failed);
+          const stop = window.__activity.commandStop(item, running && scope);
+          return row(id, item.location === 'local' ? '本机命令' : 'VPS 命令', 'term', item.command, meta,
+            `<div class="io-label${item.cwd ? ' command-cwd' : ''}">${esc(item.cwd || '输出')}</div><pre class="io">${esc(item.output || '（没有输出）')}</pre>${stop}`,
             opened(id, failed || (running && last)), failed);
         }
         case 'edit':
@@ -411,7 +412,7 @@ window.__agentThreadsReady = (async () => {
     const failedRecord = snap.state === 'failed' || (snap.state === 'replaced' && Boolean(snap.error || snap.output));
     const patches = snap.write && snap.detail === 'patches_ready' && !it.applied;
     const running = snap.state === 'running';
-    const work = chatWork(it.activity, it.taskId + ':' + it.stepId, s, running);
+    const work = chatWork(it.activity, it.taskId + ':' + it.stepId, s, running, { taskId: it.taskId, stepId: it.stepId });
     const guidance = (snap.guidance || []).map((item) => `<div class="msg-user"><span class="steer-tag">你的指导</span>${esc(item.text)}</div>`).join('');
     // Laid out like the person's own single chats: the lead's assignment and the person's guidance are messages on
     // the right, the member's thinking, commands, files and replies flow below on the left, nothing folded. When

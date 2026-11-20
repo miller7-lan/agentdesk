@@ -122,6 +122,11 @@ contextBridge.exposeInMainWorld('desk', {
     list: (threadId) => ipcRenderer.invoke('checkpoints:list', threadId),
     onReady: on('checkpoint:ready'),
   },
+  localCommands: {
+    list: (agent, threadId) => ipcRenderer.invoke('local-command:list', agent, threadId),
+    cancel: (agent, threadId, id) => ipcRenderer.invoke('local-command:cancel', agent, threadId, id),
+    onUpdate: on('local-command:update'),
+  },
   codex: {
     request: (method, params) => ipcRenderer.invoke('codex:request', method, params),
     respond: (id, result, error) => ipcRenderer.invoke('codex:respond', id, result, error),

@@ -85,6 +85,7 @@ const CLAUDE_QUOTA_FILE = process.env.AGENTDESK_CHAT_CLAUDE_QUOTA || path.join(S
 const MCP_JS = path.join(__dirname, 'chat-mcp.js');
 const TURN_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TURN_TIMEOUT || 30 * 60_000);
 const OUTPUT_LIMIT = Number(process.env.AGENTDESK_CHAT_OUTPUT_LIMIT || 4 * 1024 * 1024);
+const { COMMAND_REPLY_TIMEOUT } = require('./command-runs');
 const TOOL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TOOL_TIMEOUT || 65_000);
 const APPROVAL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_APPROVAL_TIMEOUT || 60_000);
 const READ_ONLY_TOOLS = new Set(['agentdesk_file_list', 'agentdesk_file_read', 'agentdesk_file_read_batch', 'agentdesk_file_glob', 'agentdesk_file_grep', 'agentdesk_command_list']);
@@ -452,14 +453,15 @@ async function invokeTool(turn, name, args) {
     if (turn.readOnly && isWriteTool(name)) throw new Error('只读模式下不能使用写工具');
     if (isWriteTool(name) && turn.approvalPolicy !== 'never') {
       const decision = await clientRequest(turn, 'item/tool/requestApproval', {
-        threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args,
+        threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args, itemId,
       }, APPROVAL_TIMEOUT);
       const accepted = decision && ['accept', 'acceptForSession', 'approved', 'approved_for_session'].includes(decision.decision);
-      if (!accepted) throw new Error('用户拒绝了这次文件修改');
+      if (!accepted) throw new Error(name === 'agentdesk_command_run' ? '用户拒绝运行本机命令' : '用户拒绝了这次文件修改');
     }
     const result = await clientRequest(turn, 'item/tool/call', {
       threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args,
-    }, TOOL_TIMEOUT);
+      itemId, ...(name === 'agentdesk_command_run' && { requiresApproval: turn.approvalPolicy !== 'never' }),
+    }, name === 'agentdesk_command_run' ? COMMAND_REPLY_TIMEOUT : TOOL_TIMEOUT);
     const images = name.startsWith('desktop_') && Array.isArray(result?.contentItems)
       ? result.contentItems.filter((item) => item?.type === 'inputImage' &&
           /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+=*$/i.test(item.imageUrl || ''))
@@ -519,6 +521,7 @@ const mcpServer = net.createServer((socket) => {
       if (frame.operation === 'tools') {
         wire.send({ ok: true, value: { tools: turn.tools } });
       } else if (frame.operation === 'call') {
+        if (frame.name === 'agentdesk_command_run') socket.setTimeout(COMMAND_REPLY_TIMEOUT + APPROVAL_TIMEOUT + 10_000);
         const value = await invokeTool(turn, frame.name, frame.arguments || {});
         wire.send({ ok: true, value });
       } else {

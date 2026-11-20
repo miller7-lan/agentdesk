@@ -2,6 +2,10 @@
 
 给在本机工作的 agent（Codex、Claude Code 等）用的操作手册。有待执行的版本升级时，先看对应的升级清单（当前：[UPGRADE-2026-11.md](UPGRADE-2026-11.md)）。代码在仓库里改；每一端怎样拿到新代码、怎样改配置、怎样确认生效，见对应一节。
 
+## CLI 运行位置
+
+AgentDesk 的模型 CLI 和原生会话运行在 VPS2。Windows 和 Mac 运行桌面端与 Bridge，在当前授权下处理本机文件、命令和桌面操作。单聊通过 SSH 连接 VPS2 的原生 CLI，群聊由 VPS2 主控派工。本机与 VPS2 各自有工作目录，界面和工具事件应标明实际操作位置。需要接近原生 CLI 体验时，优先复用供应商的会话和流式事件协议，并在本机 Bridge 内完成批量文件操作。
+
 ## 先判断改动落在哪一端
 
 | 改了什么 | 要部署到 |
@@ -129,6 +133,7 @@ Windows 的 Bridge 运行在 AgentDesk 应用进程里，所以**代码改动要
 ## 3. Mac 端
 
 模型列表配置、Mac 同步和本机文件验收步骤参见 [模型选择与本机文件](MODELS-AND-LOCAL-FILES.md)。
+本机命令实时输出、停止和断线恢复的安装与验收参见 [Mac 本机命令部署](MAC-LOCAL-COMMANDS.md)。
 
 Mac 有两个独立部分：**AgentDesk 应用**和**后台 Bridge**（launchd 启动 `mac-bridge.js`；可能直接指向仓库，也可能是 `~/Library/Application Support/AgentDesk/bridge/app/` 下的部署副本）。
 

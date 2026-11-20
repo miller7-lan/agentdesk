@@ -828,6 +828,31 @@ window.__groupReady = (async () => {
   // The lead's own reasoning while it plans: read from its planning step's working record, on demand.
   // Expanded records refresh while the lead is still planning.
   const leadThoughts = new Map();   // taskId -> { activity, at, state }
+  const localTests = new Map();
+  function localTestActivity(task) {
+    const entry = localTests.get(task.id);
+    const body = entry?.activity?.items?.length ? window.__activity.html(entry.activity, {
+      key: 'local-test:' + task.id, running: task.state === 'testing',
+      commandScope: { taskId: task.id, stepId: 'local-test' },
+    }) : `<p class="panel-note">${entry?.error ? esc(entry.error) : '展开后读取本机测试输出'}</p>`;
+    return `<details class="lead-think" data-step="local-test:${esc(task.id)}" data-local-test="${esc(task.id)}">
+      <summary>本机测试输出${task.state === 'testing' ? '<span class="lead-live">运行中</span>' : ''}</summary>${body}</details>`;
+  }
+
+  async function loadLocalTest(group, id) {
+    const entry = localTests.get(id) || {};
+    if (entry.loading) return;
+    entry.loading = true;
+    localTests.set(id, entry);
+    try {
+      entry.activity = await control('task_activity', { taskId: id, stepId: 'local-test' });
+      entry.error = '';
+    } catch (error) { entry.error = error.message; }
+    finally {
+      entry.loading = false;
+      if (group === currentGroup()) render();
+    }
+  }
   function leadThinking(task) {
     if (task.redacted || isExample(state.group) || !(task.plan?.rounds?.length || task.state === 'planning') || !window.__activity) return '';
     const entry = leadThoughts.get(task.id);
@@ -863,9 +888,17 @@ window.__groupReady = (async () => {
       const task = group.records.get(details.dataset.leadThink);
       if (task?.state === 'planning') loadLeadThinking(group, task.id);
     }
+    for (const details of $$('details[data-local-test][open]', timeline)) {
+      const task = group.records.get(details.dataset.localTest);
+      const entry = task && localTests.get(task.id);
+      if (task && (task.state === 'testing' || entry?.activity?.state === 'testing')) loadLocalTest(group, task.id);
+    }
   }, 3000);
   timeline.addEventListener('toggle', (event) => {
     const details = event.target;
+    if (details.matches?.('details[data-local-test]') && details.open && state.group && !localTests.has(details.dataset.localTest)) {
+      loadLocalTest(currentGroup(), details.dataset.localTest);
+    }
     if (!details.matches?.('details[data-lead-think]') || !details.open || !state.group) return;
     loadLeadThinking(currentGroup(), details.dataset.leadThink);
   }, true);
@@ -950,6 +983,10 @@ window.__groupReady = (async () => {
       const board = stepBoard(task, steps);
       if (board && filter !== 'mine' && (!filterSelect.value || steps.some((step) => step.role === filterSelect.value))) {
         messages.push(messageRow('lead', '分工进度', board, 'board'));
+      }
+      if (!task.redacted && !isExample(state.group) && filter !== 'mine' && !filterSelect.value &&
+          (task.state === 'testing' || task.testResult || (task.command && terminal.has(task.state)))) {
+        messages.push(messageRow('local', '本机测试', localTestActivity(task)));
       }
       // What the person said while the work was under way, and how the lead applied it to each step.
       for (const revision of task.revisions || []) {

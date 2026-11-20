@@ -34,7 +34,9 @@
 | `file.patch` | `apply` | `base`（Git 提交 ID）、完整的 `stream_id`。只在工作区干净且 HEAD 匹配时应用 |
 | `command.execute` | `git_baseline` | 返回 `head,clean` |
 | `command.execute` | `run` | `command,permission:"development",timeout_ms`。返回 `code,stdout,stderr` |
-| `command.execute` | `cancel` | `request_id` 引用原运行请求 |
+| `command.execute` | `status` | 按任务和原运行请求 ID 查询状态、输出尾部、序号和退出码 |
+| `command.execute` | `cancel` | `request_id` 引用原运行请求，按所属任务停止本机进程树 |
+| `task.status` | `stop_command` | 任务所有者按步骤和 `artifact` 中的原请求 ID 停止一条本机命令 |
 | `task.request` | `desktop` | `tool,arguments`。返回 `success,contentItems`。截图条目附 `stream_id,mimeType,size,sha256` |
 | `task.status` | `stream_status` | `stream_id`。返回 `stream_id,next_offset,state` |
 

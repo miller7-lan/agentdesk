@@ -99,7 +99,12 @@ async function main() {
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {
     const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
     report.tools = (listed.value?.tools || []).map((tool) => tool.name);
-    if (scenario === 'PLAN_WRITE' || scenario === 'APPROVE_WRITE') {
+    if (scenario === 'TOOL_COMMAND') {
+      report.call = await socketRequest(socketPath, {
+        capability, operation: 'call', name: 'agentdesk_command_run',
+        arguments: { name: 'build' },
+      }, 120000);
+    } else if (scenario === 'PLAN_WRITE' || scenario === 'APPROVE_WRITE') {
       report.call = await socketRequest(socketPath, {
         capability, operation: 'call', name: 'agentdesk_file_write',
         arguments: { path: '/Users/example/blocked.txt', content: 'x', overwrite: true },

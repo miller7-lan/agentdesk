@@ -344,14 +344,14 @@ test('Node endpoints interoperate with the Python TLS Relay and use chunked file
   const artifact = shot.contentItems[0];
   assert.deepEqual(await files.download('relay:mac', task, { operation: 'artifact', ...artifact }), image);
   const controller = new AbortController();
-  const command = files.call('relay:mac', task, 'command.execute', {
+  const requestId = messageId();
+  const command = clientEndpoint.request('relay:mac', task, 'command.execute', {
     operation: 'run', workspace: 'project', command: 'wait', permission: 'development', timeout_ms: 15000,
-  }, 16000, controller.signal);
-  await until(() => windows.commands.size);
-  const [requestId] = windows.commands.keys();
+  }, 16000, requestId, controller.signal);
+  await until(() => windows.commands.byKey(task, requestId)?.state === 'running');
   controller.abort();
   await assert.rejects(command, /operation_cancelled/);
-  await until(() => !windows.commands.size);
+  await until(() => windows.commands.byKey(task, requestId)?.state === 'cancelled');
   const cancelled = await files.call('relay:mac', task, 'task.status', { operation: 'operation_status', request_id: requestId });
   assert.equal(cancelled.outcome.error, 'command_cancelled');
 });

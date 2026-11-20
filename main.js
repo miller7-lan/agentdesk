@@ -21,6 +21,13 @@ const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
 const localFiles = require('./local-files');
 const localCommands = require('./local-commands');
+const { CommandRuns } = require('./orchestrator/command-runs');
+const commandScope = (agent, threadId) => JSON.stringify([agent, threadId]);
+const commandRuns = new CommandRuns((scope, run) => {
+  const [agent, threadId] = JSON.parse(scope);
+  toUi('local-command:update', { agent, threadId, run });
+}, () => path.join(app.getPath('userData'), 'local-command-runs.json'));
+const codexCommandRoots = new Map();
 // Where the person's authorized commands are defined: the Bridge configuration (Windows runs its Bridge in the
 // app), or on a Mac the file named by agentCommandsFile in mac-remote.json (normally the Mac Bridge's config).
 const commandsFile = () => remote.cfg.agentCommandsFile || remote.cfg.orchestratorBridge || null;
@@ -439,11 +446,10 @@ remote.on('server-request', (m) => {
     const command = !enrollment && typeof params.tool === 'string' && localCommands.isCommandTool(params.tool);
     if (command) {
       const turn = fileTurns.get(params.turnId);
-      const allowedTurn = !params.namespace && turn?.policy === 'full' && turn.threadId === params.threadId;
-      const connection = remote.codexProc;
+      const allowedTurn = !params.namespace && turn && turn.threadId === params.threadId;
       (allowedTurn
-        ? localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: localRootFor(appConfig?.active?.id) })
-        : Promise.resolve(localFiles.result(false, { error: '本机命令需要处于完全访问模式的活动轮次' })))
+        ? codexCommand(params, turn, m.id)
+        : Promise.resolve(localFiles.result(false, { error: '本机命令需要处于活动轮次' })))
         .then((result) => { if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result); }).catch(() => {});
       return;
     }
@@ -492,12 +498,13 @@ remote.on('notification', ({ method, params }) => {
     desktop.active.set(params.turn.id, params.threadId);
   }
   if (method === 'turn/started' && filePolicies.has(params.threadId)) {
-    fileTurns.set(params.turn.id, { threadId: params.threadId, policy: filePolicies.get(params.threadId) });
+    fileTurns.set(params.turn.id, { threadId: params.threadId, ...filePolicies.get(params.threadId) });
   }
   if (method === 'turn/completed') {
     desktop.active.delete(params.turn.id);
     desktopThreads.delete(params.threadId);
     fileTurns.delete(params.turn.id);
+    commandRuns.cancelTurn(commandScope('codex', params.threadId), params.turn.id);
     finishCheckpoint(params.turn.id);
     filePolicies.delete(params.threadId);
   } else if (method === 'serverRequest/resolved') {
@@ -709,6 +716,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     const { projectId, ...request } = params || {};
     params = request;
     const directory = currentRemoteDirectory(projectId);
+    const project = projectId ?? (method === 'thread/start' ? appConfig?.active?.id : undefined);
     if (method === 'thread/start' || method === 'thread/list') params = { ...params, cwd: directory };
     if (method === 'skills/list') params = { ...params, cwds: directory ? [directory] : [] };
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
@@ -728,9 +736,20 @@ ipcMain.handle('codex:request', async (event, method, params) => {
         desktopThreads.delete(params.threadId);
       }
       const fullAccess = params.approvalPolicy === 'never' && params.sandboxPolicy?.type === 'dangerFullAccess';
-      filePolicies.set(params.threadId, readOnly ? 'read' : fullAccess ? 'full' : 'ask');
+      filePolicies.set(params.threadId, { policy: readOnly ? 'read' : fullAccess ? 'full' : 'ask',
+        binding: codexCommandRoots.get(params.threadId) });
     }
-    return { ok: true, result: await remote.request(method, params) };
+    if (method === 'turn/interrupt' && typeof params.threadId === 'string' && typeof params.turnId === 'string') {
+      fileTurns.delete(params.turnId);
+      commandRuns.cancelTurn(commandScope('codex', params.threadId), params.turnId);
+    }
+    const result = await remote.request(method, params);
+    if ((method === 'thread/start' || method === 'thread/resume') && result?.thread?.id && project) {
+      const threadId = result.thread.id;
+      if (!codexCommandRoots.has(threadId)) codexCommandRoots.set(threadId, { projectId: project, root: localRootFor(project) });
+    }
+    if (method === 'thread/archive') codexCommandRoots.delete(params.threadId);
+    return { ok: true, result };
   } catch (e) {
     if (method === 'turn/start') {
       desktopThreads.delete(params?.threadId);
@@ -783,6 +802,7 @@ function rememberChatThread(agent, threadId, { projectId, localRoot, tools, appr
     threadId,
     projectId: projectId ?? null,
     localRoot: localRoot || '',
+    commandRoot: projectId ? localRootFor(projectId) : localRoot,
     tools: tools instanceof Set
       ? new Set(tools)
       : new Set((tools || chatToolSpecs()).map((tool) => tool.name)),
@@ -790,6 +810,59 @@ function rememberChatThread(agent, threadId, { projectId, localRoot, tools, appr
     sandboxPolicy,
   });
 }
+
+function commandWorktree(params, projectId) {
+  const worktree = worktrees().forThread(params.threadId);
+  return worktree?.projectId === projectId ? worktree?.path : undefined;
+}
+
+function commandPreview(params, projectId, root) {
+  const selected = localCommands.catalogue(commandsFile(), root).find(({ name }) => name === params.arguments?.name);
+  return selected && { argv: selected.argv, cwd: commandWorktree(params, projectId) || selected.cwd };
+}
+
+function directCommand(agent, params, requestId, projectId, root, approved) {
+  const scope = commandScope(agent, params.threadId);
+  return Promise.resolve().then(() => localCommands.call(params.tool, params.arguments, {
+    configFile: commandsFile(),
+    localRoot: root,
+    worktree: commandWorktree(params, projectId),
+    approved,
+    runs: commandRuns,
+    scope,
+    turnId: params.turnId,
+    itemId: params.itemId,
+    key: JSON.stringify([scope, params.turnId, params.itemId || requestId]),
+  })).catch((error) => localFiles.result(false, { error: error.message }));
+}
+
+async function codexCommand(params, turn, requestId) {
+  const { root, projectId } = turn.binding || {};
+  if (!root) return localFiles.result(false, { error: '没有绑定本机项目目录，请重新打开会话' });
+  let approved;
+  if (localCommands.isRunTool(params.tool)) {
+    if (turn.policy === 'read') return localFiles.result(false, { error: '只读轮次不能在本机运行命令' });
+    if (turn.policy === 'ask') {
+      approved = commandPreview(params, projectId, root);
+      if (!approved) return localFiles.result(false, { error: 'command_not_enabled_for_agents' });
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'question', message: 'Codex 请求运行本机命令',
+        detail: approved.cwd + '\n' + JSON.stringify(approved.argv), buttons: ['取消', '允许运行'], defaultId: 0, cancelId: 0,
+      });
+      if (response !== 1 || fileTurns.get(params.turnId) !== turn) {
+        return localFiles.result(false, { error: '本机命令未获批准' });
+      }
+    }
+  }
+  return directCommand('codex', params, requestId, projectId, root, approved);
+}
+
+ipcMain.handle('local-command:list', (event, agent, threadId) =>
+  fromMainWindow(event) && typeof agent === 'string' && typeof threadId === 'string'
+    ? commandRuns.list(commandScope(agent, threadId)) : []);
+ipcMain.handle('local-command:cancel', (event, agent, threadId, id) =>
+  fromMainWindow(event) && typeof agent === 'string' && typeof threadId === 'string' && typeof id === 'string'
+    ? commandRuns.cancel(commandScope(agent, threadId), id) : null);
 
 function forgetChatThread(threadId) {
   chatThreads.delete(threadId);
@@ -801,7 +874,7 @@ function finishChatTurn(turnId) {
   desktop.active.delete(turnId);
 }
 
-async function chatToolTask(agent, params) {
+async function chatToolTask(agent, params, requestId) {
   const mapping = chatThreads.get(params.threadId);
   const invalid = (message) => localFiles.result(false, { error: message });
   if (!mapping || mapping.agent !== agent) return invalid('单聊线程不存在或已归档，请重新打开会话');
@@ -811,7 +884,9 @@ async function chatToolTask(agent, params) {
   if (typeof params.tool !== 'string' || !mapping.tools.has(params.tool)) return invalid('该工具在当前单聊中不可用');
   if (localCommands.isCommandTool(params.tool)) {
     if (turn.readOnly && localCommands.isRunTool(params.tool)) return invalid('只读轮次不能在本机运行命令');
-    return localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: mapping.localRoot });
+    const approved = turn.commandApprovals?.get(params.itemId);
+    if (params.requiresApproval && !approved) return invalid('找不到已审批的本机命令');
+    return directCommand(agent, params, requestId, mapping.projectId, mapping.commandRoot, approved);
   }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
   const tool = chatFileTools === windowsFiles ? params.tool.replace(/^agentdesk_file_/, 'windows_file_') : params.tool;
@@ -834,6 +909,7 @@ for (const [agent, link] of chatLinks) {
   link.on('event', (message) => {
     if (message.method === 'turn/completed') {
       finishChatTurn(message.params?.turn?.id);
+      commandRuns.cancelTurn(commandScope(agent, message.params?.threadId), message.params?.turn?.id);
       finishCheckpoint(message.params?.turn?.id);
       const status = message.params?.turn?.status;
       notifyIfAway(`${CHAT_LABEL[agent]} ${status === 'failed' ? '本轮失败' : '已完成'}`,
@@ -847,10 +923,23 @@ for (const [agent, link] of chatLinks) {
         try { link.respond(message.id, localFiles.result(false, { error: 'AgentDesk 尚未完成主机确认' })); } catch {}
         return;
       }
-      chatToolTask(agent, message.params || {}).then((result) => {
+      chatToolTask(agent, message.params || {}, message.id).then((result) => {
         try { link.respond(message.id, result); } catch {}
       }).catch(() => {});
       return;
+    }
+    if (message.method === 'item/tool/requestApproval' && localCommands.isRunTool(message.params?.tool)) {
+      const params = message.params;
+      const turn = chatTurns.get(params.turnId);
+      const mapping = chatThreads.get(params.threadId);
+      const preview = turn?.agent === agent && turn.threadId === params.threadId &&
+        commandPreview(params, mapping?.projectId, mapping?.commandRoot);
+      if (!preview) {
+        try { link.respond(message.id, { decision: 'decline' }); } catch {}
+        return;
+      }
+      if (params.itemId) (turn.commandApprovals ||= new Map()).set(params.itemId, preview);
+      message = { ...message, params: { ...params, localCommand: preview } };
     }
     toUi('chat:server-request', message);
     if (message.method === 'item/tool/requestApproval') {
@@ -986,6 +1075,11 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       return { ok: true, result };
     }
 
+    if (method === 'turn/interrupt' && typeof request.threadId === 'string' && typeof request.turnId === 'string') {
+      if (chatTurns.get(request.turnId)?.threadId === request.threadId) finishChatTurn(request.turnId);
+      commandRuns.cancelTurn(commandScope(agent, request.threadId), request.turnId);
+    }
+
     if (method === 'thread/archive') {
       const result = await link.request(method, request);
       if (request.threadId) forgetChatThread(request.threadId);
@@ -1055,7 +1149,7 @@ function startMacDesktop() {
 const orchestrationOperations = new Set([
   'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'approve_addition', 'handover_choose',
   'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
-  'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'onboarding_check', 'diagnostics', 'maintenance',
+  'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance',
 ]);
 const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
 
@@ -1265,6 +1359,7 @@ app.on('before-quit', (e) => {
   clearTimeout(updateTimer);
   stopBridge?.();
   stopMacDesktop?.();
+  commandRuns.close();
   clearLocalTools();
   for (const link of chatLinks.values()) link.stop();
   Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close(), logger?.log('application_stop')]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());

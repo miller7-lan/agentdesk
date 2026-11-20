@@ -1,14 +1,13 @@
 // Commands an agent may run on the person's computer from a direct chat: only those the person listed for the
 // project in the Bridge configuration (workspaces.<id>.commands, enabled by workspaces.<id>.agentCommands),
-// run as fixed program-and-argument arrays in the project folder, never through a shell. Each run asks the person
-// for approval in the chat (agentdesk_command_run is a write-class tool), and read-only turns cannot run them.
-const { execFile } = require('node:child_process');
+// run as fixed program-and-argument arrays in the project folder without a shell. The chat's approval policy
+// governs agentdesk_command_run, and read-only turns cannot run it.
 const fs = require('node:fs');
 const path = require('node:path');
 const { result } = require('./local-files');
-
-const TIMEOUT = 300_000;
-const OUTPUT = 8000;
+const { CommandRuns } = require('./orchestrator/command-runs');
+const { randomUUID } = require('node:crypto');
+const defaultRuns = new CommandRuns();
 
 const specs = [
   {
@@ -18,7 +17,7 @@ const specs = [
   },
   {
     type: 'function', name: 'agentdesk_command_run',
-    description: 'Run one authorized command, by its name from agentdesk_command_list, in the project folder on the person’s computer, for example to run the tests. The person approves each run; output over 8000 characters keeps its first 2000 and last 6000; the time limit is 5 minutes.',
+    description: 'Run one authorized command, by its name from agentdesk_command_list, in the project folder on the person’s computer, for example to run the tests. The current chat policy controls approval. Returns the last 8000 characters of each output stream and the exit status. The time limit is 5 minutes.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['name'],
       properties: { name: { type: 'string', description: 'Command name from agentdesk_command_list' } } },
   },
@@ -43,10 +42,7 @@ function catalogue(configFile, localRoot) {
     .map((name) => ({ name, argv: workspace.commands[name], cwd: workspace.root }));
 }
 
-// Long output keeps its start (the command and the first error) and its end (the summary), like pi does.
-const tail = (text) => (text.length > OUTPUT ? text.slice(0, 2000) + `\n…（中间省略 ${text.length - OUTPUT} 个字符）…\n` + text.slice(-(OUTPUT - 2000)) : text);
-
-function call(tool, values, { configFile, localRoot }) {
+function call(tool, values, { configFile, localRoot, worktree, approved, runs = defaultRuns, scope = 'direct', key, turnId, itemId }) {
   const commands = catalogue(configFile, localRoot);
   if (tool === 'agentdesk_command_list') {
     return Promise.resolve(result(true, { commands: commands.map(({ name, argv }) => ({ name, program: path.basename(argv[0]), args: argv.slice(1, 21) })),
@@ -54,18 +50,16 @@ function call(tool, values, { configFile, localRoot }) {
   }
   const command = commands.find(({ name }) => name === values?.name);
   if (!command) return Promise.resolve(result(false, { error: 'command_not_enabled_for_agents' }));
-  return new Promise((resolve) => {
-    const started = Date.now();
-    execFile(command.argv[0], command.argv.slice(1), { cwd: command.cwd, timeout: TIMEOUT, maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true, shell: false }, (error, stdout, stderr) => {
-      const code = error ? (typeof error.code === 'number' ? error.code : null) : 0;
-      resolve(result(!error || code !== null, {
-        name: command.name, exitCode: code, timedOut: Boolean(error?.killed), durationMs: Date.now() - started,
-        stdout: tail(String(stdout || '')), stderr: tail(String(stderr || '')),
-        ...(error && code === null && !error.killed ? { error: error.code || error.message } : {}),
-      }));
-    });
-  });
+  const cwd = worktree || command.cwd;
+  if (approved && (cwd !== approved.cwd || JSON.stringify(command.argv) !== JSON.stringify(approved.argv))) {
+    return Promise.resolve(result(false, { error: 'command_changed_after_approval' }));
+  }
+  return runs.start({ scope, key: key || randomUUID(), turnId, itemId, name: command.name, argv: command.argv,
+    cwd, limit: 8000 }).then((run) => result(run.code !== null, {
+    id: run.id, name: run.name, exitCode: run.code, state: run.state, timedOut: run.state === 'timed_out',
+    durationMs: run.finishedAt - run.startedAt, stdout: run.stdout, stderr: run.stderr,
+    ...(run.error && { error: run.error }), ...(run.truncated && { truncated: true }),
+  }));
 }
 
 module.exports = { specs, call, catalogue, isCommandTool: (name) => NAMES.has(name), isRunTool: (name) => name === 'agentdesk_command_run' };

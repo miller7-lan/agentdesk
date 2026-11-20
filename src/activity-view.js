@@ -108,8 +108,22 @@
   };
   const changeNames = { add: '新建', create: '新建', delete: '删除', remove: '删除', update: '修改', modify: '修改' };
 
+  function commandState(item, running, failed) {
+    const states = { cancelling: '正在停止', cancelled: '已停止', timed_out: '超时', unknown: '结果待确认' };
+    if (states[item.status]) return states[item.status];
+    if (item.status === 'in_progress' || item.status === 'running') return running ? '运行中' : '结果待确认';
+    const exit = Number.isInteger(item.exitCode) ? ' · 退出码 ' + item.exitCode : '';
+    return (failed ? '失败' : '完成') + exit;
+  }
+
+  function commandStop(item, scope) {
+    if (!scope || !item.requestId || item.location !== 'local' || item.status !== 'running') return '';
+    return `<button type="button" class="btn" data-stop-local-run="${esc(item.requestId)}"
+      data-run-task="${esc(scope.taskId)}" data-run-step="${esc(scope.stepId)}">停止命令</button>`;
+  }
+
   // open: the person's own choices for which parts are expanded, by key; parts they never touched use defaults.
-  function html(activity, { key, open = new Map(), running = false } = {}) {
+  function html(activity, { key, open = new Map(), running = false, commandScope } = {}) {
     const items = activity?.items || [];
     if (!items.length) return '';
     const isOpen = (id, fallback) => open.has(id) ? open.get(id) : fallback;
@@ -125,11 +139,13 @@
           return `<div class="act act-msg"><div class="act-body">${esc(item.text)}</div></div>`;
         case 'command': {
           const failed = item.status === 'failed' || (Number.isFinite(item.exitCode) && item.exitCode !== 0);
-          const state = item.status === 'in_progress' || item.status === 'running' ? (running ? '运行中' : '')
-            : failed ? '失败' + (Number.isFinite(item.exitCode) ? ' · 退出码 ' + item.exitCode : '') : '完成';
+          const state = commandState(item, running, failed);
           return `<details class="act act-cmd${failed ? ' failed' : ''}" data-act="${esc(id)}" ${isOpen(id, failed || (running && last)) ? 'open' : ''}>
-            <summary><span class="act-tag">运行</span><code>${esc(item.command)}</code>${state ? `<span class="act-state">${state}</span>` : ''}</summary>
-            ${item.output ? `<pre>${esc(item.output)}</pre>` : '<p class="act-empty">没有输出</p>'}</details>`;
+            <summary><span class="act-tag">${item.location === 'local' ? '本机' : 'VPS'}</span><code>${esc(item.command)}</code>${state ? `<span class="act-state">${state}</span>` : ''}</summary>
+            ${item.cwd ? `<div class="io-label command-cwd">${esc(item.cwd)}</div>` : ''}
+            ${item.validation ? `<div class="io-label">${item.validation.afterPatch ? '补丁应用后' : '当前工作区'}${item.validation.base ? ' · 基线 ' + esc(item.validation.base.slice(0, 12)) : ''}</div>` : ''}
+            ${item.output ? `<pre>${esc(item.output)}</pre>` : '<p class="act-empty">没有输出</p>'}
+            ${commandStop(item, running ? commandScope : null)}</details>`;
         }
         case 'edit':
           return `<div class="act act-edit"><span class="act-tag">改文件</span><ul>${(item.files || []).map((file) =>
@@ -167,5 +183,19 @@
     (s.actOpen ||= new Map()).set(element.dataset.act, element.open);
   }, true);
 
-  window.__activity = { load, html, hasReply };
+  document.getElementById('timeline').addEventListener('click', async (event) => {
+    const button = event.target.closest?.('[data-stop-local-run]');
+    if (!button) return;
+    button.disabled = true;
+    try {
+      const result = await api.control({ operation: 'stop_command', taskId: button.dataset.runTask, stepId: button.dataset.runStep,
+        artifact: button.dataset.stopLocalRun });
+      const state = result?.value?.state;
+      if (!result?.ok || !state || state === 'unknown') A.toast(result?.error || '本机命令状态待确认');
+      else A.toast(state === 'cancelling' ? '正在停止本机命令' : '本机命令已退出');
+    } catch (error) { A.toast(error.message); }
+    finally { button.disabled = false; }
+  });
+
+  window.__activity = { load, html, hasReply, commandState, commandStop };
 })();

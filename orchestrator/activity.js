@@ -2,7 +2,8 @@
 // they printed, which files it changed, which tools and searches it used, and what it said.
 // The log holds one line per CLI output line, prefixed "stdout " or "stderr "; secrets are already redacted.
 // Every CLI reports this differently, so each has a small reader; unknown JSON falls back to any text it carries.
-const { constants } = require('node:fs');
+const { constants, readFileSync, writeFileSync, renameSync } = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const { open } = require('node:fs/promises');
 const path = require('node:path');
 
@@ -71,7 +72,8 @@ class Record {
 
   // A tool call, filed as a command, a file change or a generic tool depending on what it does.
   tool(id, name, input) {
-    if (SHELL.test(name)) return this.add({ kind: 'command', command: brief(input), status: 'running' }, id);
+    if (SHELL.test(name)) return this.add({ kind: 'command', command: brief(input), status: 'running',
+      ...(/^windows_/i.test(name) && { location: 'local' }) }, id);
     if (EDIT.test(name)) return this.add({ kind: 'edit', files: [{ path: brief(input), change: name }] }, id);
     if (/search|fetch|grep|glob/i.test(name) && /web|google|fetch/i.test(name)) return this.add({ kind: 'search', text: brief(input) }, id);
     return this.add({ kind: 'tool', name: clip(name, 80), input: brief(input), status: 'running' }, id);
@@ -225,11 +227,41 @@ function parseActivity(provider, log) {
   return { items: record.items, dropped: record.dropped };
 }
 
+const stepName = /^[a-z0-9_-]{1,32}$/;
+
+function commandRecords(stateDir, taskId, stepId) {
+  const filename = path.join(stateDir, 'logs', taskId, stepId + '.commands.json');
+  try { return JSON.parse(readFileSync(filename, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+
+function commandProgress(stateDir, taskId, stepId, validation) {
+  if (!stepName.test(stepId || '')) throw new Error('invalid_artifact');
+  const filename = path.join(stateDir, 'logs', taskId, stepId + '.commands.json');
+  return (run) => {
+    const records = commandRecords(stateDir, taskId, stepId);
+    const previous = records.find(({ requestId }) => requestId === run.requestId);
+    const output = [run.stdout, run.stderr && '[stderr]\n' + run.stderr].filter(Boolean).join('\n');
+    const command = {
+      kind: 'command', location: 'local', requestId: run.requestId, command: run.name || previous?.command,
+      cwd: run.cwd || previous?.cwd, status: run.state, exitCode: run.code,
+      output: tailClip([output || previous?.output, run.error].filter(Boolean).join('\n')),
+      ...(run.truncated && { truncated: true }),
+      ...(validation && { validation }),
+    };
+    const temp = filename + '.' + randomUUID();
+    writeFileSync(temp, JSON.stringify([...records.filter(({ requestId }) => requestId !== run.requestId), command].slice(-6)),
+      { mode: 0o600 });
+    renameSync(temp, filename);
+  };
+}
+
 async function stepActivity(stateDir, task, stepId) {
   // The lead's planning runs as a step of its own (planner / group-planner) that is not in task.steps.
   const step = (task.steps || []).find((candidate) => candidate.id === stepId) ||
+    (stepId === 'local-test' && task.command ? { id: stepId, state: task.state } : null) ||
     (['planner', 'group-planner'].includes(stepId) && (task.groupPlan || task.planRaw || task.state === 'planning') ? { id: stepId, role: 'claude', state: task.state === 'planning' ? 'running' : 'completed' } : null);
-  if (!step || !/^[a-z0-9_-]{1,32}$/.test(stepId)) throw new Error('invalid_artifact');
+  if (!step || !stepName.test(stepId)) throw new Error('invalid_artifact');
   let text = '';
   let truncated = false;
   try {
@@ -248,7 +280,9 @@ async function stepActivity(stateDir, task, stepId) {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
-  return { ...parseActivity(step.role, text), truncated, state: step.state };
+  const activity = parseActivity(step.role, text);
+  activity.items.push(...commandRecords(stateDir, task.id, stepId));
+  return { ...activity, truncated, state: step.state };
 }
 
-module.exports = { parseActivity, stepActivity };
+module.exports = { parseActivity, stepActivity, commandProgress, commandRecords };

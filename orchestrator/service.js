@@ -10,6 +10,7 @@ const { WindowsOperations, RemoteFiles } = require('./windows');
 const { Scheduler } = require('./scheduler');
 const { sweepAttachments } = require('./attachments');
 const { validate: validateFileBatch } = require('./file-batch');
+const { commandProgress } = require('./activity');
 const { EFFORT_LEVELS, modelProfiles } = require('./model-profiles');
 
 function relayConfig(config, role) {
@@ -343,9 +344,9 @@ function start(config) {
           if (!scope.runCommands) throw new Error('mcp_permission_denied: this step cannot run local commands');
           value = frame.operation === 'commands'
             ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', workspace: scope.workspace })
-            : await files.call(route, scope.taskId, 'command.execute', {
+            : await files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, {
               operation: 'run', workspace: scope.workspace, command: frame.command, permission: 'agent', timeout_ms: 300000,
-            }, 310000);
+            }, { signal: scope.signal, onStatus: commandProgress(config.stateDir, scope.taskId, scope.stepId) });
           if (frame.operation === 'run') {
             const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
             value = { ...value, stdout: tail(value.stdout), stderr: tail(value.stderr) };
@@ -454,7 +455,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'onboarding_check', 'diagnostics', 'maintenance'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -502,7 +503,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
     });
     child?.kill();
     relay?.stop();
-    for (const command of operations.commands.values()) command.controller.abort(new Error('bridge_stopping'));
+    operations.commands.close();
   };
 }
 

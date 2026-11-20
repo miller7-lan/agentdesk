@@ -34,7 +34,7 @@ async function searchFiles(args, resolve, grep) {
   let truncated = false;
   let skippedLargeFiles = 0;
   let outputSize = 0;
-  const needle = grep && new RegExp(RegExp.escape(query), caseSensitive ? 'u' : 'iu');
+  const needle = grep && new RegExp(query.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'u' : 'iu');
   const pattern = isWindows ? glob.toLowerCase() : glob;
   function add(match) {
     outputSize += Buffer.byteLength(encode(match));

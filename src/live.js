@@ -113,7 +113,8 @@
     for (let attempt = 0; attempt < 5; attempt++) {
       if (attempt) await new Promise((r) => setTimeout(r, 300 * attempt));
       if (!(await ensureReady(s))) return { ok: false, error: `${agentName(agent)} 未连接` };
-      last = await apiFor(agent).request('thread/resume', { threadId: s.threadId, ...params });
+      last = await apiFor(agent).request('thread/resume', { threadId: s.threadId, ...params,
+        ...(agent === 'codex' && A.proj(s.project)?.configured && { projectId: s.project }) });
       if (last.ok) return last;
       if (!/active writer/i.test(last.error || '')) break;
     }
@@ -176,6 +177,33 @@
     A.renderSidebar();
   }
 
+  const localCommandLabel = (run) => ({
+    running: '运行中', cancelling: '正在停止', cancelled: '已停止', timed_out: '超时', completed: '完成',
+    failed: '失败',
+  }[run.state] || '结果待确认') + (Number.isInteger(run.code) ? ' · 退出码 ' + run.code : '');
+  const localCommandOutput = (run) => [run.truncated ? '… 仅显示最近的输出 …' : '', run.stdout,
+    run.stderr && '[stderr]\n' + run.stderr,
+    ['unknown', 'cancelled', 'timed_out'].includes(run.state) ? '' : run.error].filter(Boolean).join('\n');
+
+  function updateLocalCommand(s, run) {
+    const item = s.items.find((it) => it.t === 'localCommand' && it.run.id === run.id);
+    if (item && item.run.sequence >= run.sequence) return;
+    if (item) item.run = run;
+    else {
+      const tool = run.itemId && findItem(s, run.itemId);
+      if (tool?.t === 'tool') Object.assign(tool, { t: 'localCommand', run });
+      else s.items.push({ t: 'localCommand', itemId: run.itemId, run });
+    }
+    render();
+  }
+
+  async function restoreLocalCommands(s) {
+    if (!s.threadId || !window.desk.localCommands) return;
+    try {
+      for (const run of await window.desk.localCommands.list(agentOf(s), s.threadId)) updateLocalCommand(s, run);
+    } catch { /* live updates can still arrive */ }
+  }
+
   /* ---------- 时间线条目 ---------- */
   function chipsHtml(chips) {
     return chips && chips.length ? `<div class="chips">${chips.map((c) => `<span class="chip-tag ${c.kind || ''}" title="${esc(c.title || '')}">${esc(c.label)}</span>`).join('')}</div>` : '';
@@ -191,6 +219,13 @@
         <div class="tool-head">${svg('chev').replace('<svg', '<svg class="chev"')}<span class="tool-ic">${svg('spark')}</span>
           <span class="tool-kind">${head}</span><span class="tool-arg">${esc(first.replace(/\*\*/g, '').slice(0, 90))}</span></div>
         <div class="tool-body reason-body">${md(it.text) || '<p class="sys-note">（没有思考摘要）</p>'}</div></div>`;
+    }
+    if (it.t === 'localCommand') {
+      const { run } = it;
+      const label = localCommandLabel(run);
+      return `<div class="checkpoint-card"><div class="cp-head">${svg('term')}<span>本机 · ${esc(run.name)}</span><span class="grow"></span>
+        <span class="cp-state">${esc(label)}</span>${run.state === 'running' ? `<button type="button" class="cp-undo" data-cancel-local-command="${esc(run.id)}">停止命令</button>` : ''}</div>
+        <div class="io-label command-cwd">${esc(run.cwd)}</div><pre class="io">${esc(localCommandOutput(run) || (run.state === 'running' ? '等待输出…' : '没有输出'))}</pre></div>`;
     }
     if (it.t === 'checkpoint') {
       // What this turn changed on this computer, with a one-click undo (checkpoints.js in the main process).
@@ -302,6 +337,7 @@
       return;
     }
     let it = findItem(s, item.id);
+    if (it?.t === 'localCommand') return;
     if (!it) { const tool = toolFromItem(item); if (!tool) return; it = { t: 'tool', itemId: item.id, ...tool, output: '' }; s.items.push(it); }
     if (item.type === 'commandExecution') {
       it.output = item.aggregatedOutput || it.output;
@@ -411,7 +447,10 @@
       const raw = p.arguments || {};
       const batchPaths = tool === 'write_batch' && Array.isArray(raw.items)
         ? raw.items.map(({ path }) => String(path).replace(/[\r\n]/g, ' ')) : [];
-      card = { ...base, sessionable: true,
+      if (p.tool === 'agentdesk_command_run') {
+        card = { ...base, sessionable: false, title: `请求运行本机命令（${agentName(agent)}）`,
+          desc: `工作目录 ${p.localCommand?.cwd || s.localRoot || localRoot}`, cmd: p.localCommand?.argv ? JSON.stringify(p.localCommand.argv) : String(raw.name || '') };
+      } else card = { ...base, sessionable: true,
         title: batchPaths.length ? `请求批量写入 ${batchPaths.length} 个本机文件（${agentName(agent)}）` : `请求修改本机文件（${agentName(agent)}）`,
         desc: `AI 想在本机（${s.localRoot || localRoot}）上执行：${tool}`,
         cmd: batchPaths.length ? batchPaths.join('\n') : String(raw.path || raw.destination || JSON.stringify(raw, null, 2)).slice(0, 1500) };
@@ -677,6 +716,7 @@
         if (turn.status === 'interrupted') sysNote(s, '已停止。');
       }
       s.loaded = true; s.subscribed = true; byThread.set(s.threadId, s);
+      await restoreLocalCommands(s);
     } finally {
       s.loading = false; A.renderAll();
     }
@@ -694,7 +734,7 @@
     const s = sess(id);
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.onOpen(s);
     if (s && s.live && s.history && !s.loaded) openHistory(s);
-    if (s && s.live) { if (agentOf(s) === 'codex') renderTokens(s); }
+    if (s && s.live) { if (agentOf(s) === 'codex') renderTokens(s); restoreLocalCommands(s); }
     renderConn();
   }
   async function renameSession(s, name) {
@@ -1251,7 +1291,12 @@
     const s = sess(state.active);
     body.innerHTML = `<div class="term"><div class="term-out" id="termOut"></div><div class="term-in ro"><span>只读</span><input disabled placeholder="这里显示 Codex 在 VPS / Windows 上执行的命令和输出" /></div></div>`;
     const o = $('#termOut');
-    o.innerHTML = (s.term.length ? s.term : [['', 'Codex 执行的命令和输出会显示在这里。']]).slice(-2000).map(([c, l]) => `<div class="${c}">${esc(l)}</div>`).join('');
+    const local = s.items.filter((item) => item.t === 'localCommand').flatMap(({ run }) => [
+      ['p', '本机 · ' + run.cwd + ' $ ' + run.name + ' · ' + localCommandLabel(run)],
+      ...localCommandOutput(run).split('\n').map((line) => ['', line]),
+    ]);
+    const lines = s.term.concat(local);
+    o.innerHTML = (lines.length ? lines : [['', '本机和 VPS 命令的输出会显示在这里。']]).slice(-2000).map(([c, l]) => `<div class="${c}">${esc(l)}</div>`).join('');
     o.parentElement.parentElement.scrollTop = 1e9;
   }
   function renderFiles(body) {
@@ -1359,6 +1404,15 @@
     render();
   });
   document.addEventListener('click', async (e) => {
+    const stop = e.target.closest?.('[data-cancel-local-command]');
+    if (stop) {
+      const s = sess(state.active);
+      if (!s?.threadId) return;
+      const run = await window.desk.localCommands.cancel(agentOf(s), s.threadId, stop.dataset.cancelLocalCommand);
+      if (run) updateLocalCommand(s, run);
+      else toast('找不到这次本机命令的运行记录');
+      return;
+    }
     const button = e.target.closest?.('[data-checkpoint-undo]');
     if (!button) return;
     const s = sess(state.active);
@@ -1417,6 +1471,10 @@
   window.desk.desktop.enabled().then(displayDesktop);
   window.desk.desktop.onEnabled(displayDesktop);
   desktopButton.addEventListener('click', () => window.desk.desktop.toggle().then(displayDesktop));
+  window.desk.localCommands?.onUpdate(({ agent, threadId, run }) => {
+    const s = byThread.get(threadId);
+    if (s && agentOf(s) === agent) updateLocalCommand(s, run);
+  });
   cx.onEvent(onEvent);
   cx.onServerRequest(onServerRequest);
   if (chatApi) {

@@ -1,7 +1,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { execute, CommandRuns } = require('./command-runs');
+const { setTimeout: delay } = require('node:timers/promises');
 const { homedir, tmpdir } = require('node:os');
 const { MAX_PATCH } = require('./task-output');
 const { messageId } = require('./transport');
@@ -171,54 +172,14 @@ async function checkVersion(filename, expected) {
   return current;
 }
 
-function execute(root, binary, args, timeout, signal, env = process.env, outputLimit = 16000) {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, {
-      cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32',
-    });
-    let failure;
-    const stop = (reason) => {
-      if (failure) return;
-      failure = reason;
-      if (!child.pid) return;
-      if (process.platform === 'win32') {
-        const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
-        killer.on('error', () => child.kill());
-        killer.once('exit', (code) => { if (code) child.kill(); });
-      } else {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch {}
-      }
-    };
-    const timer = setTimeout(() => stop(new Error('command_timeout')), timeout);
-    const abort = () => stop(signal.reason);
-    const output = { stdout: '', stderr: '' };
-    let truncated = false;
-    signal.addEventListener('abort', abort, { once: true });
-    for (const channel of Object.keys(output)) {
-      child[channel].setEncoding('utf-8').on('data', (chunk) => {
-        const combined = output[channel] + chunk;
-        if (channel === 'stdout' && combined.length > outputLimit) truncated = true;
-        output[channel] = combined.slice(-outputLimit);
-      });
-    }
-    child.once('error', reject);
-    child.once('close', (code) => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', abort);
-      if (failure) reject(failure);
-      else resolve({ code, ...output, ...(truncated && { truncated }) });
-    });
-  });
-}
-
 class WindowsOperations {
   constructor({ config, store, desktop, recycle }) {
     this.config = config;
     this.store = store;
     this.desktop = desktop;
     this.recycle = recycle;
-    this.commands = new Map();
+    this.commands = new CommandRuns();
+    this.startingCommands = new Map();
     this.busyStreams = new Set();
     this.busy = new Set();
   }
@@ -229,10 +190,17 @@ class WindowsOperations {
       const record = this.stream(taskId, body.stream_id);
       return { stream_id: body.stream_id, next_offset: record.offset, state: record.closed ? 'complete' : 'open' };
     }
+    if (kind === 'command.execute' && body.operation === 'status') {
+      return this.commands.byKey(taskId, body.request_id) || { state: 'unknown' };
+    }
     if (kind === 'command.execute' && body.operation === 'cancel') {
-      const command = this.commands.get(body.request_id);
-      if (command?.taskId === taskId) command.controller.abort(new Error('command_cancelled'));
-      return { state: command?.taskId === taskId ? 'cancelling' : 'unknown' };
+      const starting = this.startingCommands.get(body.request_id);
+      if (starting?.taskId === taskId) {
+        starting.cancelled = true;
+        return { state: 'cancelling' };
+      }
+      const run = this.commands.cancelKey(taskId, body.request_id);
+      return { state: run?.state || 'unknown' };
     }
     if (['stream.open', 'stream.chunk', 'stream.end'].includes(kind)) {
       const id = body.stream_id;
@@ -303,7 +271,13 @@ class WindowsOperations {
       return this.writeAnywhere(taskId, project, body);
     }
     if (body.root !== undefined && body.root !== 'project') throw new Error('read_root_readonly');
-    const root = await fs.realpath(workspace.root);
+    const starting = kind === 'command.execute' && body.operation === 'run' ? { taskId, cancelled: false } : null;
+    if (starting) this.startingCommands.set(requestId, starting);
+    let root;
+    try {
+      root = await fs.realpath(workspace.root);
+      if (starting?.cancelled) throw new Error('command_cancelled');
+    } finally { if (starting) this.startingCommands.delete(requestId); }
     if (kind === 'task.request' && body.operation === 'desktop') {
       if (workspace.desktop !== true || !this.desktop.enabled || !/^desktop_(?:click|double_click|right_click|move|drag|scroll|type|press|key|screenshot|mouse_move|mouse_click|mouse_drag|mouse_wheel|snapshot|find|type_text|press_key)$/.test(body.tool)) {
         throw new Error('desktop_not_authorized');
@@ -638,13 +612,11 @@ class WindowsOperations {
         !Number.isSafeInteger(body.timeout_ms) || body.timeout_ms < 1 || body.timeout_ms > 900000) {
       throw new Error('command_not_authorized');
     }
-    this.commands.set(id, { taskId, controller });
-    try {
-      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/KEY|TOKEN|SECRET|PASSWORD/i.test(key)));
-      return await execute(root, spec[0], spec.slice(1), body.timeout_ms, controller.signal, env);
-    } finally {
-      this.commands.delete(id);
-    }
+    const result = await this.commands.start({ scope: taskId, key: id, name: body.command, argv: spec, cwd: root, timeout: body.timeout_ms });
+    const { code, stdout, stderr, truncated } = result;
+    if (code === null) throw new Error(result.error);
+    if (body.progress === true) return result;
+    return { code, stdout, stderr, ...(truncated && { truncated }) };
   }
 }
 
@@ -663,6 +635,70 @@ class RemoteFiles {
   call(route, id, kind, body, timeout, signal) {
     signal?.throwIfAborted();
     return this.endpoint.request(route, id, kind, body, timeout, messageId(), signal);
+  }
+
+  async runCommand(route, taskId, body, { id = messageId(), signal, onStatus = () => {} } = {}) {
+    signal?.throwIfAborted();
+    const firstRoute = route();
+    const done = new AbortController();
+    let sequence = -1;
+    let terminalPublished = false;
+    const publish = (snapshot) => {
+      try { onStatus({ ...snapshot, requestId: id }); } catch { /* an activity preview must not change the command result */ }
+    };
+    const follow = async () => {
+      while (!done.signal.aborted) {
+        await delay(1200, undefined, { signal: done.signal });
+        const status = await this.call(route(), taskId, 'command.execute', {
+          operation: 'status', request_id: id,
+        }, 1500, done.signal).catch(() => null);
+        if (done.signal.aborted) return;
+        if (!status || status.state === 'unknown') {
+          const receipt = await this.call(route(), taskId, 'task.status', {
+            operation: 'operation_status', request_id: id,
+          }, 1500, done.signal).catch(() => null);
+          if (receipt?.state === 'finished') {
+            if (receipt.kind === 'error') throw Object.assign(new Error(receipt.outcome.error), { remoteConfirmed: true });
+            return receipt.outcome.value;
+          }
+          continue;
+        }
+        if (status.sequence > sequence) {
+          sequence = status.sequence;
+          publish(status);
+        }
+        if (status.finishedAt) return status;
+      }
+    };
+    const cancelAlternate = () => {
+      const current = route();
+      if (current !== firstRoute) this.call(current, taskId, 'command.execute', {
+        operation: 'cancel', request_id: id,
+      }, 5000).catch(() => {});
+    };
+    signal?.addEventListener('abort', cancelAlternate, { once: true });
+    try {
+      const result = await Promise.race([
+        this.endpoint.request(firstRoute, taskId, 'command.execute', { ...body, progress: true }, body.timeout_ms + 10000, id, signal),
+        follow(),
+      ]);
+      terminalPublished = true;
+      if (result.finishedAt) publish(result);
+      else publish({ ...result, name: body.command, state: result.code === 0 ? 'completed' : 'failed' });
+      if (!Number.isInteger(result.code)) throw Object.assign(new Error(result.error || 'command_failed'), { remoteConfirmed: true });
+      const { code, stdout, stderr, truncated } = result;
+      return { code, stdout, stderr, ...(truncated && { truncated }) };
+    } catch (error) {
+      if (!terminalPublished) publish({
+        name: body.command, state: signal?.aborted ? 'unknown' : error.message === 'command_cancelled' ? 'cancelled' :
+          error.message === 'command_timeout' ? 'timed_out' : error.remoteConfirmed ? 'failed' : 'unknown',
+        error: error.message,
+      });
+      throw error;
+    } finally {
+      done.abort();
+      signal?.removeEventListener('abort', cancelAlternate);
+    }
   }
 
   async upload(route, taskId, bytes, id = randomUUID()) {

@@ -192,6 +192,7 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .tool-body { display: none; border-top: 1px solid var(--border); }
 .tool.open .tool-body { display: block; }
 .io-label { font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--faint); padding: 6px 12px 0; }
+.io-label.command-cwd { text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; }
 .io { margin: 0; padding: 4px 12px 10px; font-size: 12px; white-space: pre-wrap; color: var(--text); max-height: 240px; overflow: auto; }
 .tool-link { color: var(--accent); font-size: 11.5px; padding: 0 12px 9px; display: inline-block; }
 .tool-link:hover { text-decoration: underline; }

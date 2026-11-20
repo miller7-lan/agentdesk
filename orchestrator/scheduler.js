@@ -15,7 +15,7 @@ const { quotaStatus } = require('./quotas');
 const { teamAdapter } = require('./team');
 const { cleanup, retention, historyCandidates } = require('./cleanup');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
-const { stepActivity } = require('./activity');
+const { stepActivity, commandProgress } = require('./activity');
 const { hostResources } = require('./host-resources');
 const { buildAcceptanceBrief, buildTriageBrief, buildLeadBrief, compactProject, clip } = require('./summary');
 const {
@@ -1709,7 +1709,7 @@ event(task, state, detail) {
     const stepSignal = AbortSignal.any([signal, stepController.signal]);
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
-    if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace,
+    if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
       runCommands: step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
@@ -2377,10 +2377,12 @@ event(task, state, detail) {
     task.pendingRequest = messageId();
     task.pendingKind = 'test';
     this.save(task, 'testing', 'windows_test_started');
-    task.testResult = await this.files.endpoint.request(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
+    task.testResult = await this.files.runCommand(() => this.bridgeRoute(task.workspace), task.id, {
       operation: 'run', workspace: task.workspace, command: task.command, permission: 'development',
       timeout_ms: 300000,
-    }, 310000, task.pendingRequest, signal);
+    }, { id: task.pendingRequest, signal, onStatus: commandProgress(this.config.stateDir, task.id, 'local-test', {
+      base: task.base, afterPatch: Boolean(task.applied?.applied),
+    }) });
     delete task.pendingRequest;
     delete task.pendingKind;
     if (task.testResult.code !== 0) throw new Error('windows_test_failed');
@@ -3063,6 +3065,16 @@ event(task, state, detail) {
       if (!owner) throw new Error('task_access_denied');
       if (typeof body.stepId !== 'string' || !/^[\w-]{1,64}$/.test(body.stepId)) throw new Error('invalid_step');
       return this.steerStep(task, body.stepId, body.reply);
+    }
+    if (body.operation === 'stop_command') {
+      if (!task || !owner) throw new Error('task_access_denied');
+      return stepActivity(this.config.stateDir, task, body.stepId).then(({ items }) => {
+        const run = items.find((item) => item.location === 'local' && item.requestId === body.artifact);
+        if (!run || run.status !== 'running') throw new Error('command_not_running');
+        return this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', {
+          operation: 'cancel', request_id: run.requestId,
+        }, 5000);
+      });
     }
     if (body.operation === 'stop_step') {
       if (!owner) throw new Error('task_access_denied');

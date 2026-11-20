@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Store = require('../orchestrator/store');
 const { Scheduler } = require('../orchestrator/scheduler');
+const { RemoteFiles } = require('../orchestrator/windows');
 
 const adapters = (...names) => Object.fromEntries(names.map((name) => [name, { bin: name, env: {} }]));
 
@@ -48,7 +49,7 @@ function schedulerFor(dir, mirror, adapter, config = {}) {
       ...config,
     },
     store: new Store(':memory:'),
-    files: { endpoint: {} },
+    files: new RemoteFiles({}),
     adapter,
   });
 }
