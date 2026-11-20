@@ -111,8 +111,35 @@ test('a signed-out CLI does not hide another CLI catalog', async () => {
 });
 
 test('a CLI without a catalog command is left alone', async () => {
-  await assert.rejects(discoverModels('claude', { bin: '/bin/claude', env: {} }),
-    /model_catalog:claude:unsupported/);
+  await assert.rejects(discoverModels('gemini', { bin: '/bin/gemini', env: {} }),
+    /model_catalog:gemini:unsupported/);
+});
+
+test('Claude models come from Anthropic\'s model list, with an API key or the CLI sign-in token', async (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { discoverClaude, mergeModels: merge } = require('../orchestrator/model-catalog');
+  const reply = { data: [{ id: 'claude-opus-5-6', display_name: 'Claude Opus 5.6' }, { id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5' }, { id: 'not-claude' }] };
+  let seen;
+  const request = async (url, options) => { seen = { url, headers: options.headers }; return { ok: true, json: async () => reply }; };
+  const byKey = await discoverClaude({ env: { ANTHROPIC_API_KEY: 'k' } }, request);
+  assert.deepEqual(byKey.models.map((model) => model.id), ['claude-opus-5-6', 'claude-sonnet-5-5']);
+  assert.equal(seen.headers['x-api-key'], 'k');
+  assert.match(seen.url, /^https:\/\/api\.anthropic\.com\/v1\/models/);
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-claude-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, '.claude'));
+  fs.writeFileSync(path.join(home, '.claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'tok' } }));
+  await discoverClaude({ env: { HOME: home } }, request);
+  assert.equal(seen.headers.Authorization, 'Bearer tok');
+  assert.equal(seen.headers['anthropic-beta'], 'oauth-2025-04-20');
+  // A new model joins; the hand-written description of a model still offered is kept.
+  const profiles = { defaultModel: 'claude-sonnet-5-5', models: { 'claude-sonnet-5-5': { strengths: 'hand-written', billing: 'subscription' } } };
+  merge(profiles, 'claude', byKey);
+  assert.equal(profiles.models['claude-sonnet-5-5'].strengths, 'hand-written');
+  assert.equal(profiles.models['claude-opus-5-6'].label, 'Claude Opus 5.6');
+  await assert.rejects(discoverClaude({ env: { HOME: home } }, async () => ({ ok: false, status: 401 })), /model_catalog:claude:http_401/);
 });
 
 test('an empty catalog is not treated as "no models available"', () => {

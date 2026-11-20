@@ -82,7 +82,30 @@ function parseCodex(text) {
 
 const parsers = { antigravity: parseAntigravity, grok: parseGrok, codex: parseCodex };
 
+// Claude Code has no command that lists models, so Claude's list comes from Anthropic's model list
+// (GET /v1/models), with an API key when the adapter has one, otherwise the CLI's own sign-in token on VPS2 —
+// the same token the live quota reading uses. Listing models with a sign-in token is not documented by
+// Anthropic; when it is refused, Claude keeps the models in the configuration.
+function parseClaude(body) {
+  const models = [];
+  for (const entry of body?.data || []) {
+    const id = entry?.id;
+    if (typeof id !== 'string' || !/^claude-/i.test(id) || !modelId.test(id) || models.some((model) => model.id === id)) continue;
+    models.push({ id, ...(typeof entry.display_name === 'string' && entry.display_name.trim() && { label: entry.display_name.trim().slice(0, 80) }) });
+  }
+  return { models };
+}
+async function discoverClaude(adapter, request = globalThis.fetch) {
+  const key = adapter.env?.ANTHROPIC_API_KEY;
+  const headers = key ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+    : { Authorization: 'Bearer ' + await require('./quotas').claudeToken(adapter.env), 'anthropic-beta': 'oauth-2025-04-20', 'anthropic-version': '2023-06-01' };
+  const response = await request('https://api.anthropic.com/v1/models?limit=1000', { headers, signal: AbortSignal.timeout(CATALOG_TIMEOUT) });
+  if (!response.ok) throw new Error('model_catalog:claude:http_' + response.status);
+  return parseClaude(await response.json());
+}
+
 function discoverModels(role, adapter, exec) {
+  if (role === 'claude') return discoverClaude(adapter);
   const parser = parsers[role];
   if (!parser) return Promise.reject(new Error('model_catalog:' + role + ':unsupported'));
   const args = { codex: ['debug', 'models'], grok: ['models'], antigravity: ['models'] }[role];
@@ -136,7 +159,7 @@ function mergeModels(profiles, role, catalog) {
 
 // Best-effort: one CLI being signed out or slow must not hide the catalog of the others.
 async function refreshModelCatalog(config, exec) {
-  const roles = ['codex', 'grok', 'antigravity'].filter((role) => config.adapters?.[role]);
+  const roles = ['codex', 'grok', 'antigravity', 'claude'].filter((role) => config.adapters?.[role]);
   const entries = await Promise.all(roles.map(async (role) => {
     try {
       const catalog = await discoverModels(role, config.adapters[role], exec);
@@ -150,5 +173,5 @@ async function refreshModelCatalog(config, exec) {
 }
 
 module.exports = {
-  parseAntigravity, parseGrok, parseCodex, discoverModels, mergeModels, refreshModelCatalog,
+  parseAntigravity, parseGrok, parseCodex, parseClaude, discoverClaude, discoverModels, mergeModels, refreshModelCatalog,
 };

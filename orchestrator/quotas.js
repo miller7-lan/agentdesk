@@ -284,6 +284,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets, claudeUsageBuckets, readClaudeQuotas,
+  codexBuckets, quotaStatus, readGrokQuotas, antigravityBuckets, claudeUsageBuckets, readClaudeQuotas, claudeToken,
   captureClaudeQuotas, claudeRateLimitBuckets, captureClaudeRateLimitEvent,
 };

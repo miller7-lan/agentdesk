@@ -164,11 +164,12 @@ function start(config) {
     if (error.code !== 'EEXIST') throw error;
   }
   const scheduler = new Scheduler({ config, store, files });
-  // Model catalogs change only when the CLI or its sign-in changes, so once a day is enough. It runs in the
-  // background: a slow or signed-out CLI must not delay the service or hide another CLI's catalog.
+  // New models from the providers show up by themselves: every few hours (discoverModelsHours, default 6) each
+  // CLI's list is read again — and Claude's from Anthropic's model list. It runs in the background: a slow or
+  // signed-out CLI must not delay the service or hide another CLI's catalog.
   const modelCatalogTimer = config.discoverModels && setInterval(() => {
     scheduler.refreshModelCatalog().catch((error) => console.error('model catalog:', error.message));
-  }, 24 * 3600_000);
+  }, Math.min(48, Math.max(1, Number(config.discoverModelsHours) || 6)) * 3600_000);
   modelCatalogTimer?.unref();
   if (config.discoverModels) {
     scheduler.refreshModelCatalog().catch((error) => console.error('model catalog:', error.message));
