@@ -1693,7 +1693,7 @@ event(task, state, detail) {
       ? await this.mountFor(task).catch(() => null) : null;
     const mcp = bridgeTools && (task.snapshot ? Boolean(step.localTools) : access.mcp === 'always' || !mount)
       ? this.config.mcp : undefined;
-    if (task.snapshot) {
+    if (task.snapshot && step.id !== 'group-planner') {
       prompt += '\nUse this working tree for all project files. Its base is the fixed snapshot of the requester\'s project. ' +
         'Edit here and deliver a reviewed patch. ' + (step.localTools === 'files' ? 'Use local file tools only for files outside the project.'
           : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
