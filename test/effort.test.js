@@ -75,11 +75,13 @@ test('an exit code keeps the CLI line that explains it', async (t) => {
 process.stderr.write('error: invalid model selection (--model "gemini-4-hydrogen" --effort "medium"): --effort is not supported for model "gemini-4-hydrogen"\\n');
 process.exit(1);
 `, { mode: 0o755 });
-  // The adapter passes Codex's global --search flag before exec; the stand-in ignores its arguments.
-  const bin = path.join(dir, 'codex');
-  await fs.writeFile(bin, `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`, { mode: 0o700 });
-  const { runAdapter } = require('../orchestrator/adapters');
-  await assert.rejects(runAdapter({ name: 'codex', config: { bin, env: { PATH: process.env.PATH } }, cwd: dir, prompt: 'p',
+  // The adapter passes Codex's global --search flag before exec; run the Node stand-in as a script on every platform.
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', (file, args, options) => spawn(process.execPath, [file, ...args], options));
+  const filename = require.resolve('../orchestrator/adapters');
+  delete require.cache[filename];
+  const { runAdapter } = require(filename);
+  await assert.rejects(runAdapter({ name: 'codex', config: { bin: script, env: { PATH: process.env.PATH } }, cwd: dir, prompt: 'p',
     readonly: true, timeout: 10000, signal: new AbortController().signal, log: path.join(dir, 'error.log'), onSession() {} }),
   (error) => {
     assert.match(error.message, /^cli_exit_1: error: invalid model selection/);

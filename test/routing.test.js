@@ -3,12 +3,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 const { Router, validateRoutes } = require('../orchestrator/routing');
 const { parsePlan, Scheduler } = require('../orchestrator/scheduler');
 const { runAdapter, normalizeUsage, classifyFailure, formatDuration } = require('../orchestrator/adapters');
 const Store = require('../orchestrator/store');
 
 const adapters = (...names) => Object.fromEntries(names.map((name) => [name, { bin: name, env: {} }]));
+
+// A standalone CLI fixture runs as `node <script>`; when the adapter prepends one of its global flags, drop the
+// flag (and its value) so the fake script still starts on every platform, Windows included.
+function freshRunAdapter(t, cleanArgs) {
+  const filename = require.resolve('../orchestrator/adapters');
+  const cached = require.cache[filename];
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', (file, args, options) => spawn(file, cleanArgs(file, args), options));
+  delete require.cache[filename];
+  t.after(() => { if (cached) require.cache[filename] = cached; else delete require.cache[filename]; });
+  return require(filename).runAdapter;
+}
 
 test('the router picks the first available candidate and skips blocked CLIs until the block lifts', () => {
   let now = 0;
@@ -114,11 +127,11 @@ test('Codex JSON errors classify quota exhaustion without treating recovered ret
     "  process.exitCode = 1;",
     "}",
   ].join('\n'));
-  // The adapter runs Codex with the global --search flag before `exec`; the stand-in ignores the flags.
-  const bin = path.join(dir, 'codex');
-  await fs.writeFile(bin, `#!${process.execPath}\nrequire(${JSON.stringify(path.join(dir, 'exec'))});\n`, { mode: 0o700 });
-  const run = (result) => runAdapter({
-    name: 'codex', config: { bin, env: { ...process.env, MOCK_CODEX_RESULT: result } },
+  // The adapter runs Codex with the global --search flag before `exec`; drop it for the Node stand-in.
+  const runAdapterWithSearch = freshRunAdapter(t,
+    (file, args) => file === process.execPath && args[0] === '--search' ? args.slice(1) : args);
+  const run = (result) => runAdapterWithSearch({
+    name: 'codex', config: { bin: process.execPath, env: { ...process.env, MOCK_CODEX_RESULT: result } },
     cwd: dir, readonly: true, signal: new AbortController().signal, timeout: 5000,
     prompt: 'hello', log: path.join(dir, result + '.log'), onSession() {},
   });
@@ -209,18 +222,13 @@ test('Antigravity streaming results preserve responses, sessions, usage and auth
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const fixture = path.join(dir, 'fixture.js');
   await fs.writeFile(fixture, `const bad=process.argv[2]==='fail'; console.log(JSON.stringify({event:'result',result:{conversation_id:'agy-session',response:bad?'':'connected',usage:{input_tokens:5,output_tokens:2},...(bad?{error:'authentication required'}:{})}}));`);
-  // The adapter prepends Antigravity's --settings; the stand-in takes the prompt after the fixture path.
-  const bin = path.join(dir, 'agy');
-  await fs.writeFile(bin, `#!${process.execPath}
-const args = process.argv.slice(2);
-const at = args.indexOf(${JSON.stringify(fixture)});
-process.argv = [process.argv[0], ${JSON.stringify(fixture)}, ...args.slice(at + 1)];
-require(${JSON.stringify(fixture)});
-`, { mode: 0o700 });
+  // The adapter prepends Antigravity's --settings (flag and JSON); drop the pair for the Node stand-in.
+  const runAdapterWithSettings = freshRunAdapter(t,
+    (file, args) => file === process.execPath && args[0] === '--settings' ? args.slice(2) : args);
   const template = { ...require('../orchestrator/vps2.example.json').adapters.antigravity.template,
     args: [fixture, '{prompt}'], readonlyArgs: [], writeArgs: [], resumeArgs: [] };
   let session;
-  const run = prompt => runAdapter({ name:'antigravity', config:{bin,env:process.env,template},
+  const run = prompt => runAdapterWithSettings({ name:'antigravity', config:{bin:process.execPath,env:process.env,template},
     cwd:dir, prompt, readonly:true, signal:new AbortController().signal, timeout:5000,
     log:path.join(dir,'result.log'), onSession:id=>{session=id;} });
   assert.deepEqual(await run('ok'), { output:'connected', usage:{input:5,output:2} });
