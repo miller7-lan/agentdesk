@@ -175,8 +175,12 @@ function createProjectSftp({ root }) {
       await guard.withPaths([parent(source), parent(target)], null, async () => {
         const before = await statPath(source.file);
         if (!before) throw fail('ENOENT', 'project_path_not_found');
+        const destination = await statPath(target.file);
         verify(source, before);
-        if (replace) verify(target, await statPath(target.file));
+        if (!replace && destination && source.file.toLowerCase() !== target.file.toLowerCase()) {
+          throw fail('EEXIST', 'project_file_exists');
+        }
+        if (replace) verify(target, destination);
         await guard.move(source.file, target.file, replace);
         observed.delete(source.file.toLowerCase());
         const moved = await statPath(target.file);
@@ -279,7 +283,7 @@ function createProjectSftp({ root }) {
           const metadata = fields.metadata();
           await pin(target, false, async () => {
             verify(target, await statPath(target.file));
-            const file = await fs.open(target.file, metadata.size === undefined ? C.O_RDONLY : C.O_RDWR);
+            const file = await fs.open(target.file, C.O_RDWR);
             try {
               await setFile(file, metadata);
               await file.sync();

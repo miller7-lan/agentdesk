@@ -65,6 +65,11 @@ test('Windows project SFTP writes binary chunks, appends, truncates, and replace
   const append = await open('subdir/二进制.bin', 6);
   await check(S.OK, T.WRITE, str(append), u64(0), str('tail'));
   await check(S.OK, T.CLOSE, str(append));
+  const timestamp = 1_700_000_000;
+  await check(S.OK, T.SETSTAT, str('subdir/二进制.bin'), u32(8), u32(timestamp), u32(timestamp));
+  assert.equal(Math.floor((await fs.stat(path.join(root, 'subdir', '二进制.bin'))).mtimeMs / 1000), timestamp);
+  await check(S.FAILURE, T.RENAME, str('subdir/二进制.bin'), str('source.bin'));
+  assert.equal(await fs.readFile(path.join(root, 'source.bin'), 'utf8'), 'original');
   await check(S.OK, T.EXTENDED, str('posix-rename@openssh.com'), str('subdir/二进制.bin'), str('source.bin'));
   assert.deepEqual(await fs.readFile(path.join(root, 'source.bin')), Buffer.concat([data.subarray(0, 2 * 65536), Buffer.from('tail')]));
   await check(S.OK, T.RENAME, str('source.bin'), str('subdir/finish.bin'));
