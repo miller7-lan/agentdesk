@@ -330,3 +330,9 @@ ssh -F none -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
 主控在转发本机文件改动前记录请求编号，在收到 Bridge 回复后保存每项结果。连接中断时优先查询该编号；写入内容有已知哈希时也可核对落盘版本。移动、删除结果未知时转入人工核对。旧版只有最后文件名且缺少证据的任务，需要核对已有交付后再决定是否重试。Grok 自身的无交互工具授权失败会进入成员选择。组长申请的 Bridge 临时权限在桌面端审批。
 
 部署顺序为 VPS2 主控、Windows 客户端及 Bridge、Mac 客户端及 Bridge。Mac 使用现有群聊部署流程更新后台 Bridge 并重启，再验证仅允许一个步骤的目录或命令在下一步失效。保留每台机器原有连接配置。
+
+#### 2026-11-21 验证记录
+
+运行版本 `71181c9` 包含主线 `562da84`。本机 Windows 测试 294 项通过，33 项按平台条件跳过。Ubuntu、macOS、Windows 的 Node 测试及 Relay 测试均通过。[三平台 CI](https://github.com/miller7-lan/agentdesk/actions/runs/44774873228)
+
+在 VPS2 以服务账户运行真实 bubblewrap，工作树同时包含已暂存和未暂存的改动，`git status --short` 返回 `MM`，两类 diff 均可读。SSH 网关、主控、Bridge 联调验证了写入前后的回执使用同一请求编号。实际 Windows Bridge 在两块磁盘的临时目录通过创建、读回、编辑、批量版本冲突、移动和回收测试。未使用模型订阅额度。

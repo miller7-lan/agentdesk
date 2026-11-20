@@ -178,3 +178,9 @@ launchctl print "$domain/local.agentdesk.bridge"
 本版群聊调度、调用归属及恢复能力适用于 Mac。Windows 原生单聊 Worker、Windows 隔离构建执行器和 EXE 验收使用各自的 Windows 部署流程。Mac 的本机验证使用上述授权命令与群聊补丁流程。 [Windows 群聊构建说明](GROUP-WINDOWS-TESTS.md)
 
 回滚时先退出 AgentDesk，恢复备份的应用和上一版 Bridge 源码，重启原 LaunchAgent。若 VPS2 也需回滚，由管理员先排空活动任务，再从备份恢复代码；保留 Mac 和 VPS2 的状态数据、已建 Worktree、会话与待应用补丁。单聊认证异常时分别检查 SSH 公钥登记、主机指纹和 VPS2 服务账号的模型登录。群聊离线时检查 LaunchAgent 日志、Bridge socket 和 VPS2 工作区绑定。
+
+### 群聊文件交付与临时授权
+
+升级到包含 `71181c9` 的版本时，先部署 VPS2 主控，再安装同一提交的通用 Mac 应用，并按上文更新和重启后台 Bridge。启动后选一个项目外的临时目录，给群聊某个步骤授予该目录的写入权限。交付文件的版本应与 Bridge 写入回执一致，下一步骤应无法复用本次单步授权。选择「整个任务」时，同一任务的后续步骤可以继续使用，任务结束后授权收回。
+
+若交付后线路中断，在群聊里核对原请求的状态和文件版本。收到「结果待核对」时，先检查已生成的文件，再决定是否重试。VPS2 群聊沙盒可用 `git status` 和 `git diff` 检查当前步骤。
