@@ -17,7 +17,7 @@ window.__agentThreadsReady = (async () => {
   // of its own under the group.
   const ROLES = new Set(['codex', 'grok', 'gemini', 'antigravity']);
   const capabilities = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
-  const stepStates = { switched: '已换模型', waiting_choice: '等你选接手', replaced: '已改派', queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
+  const stepStates = { switched: '已换模型', waiting_choice: '等你选接手', waiting_permission: '等你批权限', replaced: '已改派', queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败', cancelled: '已停止', skipped: '跳过' };
   const taskTerminal = new Set(['completed', 'failed', 'cancelled']);
   const stepDone = new Set(['completed', 'failed', 'cancelled', 'skipped', 'switched', 'replaced']);
   const MAX_THREADS = 400;   // a safety net; the real limit is ten per group chat (prune)

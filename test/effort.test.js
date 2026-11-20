@@ -347,3 +347,43 @@ test('a step not started yet can get another member, model and effort from its n
   choose(planned, { stepId: 'fix', role: 'grok' });
   assert.equal(planned.groupPlan.rounds[0].steps[0].role, 'grok');
 });
+
+test('a step refused access goes to the lead, who asks the person; allowed access continues the same session', async () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  const events = [];
+  const decisions = [{ grant: 'commands', reason: '要在本机跑 Windows 测试' }];
+  const self = {
+    config: { stateDir: require('node:os').tmpdir(), workspaces: { mac: { groupLocalDrives: ['C', 'D'] } }, adapters: { claude: { profiles: { models: {} } } } },
+    tasks: new Map(), running: new Map(), now: () => Date.now(),
+    save: (task, state, detail) => { task.state = state; events.push(detail); }, status: (id) => ({ id }), pump() {},
+    pickForTask: () => 'claude', leadModelFor: () => undefined, orderModels: () => [],
+    execute: async () => ({ output: JSON.stringify(decisions.shift()) }),
+  };
+  for (const name of ['recordDenial', 'requestPermission', 'leadAccessDecision', 'requeueAfterAccess', 'answerPermission', 'grantAccess']) self[name] = S[name].bind(self);
+  const task = { id: 't', workspace: 'mac', state: 'running', prompt: '修好并在本机测试', steps: [
+    { id: 'check', role: 'grok', capability: 'review', state: 'running', session: 's1' }] };
+  self.tasks.set('t', task);
+  self.recordDenial('t', 'check', { operation: 'run', command: 'windows-test', error: 'mcp_permission_denied: this step cannot run local commands' });
+  const step = task.steps[0];
+  step.state = 'failed';
+  step.error = 'cli_exit_1';
+  assert.equal(await self.requestPermission(task, new AbortController().signal), true);
+  assert.equal(step.state, 'waiting_permission');
+  assert.equal(step.permissionRequest.kind, 'commands');
+  assert.match(step.permissionRequest.denials[0], /cannot run local commands/);
+  // Allowed for the whole task: the same session goes on, and the same kind is not asked again in this task.
+  self.answerPermission(task, { stepId: 'check', decision: 'task' });
+  assert.deepEqual([step.state, step.session, step.extraAccess, task.extraAccess], ['queued', 's1', ['commands'], ['commands']]);
+  assert.ok(events.includes('check:access_granted_task'));
+  // Declining: the step continues without it and is told what is missing.
+  decisions.push({ grant: 'files_write', reason: '要把报告写到 D 盘' });
+  step.state = 'failed';
+  self.recordDenial('t', 'check', { operation: 'write', path: 'D:/out/report.txt', error: 'mcp_permission_denied: this step cannot change files on the person\'s computer' });
+  await self.requestPermission(task, new AbortController().signal);
+  self.answerPermission(task, { stepId: 'check', decision: 'deny' });
+  assert.equal(step.state, 'queued');
+  assert.match(step.guidance.at(-1).text, /没有允许/);
+  assert.equal(step.localDrives, undefined);
+  assert.throws(() => self.answerPermission(task, { stepId: 'check', decision: 'step' }), /step_not_waiting/);
+});

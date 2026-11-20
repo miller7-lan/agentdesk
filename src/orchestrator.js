@@ -50,6 +50,8 @@ window.__groupReady = (async () => {
     plan_revise_requested: '你改了方向：组长保留已完成的部分，按你的话重新规划剩下的，新方案出来后请确认。',
     revise_deciding: '组长正在判断你的话影响哪些步骤：不受影响的继续，需要的补一句指导接着做，方向变了的才停下。',
     handover_choice: '有一步换了几个模型都没完成，等你选择接手的模型。',
+    permission_request: '组长申请给一步临时开权限，等你批准。',
+    permission_answered: '你处理了权限申请，继续执行。',
     handover_chosen: '你选好了接手的模型，继续执行。',
     revise_decided: '组长已按你的话调整了正在做的步骤。',
     revise_needs_approval: '组长按你的话新增了步骤，请确认后开始。',
@@ -544,6 +546,11 @@ window.__groupReady = (async () => {
     const handed = /^([\w-]+):(handover|chosen):([^/>]+)(?:\/([^>]*))?->([^/]+)(?:\/(.*))?$/.exec(detail || '');
     if (handed) return `${memberName(handed[3])}${handed[4] ? '（' + handed[4] + '）' : ''}没完成，${handed[2] === 'chosen' ? '按你的选择' : '已直接'}交给 ${memberName(handed[5])}${handed[6] ? '（' + handed[6] + '）' : ''} 接着它的改动做。`;
     if (/:needs_choice$/.test(detail || '')) return '这一步没人能完成，请选择接手的模型。';
+    const asked = /^([\w-]+):permission_requested:(\w+)$/.exec(detail || '');
+    if (asked) return `${asked[1]} 因为权限不够没做完，组长申请临时给它开「${ACCESS_NAMES[asked[2]] || asked[2]}」，等你批准。`;
+    const access = /^([\w-]+):access_(granted|granted_task|denied|advised)$/.exec(detail || '');
+    if (access) return { granted: `你允许了 ${access[1]} 这一步的临时权限，它接着原来的进度做。`, granted_task: `你允许了这项任务里同类的临时权限，${access[1]} 接着原来的进度做。`,
+      denied: `你没有允许 ${access[1]} 的权限申请，它会不用这个权限把能做的做完。`, advised: `组长认为 ${access[1]} 不需要更多权限，给了它另一个做法，它接着做。` }[access[2]];
     const adjusted = /^([\w-]+):adjusted:([^/]+)(?:\/(.*))?$/.exec(detail || '');
     if (adjusted) return `你把 ${adjusted[1]} 改由 ${memberName(adjusted[2])}${adjusted[3] ? '（' + adjusted[3] + '）' : ''} 来做。`;
     const stepFailed = /^step_failed:([\w-]+):(\w+)$/.exec(detail || '');
@@ -805,7 +812,10 @@ window.__groupReady = (async () => {
   const threadRoles = new Set(['codex', 'grok', 'gemini', 'antigravity']);   // members only; the lead works in the group itself
   const capabilityLabels = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
   const stepStates = { queued: '排队', waiting: '等待', running: '执行中', completed: '完成', failed: '失败',
-    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止', proposed: '待你确认', waiting_choice: '等你选接手' };
+    replaced: '已重新分配', cancelled: '已停止', skipped: '未执行', stopped: '已中止', proposed: '待你确认', waiting_choice: '等你选接手', waiting_permission: '等你批权限' };
+  // The kinds of temporary access the lead may ask for (scheduler ACCESS_KINDS); credential and system folders never.
+  const ACCESS_NAMES = { files_read: '读你电脑上的任意文件夹（项目以外）', files_write: '改你电脑上任意文件夹里的文件（项目以外）',
+    commands: '运行这台电脑授权给 AI 的命令', desktop: '操作桌面' };
   const terminalTask = new Set(['completed', 'failed', 'cancelled']);
   // A step still marked running or queued under a task that has already ended was cut off; show that
   // instead of a live state that contradicts the task.
@@ -1010,7 +1020,7 @@ window.__groupReady = (async () => {
         ].filter(Boolean).join(' · '))}</span>
         ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
-      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => `<div class="task-addition"><p>${esc(memberName(step.role))} 这一步没完成，等你选接手的模型。</p><div class="task-actions"><button type="button" class="btn primary" data-handover-open="${esc(task.id + ':' + step.id)}">选择接手的模型</button></div></div>`).join('') : ''}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
+      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_permission').map((step) => `<div class="task-addition"><p>组长申请给 ${esc(memberName(step.role))} 临时开「${esc(ACCESS_NAMES[step.permissionRequest?.kind] || '')}」。</p><div class="task-actions"><button type="button" class="btn primary" data-permission-open="${esc(task.id + ':' + step.id)}">查看并批准</button></div></div>`).join('') : ''}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => `<div class="task-addition"><p>${esc(memberName(step.role))} 这一步没完成，等你选接手的模型。</p><div class="task-actions"><button type="button" class="btn primary" data-handover-open="${esc(task.id + ':' + step.id)}">选择接手的模型</button></div></div>`).join('') : ''}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
         <p><b>为什么失败：</b>${esc(failureReason(task))}</p>
         <div class="task-actions"><button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>
         <button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="terminal">看输出 ${svg('chev')}</button></div></div>` : ''}`;
@@ -1336,7 +1346,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:|^snapshot_skipped:|^mirror_synced:/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:|^snapshot_skipped:|^mirror_synced:|:permission_requested:|:access_/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
@@ -2668,9 +2678,54 @@ window.__groupReady = (async () => {
     if (adjust && step.effort) dialog.querySelector('#handoverEffort').value = step.effort;
   }
   const failureText = (error) => window.__providerDirect?.errors?.[error] || ({ cli_exit_1: 'CLI 异常退出', cli_timeout: '超时', cli_stalled: '长时间没有输出' })[String(error).split(':')[0]] || String(error).slice(0, 300);
+  // The lead asks for temporary access for one step: the person allows it for this step, for the whole task
+  // (same kind, until the task ends), or declines.
+  function permissionDialog(task, step) {
+    let dialog = document.querySelector('#permissionDialog');
+    if (!dialog) {
+      dialog = document.createElement('dialog');
+      dialog.id = 'permissionDialog';
+      dialog.className = 'handover-dialog';
+      document.body.appendChild(dialog);
+      dialog.addEventListener('click', async (event) => {
+        if (event.target === dialog || event.target.closest('[data-permission-close]')) { dialog.close(); return; }
+        const button = event.target.closest('[data-permission-answer]');
+        if (!button) return;
+        const group = currentGroup();
+        const { taskId, stepId } = dialog.dataset;
+        const answer = button.dataset.permissionAnswer;
+        const ok = await run(async () => {
+          if (isExample(group.id)) return;
+          updateTask(group, taskId, await control('permission_answer', { taskId, stepId, reply: answer }), true);
+        }, group);
+        if (ok) { dialog.close(); A.toast({ step: '已允许这一步', task: '已允许这项任务里同类的权限', deny: '已拒绝，这一步会不用它把能做的做完' }[answer]); render(); }
+      });
+    }
+    const request = step.permissionRequest || {};
+    dialog.dataset.taskId = task.id;
+    dialog.dataset.stepId = step.id;
+    dialog.innerHTML = `<form method="dialog"><header><h3>组长申请临时权限</h3><button type="button" class="qv-close" data-permission-close aria-label="关闭">×</button></header>
+      <p class="handover-why"><b>${esc(memberName(step.role))}${step.model ? '（' + esc(step.model) + '）' : ''}</b> 在 ${esc(step.id)} 这一步因为权限不够没做完。</p>
+      <p class="permission-kind">申请：<b>${esc(ACCESS_NAMES[request.kind] || request.kind || '')}</b></p>
+      ${request.reason ? `<p class="handover-note">组长的理由：${esc(request.reason)}</p>` : ''}
+      ${request.denials?.length ? `<p class="handover-tried">被拒绝的操作：${esc(request.denials.join('；'))}</p>` : ''}
+      <p class="handover-note">只给这一步（或这项任务）用，结束就收回。凭据和系统目录、绕过补丁直接改项目，无论怎样都不会开。</p>
+      <footer><button type="button" class="btn" data-permission-answer="deny">拒绝</button><span class="grow"></span>
+        <button type="button" class="btn" data-permission-answer="task">这项任务都允许</button><button type="button" class="btn primary" data-permission-answer="step">允许这一步</button></footer></form>`;
+    if (!dialog.open) dialog.showModal();
+  }
   function offerChoices() {
     const group = currentGroup();
     if (!group || document.hidden) return;
+    for (const task of group.records.values()) {
+      for (const step of (task.steps || []).filter((item) => item.state === 'waiting_permission')) {
+        const key = 'permission:' + task.id + ':' + step.id + ':' + (step.permissionRequest?.kind || '');
+        if (shownChoices.has(key)) continue;
+        shownChoices.add(key);
+        permissionDialog(task, step);
+        return;
+      }
+    }
     for (const { task, step } of waitingChoices(group)) {
       const key = task.id + ':' + step.id + ':' + (step.history?.length || 0);
       if (shownChoices.has(key)) continue;
@@ -2691,6 +2746,14 @@ window.__groupReady = (async () => {
     const step = task && [...(task.steps || []), ...(task.plan?.rounds?.at(-1)?.steps || [])].find((item) => item.id === stepId);
     if (step) choiceDialog(task, step, step.state !== 'waiting_choice');
   }, true);
+  timeline.addEventListener('click', (event) => {
+    const open = event.target.closest('[data-permission-open]');
+    if (!open) return;
+    const [taskId, stepId] = open.dataset.permissionOpen.split(':');
+    const task = currentGroup()?.records.get(taskId);
+    const step = task?.steps?.find((item) => item.id === stepId && item.state === 'waiting_permission');
+    if (step) permissionDialog(task, step);
+  });
   timeline.addEventListener('click', (event) => {
     const button = event.target.closest('[data-handover-open]');
     if (!button) return;

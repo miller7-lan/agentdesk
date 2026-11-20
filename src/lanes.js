@@ -163,6 +163,7 @@
   };
   STEP_STATE.proposed = '待你确认';
   STEP_STATE.waiting_choice = '等你选接手';
+  STEP_STATE.waiting_permission = '等你批权限';
   const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
   // A failed step stays on the graph even after the lead handed it to someone else: its error is the record of
   // what went wrong, and the node must stay red instead of fading into a neutral "已改派".

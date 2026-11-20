@@ -782,3 +782,5 @@ button.lane-node { cursor: pointer; }
 .sg-adjust { position: absolute; right: 6px; bottom: 6px; }
 .sg-adjust:hover, .step-row-adjust:hover { background: var(--accent-soft); }
 .handover-option small.now { color: var(--accent); }
+.permission-kind { margin: 0; font-size: 13px; }
+.permission-kind b { color: var(--accent); }
