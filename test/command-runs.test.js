@@ -31,7 +31,7 @@ test('direct command uses the session project and rechecks the approved program 
   assert.equal(JSON.parse(rejected.contentItems[0].text).error, 'command_changed_after_approval');
   const outcome = await call({ cwd: worktree, argv });
   assert.equal(outcome.success, true);
-  assert.equal(JSON.parse(outcome.contentItems[0].text).stdout.trim(), await fs.realpath(worktree));
+  assert.equal(await fs.realpath(JSON.parse(outcome.contentItems[0].text).stdout.trim()), await fs.realpath(worktree));
 });
 
 test('local command streams before exit, uses the bound directory and replays the completed run', async (t) => {
@@ -52,7 +52,9 @@ test('local command streams before exit, uses the bound directory and replays th
   const finished = await done;
   assert.equal(finished.code, 0);
   const realFolder = await fs.realpath(folder);
-  assert.ok(updates.some(({ state, stdout }) => state === 'running' && path.resolve(stdout.trim()) === realFolder));
+  const streamed = updates.find(({ state, stdout }) => state === 'running' && stdout.trim());
+  assert.ok(streamed);
+  assert.equal(await fs.realpath(streamed.stdout.trim()), realFolder);
   assert.equal(finished.stderr.trim(), 'finished');
   const reopened = new CommandRuns(undefined, journal);
   assert.deepEqual(await reopened.start(request), finished);

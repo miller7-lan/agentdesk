@@ -67,16 +67,19 @@ function client(root, options = {}) {
 }
 
 test('the Bridge serves the home folder read-only, without credential folders or ways out', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-home-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-home-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const home = path.join(fixture, 'home');
+  const alias = path.join(fixture, 'home-alias');
   fs.mkdirSync(path.join(home, 'proj', 'src'), { recursive: true });
+  fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
   fs.mkdirSync(path.join(home, '.ssh'));
   fs.mkdirSync(path.join(home, 'bridge-state'));
   fs.writeFileSync(path.join(home, 'proj', 'src', 'a.js'), 'console.log(1)');
   fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519'), 'SECRET');
   fs.writeFileSync(path.join(home, 'bridge-state', 'key'), 'SECRET');
   if (process.platform !== 'win32') fs.symlinkSync('/etc', path.join(home, 'proj', 'out'));
-  const sftp = client(home, { hidden: [path.join(home, 'bridge-state')] });
+  const sftp = client(alias, { hidden: [path.join(alias, 'bridge-state')] });
   const version = await sftp.init();
   assert.equal(version[0], T.VERSION);
   assert.deepEqual(await sftp.list('/'), ['proj']);                      // .ssh and the Bridge's state are not listed

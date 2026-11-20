@@ -87,7 +87,24 @@ function createReadOnlySftp({ root = os.homedir(), hidden = [], platform = proce
   const native = platform === 'win32' ? path.win32 : path.posix;
   const base = native.resolve(root);
   const denied = [...HIDDEN, ...hidden].map((entry) => fold(String(entry).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')));
-  const extraAbsolute = hidden.filter((entry) => native.isAbsolute(String(entry))).map((entry) => fold(native.resolve(entry)));
+  const extraAbsolute = hidden.filter((entry) => native.isAbsolute(String(entry))).map((entry) => native.resolve(entry));
+  const lexicalHidden = extraAbsolute.map(fold);
+  const hiddenPath = (value, entries) => entries.some((entry) => value === entry || value.startsWith(entry + native.sep));
+  let rootPolicy;
+  function resolveRoot() {
+    return rootPolicy ||= fs.realpath(base).then(async (realBase) => {
+      const absolute = new Set(lexicalHidden);
+      for (const entry of extraAbsolute) {
+        const relative = native.relative(base, entry);
+        if (!native.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + native.sep)) {
+          absolute.add(fold(native.resolve(realBase, relative)));
+        }
+        const real = await fs.realpath(entry).catch(() => null);
+        if (real) absolute.add(fold(real));
+      }
+      return { realBase, absolute: [...absolute] };
+    }).catch((error) => { rootPolicy = null; throw error; });
+  }
 
   // "/a/b" (always "/"-separated, as SFTP paths are) → the absolute native path under the home folder, or null
   // when it leaves the home folder or names a hidden folder.
@@ -101,7 +118,8 @@ function createReadOnlySftp({ root = os.homedir(), hidden = [], platform = proce
     }
     const relative = parts.join('/');
     if (isHidden(relative)) return null;
-    return { relative, native: parts.length ? native.join(base, ...parts) : base };
+    const candidate = parts.length ? native.join(base, ...parts) : base;
+    return hiddenPath(fold(candidate), lexicalHidden) ? null : { relative, native: candidate };
   }
   function isHidden(relative) {
     const key = fold(relative);
@@ -109,11 +127,12 @@ function createReadOnlySftp({ root = os.homedir(), hidden = [], platform = proce
   }
   // Symbolic links are followed only when they stay inside the home folder and do not lead into a hidden one.
   async function safeStat(target) {
+    const { realBase, absolute } = await resolveRoot();
     const real = await fs.realpath(target.native);
-    const inside = native.relative(base, real);
+    const inside = native.relative(realBase, real);
     if (inside.startsWith('..') || native.isAbsolute(inside)) throw Object.assign(new Error('outside'), { code: 'EACCES' });
     if (isHidden(inside.split(native.sep).join('/'))) throw Object.assign(new Error('hidden'), { code: 'EACCES' });
-    if (extraAbsolute.some((entry) => fold(real) === entry || fold(real).startsWith(entry + native.sep))) throw Object.assign(new Error('hidden'), { code: 'EACCES' });
+    if (hiddenPath(fold(real), absolute)) throw Object.assign(new Error('hidden'), { code: 'EACCES' });
     return { real, stat: await fs.stat(real) };
   }
   const code = (error) => error?.code === 'ENOENT' || error?.code === 'ENOTDIR' ? S.NO_SUCH_FILE
