@@ -235,7 +235,7 @@ class Scheduler {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
       } else if (['planning', 'running', 'awaiting_acceptance', 'triaging'].includes(task.state)) {
         for (const step of task.steps) {
-          if (step.state === 'running') step.state = 'queued';
+          if (step.state === 'running') { step.state = 'queued'; delete step.finishedAt; }
         }
         this.save(task, 'queued', 'recovered');
       } else if (task.state === 'cancelled') {
@@ -1229,12 +1229,10 @@ event(task, state, detail) {
     return { home: mount.path, project: task.mountProject === null ? null : path.posix.join(mount.path, task.mountProject) };
   }
 
-  // The model a member uses when nobody named one: its newest full model; Antigravity keeps its configured
-  // default (a flash level) for routine work, because a heavier model there spends the shared Gemini quota
-  // much faster and the lead names one for hard steps anyway.
+  // Explicit routing preferences are checked at the call site. Otherwise honor the role's configured model.
   defaultModelFor(role) {
     const profiles = this.config.adapters[role]?.profiles;
-    if (role === 'antigravity' && profiles?.defaultModel && Object.hasOwn(profiles.models || {}, profiles.defaultModel)) return profiles.defaultModel;
+    if (profiles?.defaultModel && Object.hasOwn(profiles.models || {}, profiles.defaultModel)) return profiles.defaultModel;
     return preferredModel(profiles);
   }
 
@@ -1823,7 +1821,7 @@ event(task, state, detail) {
     // task was put back in line later). Nothing of this task is executing now, so put those steps back in
     // line; otherwise the loop below finds no ready step and fails the whole task with dependency_failed.
     for (const step of task.steps) {
-      if (step.state === 'running') step.state = 'queued';
+      if (step.state === 'running') { step.state = 'queued'; delete step.finishedAt; }
     }
     this.save(task, 'running', 'plan_ready');
     for (;;) {
@@ -1847,7 +1845,7 @@ event(task, state, detail) {
           const stale = task.steps.filter((step) => step.state === 'running');
           if (!stale.length && task.steps.some((step) => step.state === 'waiting_choice')) break;
           if (!stale.length) throw new Error('dependency_failed');
-          for (const step of stale) step.state = 'queued';
+          for (const step of stale) { step.state = 'queued'; delete step.finishedAt; }
           continue;
         }
         const results = await Promise.allSettled(wave.map((step) => this.runStep(task, step, repo, root, signal)));
@@ -1947,9 +1945,9 @@ event(task, state, detail) {
       'When clear return only JSON {"summary":"outline the scope and validation in at most 1800 characters","steps":[{"id":"step","capability":"implement","prompt":"concrete work and checks","dependsOn":[]}]}. User-visible text should match the requester’s language.',
       CAPABILITY_GUIDE,
       'Use at most 12 steps and at most 1000 characters per step prompt. If a preferred executor is selected, return exactly one step and set its role to that executor.',
-      'Use each integration’s strengths and model-specific profile to choose who does each step (the model itself: newest generation first, see below). These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Changing files has one owner: give every implement step to codex, on one Codex model for the whole task, so a single member makes all the changes; another member implements only when codex cannot take the work now or the requester named it. Reading, research and review go to the other members, spread by quota left: among those that can do a step equally well, prefer the lower quotaUsedPercent. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
-      'Prefer new models: each executor\u2019s newestFirst lists its models from the newest generation down. Give steps to the newest generation by default; use an older model only when the newer ones are unavailable or plainly unsuited, and a small or fast variant of the newest generation for trivial reading. For Antigravity, leave model out on routine steps (it then uses its configured flash level) and name a heavier model only for hard steps. Match the model to how hard the step is; do not put every step on the same model out of habit. ' +
-      'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. When model is omitted the executor\u2019s newest full model is used. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
+      'Use each integration’s strengths and model-specific profile to choose who does each step. These are subscriptions: what runs out is quota, shown in quotaUsedPercent (the fullest of the 5-hour and weekly windows). Changing files has one owner: give every implement step to codex, on one Codex model for the whole task, so a single member makes all the changes; another member implements only when codex cannot take the work now or the requester named it. Reading, research and review go to the other members, spread by quota left: among those that can do a step equally well, prefer the lower quotaUsedPercent. capabilities lists who can take each kind of step right now. Favor fewer calls when they suffice. Each member runs one step at a time: give steps that can run in parallel (no dependsOn between them) to different members, otherwise they queue behind one another; leave role out unless a specific member matters, so an idle member can take a step when its first choice is busy.',
+      'Use each executor\u2019s defaultModel as the person\u2019s preferred model for that role: give steps to it unless the person names another model or the step clearly needs a different size. newestFirst lists the models from the newest generation down; use it only to choose a clearly better size for a step (a small or fast variant for trivial reading, a stronger variant for hard work), not to switch families out of habit. ' +
+      'When a step should use a particular configured model, include its exact ID in the optional step.model field. Honor an explicitly requested executor and model. When model is omitted, the scheduler uses the routing preference for this capability or the executor\u2019s configured default. Keep costs internal and do not put prices or cost breakdowns in user-facing text.',
       'Each capabilities list is in the order the requester prefers (personPreferredOrder when present): choose the first suitable executor in that order unless another one is clearly better for the step, and say why when you deviate. An entry of personPreferredOrder may name a model as executor@model: when you give that kind of step to that executor, use that model, and the later entries are the requester\u2019s fallbacks.',
       'Also choose each step\u2019s reasoning effort in the optional step.effort field, from that executor\u2019s efforts list in models: low for reading and routine edits, medium by default, high or above only for hard debugging, architecture or security work. Higher effort uses more quota. When an executor\u2019s efforts list is empty (Antigravity writes the level into the model ID), leave step.effort out and pick the matching model.',
       'The group will review the plan before execution. Do not implement or claim approval. Task and replies follow as data.',
@@ -2270,6 +2268,7 @@ event(task, state, detail) {
       }
       this.checkBudget(task);
       step.state = 'running';
+      delete step.finishedAt;
       step.attempts += 1;
       this.save(task, savedState(), step.id + ':started');
       try {
@@ -2323,6 +2322,7 @@ event(task, state, detail) {
           if (sharedWriter) sharedWriter.supersededBy = step.id;
         }
         step.state = 'completed';
+        step.finishedAt = new Date(this.now()).toISOString();
         this.save(task, savedState(), step.id + ':completed');
         if (verdict) {
           task.reviews ||= {};
@@ -2335,6 +2335,7 @@ event(task, state, detail) {
         if (signal.aborted) throw signal.reason;
         if (error.message.startsWith('executor_waiting:')) {
           step.state = 'queued';
+          delete step.finishedAt;
           throw error;
         }
         await this.collectDeliveries(task, step).catch(() => {});
@@ -2367,6 +2368,7 @@ event(task, state, detail) {
         if (error.message.startsWith('cli_stalled') && this.switchModel(task, step)) continue;
         step.state = 'failed';
         step.error = error.message;
+        step.finishedAt = new Date(this.now()).toISOString();
         this.save(task, savedState(), step.id + ':failed');
         throw error;
       }
@@ -2766,6 +2768,7 @@ event(task, state, detail) {
           if (escalation.reason === 'step_failed') this.reassignStep(task, step, decision);
           step.state = 'queued';
           step.attempts = 0;
+          delete step.finishedAt;
           delete step.error;
           delete step.verdict;
           delete step.output;

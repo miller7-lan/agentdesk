@@ -159,7 +159,7 @@ test('while members work, the lead decides per step: continue, guide with the wo
     ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
     execute: async () => ({ output: JSON.stringify(reply) }),
   };
-  for (const name of ['decideRevision', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan', 'orderModels', 'orderEntries', 'defaultModelFor']) self[name] = S[name].bind(self);
+  for (const name of ['decideRevision', 'resolveModel', 'reviseFallback', 'steerStep', 'leadModelFor', 'autoApproves', 'approveAddition', 'revisePlan', 'updatePlan', 'orderModels', 'orderEntries', 'defaultModelFor']) self[name] = S[name].bind(self);
   const task = { id: 't2', state: 'running', approval: 'always', prompt: '修登录', groupPlan: { approved: 1, rounds: [{ revision: 1, summary: 's', steps: [] }] },
     steps: [{ id: 'scout', role: 'grok', state: 'completed', dependsOn: [] }, { id: 'edit', role: 'codex', state: 'running', dependsOn: ['scout'] },
       { id: 'docs', role: 'grok', state: 'running', dependsOn: ['scout'] }, { id: 'review', role: 'grok', state: 'queued', dependsOn: ['edit'] }] };
@@ -185,6 +185,81 @@ test('while members work, the lead decides per step: continue, guide with the wo
   assert.equal(step('docs').guidance.at(-1).text, '再加个日志');
 });
 
+test('the lead gets exact model ids when it revises, changes a queued model in place, and understands "4hy"', async () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  let prompt = '';
+  const reply = { summary: 'ok', steps: {
+    edit: { action: 'continue', model: 'gemini 4 hy' },
+    docs: { action: 'continue', model: 'gemini 4 hy' },
+  }, add: [
+    { id: 'a', capability: 'implement', prompt: 'x', model: 'Gemini 4 Hydrogen (High)' },
+    { id: 'b', capability: 'implement', prompt: 'y', model: '4hydragon' },
+    { id: 'c', capability: 'implement', prompt: 'z', model: 'not-a-model' },
+  ] };
+  const routes = { implement: ['antigravity'], triage: ['antigravity'] };
+  const self = {
+    config: { stateDir: require('node:os').tmpdir(), adapters: { antigravity: { profiles: { defaultModel: 'gemini-4-neon-high', models: {
+      'gemini-4-hydrogen-high': { label: 'Gemini 4 Hydrogen (High)', strengths: 'x', billing: 'subscription' },
+      'gemini-4-neon-high': { label: 'Gemini 4 Neon (High)', strengths: 'x', billing: 'subscription' } } } } } },
+    router: { routes, quotaAllows: () => true, canWrite: () => true, available: () => true, pick: () => 'antigravity' },
+    running: new Map(), stepControllers: new Map(), now: () => Date.now(),
+    save() {}, status: (id) => ({ id }), pump() {},
+    pickForTask: () => 'antigravity', availableRoles: () => ['antigravity'], ordered: (t, n, list) => list,
+    ownerAllows: () => ({ allowed: true }), isAcceptStep: () => false,
+    execute: async (task, step, cwd, signal, text) => { prompt = text; return { output: JSON.stringify(reply) }; },
+  };
+  for (const name of ['decideRevision', 'resolveModel', 'leadModelFor', 'autoApproves', 'approveAddition', 'orderModels', 'orderEntries', 'defaultModelFor']) self[name] = S[name].bind(self);
+  const task = { id: 't3', state: 'running', approval: 'auto', prompt: 'p', groupPlan: { rounds: [] },
+    steps: [
+      { id: 'edit', role: 'antigravity', capability: 'implement', state: 'queued', dependsOn: [], model: 'gemini-4-neon-high' },
+      { id: 'docs', role: 'antigravity', capability: 'implement', state: 'running', dependsOn: [], model: 'gemini-4-neon-high' },
+    ],
+    revisions: [{ text: '用 hydrogen', state: 'deciding' }] };
+  await S.decideRevision.call(self, task, '用 hydrogen');
+  // The context carries each step's actual model, and the ids and labels the lead must choose from.
+  assert.match(prompt, /"model":"gemini-4-neon-high"/);
+  assert.match(prompt, /gemini-4-hydrogen-high/);
+  assert.match(prompt, /Gemini 4 Hydrogen \(High\)/);
+  assert.match(prompt, /exact id/);
+  // A queued step changes model in place; a running step keeps the model it started with.
+  const step = (id) => task.steps.find((item) => item.id === id);
+  assert.equal(step('edit').model, 'gemini-4-hydrogen-high');
+  assert.equal(step('docs').model, 'gemini-4-neon-high');
+  assert.deepEqual(task.revisions.at(-1).remodeled, [{ step: 'edit', from: 'gemini-4-neon-high', to: 'gemini-4-hydrogen-high' }]);
+  // "gemini 4 hy", "4hy" and "4hydragon" all mean the Hydrogen family; a label resolves too. Only an unknown name
+  // falls back to the default, and that fallback is recorded for the chat instead of hidden.
+  assert.equal(S.resolveModel.call(self, 'antigravity', 'gemini 4 hy'), 'gemini-4-hydrogen-high');
+  assert.equal(S.resolveModel.call(self, 'antigravity', '4hy'), 'gemini-4-hydrogen-high');
+  assert.equal(S.resolveModel.call(self, 'antigravity', 'hy'), 'gemini-4-hydrogen-high');
+  assert.equal(S.resolveModel.call(self, 'antigravity', '4hydragon'), 'gemini-4-hydrogen-high');
+  assert.equal(step('a').model, 'gemini-4-hydrogen-high');
+  assert.equal(step('b').model, 'gemini-4-hydrogen-high');
+  assert.equal(step('c').model, 'gemini-4-neon-high');
+  assert.deepEqual(task.revisions.at(-1).modelFallbacks, [{ step: 'c', requested: 'not-a-model', used: 'gemini-4-neon-high' }]);
+});
+
+test('an administrator can change a queued step model by shorthand, but not a running one', () => {
+  const { Scheduler } = require('../orchestrator/scheduler');
+  const S = Scheduler.prototype;
+  const self = {
+    config: { adapters: { antigravity: { profiles: { models: {
+      'gemini-4-hydrogen-high': { label: 'Gemini 4 Hydrogen (High)', strengths: 'x', billing: 'subscription' },
+      'gemini-4-neon-high': { label: 'Gemini 4 Neon (High)', strengths: 'x', billing: 'subscription' } } } } } },
+    save() {}, status: () => ({ ok: true }),
+  };
+  self.resolveModel = S.resolveModel.bind(self);
+  const task = { id: 't', state: 'queued', steps: [
+    { id: 'a', role: 'antigravity', state: 'queued', model: 'gemini-4-neon-high' },
+    { id: 'b', role: 'antigravity', state: 'running', model: 'gemini-4-neon-high' },
+  ] };
+  const result = S.setStepModels.call(self, task, { a: 'hy' });
+  assert.equal(task.steps[0].model, 'gemini-4-hydrogen-high');
+  assert.deepEqual(result.changed, [{ step: 'a', from: 'gemini-4-neon-high', to: 'gemini-4-hydrogen-high' }]);
+  assert.throws(() => S.setStepModels.call(self, task, { b: 'hy' }), /step_started/);
+  assert.equal(task.steps[1].model, 'gemini-4-neon-high');
+});
+
 test('the lead prefers new models: newest generation first, full before small, a date is not a version', () => {
   const { newestFirst, preferredModel } = require('../orchestrator/model-profiles');
   assert.deepEqual(newestFirst(['gpt-5', 'gpt-5.4-mini', 'gpt-5.5-mini', 'gpt-5.4', 'gpt-5.5-codex']), ['gpt-5.5-codex', 'gpt-5.5-mini', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5']);
@@ -194,6 +269,7 @@ test('the lead prefers new models: newest generation first, full before small, a
   // an older configured default gives way to the newest model; one of the newest generation is kept
   assert.equal(preferredModel({ defaultModel: 'gpt-5.4', models: { 'gpt-5.4': {}, 'gpt-5.5': {} } }), 'gpt-5.5');
   assert.equal(preferredModel({ defaultModel: 'gemini-4-hydrogen-medium', models: { 'gemini-4-hydrogen-high': {}, 'gemini-4-hydrogen-medium': {}, 'gemini-3-pro': {} } }), 'gemini-4-hydrogen-medium');
+  assert.equal(preferredModel({ defaultModel: 'gemini-4-hydrogen-high', models: { 'gemini-4-hydrogen-high': {}, 'gemini-4-neon-high': {} } }), 'gemini-4-hydrogen-high');
   assert.equal(preferredModel({ defaultModel: 'gpt-5.5-mini', models: { 'gpt-5.5-mini': {}, 'gpt-5.5': {} } }), 'gpt-5.5');
 });
 
@@ -225,7 +301,7 @@ test('the person fills each kind of work with more members and models; the lead 
   assert.deepEqual(self.orderModels(task, 'implement', 'codex'), ['gpt-5.4', 'gpt-5.5']);
 });
 
-test('work is spread by quota left; Antigravity keeps its flash default for routine steps', () => {
+test('work is spread by quota left and members keep their configured model defaults', () => {
   const { Scheduler } = require('../orchestrator/scheduler');
   const S = Scheduler.prototype;
   const self = { router: { quota: { antigravity: 72, codex: 18, grok: 65 } }, orderEntries: () => [],
@@ -240,7 +316,7 @@ test('work is spread by quota left; Antigravity keeps its flash default for rout
   assert.deepEqual(balanced(['antigravity', 'codex', 'grok']), ['antigravity', 'codex', 'grok']);  // unknown quota keeps its place
   assert.deepEqual(S.balanced.call({ ...self, orderEntries: () => [{ role: 'antigravity' }] }, {}, 'review', ['antigravity', 'codex']), ['antigravity', 'codex']);   // the person's order wins
   assert.equal(S.defaultModelFor.call(self, 'antigravity'), 'gemini-3.8-flash-medium');
-  assert.equal(S.defaultModelFor.call(self, 'codex'), 'gpt-5.5');
+  assert.equal(S.defaultModelFor.call(self, 'codex'), 'gpt-5.4');
 });
 
 test('a step not started yet can get another member, model and effort from its node; running and lead steps cannot', () => {
