@@ -125,7 +125,7 @@ Windows：
 2. **群聊要求 VPS2 已经有本机的提交**：**已经修复**。VPS2 的仓库缺你当前的提交时，主控让 Bridge 把缺的提交打成 Git bundle 自动同步过去，只传 VPS2 没有的部分，不用手动推送。单次上限 20 MiB；第一次同步整个历史超过上限时，手动推送一次即可。
 3. **Windows 测试在补丁写回真实项目之后才跑**：配置了隔离测试的项目已经解决。在 VPS2 工作区配置 `isolatedTests` 和 `defaultIsolatedTest`，在 Windows Bridge 配置 `isolatedCommands` 后，补丁会先在 Windows 的临时目录里编译和测试，通过后才让你应用（见 [GROUP-WINDOWS-TESTS.md](GROUP-WINDOWS-TESTS.md)）。没配置的项目仍按旧流程：应用补丁后再在本机测试。建议所有需要 Windows 构建的项目都配置上。
 
-## 五、接下来的方向
+## 六、接下来的方向
 
 **P0：先把真机跑通**
 
