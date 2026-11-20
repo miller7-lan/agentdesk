@@ -4,6 +4,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { setTimeout: delay } = require('node:timers/promises');
 const { once } = require('node:events');
+const { randomUUID } = require('node:crypto');
 
 const run = promisify(execFile);
 
@@ -94,4 +95,55 @@ async function mountProject({
   }
 }
 
-module.exports = { mountProject, isMounted };
+// A launcher supplies an already-authorized stream and runs this inside its private mount namespace.
+// The request never chooses either an operating-system path or a stream.
+function createProjectMounts({ stateDir, openTransport, onChange = () => {}, onDisconnect = () => {}, mount = mountProject }) {
+  const mounts = new Map();
+  const view = (entry) => ({ mountId: entry.mountId, leaseId: entry.leaseId,
+    mountPath: entry.state === 'ready' ? entry.mounted.directory : null, state: entry.state,
+    readOnly: entry.readOnly, generation: entry.generation });
+  const change = (entry, state) => {
+    entry.state = state;
+    onChange(view(entry), entry.context);
+  };
+  return async function handle(operation, binding, request, context) {
+    const key = binding.id + ':' + binding.generation;
+    let entry = mounts.get(key);
+    if (operation === 'project.mount') {
+      if (entry) {
+        if (entry.requestId !== request.requestId) throw new Error('native_project_mount_exists');
+        return view(entry);
+      }
+      entry = { mountId: randomUUID(), leaseId: binding.id, generation: binding.generation, requestId: request.requestId,
+        readOnly: context.accessMode === 'read', context, controller: new AbortController() };
+      mounts.set(key, entry);
+      change(entry, 'mounting');
+      try {
+        const transport = await openTransport(binding, { readOnly: entry.readOnly, signal: entry.controller.signal });
+        entry.mounted = await mount({ ...transport, stateDir, readOnly: entry.readOnly, signal: entry.controller.signal });
+        entry.mounted.signal.addEventListener('abort', () => {
+          if (entry.state !== 'ready') return;
+          change(entry, 'suspended');
+          onDisconnect(binding, context);
+        }, { once: true });
+        if (entry.mounted.signal.aborted) throw new Error('project_mount_disconnected');
+        change(entry, 'ready');
+      } catch (error) {
+        if (entry.state === 'mounting') change(entry, 'failed');
+        throw error;
+      }
+    } else if (!entry || (request.mountId !== undefined && request.mountId !== entry.mountId)) {
+      throw new Error('project_mount_failed');
+    } else if (operation === 'project.unmount' && entry.state !== 'unmounted') {
+      change(entry, 'unmounting');
+      entry.controller.abort(new Error('project_mount_closed'));
+      try {
+        await entry.mounted?.close();
+        change(entry, 'unmounted');
+      } catch (error) { change(entry, 'failed'); throw error; }
+    }
+    return view(entry);
+  };
+}
+
+module.exports = { mountProject, isMounted, createProjectMounts };

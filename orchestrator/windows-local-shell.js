@@ -54,11 +54,15 @@ function result(snapshot, args = {}) {
   const { id, state, code, sequence, startedAt, finishedAt, error, cursor, stdout, stderr } = snapshot;
   const output = { runId: id, state, exitCode: code ?? null, sequence, startedAt, finishedAt, ...(error && { error }) };
   for (const [key, text] of [['stdout', stdout], ['stderr', stderr]]) {
-    const first = (cursor?.[key] || 0) - text.length;
+    const bytes = Buffer.from(text);
+    const end = cursor?.[key] ?? bytes.length;
+    const first = end - bytes.length;
     const offset = args[key + 'Cursor'] ?? 0;
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset > first + text.length) throw new Error('invalid_local_shell_cursor');
-    output[key] = text.slice(Math.max(0, offset - first));
-    output[key + 'Cursor'] = first + text.length;
+    const position = Math.max(0, offset - first);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > end ||
+        (position < bytes.length && (bytes[position] & 0xc0) === 0x80)) throw new Error('invalid_local_shell_cursor');
+    output[key] = bytes.subarray(position).toString('utf8');
+    output[key + 'Cursor'] = end;
     if (offset < first) output[key + 'Truncated'] = true;
   }
   return output;
@@ -100,8 +104,8 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000 }) {
           .then(() => result(runs.byKey(lease.scope, key)))]);
       } finally { timer.abort(); }
     },
-    canResume(lease) {
-      return leaseRuns(lease).every((run) => run.finishedAt && run.state !== 'unknown');
+    canResume(lease, { acknowledgeUnknown = false } = {}) {
+      return runs.listAll(lease.scope).every((run) => run.finishedAt && (acknowledgeUnknown || run.state !== 'unknown'));
     },
   };
 }

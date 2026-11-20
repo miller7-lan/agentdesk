@@ -7,13 +7,13 @@ const { PassThrough } = require('node:stream');
 const { Reader, packet, T, S, u32, u64, str } = require('../orchestrator/sftp-readonly');
 const { createProjectSftp } = require('../orchestrator/sftp-project-write');
 
-async function fixture(t) {
+async function fixture(t, serve = (root, input, output) => createProjectSftp({ root })(input, output)) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'agentdesk-project-sftp-'));
   const root = path.join(temporary, 'project');
   await fs.mkdir(root);
   const input = new PassThrough();
   const output = new PassThrough();
-  const channel = createProjectSftp({ root })(input, output);
+  const channel = await serve(root, input, output);
   t.after(async () => {
     channel.close();
     await channel.done;
@@ -41,7 +41,7 @@ async function fixture(t) {
     return result.subarray(9);
   };
   assert.equal((await send(T.INIT, u32(3)))[0], T.VERSION);
-  return { temporary, root, check, open, send };
+  return { temporary, root, check, open, send, channel };
 }
 
 test('Windows project SFTP writes binary chunks, appends, truncates, and replaces a file', {
@@ -75,6 +75,27 @@ test('Windows project SFTP writes binary chunks, appends, truncates, and replace
   await check(S.OK, T.RENAME, str('source.bin'), str('subdir/finish.bin'));
   await check(S.OK, T.REMOVE, str('subdir/finish.bin'));
   await check(S.OK, T.RMDIR, str('subdir'));
+});
+
+test('suspending a project closes old SFTP handles and an acknowledged recovery rotates the generation', {
+  skip: process.platform !== 'win32', timeout: 30000,
+}, async (t) => {
+  const { WindowsProjectLeases } = require('../orchestrator/windows-project-leases');
+  const leases = new WindowsProjectLeases();
+  let binding;
+  const { root, open, check, channel } = await fixture(t, async (root, input, output) => {
+    const identity = { device: 'test', provider: 'codex', threadId: 'thread', projectId: 'project', root, fullAccess: true };
+    binding = { ...identity, ...await leases.acquire(identity) };
+    return leases.serveSftp(binding, input, output);
+  });
+  const handle = await open('state.txt', 10);
+  await check(S.OK, T.WRITE, str(handle), u64(0), str('before pause'));
+  leases.suspend(binding);
+  await channel.done;
+  assert.equal(await leases.settle(binding, () => true), false);
+  assert.equal(await leases.settle(binding, () => true, { acknowledgeFiles: true }), true);
+  assert.throws(() => leases.serveSftp(binding, new PassThrough(), new PassThrough()), /native_chat_lease_expired/);
+  assert.equal(await fs.readFile(path.join(root, 'state.txt'), 'utf8'), 'before pause');
 });
 
 test('Windows project SFTP rejects external changes, project escapes, and junction traversal', {

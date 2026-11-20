@@ -5,6 +5,7 @@ const { createHash, randomBytes, timingSafeEqual } = require('node:crypto');
 const { Lines } = require('./transport');
 const { WindowsProjectLeases } = require('./windows-project-leases');
 const { createWindowsLocalShell } = require('./windows-local-shell');
+const { makeProtocol, errorResponse } = require('./windows-native-protocol');
 
 const FRAME_LIMIT = 512 * 1024;
 
@@ -75,6 +76,7 @@ function connectWorker(stateDir, secret, { onUpdate } = {}) {
 }
 
 function serveWorker(stateDir, setup = {}) {
+  const { resolveSession, mount, ...shellOptions } = setup;
   const secret = readSecret(stateDir);
   const leases = new WindowsProjectLeases(path.join(stateDir, 'leases.json'));
   const clients = new Set();
@@ -86,8 +88,9 @@ function serveWorker(stateDir, setup = {}) {
         catch { client.output.destroy(); }
       }
     },
-    ...setup,
+    ...shellOptions,
   });
+  const protocol = makeProtocol({ leases, shell, mount });
   const server = createServer((socket) => {
     const wire = new Lines(socket, socket, FRAME_LIMIT);
     let authed = false;
@@ -112,6 +115,8 @@ function serveWorker(stateDir, setup = {}) {
           case 'reconcile':
           case 'release': return leases.settle(binding, shell.canResume, { release: operation === 'release' });
           case 'shell': return shell.call(binding, args, { requestId });
+          case 'native': return Promise.resolve(resolveSession?.(frame.sessionId))
+            .then((context) => protocol(args, context), (error) => errorResponse(error, args?.requestId));
           default: throw new Error('invalid_windows_chat_worker_operation');
         }
       }).then(

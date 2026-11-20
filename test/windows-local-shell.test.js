@@ -60,11 +60,19 @@ test('Windows local_shell runs PowerShell and CMD, journals background runs and 
   for (let count = 0; count < 80 && !(await call({ action: 'status', runId: run.runId })).finishedAt; count++) await delay(50);
   assert.equal((await call({ action: 'status', runId: run.runId })).state, 'cancelled');
   assert.equal(await leases.settle(binding, shell.canResume), true);
+  binding.generation = leases.view(leases.get({ ...binding, generation: undefined })).generation;
   const restored = createWindowsLocalShell({ leases, journal });
   const replay = await restored.call(binding, { action: 'run', command: 'Add-Content -LiteralPath attempt.txt -Value once' },
     { requestId: 'dedup-key' });
   assert.equal(replay.runId, powershell.runId);
   assert.match(await fs.readFile(path.join(root, 'attempt.txt'), 'utf8'), /^once\r?\n$/);
+  const unicode = await launch('[Console]::Write(("汉" * 6000) + "界")', {}, 'unicode');
+  assert.equal(unicode.stdoutCursor, 18003);
+  assert.equal(unicode.stdoutTruncated, true);
+  assert.doesNotMatch(unicode.stdout, /�/u);
+  const delta = await call({ action: 'status', runId: unicode.runId, stdoutCursor: 18000 });
+  assert.equal(delta.stdout, '界');
+  await assert.rejects(call({ action: 'status', runId: unicode.runId, stdoutCursor: 18001 }), /invalid_local_shell_cursor/);
 });
 
 test('Windows shell worker keeps the same run after the desktop client disconnects', {

@@ -59,7 +59,7 @@ function attrs(stat) {
     u32(Number(stat.mode)), u32(Math.floor(Number(stat.atimeMs) / 1000)), u32(Math.floor(Number(stat.mtimeMs) / 1000))]);
 }
 
-function createProjectSftp({ root }) {
+function createProjectSftp({ root, authorize = () => () => {} }) {
   if (process.platform !== 'win32') throw new Error('project_sftp_windows_required');
   const base = path.resolve(root);
   if (!/^[A-Za-z]:\\.+/.test(base)) throw new Error('project_sftp_requires_local_directory');
@@ -198,7 +198,13 @@ function createProjectSftp({ root }) {
         return;
       }
       const id = fields.u32();
+      let finish;
       try {
+        const header = new Fields(data.subarray(5));
+        const write = [T.WRITE, T.SETSTAT, T.FSETSTAT, T.MKDIR, T.REMOVE, T.RMDIR, T.RENAME].includes(type) ||
+          (type === T.OPEN && (header.text(), Boolean(header.u32() & ~FLAGS.READ))) ||
+          (type === T.EXTENDED && header.text() === 'posix-rename@openssh.com');
+        finish = authorize(write);
         if (type === T.OPEN) return await open(id, fields);
         if (type === T.RENAME) return await move(id, fields, false);
         if (type === T.EXTENDED) {
@@ -313,7 +319,7 @@ function createProjectSftp({ root }) {
             error.code === 'ENOTSUP' ? S.OP_UNSUPPORTED : error.code === 'EBADMSG' ? S.BAD_MESSAGE : S.FAILURE;
         // Native errors can contain absolute Windows paths. Report the virtual path only for explicit conflicts.
         status(id, code, error.code === 'ECONFLICT' ? error.message : (error.code || 'project_operation_failed'));
-      }
+      } finally { finish?.(); }
     }
 
     const close = () => { closed = true; input.destroy(); };

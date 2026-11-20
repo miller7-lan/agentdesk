@@ -6,6 +6,14 @@ const path = require('node:path');
 const COMMAND_TIMEOUT = 300_000;
 const COMMAND_REPLY_TIMEOUT = COMMAND_TIMEOUT + 15_000;
 
+function utf8Tail(text, limit) {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= limit) return text;
+  let offset = bytes.length - limit;
+  while (offset < bytes.length && (bytes[offset] & 0xc0) === 0x80) offset++;
+  return bytes.subarray(offset).toString('utf8');
+}
+
 function execute(root, binary, args, timeout, signal, env = process.env, outputLimit = 16000, onOutput = () => {}, options = {}) {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -35,9 +43,9 @@ function execute(root, binary, args, timeout, signal, env = process.env, outputL
     for (const channel of Object.keys(output)) {
       child[channel].setEncoding('utf-8').on('data', (chunk) => {
         const combined = output[channel] + chunk;
-        if (combined.length > outputLimit) truncated = true;
-        offsets[channel] += chunk.length;
-        output[channel] = combined.slice(-outputLimit);
+        offsets[channel] += options.fingerprint ? Buffer.byteLength(chunk) : chunk.length;
+        output[channel] = options.fingerprint ? utf8Tail(combined, outputLimit) : combined.slice(-outputLimit);
+        if (output[channel].length < combined.length) truncated = true;
         onOutput({ ...output, truncated }, offsets);
       });
     }
@@ -70,6 +78,10 @@ class CommandRuns {
       const records = JSON.parse(fs.readFileSync(this.journal(), 'utf8'));
       for (const item of records) {
         const snapshot = item.snapshot;
+        if (snapshot.fingerprint && snapshot.cursorUnit !== 'utf8') {
+          snapshot.cursor = { stdout: Buffer.byteLength(snapshot.stdout), stderr: Buffer.byteLength(snapshot.stderr) };
+          snapshot.cursorUnit = 'utf8';
+        }
         if (!snapshot.finishedAt) Object.assign(snapshot, {
           state: 'unknown', code: null, finishedAt: Date.now(), error: 'command_status_unknown', sequence: snapshot.sequence + 1,
         });
@@ -106,11 +118,12 @@ class CommandRuns {
       }
       return existing.done;
     }
-    if (this.runs.size >= 128) throw new Error('command_run_capacity');
+    if ([...this.runs.values()].filter(({ snapshot }) => !snapshot.compacted).length >= 128) throw new Error('command_run_capacity');
     const id = randomUUID();
     const controller = new AbortController();
     const snapshot = { id, name, cwd, state: 'running', startedAt: Date.now(), sequence: 0, stdout: '', stderr: '',
-      ...(turnId && { turnId }), ...(itemId && { itemId }), ...(native && { fingerprint: native.fingerprint, cursor: { stdout: 0, stderr: 0 } }) };
+      ...(turnId && { turnId }), ...(itemId && { itemId }),
+      ...(native && { fingerprint: native.fingerprint, cursorUnit: 'utf8', cursor: { stdout: 0, stderr: 0 } }) };
     const entry = { scope, key, name, cwd, turnId, controller, snapshot };
     this.keys.set(key, entry);
     this.runs.set(id, entry);
@@ -162,9 +175,13 @@ class CommandRuns {
   }
 
   list(scope) {
+    return this.listAll(scope).slice(-16);
+  }
+
+  listAll(scope) {
     this.load();
     this.prune();
-    return [...this.runs.values()].filter((item) => item.scope === scope).slice(-16).map(({ snapshot }) => ({ ...snapshot }));
+    return [...this.runs.values()].filter((item) => item.scope === scope).map(({ snapshot }) => ({ ...snapshot }));
   }
 
   cancel(scope, id) {
@@ -200,10 +217,15 @@ class CommandRuns {
 
   prune() {
     const oldest = Date.now() - 60 * 60 * 1000;
-    const finished = [...this.runs.values()].filter(({ snapshot }) => snapshot.finishedAt)
+    const finished = [...this.runs.values()].filter(({ snapshot }) => snapshot.finishedAt && !snapshot.compacted)
       .sort((a, b) => a.snapshot.finishedAt - b.snapshot.finishedAt);
     for (const [index, { key, snapshot }] of finished.entries()) {
       if (snapshot.finishedAt >= oldest && index >= finished.length - 64) break;
+      if (snapshot.fingerprint) {
+        // Preserve the authenticated request ID and outcome. Pruning its log must never make a retry execute it.
+        Object.assign(snapshot, { stdout: '', stderr: '', compacted: true });
+        continue;
+      }
       this.keys.delete(key);
       this.runs.delete(snapshot.id);
     }
