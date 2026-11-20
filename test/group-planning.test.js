@@ -295,3 +295,25 @@ test('a group builds an isolated Windows project and syncs only the first repair
   assert.equal(tested.length, 2);
   assert.equal(fs.existsSync(path.join(workspace, artifactName)), false);
 });
+
+test('a local commit VPS2 does not have yet is brought over from the Bridge as a bundle, without a manual push', async (t) => {
+  const { scheduler, task, workspace, git } = setup(t, [
+    ({ cwd }) => {
+      assert.equal(fs.readFileSync(path.join(cwd, 'only-local.txt'), 'utf8'), 'committed here\n');
+      return { output: JSON.stringify({ questions: ['好的？'] }) };
+    },
+  ]);
+  delete task.groupPlan.base;
+  fs.writeFileSync(path.join(workspace, 'only-local.txt'), 'committed here\n');
+  git(workspace, 'add', 'only-local.txt');
+  git(workspace, '-c', 'user.email=t@example.invalid', '-c', 'user.name=T', 'commit', '-qm', 'local only');
+  const local = git(workspace, 'rev-parse', 'HEAD');
+  const bridge = new WindowsOperations({ store: scheduler.store,
+    config: { stateDir: path.join(path.dirname(workspace), 'bridge'), workspaces: { mac: { root: workspace, write: true } } } });
+  scheduler.files = new RemoteFiles({ request: (_route, taskId, kind, body, _timeout, requestId) =>
+    bridge.call({ task_id: taskId, kind, body, id: requestId }) });
+  await scheduler.run(task, new AbortController().signal);
+  assert.equal(task.snapshot.head, local);
+  assert.equal(task.state, 'awaiting_details');
+  assert.ok(scheduler.store.events(task.id).some((event) => String(event.detail).startsWith('mirror_synced:' + local.slice(0, 12))));
+});

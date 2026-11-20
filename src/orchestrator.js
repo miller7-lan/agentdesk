@@ -61,6 +61,8 @@ window.__groupReady = (async () => {
     plan_workspace_changed: '工作区版本已变化，请基于当前版本重新规划。',
     project_snapshot_failed: '读取本机项目快照失败，请检查项目和 Bridge 后重试。',
     project_snapshot_too_large: '未提交的项目改动超过 8 MiB，请缩小任务范围或先同步项目提交。',
+    mirror_missing_commit: 'VPS2 上的仓库还没有你本机当前的提交，而这台电脑的 Bridge 版本太旧，不能自动同步：请更新 Bridge，或手动推送一次。',
+    project_sync_too_large: '要同步到 VPS2 的提交超过 20 MB（通常是第一次同步整个历史）：请手动推送一次，之后会自动增量同步。',
     project_snapshot_unmerged: '项目有未解决的 Git 合并冲突，请处理后再发起任务。',
     project_snapshot_submodule: '子模块有改动，请先同步子模块及主项目的提交。',
     project_snapshot_sensitive_path: '未提交改动包含受限文件，请检查项目中的凭据文件后重试。',
@@ -537,6 +539,7 @@ window.__groupReady = (async () => {
     if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
     if (/:steered$/.test(detail || '')) return '你在成员的单聊里给了指导，它正按你的话继续。';
     if (/:revised_out$/.test(detail || '')) return '有一步按你的新方向停下了。';
+    if (/^mirror_synced:/.test(detail || '')) return '你本机有 VPS2 还没有的提交，已经自动同步过去（只传缺的部分），不用手动推送。';
     if (/^snapshot_skipped:\d+$/.test(detail || '')) return `项目快照没有带上 ${detail.split(':')[1]} 个敏感文件（如 .env、密钥）的改动，组长和成员看不到它们；其余未提交的改动和新文件都已带上。`;
     const handed = /^([\w-]+):(handover|chosen):([^/>]+)(?:\/([^>]*))?->([^/]+)(?:\/(.*))?$/.exec(detail || '');
     if (handed) return `${memberName(handed[3])}${handed[4] ? '（' + handed[4] + '）' : ''}没完成，${handed[2] === 'chosen' ? '按你的选择' : '已直接'}交给 ${memberName(handed[5])}${handed[6] ? '（' + handed[6] + '）' : ''} 接着它的改动做。`;
@@ -1333,7 +1336,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:|^snapshot_skipped:/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:|^snapshot_skipped:|^mirror_synced:/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));

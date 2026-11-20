@@ -1897,7 +1897,7 @@ event(task, state, detail) {
       });
       if (!clean || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error('windows_workspace_dirty');
       if (task.groupPlan && task.groupPlan.base !== head) throw new Error('plan_workspace_changed');
-      await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
+      await this.ensureCommit(task, repo, head, signal);
       task.base = head;
     }
     if (task.pendingTriage || task.escalation?.active) {
@@ -2045,6 +2045,39 @@ event(task, state, detail) {
     this.save(task, 'completed', 'completed');
   }
 
+  // The mirror on VPS2 must have the commit the person's project is on. When it does not (a local commit not
+  // pushed yet), the Bridge sends the missing commits as a Git bundle — only what the mirror lacks, from the
+  // commits it names — and they are fetched into the mirror under refs/agentdesk/sync/. No manual push needed.
+  async ensureCommit(task, repo, head, signal) {
+    if (await git(repo, ['cat-file', '-e', head + '^{commit}'], signal).then(() => true, () => false)) return;
+    const tips = String(await git(repo, ['for-each-ref', '--format=%(objectname)', 'refs/'], signal).catch(() => '') || '')
+      .split('\n').map((line) => line.trim()).filter((sha) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha));
+    const haves = [...new Set(tips)].slice(0, 400);
+    const route = this.bridgeRoute(task.workspace);
+    let sync;
+    try {
+      sync = await this.files.call(route, task.id, 'command.execute', { operation: 'git_sync_bundle', workspace: task.workspace, haves }, 120000, signal);
+    } catch (error) {
+      // An older Bridge cannot send commits: the mirror needs a push, as before.
+      if (error.remoteConfirmed && /unsupported|not_authorized/.test(error.message)) throw new Error('mirror_missing_commit');
+      throw error;
+    }
+    if (sync?.head !== head) throw new Error('plan_workspace_changed');
+    const bytes = await this.files.download(route, task.id, { operation: 'artifact', ...sync.artifact }, signal);
+    if (createHash('sha256').update(bytes).digest('hex') !== sync.artifact.sha256) throw new Error('project_sync_failed');
+    const folder = await mkdtemp(path.join(this.config.stateDir, 'sync-'));
+    try {
+      const file = path.join(folder, 'head.bundle');
+      await writeFile(file, bytes, { mode: 0o600 });
+      await git(repo, ['bundle', 'verify', file], signal);
+      await git(repo, ['fetch', '--no-tags', file, 'HEAD:refs/agentdesk/sync/' + head], signal);
+    } finally {
+      await rm(folder, { recursive: true, force: true });
+    }
+    await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
+    this.save(task, task.state, 'mirror_synced:' + head.slice(0, 12) + ':' + bytes.length);
+  }
+
   async captureProject(task, repo, root, signal) {
     const route = this.bridgeRoute(task.workspace);
     const captured = await this.files.call(route, task.id, 'command.execute',
@@ -2055,7 +2088,7 @@ event(task, state, detail) {
     const { head, version, artifact, skipped } = captured || await this.files.call(route, task.id, 'command.execute',
       { operation: 'git_baseline', workspace: task.workspace }, 35000, signal);
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) throw new Error('invalid_workspace_baseline');
-    await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
+    await this.ensureCommit(task, repo, head, signal);
     if (!captured) {
       task.groupPlan.base = head;
       this.save(task, 'planning', 'legacy_project_baseline');

@@ -646,6 +646,27 @@ class WindowsOperations {
     }
   }
 
+  async syncBundle(taskId, root, body, signal) {
+    const haves = Array.isArray(body.haves) ? body.haves.filter((sha) => typeof sha === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha)).slice(0, 400) : [];
+    const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+    const head = (await this.git(root, ['rev-parse', 'HEAD'], signal, env)).stdout.trim();
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) throw new Error('git_status_failed');
+    // Only commits this repository knows can mark the boundary; the rest of the mirror's tips are ignored.
+    const known = [];
+    for (const sha of haves) if ((await this.git(root, ['cat-file', '-e', sha + '^{commit}'], signal, env)).code === 0) known.push(sha);
+    const directory = await fs.mkdtemp(path.join(tmpdir(), 'agentdesk-sync-'));
+    try {
+      const file = path.join(directory, 'head.bundle');
+      const result = await this.git(root, ['bundle', 'create', file, 'HEAD', ...known.map((sha) => '^' + sha)], signal, env);
+      if (result.code !== 0) throw new Error('project_sync_failed');
+      const bytes = await fs.readFile(file);
+      if (bytes.length > MAX_FILE) throw new Error('project_sync_too_large');
+      return { head, artifact: await this.saveArtifact(taskId, bytes), incremental: known.length > 0 };
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  }
+
   async reviewDiff(root, signal) {
     const { head } = await this.baseline(root, signal);
     const directory = await fs.mkdtemp(path.join(tmpdir(), 'agentdesk-review-'));
@@ -690,6 +711,9 @@ class WindowsOperations {
   async command(taskId, id, workspace, root, body) {
     const controller = new AbortController();
     if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
+    // VPS2's mirror lacks the commit this project is on (a local commit not pushed yet): pack only what is missing
+    // into a Git bundle — the mirror names the commits it already has — for VPS2 to fetch.
+    if (body.operation === 'git_sync_bundle') return this.syncBundle(taskId, root, body, controller.signal);
     if (body.operation === 'git_project_snapshot' || body.operation === 'git_project_snapshot_status') {
       const { head, version, bytes, skipped } = await this.projectSnapshot(root, controller.signal);
       if (body.operation === 'git_project_snapshot_status') return { head, version };
