@@ -41,6 +41,32 @@ const mac = process.platform === 'darwin';
 const platformName = detectOs({ platform: process.platform });
 const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
 const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
+let windowsNative;
+function nativeDesktop() {
+  if (process.platform !== 'win32' || enrollment) return null;
+  if (!windowsNative) {
+    const { createWindowsNativeDesktop } = require('./orchestrator/windows-native-desktop');
+    windowsNative = createWindowsNativeDesktop({
+      stateDir: path.join(app.getPath('userData'), 'windows-native-chat'), remote,
+      findProject: (id) => id ? appConfig?.value.projects.find((item) => item.id === id) : appConfig?.active,
+      bridgeSettings: () => localBridgeSettings,
+      onEvent: (agent, frame) => {
+        if (agent === 'codex') toUi('codex:event', frame);
+        else toUi('chat:event', { ...frame, agent });
+      },
+      onCommand: (agent, threadId, run) => toUi('local-command:update', { agent, threadId, run }),
+      reviewUnknown: async () => {
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'warning', message: '上次断线时有本机操作的结果未确认。',
+          detail: '请检查本机项目和后台进程。仅在确认旧操作已结束、文件状态已核对后继续原会话。',
+          buttons: ['稍后核对', '已核对，继续'], defaultId: 0, cancelId: 0,
+        });
+        return response === 1;
+      },
+    });
+  }
+  return windowsNative;
+}
 const windowMaterial = materialFor({ os: platformName, build: windowsBuild });
 const translucentWindow = windowMaterial === 'vibrancy' || windowMaterial === 'acrylic';
 // One id per app launch: a renderer reload inside the same process must not replay the boot.
@@ -714,6 +740,8 @@ ipcMain.handle('codex:request', async (event, method, params) => {
   try {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     const { projectId, ...request } = params || {};
+    const native = await nativeDesktop()?.select('codex', method, params);
+    if (native) return { ok: true, result: await native.request(method, request) };
     params = request;
     const directory = currentRemoteDirectory(projectId);
     const project = projectId ?? (method === 'thread/start' ? appConfig?.active?.id : undefined);
@@ -857,12 +885,15 @@ async function codexCommand(params, turn, requestId) {
   return directCommand('codex', params, requestId, projectId, root, approved);
 }
 
-ipcMain.handle('local-command:list', (event, agent, threadId) =>
-  fromMainWindow(event) && typeof agent === 'string' && typeof threadId === 'string'
-    ? commandRuns.list(commandScope(agent, threadId)) : []);
-ipcMain.handle('local-command:cancel', (event, agent, threadId, id) =>
-  fromMainWindow(event) && typeof agent === 'string' && typeof threadId === 'string' && typeof id === 'string'
-    ? commandRuns.cancel(commandScope(agent, threadId), id) : null);
+ipcMain.handle('local-command:list', async (event, agent, threadId) => {
+  if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string') return [];
+  return await nativeDesktop()?.commands(agent, threadId, 'list') ?? commandRuns.list(commandScope(agent, threadId));
+});
+ipcMain.handle('local-command:cancel', async (event, agent, threadId, id) => {
+  if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string' || typeof id !== 'string') return null;
+  const native = await nativeDesktop()?.commands(agent, threadId, 'stop', id);
+  return native === undefined ? commandRuns.cancel(commandScope(agent, threadId), id) : native;
+});
 
 function forgetChatThread(threadId) {
   chatThreads.delete(threadId);
@@ -972,7 +1003,8 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     if (typeof method !== 'string') throw new Error('invalid_method');
     if (method.startsWith('attachment/')) throw new Error('invalid_method');
-    const link = chatLink(agent);
+    const native = await nativeDesktop()?.select(agent, method, params);
+    const link = native || chatLink(agent);
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
 
@@ -1387,6 +1419,7 @@ app.on('before-quit', (e) => {
   clearTimeout(enrollmentExpiry);
   clearTimeout(updateTimer);
   stopBridge?.();
+  windowsNative?.disconnect();
   stopMacDesktop?.();
   commandRuns.close();
   clearLocalTools();

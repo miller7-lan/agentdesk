@@ -266,4 +266,4 @@ function createReadOnlySftp({ root = os.homedir(), hidden = [], platform = proce
   };
 }
 
-module.exports = { createReadOnlySftp, HIDDEN, packet, T, S };
+module.exports = { createReadOnlySftp, HIDDEN, Reader, packet, u32, u64, str, T, S };

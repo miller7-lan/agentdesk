@@ -95,6 +95,12 @@ async function main() {
         seven_day: { utilization: 0.84, resetsAt: now + 3 * 86400, status: 'allowed_warning', surpassedThreshold: 0.75 },
       } } });
   }
+  if (provider === 'grok' && scenario === 'QUOTA') {
+    writeLine({ type: 'result', subtype: 'error_during_execution', is_error: true,
+      errors: ['API error (status 402 Payment Required): Grok Build usage balance exhausted'] });
+    process.exitCode = 1;
+    return;
+  }
 
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {
     const listed = await socketRequest(socketPath, { capability, operation: 'tools' });

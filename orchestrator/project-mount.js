@@ -1,0 +1,165 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { setTimeout: delay } = require('node:timers/promises');
+const { once } = require('node:events');
+const { randomUUID } = require('node:crypto');
+
+const run = promisify(execFile);
+
+async function isMounted(directory) {
+  const table = await fs.readFile('/proc/self/mountinfo', 'utf8');
+  return table.split('\n').some((line) => line.split(' ')[4]?.replace(/\\([0-7]{3})/g,
+    (_, code) => String.fromCharCode(parseInt(code, 8))) === directory);
+}
+
+// The caller owns and authenticates the SFTP stream. This worker never accepts a root or a
+// mountpoint from an SSH payload. Create one unique mountpoint and fail closed on channel loss.
+async function mountProject({
+  stateDir, input, output, signal, readOnly = false, sshfs = '/usr/bin/sshfs',
+  fusermount = '/usr/bin/fusermount3', spawnProcess = spawn, checkMount = isMounted, unmount, account,
+}) {
+  signal?.throwIfAborted();
+  if (account) {
+    if (![account.uid, account.gid].every((value) => Number.isSafeInteger(value) && value > 0) ||
+        process.getuid?.() !== 0 ||
+        await fs.readlink('/proc/self/ns/mnt') === await fs.readlink('/proc/1/ns/mnt')) {
+      throw new Error('project_mount_account_requires_private_namespace');
+    }
+    const mountInfo = await fs.readFile('/proc/self/mountinfo', 'utf8');
+    if (mountInfo.split('\n').some((line) => line.split(' - ')[0].split(' ').some((value) => value.startsWith('shared:')))) {
+      throw new Error('project_mount_account_requires_private_namespace');
+    }
+  }
+  const root = path.join(stateDir, 'windows-chat-mounts');
+  await fs.mkdir(root, { recursive: true, mode: account ? 0o710 : 0o700 });
+  if (account) {
+    await fs.chown(root, 0, account.gid);
+    await fs.chmod(root, 0o710);
+  }
+  const directory = await fs.mkdtemp(path.join(root, 'project-'));
+  const mountOptions = ['passive', 'idmap=user', 'sshfs_sync', 'direct_io', 'dir_cache=no', 'nodev', 'nosuid',
+    ...(account ? ['allow_other', 'default_permissions', 'uid=' + account.uid, 'gid=' + account.gid, 'umask=0077'] : []),
+    ...(readOnly ? ['ro'] : [])];
+  let child;
+  let cleanup;
+  const disconnected = new AbortController();
+  let failure;
+  const lost = () => close(new Error('project_mount_disconnected'));
+  function close(error = new Error('project_mount_closed')) {
+    if (cleanup) return cleanup;
+    failure = error;
+    disconnected.abort(error);
+    input.unpipe(child?.stdin);
+    child?.stdout.unpipe(output);
+    signal?.removeEventListener('abort', abort);
+    cleanup = Promise.resolve().then(async () => {
+      try {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          const closed = once(child, 'close').catch(() => {});
+          child.kill();
+          const timeout = new AbortController();
+          try {
+            await Promise.race([closed, delay(1500, undefined, { signal: timeout.signal })]);
+          } finally { timeout.abort(); }
+        }
+        if (await checkMount(directory)) {
+          if (unmount) await unmount(directory);
+          else await run(fusermount, ['-u', '-z', directory], { timeout: 10_000 });
+        }
+        if (await checkMount(directory)) throw new Error('project_unmount_failed');
+        await fs.rmdir(directory);
+      } finally {
+        input.destroy();
+        if (output !== input) output.destroy();
+      }
+    });
+    cleanup.catch(() => {});
+    return cleanup;
+  }
+  const abort = () => close(signal.reason);
+  try {
+    signal?.throwIfAborted();
+    child = spawnProcess(sshfs, ['-f', '-o', mountOptions.join(','), ':/', directory],
+      { stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stderr.resume();
+    child.stdin.on('error', lost);
+    child.once('error', lost);
+    child.once('exit', lost);
+    input.once('end', lost);
+    input.once('error', lost);
+    input.once('close', lost);
+    output.once('error', lost);
+    output.once('close', lost);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    input.pipe(child.stdin);
+    child.stdout.pipe(output, { end: false });
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (failure) throw failure;
+      if (await checkMount(directory)) {
+        if (failure) throw failure;
+        return { directory, signal: disconnected.signal, close };
+      }
+      await delay(100, undefined, { signal: disconnected.signal });
+    }
+    throw new Error('project_mount_timeout');
+  } catch (error) {
+    await close(error);
+    throw error;
+  }
+}
+
+// A launcher supplies an already-authorized stream and runs this inside its private mount namespace.
+// The request never chooses either an operating-system path or a stream.
+function createProjectMounts({ stateDir, openTransport, onChange = () => {}, onDisconnect = () => {}, mount = mountProject }) {
+  const mounts = new Map();
+  const view = (entry) => ({ mountId: entry.mountId, leaseId: entry.leaseId,
+    mountPath: entry.state === 'ready' ? entry.mounted.directory : null, state: entry.state,
+    readOnly: entry.readOnly, generation: entry.generation });
+  const change = (entry, state) => {
+    entry.state = state;
+    onChange(view(entry), entry.context);
+  };
+  return async function handle(operation, binding, request, context) {
+    const key = binding.id + ':' + binding.generation;
+    let entry = mounts.get(key);
+    if (operation === 'project.mount') {
+      if (entry) {
+        if (entry.requestId !== request.requestId) throw new Error('native_project_mount_exists');
+        return view(entry);
+      }
+      entry = { mountId: randomUUID(), leaseId: binding.id, generation: binding.generation, requestId: request.requestId,
+        readOnly: context.accessMode === 'read', context, controller: new AbortController() };
+      mounts.set(key, entry);
+      change(entry, 'mounting');
+      try {
+        const transport = await openTransport(binding, { readOnly: entry.readOnly, signal: entry.controller.signal });
+        entry.mounted = await mount({ ...transport, stateDir, readOnly: entry.readOnly, signal: entry.controller.signal });
+        entry.mounted.signal.addEventListener('abort', () => {
+          if (entry.state !== 'ready') return;
+          change(entry, 'suspended');
+          onDisconnect(binding, context);
+        }, { once: true });
+        if (entry.mounted.signal.aborted) throw new Error('project_mount_disconnected');
+        change(entry, 'ready');
+      } catch (error) {
+        if (entry.state === 'mounting') change(entry, 'failed');
+        throw error;
+      }
+    } else if (!entry || (request.mountId !== undefined && request.mountId !== entry.mountId)) {
+      throw new Error('project_mount_failed');
+    } else if (operation === 'project.unmount' && entry.state !== 'unmounted') {
+      change(entry, 'unmounting');
+      entry.controller.abort(new Error('project_mount_closed'));
+      try {
+        await entry.mounted?.close();
+        change(entry, 'unmounted');
+      } catch (error) { change(entry, 'failed'); throw error; }
+    }
+    return view(entry);
+  };
+}
+
+module.exports = { mountProject, isMounted, createProjectMounts };
