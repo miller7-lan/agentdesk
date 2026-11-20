@@ -192,6 +192,16 @@ window.__groupReady = (async () => {
   }
 
   const savedProjects = temporary ? [] : store.get('groupProjectBindings', []);
+  // A group project is only a folder for its group chats. Once its last group is deleted there is nothing
+  // left to open in it, and neither the project menu nor a session menu can remove it, so drop the shell at
+  // load instead of leaving a row in the sidebar that cannot be deleted.
+  const storedGroupIds = temporary ? [] : store.get('projectGroups', []);
+  const groupedProjects = new Set(storedGroupIds.map(projectIdOf));
+  const keptProjects = savedProjects.filter((project) => groupedProjects.has(project.id));
+  if (keptProjects.length !== savedProjects.length) {
+    savedProjects.splice(0, savedProjects.length, ...keptProjects);
+    if (!temporary) store.set('groupProjectBindings', savedProjects);
+  }
   for (const project of savedProjects) {
     if (typeof project.id === 'string' && /^group-[a-f0-9-]+$/.test(project.id) && typeof project.name === 'string') {
       A.D.projects.push(project);
@@ -233,12 +243,38 @@ window.__groupReady = (async () => {
   const nameOf = (id) => groupNames.get(id) || '群聊';
   const groupsOf = (project) => [...groups.keys()].filter((id) => projectIdOf(id) === project).map((id) => ({ id, name: nameOf(id) }));
 
+  // A group project's folder comes from groupProjectBindings, not the workspace settings, so the project
+  // menu cannot delete it. Once its last group is gone the folder has nothing to open and its local chats
+  // have no home; remove both with the group instead of leaving an undeletable row in the sidebar.
+  function dropGroupProject(projectId) {
+    if (!/^group-[a-f0-9-]+$/.test(projectId)) return false;
+    if ([...groups.keys()].some((id) => projectIdOf(id) === projectId)) return false;
+    const index = savedProjects.findIndex((project) => project.id === projectId);
+    if (index === -1) return false;
+    const dropped = A.D.sessions.filter((session) => session.project === projectId);
+    const activeDropped = dropped.some((session) => session.id === state.active);
+    savedProjects.splice(index, 1);
+    if (!temporary) store.set('groupProjectBindings', savedProjects);
+    const at = A.D.projects.findIndex((project) => project.id === projectId);
+    if (at !== -1) A.D.projects.splice(at, 1);
+    for (const session of dropped) A.D.sessions.splice(A.D.sessions.indexOf(session), 1);
+    if (!state.group && activeDropped) {
+      const next = A.D.sessions.find((session) => session.live) || A.D.sessions[0];
+      if (next) A.openSession(next.id);
+    }
+    return true;
+  }
+
   // Deleting a group removes it, its saved task list and the lead-dispatched records of its work from this
   // computer, after a warning. The tasks themselves stay on the orchestrator.
   function deleteGroup(id) {
     if (!groups.has(id)) return false;
     const records = window.__agentThreads?.threadsOf?.(id) || [];
-    const message = `删除「${nameOf(id)}」？\n\n将从本机一并删除：\n· 这个群聊的消息和任务列表\n· 组长派遣给成员的 ${records.length} 个只读记录（${records.map((s) => s.title).join('、') || '无'}）\n\n主控上的任务不会被删除；正在执行的任务会继续执行。此操作不能撤销。`;
+    const projectId = projectIdOf(id);
+    const lastInProject = ![...groups.keys()].some((key) => key !== id && projectIdOf(key) === projectId);
+    const groupProject = lastInProject && savedProjects.some((project) => project.id === projectId);
+    const localChats = groupProject ? A.D.sessions.filter((session) => session.project === projectId).length : 0;
+    const message = `删除「${nameOf(id)}」？\n\n将从本机一并删除：\n· 这个群聊的消息和任务列表\n· 组长派遣给成员的 ${records.length} 个只读记录（${records.map((s) => s.title).join('、') || '无'}）${groupProject ? `\n· 群聊项目「${A.proj(projectId)?.name || ''}」和它的 ${localChats} 个单聊会话` : ''}\n\n主控上的任务不会被删除；正在执行的任务会继续执行。此操作不能撤销。`;
     if (!window.confirm(message)) return false;
     groups.delete(id);
     groupNames.delete(id);
@@ -257,6 +293,7 @@ window.__groupReady = (async () => {
       if (next) A.openGroup(next);
       else A.openSession(A.D.sessions[0]?.id);
     }
+    dropGroupProject(projectId);
     A.renderSidebar();
     A.toast(`已删除「${nameOf(id)}」及 ${records.length} 个派遣记录`);
     return true;

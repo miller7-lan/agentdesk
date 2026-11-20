@@ -415,13 +415,16 @@
       case 'turn/completed': {
         dropThinking(s);
         const st = p.turn?.status;
-        if (st === 'interrupted') sysNote(s, '已停止。');
+        if (st === 'interrupted' && !s.steerQueue?.length && !s.steerInterrupting) sysNote(s, '已停止。');
         if (st === 'failed') sysNote(s, '本轮失败：' + (p.turn?.error?.message || ''), true);
         s.items.forEach((x) => { if (x.t === 'approval' && x.state === 'pending') x.state = 'rejected'; if (x.t === 'reason' && !x.done) x.done = true; });
         s.busy = false; s.status = st === 'completed' ? 'done' : 'idle'; s.turnId = null; s.time = '刚刚';
+        s.steerInterrupting = false;
         if (!isActive(s) && st === 'completed') toast(`「${s.title}」已完成`);
         pet(s, st === 'failed' ? 'error' : 'attention', 'Stop');
         refreshChanges();
+        // 插话会先停下正在跑的这一轮；等本轮真正结束后，再把积攒的插话作为下一轮发出去。
+        flushSteer(s);
         break;
       }
       default: return;
@@ -536,27 +539,35 @@
     return { input, chips };
   }
 
-  async function send(s, fromButton) {
+  async function send(s, fromButton, options = {}) {
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.send(s, fromButton);
     const ta = $('#input');
-    const text = ta.value.trim();
+    const fromQueue = options.fromQueue === true;
+    const text = fromQueue ? options.text : ta.value.trim();
     const agent = agentOf(s);
     const chat = isChat(s);
-    const attachments = chat ? (s.chatAttachments || []) : [];
+    const attachments = fromQueue ? [] : chat ? (s.chatAttachments || []) : [];
     const api = apiFor(agent);
-    if (s.busy) { if (text) return steer(s, text); if (fromButton) return interrupt(s); return; }
-    if (!text && !(chat ? attachments.length : liveAtt.length)) return;
-    if (text.startsWith('/') && runCommand(text)) return;
-    const { approvalPolicy, sandbox, sandboxPolicy } = modeToPolicy($('#modeSelect').value);
-    if (!(await ensureReady(s))) return;
-    if (!chat) { ta.value = ''; A.autosize(); }
+    if (!fromQueue && (s.busy || s.steerFlushing)) {
+      if (text) return steer(s, text);
+      if (fromButton) return interrupt(s);
+      return false;
+    }
+    if (!text && !(chat ? attachments.length : liveAtt.length)) return false;
+    if (!fromQueue && text.startsWith('/') && runCommand(text)) return false;
+    const { approvalPolicy, sandbox, sandboxPolicy } = fromQueue
+      ? (options.policy || s.chatPolicy || modeToPolicy($('#modeSelect').value))
+      : modeToPolicy($('#modeSelect').value);
+    if (chat) s.chatPolicy = { approvalPolicy, sandboxPolicy };
+    if (!(await ensureReady(s))) return false;
+    if (!chat && !fromQueue) { ta.value = ''; A.autosize(); }
     const { input, chips } = chat
       ? { input: [{ type: 'text', text: text || '请查看随附的文件。', text_elements: [] }],
-        chips: attachments.map(file => ({ label: '附件 ' + file.name, kind: 'file', title: file.name })) }
+        chips: fromQueue ? [] : attachments.map(file => ({ label: '附件 ' + file.name, kind: 'file', title: file.name })) }
       : await buildInput(text);
-    if (!chat) { liveAtt = []; renderAtt(); }
+    if (!chat && !fromQueue) { liveAtt = []; renderAtt(); }
     if (s.title === '新会话') s.title = (text || '附件').slice(0, 24);
-    s.items.push({ t: 'user', text, chips });
+    if (!fromQueue) s.items.push({ t: 'user', text, chips });
     s.busy = true; s.status = 'running'; s.time = '刚刚';
     s.items.push({ t: 'thinking', text: '思考中' });
     A.renderAll(); pet(s, 'thinking', 'UserPromptSubmit');
@@ -566,8 +577,10 @@
       else if (!chat) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。优先用 glob 找文件、grep 查找文本、edit 做精确替换。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
     const sel = $('#modelSelect');
-    const model = chat ? (sel.value || undefined) : (sel.dataset.live ? sel.value : undefined);
-    if (chat) {
+    const model = chat
+      ? (fromQueue ? (s.model || undefined) : (sel.value || undefined))
+      : (sel.dataset.live ? sel.value : undefined);
+    if (chat && !fromQueue) {
       s.model = model;
       s.effort = $('#effortWrap').hidden ? undefined : ($('#effortSelect').value || undefined);
     }
@@ -592,7 +605,7 @@
       };
     const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
-    if (chat) {
+    if (chat && !fromQueue) {
       s.chatAttachments = [];
       if (state.active === s.id && !state.group) {
         if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
@@ -600,14 +613,68 @@
       }
     }
     s.turnId = r.result.turn.id;
+    return true;
   }
   async function steer(s, text) {
-    if (!s.turnId) return;
-    if (isChat(s)) { toast(`${agentName(agentOf(s))} 单聊暂不支持插话，请等本轮结束或先停止`); return; }
-    const ta = $('#input'); ta.value = ''; A.autosize();
+    const ta = $('#input');
+    if (isChat(s)) {
+      if (state.active === s.id && !state.group) {
+        if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
+        s.model = $('#modelSelect').value || s.model;
+        s.effort = $('#effortWrap').hidden ? s.effort : ($('#effortSelect').value || s.effort);
+        s.chatPolicy = modeToPolicy($('#modeSelect').value);
+      }
+      const item = { t: 'user', text, steer: true, queued: true };
+      s.items.push(item);
+      s.steerQueue = [...(s.steerQueue || []), { text, item }];
+      A.renderAll();
+      if (!s.busy) { flushSteer(s); return true; }
+      if (s.turnId && !s.steerInterrupting) {
+        s.steerInterrupting = true;
+        toast(`已插话：${agentName(agentOf(s))} 会停下当前这一轮，带着你的话继续`);
+        apiFor(agentOf(s)).request('turn/interrupt', { threadId: s.threadId, turnId: s.turnId }).then((r) => {
+          s.steerInterrupting = false;
+          if (!r.ok) toast('插话时停止当前回合失败：' + r.error + '，本条会在本轮结束后发送');
+          else if (!s.busy) flushSteer(s);
+        });
+      } else {
+        toast(`已插话：${agentName(agentOf(s))} 会在本轮结束后接着处理`);
+      }
+      return true;
+    }
+    if (!s.turnId) return false;
+    ta.value = ''; A.autosize();
     const r = await cx.request('turn/steer', { threadId: s.threadId, expectedTurnId: s.turnId, input: [{ type: 'text', text, text_elements: [] }] });
-    if (!r.ok) { toast('插话失败：' + r.error); ta.value = text; return; }
+    if (!r.ok) { toast('插话失败：' + r.error); ta.value = text; return false; }
     dropThinking(s); s.items.push({ t: 'user', text, steer: true }); s.items.push({ t: 'thinking', text: '已收到补充说明' }); A.renderAll();
+    return true;
+  }
+  // 插话已经把当前轮停下了；等 turn/completed 真正到达后，再把这一批话作为下一轮发出去。
+  // 相同会话的多次插话会合并成一条消息，避免连续打断。
+  function flushSteer(s) {
+    if (!s?.live || !isChat(s) || s.busy || s.steerFlushing || !s.steerQueue?.length) return;
+    const batch = s.steerQueue.splice(0);
+    const text = batch.map((entry) => entry.text).join('\n\n');
+    const policy = s.chatPolicy;
+    s.steerFlushing = true;
+    s.busy = true; s.status = 'running'; s.time = '刚刚';
+    A.renderAll();
+    send(s, false, { text, fromQueue: true, policy }).then((ok) => {
+      s.steerFlushing = false;
+      if (ok) batch.forEach(({ item }) => { if (item) item.queued = false; });
+      else {
+        s.busy = false;
+        if (s.status === 'running') s.status = 'idle';
+        s.steerQueue.unshift(...batch);
+        toast('插话还没发出，已保留；请稍后再试');
+      }
+      A.renderAll();
+    }).catch(() => {
+      s.steerFlushing = false; s.busy = false;
+      if (s.status === 'running') s.status = 'idle';
+      s.steerQueue.unshift(...batch);
+      A.renderAll();
+    });
   }
   async function interrupt(s) {
     if (!s.threadId || !s.turnId) return;
@@ -617,6 +684,7 @@
   function fail(s, msg) {
     dropThinking(s); sysNote(s, msg, true);
     s.busy = false; s.status = 'idle'; A.renderAll(); pet(s, 'error', 'Stop');
+    return false;
   }
 
   /* ---------- 斜杠命令 ---------- */

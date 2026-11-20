@@ -1499,6 +1499,13 @@ event(task, state, detail) {
   cancel(task) {
     if (terminal.has(task.state)) return { state: task.state };
     this.running.get(task.id)?.abort(new Error('cancelled'));
+    // The CLI is aborted with the task, so a step left as running would sit on the board as live forever.
+    // End it for whichever member was running it; the task itself carries the cancellation.
+    for (const step of task.steps || []) {
+      if (step.state !== 'running') continue;
+      step.state = 'cancelled';
+      step.finishedAt = new Date(this.now()).toISOString();
+    }
     this.save(task, task.pendingRequest ? 'needs_review' : 'cancelled', 'cancel_requested');
     return { state: task.state };
   }
