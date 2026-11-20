@@ -39,8 +39,9 @@ const teamTimeout = 40 * 60_000;
 // A single CLI turn may run this long before the session is continued. The stall watchdog still stops a CLI
 // that writes nothing for 10 minutes, so a longer turn limit does not leave a hung process running forever.
 const defaultCliTimeoutMs = 45 * 60_000;
+const mayCheckLocally = (step) => step.write || ['scout', 'review', 'triage', 'accept'].includes(step.capability);
 const hasLocalEffects = (step) => (step.write && ['files', 'desktop'].includes(step.localTools)) ||
-  (step.localTools === 'commands' && (step.write || step.capability === 'scout'));
+  (step.localTools === 'commands' && mayCheckLocally(step));
 
 const CAPABILITY_GUIDE = [
   'Give each step a capability; the scheduler assigns the CLI from the configured candidates and moves a step to the next candidate when a CLI is out of quota or signed out.',
@@ -169,7 +170,7 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
     if (capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex') writers.set(step.id, role);
     return {
       id: step.id, role, ...(capability !== undefined && { capability }), ...(step.role && step.role === role && { named: true }),
-      prompt: step.prompt, dependsOn: [...new Set(dependsOn)],
+      prompt: step.prompt, ...(typeof step.outputPath === 'string' && { outputPath: step.outputPath }), ...(typeof step.desktopOutput === 'string' && { desktopOutput: step.desktopOutput }), dependsOn: [...new Set(dependsOn)],
       ...(['files', 'commands', 'desktop'].includes(step.localTools) && { localTools: step.localTools }),
       write: capability !== undefined ? CAPABILITIES[capability].write && router.canWrite(role) : role === 'codex',
       state: 'queued', attempts: 0,
@@ -1009,6 +1010,7 @@ event(task, state, detail) {
       const added = validateSteps(raw.map((item) => ({ ...item, dependsOn: (Array.isArray(item?.dependsOn) ? item.dependsOn : []).filter((id) => !existing.has(id)) })),
         this.availableRoles(), this.router, (capability, exclude) => this.pickForTask(task, capability, exclude),
         (role) => this.ownerAllows(task, role).allowed);
+      for (const step of added) if (task.snapshot) this.bindLocalAccess(task, step);
       const renamed = new Map();
       for (const item of added) {
         let next = item.id;
@@ -1663,11 +1665,53 @@ event(task, state, detail) {
 
   // Reads the bridge receipts for this attempt and keeps a compact delivery list on the step. A failed
   // write with no later success for the same target is unresolved: the step must not claim completion.
+  bindLocalAccess(task, step) {
+    if (!task.snapshot || readOnlyMode(task.mode) || (step.localTools && step.localTools !== 'files')) return;
+    const request = [task.prompt, ...(task.groupPlan?.rounds || []).map((round) => round.reply)].filter(Boolean).join('\n');
+    const workspace = this.config.workspaces[task.workspace];
+    const drives = (workspace?.groupLocalDrives || []).filter((drive) => /^[A-Z]$/.test(drive));
+    const referencesDrive = (text) => [...String(text).matchAll(/\b([a-z]):[\\/]|([a-z])\s*盘/gi)].some((m) => drives.includes((m[1] || m[2]).toUpperCase()));
+    const mentionsDesktop = (text) => /桌面|\bdesktop\b/i.test(text);
+    const wantsLocal = (referencesDrive(request) && referencesDrive(step.prompt)) ||
+      (mentionsDesktop(request) && mentionsDesktop(step.prompt));
+    if (drives.length && (wantsLocal || step.localTools === 'files')) {
+      step.localTools = 'files';
+      if (step.write) step.localDrives = drives;
+    }
+    if (!step.write) return;
+    if (step.outputPath && drives.length) {
+      if (!/^[a-z]:[\\/]/i.test(step.outputPath) || !drives.includes(step.outputPath[0].toUpperCase()) ||
+          step.outputPath.slice(2).split(/[\\/]/).some((part) => part === '..' || /[<>:"|?*\x00-\x1f]/.test(part))) {
+        throw new Error('invalid_local_output');
+      }
+      step.deliveryTarget = path.win32.normalize(step.outputPath);
+      step.localDrives = drives;
+      step.localTools = 'files';
+      return;
+    }
+    if (!mentionsDesktop(request) || (!step.desktopOutput && !mentionsDesktop(step.prompt))) {
+      if (step.desktopOutput) throw new Error('desktop_delivery_outside_request');
+      return;
+    }
+    const quoted = step.prompt.match(/[\x60“「"]([^\\/:*?"<>|\x60”」\r\n]+\.[\w-]{1,12})[\x60”」"]/u)?.[1];
+    const name = step.desktopOutput || (quoted && request.includes(quoted) &&
+      /写入|保存|创建|生成|导出|\b(write|save|create|export)\b/i.test(step.prompt) && quoted);
+    if (!name) return;
+    if (!/^[\p{L}\p{N}_-][\p{L}\p{N} _.-]{0,180}\.[a-z0-9]{1,12}$/iu.test(name)) throw new Error('invalid_desktop_output');
+    const desktop = this.config.workspaces[task.workspace]?.deliveryDesktop;
+    if (!desktop) return;
+    const platform = desktop.startsWith('/') ? path.posix : path.win32;
+    if (!platform.isAbsolute(desktop)) throw new Error('invalid_desktop_directory');
+    step.localTools = 'files';
+    step.deliveryTarget = platform.join(desktop, name);
+  }
+
   async collectDeliveries(task, step) {
     const receipts = await readReceipts(path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl'));
     if (!receipts.length) {
       delete step.deliveries;
-      delete step.writeFailure;
+      if (step.deliveryTarget) step.writeFailure = 'missing_delivery_receipt: ' + step.deliveryTarget;
+      else delete step.writeFailure;
       return;
     }
     step.deliveries = receipts.slice(-50).map((receipt) => ({
@@ -1691,6 +1735,9 @@ event(task, state, detail) {
     if (failed) {
       step.writeFailure = 'write_failed:' + (failed.path || 'unknown') +
         (failed.error ? ': ' + String(failed.error).slice(0, 200) : '');
+    } else if (step.deliveryTarget && !receipts.some((r) => r.operation === 'write' && r.ok === true &&
+        r.root === 'computer' && r.path === step.deliveryTarget)) {
+      step.writeFailure = 'missing_delivery_receipt: ' + step.deliveryTarget;
     } else {
       delete step.writeFailure;
     }
@@ -1747,6 +1794,8 @@ event(task, state, detail) {
           : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
             : step.localTools === 'desktop' ? 'Use local_desktop only for the requested GUI operation. Verify the current screen before repeating any action.' : '');
     }
+    if (step.deliveryTarget) prompt += '\nUse windows_write_file with root computer and this exact path: ' +
+      JSON.stringify(step.deliveryTarget) + '. A successful write receipt is required for delivery.';
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
@@ -1796,9 +1845,11 @@ event(task, state, detail) {
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
       recordMcp: () => { if (call) call.bridgeMcpRequests += 1; },
       localTools,
-      desktopWrite: step.localTools === 'desktop' && Boolean(step.write),
+      deliveryTarget: step.deliveryTarget, localDrives: step.localDrives,
+      desktopWrite: !readOnlyMode(task.mode) && step.localTools === 'desktop' && Boolean(step.write),
       runCommands: (!task.snapshot || step.localTools === 'commands') &&
-        step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
+        step.id !== 'group-planner' && (step.role !== 'antigravity' || step.localTools === 'commands') && !readOnlyMode(task.mode) &&
+        (step.write || step.capability === 'scout' || (step.localTools === 'commands' && mayCheckLocally(step))),
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
       readAnyFolder: true,
@@ -2142,7 +2193,7 @@ event(task, state, detail) {
     const prompt = [
       'You are 组长, the group lead. Stay in read-only planning mode. Inspect the checked-out code when useful.',
       task.snapshot
-        ? 'Inspect the fixed project snapshot in the current working tree. Only for a step explicitly needing a file outside this snapshot, set localTools to "files". For a step explicitly needing commands that must run on the requester\'s computer, set localTools to "commands". For an explicitly requested desktop operation, set localTools to "desktop". Name the exact local action in the step prompt. Separate distinct local tool types into individual steps. Omit localTools for repository reading, edits and checks that can run in the working tree.'
+        ? 'Inspect the fixed project snapshot in the current working tree. Only for a step explicitly needing a file outside this snapshot, set localTools to "files". For a step explicitly needing commands that must run on the requester\'s computer, set localTools to "commands". For an explicitly requested desktop operation, set localTools to "desktop". Name the exact local action in the step prompt. For a requested file delivery at a Windows absolute path include outputPath with the full path. For a requested desktop file delivery mention the desktop and filename in the implement step prompt and include desktopOutput (one basename with extension) and localTools "files". For local verification review, triage and acceptance may request configured commands; discovery and research may request external reads. Separate distinct local tool types into individual steps. Omit localTools for repository reading, edits and checks that can run in the working tree.'
         : 'The checkout here is a copy on the server. Use windows_list_locations and the read-only file tools to inspect the authorized locations when needed. Project edits are delivered as a reviewed patch.',
       'Reply with the JSON object alone, with no text before or after it and no code fence.',
       'When completedWork is present the person changed direction while the work was under way: that work is done and kept. Plan only what remains under the newest reply, build on the finished work instead of redoing it, and do not depend on its step ids.',
@@ -2229,6 +2280,7 @@ event(task, state, detail) {
         (capability, exclude) => this.pickForTask(task, capability, exclude),
         (role) => this.ownerAllows(task, role).allowed);
       if (!steps.every((step) => step.prompt.length <= 1000) || (task.provider && steps.length !== 1)) throw new Error('invalid_plan');
+      for (const step of steps) this.bindLocalAccess(task, step);
       this.addDuoReviews(task, steps);
     } catch (error) {
       if (!error.message.startsWith('executor_waiting:')) throw error;
@@ -2401,7 +2453,7 @@ event(task, state, detail) {
   // that writer's worktree and its cumulative patch supersedes the writer's earlier patch.
   appendRework(task, acceptance) {
     const parent = [...task.steps].reverse()
-      .find((step) => step.write && step.paths?.length && !step.supersededBy);
+      .find((step) => step.write && (step.paths?.length || step.deliveryTarget || step.localDrives?.length) && !step.supersededBy);
     const original = task.snapshot && parent?.session && this.router.canWrite(parent.role) &&
       this.router.available(parent.role) && this.router.quotaAllows(parent.role, 'implement') &&
       this.ownerAllows(task, parent.role).allowed ? parent : null;
@@ -2419,6 +2471,8 @@ event(task, state, detail) {
         (acceptance.summary ? '\nAcceptance summary: ' + acceptance.summary : '') +
         (findings ? '\nFindings:\n' + findings : ''),
       ...(parent && { reworkOf: parent.id }),
+      ...(parent?.localDrives && { localDrives: parent.localDrives, localTools: 'files' }),
+      ...(parent?.deliveryTarget && { deliveryTarget: parent.deliveryTarget, localTools: 'files' }),
       ...(original && { session: original.session, model: original.model, effort: original.effort }),
     };
     task.steps.push(step);
@@ -3199,7 +3253,7 @@ event(task, state, detail) {
     }];
     const used = new Set(task.steps.map((step) => step.id));
     const steps = [];
-    let parent = [...task.steps].reverse().find((step) => step.write && step.paths?.length && !step.supersededBy);
+    let parent = [...task.steps].reverse().find((step) => step.write && (step.paths?.length || step.deliveryTarget || step.localDrives?.length) && !step.supersededBy);
     for (const item of raw.slice(0, 4)) {
       const capability = item.capability || 'implement';
       const role = this.namedExecutor(task, capability, item.executor) || this.pickForTask(task, capability, item.exclude || []) ||
@@ -3220,7 +3274,11 @@ event(task, state, detail) {
         prompt: item.prompt,
       };
       this.chooseModel(step, item);
-      if (capability === 'implement' && parent) step.reworkOf = parent.id;
+      if (capability === 'implement' && parent) {
+        step.reworkOf = parent.id;
+        if (parent.localDrives) Object.assign(step, { localTools: 'files', localDrives: parent.localDrives });
+        if (parent.deliveryTarget) Object.assign(step, { localTools: 'files', deliveryTarget: parent.deliveryTarget });
+      }
       if (step.write) parent = step;
       steps.push(step);
     }
