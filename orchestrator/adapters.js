@@ -158,7 +158,7 @@ function errorDetail(text) {
     || '').replace(/\s+/g, ' ').slice(0, 300);
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, readPaths = [] }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, readPaths = [], hidePaths = [] }) {
   if (effort !== undefined && !effortsFor(name, config, model).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
@@ -242,7 +242,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   const launch = sandboxed
     ? sandboxCommand(config.bin, args, { bin: config.sandbox.bin, cwd, home: env.HOME, writable: !readonly,
       hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [],
-      extraReadOnly: [...(attachmentDirectory ? [attachmentDirectory] : []), ...readPaths] })
+      extraReadOnly: [...(attachmentDirectory ? [attachmentDirectory] : []), ...readPaths], mask: hidePaths })
     : { command: config.bin, args };
   const child = spawn(launch.command, launch.args, {
     cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],

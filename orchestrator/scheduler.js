@@ -112,10 +112,12 @@ function planProblem(value) {
 }
 
 // Tells a CLI where the person's computer is mounted and how to use it.
-function mountNote(mount, writes, tools) {
+function mountNote(mount, writes, tools, snapshot = false) {
   return '\n\nThe person\u2019s computer: their home folder is mounted read-only at ' + mount.home +
-    (mount.project ? '; this task\u2019s project on their computer is ' + mount.project : '') +
-    '. It is live (including changes they have not committed). Read, list and search there directly with your own tools (read files, rg, find, git --no-optional-locks log/diff/show) instead of tool calls' +
+    (snapshot ? (mount.project ? ' (the project\u2019s own folder there, ' + mount.project + ', is left out: work on the project only in your working tree, the fixed snapshot)' : '') +
+      '. Use it for files outside the project' :
+      (mount.project ? '; this task\u2019s project on their computer is ' + mount.project : '') + '. It is live (including changes they have not committed)') +
+    '. Read, list and search there directly with your own tools (read files, rg, find, git --no-optional-locks log/diff/show) instead of tool calls' +
     (tools ? '; use the windows_* read tools only for folders outside the home folder' : '') +
     '. Credential folders are left out on purpose. Nothing there can be changed' +
     (writes ? ': make the project\u2019s changes in your working folder (they reach the computer as a reviewed patch), and use the windows_* write tools only for files outside the project.' : '.');
@@ -1696,9 +1698,16 @@ event(task, state, detail) {
     // commands stays off for planning and other read-only steps.
     // Access by duty, not by member or model (DUTY_ACCESS): reading goes to the read-only mount when it is up.
     const access = Scheduler.DUTY_ACCESS[Scheduler.dutyOf(step)] || Scheduler.DUTY_ACCESS.scout;
-    const mount = !task.snapshot && access.mount && (this.mounts.size || this.config.homeMounts)
+    const mount = access.mount && (this.mounts.size || this.config.homeMounts)
       ? await this.mountFor(task).catch(() => null) : null;
-    const mcp = bridgeTools && (task.snapshot ? Boolean(step.localTools) : access.mcp === 'always' || !mount)
+    // With a project snapshot, project files come only from the working tree (one version for everyone); the
+    // home mount and the read tools are for what lies outside the project. The lead keeps those read tools, as
+    // the person asked (it reaches folders outside the home folder too); members get them only while the mount
+    // is down; the writer changes the project by patch and gets local tools only when the lead marked the step
+    // (localTools), as does any step that needs commands or the desktop.
+    const leadDuty = LEAD_CAPABILITIES.has(Scheduler.dutyOf(step));
+    const localTools = task.snapshot ? step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
+    const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount)
       ? this.config.mcp : undefined;
     if (task.snapshot && step.id !== 'group-planner') {
       prompt += '\nUse this working tree for all project files. Its base is the fixed snapshot of the requester\'s project. ' +
@@ -1706,7 +1715,7 @@ event(task, state, detail) {
           : step.localTools === 'commands' ? 'Local commands run on the requester\'s live computer; use only for the requested local checks.'
             : step.localTools === 'desktop' ? 'Use local_desktop only for the requested GUI operation. Verify the current screen before repeating any action.' : '');
     }
-    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp));
+    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp), Boolean(task.snapshot));
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
@@ -1741,14 +1750,14 @@ event(task, state, detail) {
     this.recordCall(step.role);
     const capability = mcp && randomBytes(32).toString('base64url');
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
-      localTools: task.snapshot ? step.localTools : undefined,
+      localTools,
       desktopWrite: step.localTools === 'desktop' && Boolean(step.write),
       runCommands: (!task.snapshot || step.localTools === 'commands') &&
         step.id !== 'group-planner' && step.role !== 'antigravity' && !readOnlyMode(task.mode) && Boolean(step.write || step.capability === 'scout'),
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
       readAnyFolder: true,
-      writeFiles: (!task.snapshot || step.localTools === 'files') &&
+      writeFiles: (!task.snapshot || localTools === 'files') &&
         step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
@@ -1765,10 +1774,12 @@ event(task, state, detail) {
         session: step.session, model: step.model,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort &&
           effortsFor(step.role, this.config.adapters[step.role], step.model).includes(task.leadEffort) ? task.leadEffort : undefined),
-        mcp: mcp && { socket: mcp.socket, capability, ...(task.snapshot && { scope: step.localTools }),
+        mcp: mcp && { socket: mcp.socket, capability, ...(task.snapshot && { scope: localTools }),
           receipts: path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl') },
         attachmentDirectory,
         readPaths: mount ? [mount.home] : [],
+        // the project's live folder on the mount is hidden while the step works on the snapshot
+        hidePaths: mount && task.snapshot && mount.project ? [mount.project] : [],
         onSession: (id) => {
           if (step.session === id) return;
           step.session = id;
@@ -1961,7 +1972,7 @@ event(task, state, detail) {
       if (!error.remoteConfirmed || error.message !== 'command_not_authorized') throw error;
       return null;
     });
-    const { head, version, artifact } = captured || await this.files.call(route, task.id, 'command.execute',
+    const { head, version, artifact, skipped } = captured || await this.files.call(route, task.id, 'command.execute',
       { operation: 'git_baseline', workspace: task.workspace }, 35000, signal);
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) throw new Error('invalid_workspace_baseline');
     await git(repo, ['cat-file', '-e', head + '^{commit}'], signal);
@@ -1972,6 +1983,11 @@ event(task, state, detail) {
     }
     const bytes = artifact ? await this.files.download(route, task.id, { operation: 'artifact', ...artifact }, signal) : Buffer.alloc(0);
     if (createHash('sha256').update(bytes).digest('hex') !== version) throw new Error('project_snapshot_failed');
+    // Secret-looking files the Bridge left out of the snapshot (.env, keys): the group is told, the task goes on.
+    if (Array.isArray(skipped) && skipped.length) {
+      task.snapshotSkipped = skipped.filter((name) => typeof name === 'string').slice(0, 50).map((name) => name.slice(0, 300));
+      this.save(task, task.state, 'snapshot_skipped:' + task.snapshotSkipped.length);
+    }
     let base = head;
     if (bytes.length) {
       const folder = path.join(root, 'project-snapshot');
@@ -2133,7 +2149,8 @@ event(task, state, detail) {
   // always (when the client says nothing, e.g. WeChat): every plan waits for the person. small (the desktop's
   // default): a plan that changes no files, or has at most three steps, starts by itself. auto: every plan does.
   autoApproves(task, steps) {
-    if (task.snapshot && steps?.some((step) => step.localTools)) return false;
+    // Plans that use the person's computer wait for confirmation, unless the group runs every plan by itself.
+    if (task.snapshot && steps?.some((step) => step.localTools) && task.approval !== 'auto') return false;
     const mode = task.approval || 'always';
     if (mode === 'auto') return true;
     if (mode !== 'small' || !steps?.length) return false;

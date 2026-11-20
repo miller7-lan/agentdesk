@@ -36,6 +36,11 @@ function sandboxCommand(command, args, options) {
   for (const target of options.extraReadOnly || []) {
     if (exists(target)) argv.splice(argv.indexOf('--'), 0, '--ro-bind', real(target), real(target));
   }
+  // Covered after the read-only folders are in place (a folder inside one of them, e.g. the live project on the
+  // mount while the step works on a snapshot).
+  for (const target of options.mask || []) {
+    if (exists(target)) argv.splice(argv.indexOf('--'), 0, '--tmpfs', real(target));
+  }
   return { command: options.bin || '/usr/bin/bwrap', args: argv };
 }
 

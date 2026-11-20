@@ -97,10 +97,14 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   const content = (cwd, name) => fs.readFileSync(path.join(cwd, name), 'utf8').replace(/\r\n/g, '\n');
   const { scheduler, task, workspace, git, head, mcps } = setup(t, [
     ({ cwd, mcp }) => {
-      assert.equal(mcp, undefined);
+      // The lead reads the project from the snapshot and keeps read tools for files outside it only.
+      assert.equal(mcp.scope, 'files');
       assert.equal(content(cwd, 'README.md'), 'working\n');
       assert.equal(content(cwd, '加入.txt'), 'new\n');
-      assert.equal(fs.existsSync(path.join(cwd, 'private.txt')), false);
+      // New files come along unless .gitignore excludes them; secret-looking files never do.
+      assert.equal(content(cwd, 'private.txt'), 'untracked\n');
+      assert.equal(fs.existsSync(path.join(cwd, 'build.log')), false);
+      assert.equal(fs.existsSync(path.join(cwd, '.env')), false);
       return { output: JSON.stringify({ summary: '修改项目', steps: [
         { id: 'edit', capability: 'implement', prompt: 'edit readme' },
       ] }) };
@@ -127,6 +131,9 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   fs.writeFileSync(path.join(workspace, '加入.txt'), 'new\n');
   git(workspace, 'add', '-N', '加入.txt');
   fs.writeFileSync(path.join(workspace, 'private.txt'), 'untracked\n');
+  fs.writeFileSync(path.join(workspace, '.git', 'info', 'exclude'), 'build.log\n');
+  fs.writeFileSync(path.join(workspace, 'build.log'), 'ignored\n');
+  fs.writeFileSync(path.join(workspace, '.env'), 'TOKEN=secret\n');
   const bridge = new WindowsOperations({ store: scheduler.store,
     config: { stateDir: path.join(path.dirname(workspace), 'bridge'), workspaces: { mac: { root: workspace, write: true } } } });
   scheduler.files = new RemoteFiles({ request: (_route, taskId, kind, body, _timeout, requestId) =>
@@ -135,10 +142,12 @@ test('a new group pins the working project, resumes a stalled writer and checks 
   await scheduler.run(task, signal);
   assert.equal(task.state, 'awaiting_approval', JSON.stringify(task.groupPlan.rounds.at(-1)));
   assert.equal(task.snapshot.head, head);
+  assert.deepEqual(task.snapshotSkipped, ['.env']);
   assert.notEqual(task.snapshot.base, head);
   scheduler.approveRound(task, task.groupPlan.rounds.at(-1));
   await scheduler.run(task, signal);
-  assert.deepEqual(mcps, []);
+  // Only the lead's planning had the (read, outside the project) tools; the writer worked on the snapshot alone.
+  assert.deepEqual(mcps.map((entry) => entry.name), ['claude']);
   assert.equal(task.steps[0].state, 'completed');
   assert.equal(task.steps[0].attempts, 2);
   assert.equal(task.detail, 'patches_ready');

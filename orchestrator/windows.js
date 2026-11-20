@@ -562,36 +562,57 @@ class WindowsOperations {
     return { head: head.stdout.trim(), clean: !status.stdout };
   }
 
+  // The project as it is now: HEAD plus every change in the working folder — tracked changes, deletions and new
+  // files that .gitignore does not exclude — built in a temporary index, so the person's staging area is never
+  // touched. Secret-looking files (.env, keys, certificates) are left out of the snapshot and named in
+  // `skipped`, instead of failing the whole task.
   async projectSnapshot(root, signal) {
-    const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-    const command = async (args) => {
-      const result = await this.git(root, args, signal, env, MAX_PROJECT_SNAPSHOT + 1);
+    const plain = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+    const directory = await fs.mkdtemp(path.join(tmpdir(), 'agentdesk-snapshot-'));
+    const env = { ...plain, GIT_INDEX_FILE: path.join(directory, 'index') };
+    const command = async (args, environment = env) => {
+      const result = await this.git(root, args, signal, environment, MAX_PROJECT_SNAPSHOT + 1);
       if (result.code !== 0) throw new Error('project_snapshot_failed');
       if (result.truncated || Buffer.byteLength(result.stdout) > MAX_PROJECT_SNAPSHOT) throw new Error('project_snapshot_too_large');
       return result.stdout;
     };
-    const head = (await command(['rev-parse', 'HEAD'])).trim();
-    const diff = ['-c', 'core.quotePath=true', 'diff', '--no-color', '--no-ext-diff', '--no-textconv',
-      '--no-renames', '--ignore-submodules=none'];
-    if (await command(['ls-files', '--unmerged'])) throw new Error('project_snapshot_unmerged');
-    const changed = await command([...diff, '--raw', '-z', head]);
-    const records = changed.split('\0');
-    for (let index = 0; index + 1 < records.length; index += 2) {
-      const [oldMode, newMode] = records[index].split(' ');
-      if (oldMode === ':160000' || newMode === '160000') throw new Error('project_snapshot_submodule');
-      const filename = path.resolve(root, records[index + 1]);
-      // The patch can contain both the old and new contents of a changed file.
-      if (!under(fold(filename), fold(root)) || !allowedAnywherePath(filename) ||
-          /(?:^|[\\/])(?:\.env(?:\..*)?|[^\\/]+\.(?:pem|pfx|p12|key))$/i.test(filename)) {
-        throw new Error('project_snapshot_sensitive_path');
-      }
+    const sensitive = (filename) => /(?:^|[\\/])(?:\.env(?:\..*)?|[^\\/]+\.(?:pem|pfx|p12|key))$/i.test(filename);
+    try {
+      const head = (await command(['rev-parse', 'HEAD'], plain)).trim();
+      if (await command(['ls-files', '--unmerged'], plain)) throw new Error('project_snapshot_unmerged');
+      const diff = ['-c', 'core.quotePath=true', 'diff', '--cached', '--no-color', '--no-ext-diff', '--no-textconv',
+        '--no-renames', '--ignore-submodules=none'];
+      const stage = async () => {
+        await command(['read-tree', head]);
+        await command(['add', '--all', '--', '.']);
+        const skipped = [];
+        let changed = await command([...diff, '--raw', '-z', head]);
+        let records = changed.split('\0');
+        for (let index = 0; index + 1 < records.length; index += 2) {
+          const [oldMode, newMode] = records[index].split(' ');
+          if (oldMode === ':160000' || newMode === '160000') throw new Error('project_snapshot_submodule');
+          const relative = records[index + 1];
+          const filename = path.resolve(root, relative);
+          if (!under(fold(filename), fold(root))) throw new Error('project_snapshot_sensitive_path');
+          // The patch can contain both the old and new contents of a changed file: secrets stay out of it.
+          if (!allowedAnywherePath(filename) || sensitive(filename)) skipped.push(relative);
+        }
+        if (skipped.length) {
+          await command(['reset', '-q', head, '--', ...skipped.map((relative) => ':(literal)' + relative)]);
+          changed = await command([...diff, '--raw', '-z', head]);
+        }
+        return { changed, skipped };
+      };
+      const { changed, skipped } = await stage();
+      const patch = await command([...diff, '--binary', head]);
+      if (patch.includes('\ufffd')) throw new Error('project_snapshot_encoding');
+      const bytes = Buffer.from(patch);
+      // Nothing moved while it was taken (a commit, a save half-written).
+      if ((await command(['rev-parse', 'HEAD'], plain)).trim() !== head || (await stage()).changed !== changed) throw new Error('plan_workspace_changed');
+      return { head, version: sha(bytes), bytes, skipped };
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
     }
-    const patch = await command([...diff, '--binary', head]);
-    if (patch.includes('\ufffd')) throw new Error('project_snapshot_encoding');
-    const bytes = Buffer.from(patch);
-    if ((await command(['rev-parse', 'HEAD'])).trim() !== head ||
-        await command([...diff, '--raw', '-z', head]) !== changed) throw new Error('plan_workspace_changed');
-    return { head, version: sha(bytes), bytes };
   }
 
   async reviewDiff(root, signal) {
@@ -639,11 +660,12 @@ class WindowsOperations {
     const controller = new AbortController();
     if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
     if (body.operation === 'git_project_snapshot' || body.operation === 'git_project_snapshot_status') {
-      const { head, version, bytes } = await this.projectSnapshot(root, controller.signal);
+      const { head, version, bytes, skipped } = await this.projectSnapshot(root, controller.signal);
       if (body.operation === 'git_project_snapshot_status') return { head, version };
       const current = await this.projectSnapshot(root, controller.signal);
       if (current.head !== head || current.version !== version) throw new Error('plan_workspace_changed');
-      return { head, version, artifact: bytes.length ? await this.saveArtifact(taskId, bytes) : null };
+      return { head, version, artifact: bytes.length ? await this.saveArtifact(taskId, bytes) : null,
+        ...(skipped.length && { skipped: skipped.slice(0, 50) }) };
     }
     // Where this workspace sits inside the folder the read-only mount serves (the home folder, "/"-separated),
     // or null when it is outside it.

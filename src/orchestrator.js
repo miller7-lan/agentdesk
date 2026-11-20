@@ -533,6 +533,7 @@ window.__groupReady = (async () => {
     if (/:stopped_by_person$/.test(detail || '')) return '你停止了这一步，交给组长重新安排。';
     if (/:steered$/.test(detail || '')) return '你在成员的单聊里给了指导，它正按你的话继续。';
     if (/:revised_out$/.test(detail || '')) return '有一步按你的新方向停下了。';
+    if (/^snapshot_skipped:\d+$/.test(detail || '')) return `项目快照没有带上 ${detail.split(':')[1]} 个敏感文件（如 .env、密钥）的改动，组长和成员看不到它们；其余未提交的改动和新文件都已带上。`;
     const handed = /^([\w-]+):(handover|chosen):([^/>]+)(?:\/([^>]*))?->([^/]+)(?:\/(.*))?$/.exec(detail || '');
     if (handed) return `${memberName(handed[3])}${handed[4] ? '（' + handed[4] + '）' : ''}没完成，${handed[2] === 'chosen' ? '按你的选择' : '已直接'}交给 ${memberName(handed[5])}${handed[6] ? '（' + handed[6] + '）' : ''} 接着它的改动做。`;
     if (/:needs_choice$/.test(detail || '')) return '这一步没人能完成，请选择接手的模型。';
@@ -1314,7 +1315,7 @@ window.__groupReady = (async () => {
       else if (detail === 'triage_rework' || detail === 'triage_retry') add('组长已给出处理意见，任务重新排队。');
       else if (detail === 'triage_limit' || detail === 'acceptance_limit') add('自动处理次数已达上限，请人工查看。');
       else if (detail === 'review_conflict') add('审查意见冲突，已交给组长判断。');
-      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:/.test(detail)) add(textOf(detail));
+      else if (/^step_failed:|^reassign_started:|:reassigned_by_lead:|^reassign_limit|:stalled:|:model_switch:|:stopped_by_person$|:steered$|:revised_out$|^revise_deciding$|^revise_fallback$|:handover:|:chosen:|:needs_choice$|:adjusted:|^snapshot_skipped:/.test(detail)) add(textOf(detail));
       else if (detail === 'acceptance_started') add('组长开始验收。');
       else if (detail === 'rework_after_apply') add('补丁已应用，返工不会自动改写已应用的文件。');
       else if (/^triage_decision:(\w+)$/.test(detail)) add(textOf(detail));
