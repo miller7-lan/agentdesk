@@ -9,6 +9,7 @@ const { messageId } = require('./transport');
 const { attachmentRoot, idPattern } = require('./attachments');
 const { readBatch, writeBatch, editFile } = require('./file-batch');
 const { searchFiles } = require('./file-search');
+const { installSnapshot, buildCopy, regularFile } = require('./test-snapshot');
 
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;
@@ -182,6 +183,7 @@ class WindowsOperations {
     this.commands = new CommandRuns();
     this.startingCommands = new Map();
     this.busyStreams = new Set();
+    this.activeTests = new Set();
     this.busy = new Set();
   }
 
@@ -227,6 +229,18 @@ class WindowsOperations {
     const workspaceName = body.workspace;
     const workspace = Object.hasOwn(this.config.workspaces, workspaceName) && this.config.workspaces[workspaceName];
     if (!workspace) throw new Error('workspace_not_authorized');
+    if (kind === 'file.patch' && body.operation === 'isolated_test_sync') {
+      this.isolatedSpec(workspace, body.command);
+      await this.checkTestLocation(workspace);
+      const record = this.stream(taskId, body.stream_id);
+      if (!record.closed) throw new Error('stream_incomplete');
+      const version = await this.withTestLock(taskId, async () =>
+        installSnapshot(this.config.stateDir, taskId, await fs.readFile(this.streamPath(body.stream_id))));
+      return { version };
+    }
+    if (kind === 'command.execute' && body.operation === 'run_isolated_test') {
+      return this.withTestLock(taskId, () => this.isolatedTest(taskId, requestId, workspace, body));
+    }
     if (kind === 'file.read') {
       const roots = workspace.readRoots || {};
       const anyFolder = this.config.readAnyFolder === true || workspace.readAnyFolder === true;
@@ -332,6 +346,23 @@ class WindowsOperations {
         }
       }
     }
+    const root = path.join(await fs.realpath(this.config.stateDir), 'isolated-tests');
+    if (await fs.realpath(root).catch(() => null) !== root) return;
+    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name) || this.activeTests.has(entry.name)) continue;
+      await this.withTestLock(entry.name, async () => {
+        const directory = path.join(root, entry.name);
+        if (await fs.realpath(directory).catch(() => null) !== directory) return;
+        if ((await fs.stat(directory)).mtimeMs < now - 24 * 60 * 60 * 1000) await fs.rm(directory, { recursive: true, force: true });
+      });
+    }
+  }
+
+  async withTestLock(taskId, work) {
+    if (this.activeTests.has(taskId)) throw new Error('isolated_test_busy');
+    this.activeTests.add(taskId);
+    try { return await work(); }
+    finally { this.activeTests.delete(taskId); }
   }
 
   stream(taskId, id) {
@@ -671,6 +702,44 @@ class WindowsOperations {
     if (body.progress === true) return result;
     return { code, stdout, stderr, ...(truncated && { truncated }) };
   }
+
+  isolatedSpec(workspace, name) {
+    const spec = Object.hasOwn(workspace.isolatedCommands || {}, name) && workspace.isolatedCommands[name];
+    if (!spec || !Array.isArray(spec.runner) || !spec.runner.length || !path.isAbsolute(spec.runner[0]) ||
+        spec.runner.some((arg) => typeof arg !== 'string') ||
+        (spec.artifacts !== undefined && (!Array.isArray(spec.artifacts) || spec.artifacts.length > 10 ||
+          spec.artifacts.some((file) => typeof file !== 'string')))) throw new Error('isolated_test_not_authorized');
+    return spec;
+  }
+
+  async checkTestLocation(workspace) {
+    const project = fold(await fs.realpath(workspace.root));
+    const state = fold(await fs.realpath(this.config.stateDir));
+    if (under(path.join(state, 'isolated-tests'), project)) throw new Error('invalid_test_workspace');
+  }
+
+  async isolatedTest(taskId, id, workspace, body) {
+    const spec = this.isolatedSpec(workspace, body.command);
+    await this.checkTestLocation(workspace);
+    const directory = await buildCopy(this.config.stateDir, taskId, body.version);
+    try {
+      const result = await this.commands.start({ scope: taskId, key: id, name: body.command,
+        argv: spec.runner, cwd: directory, timeout: 300000 });
+      if (!Number.isInteger(result.code)) throw new Error(result.error || 'isolated_test_failed');
+      const artifacts = [];
+      if (result.code === 0) for (const relative of spec.artifacts || []) {
+        const filename = await regularFile(directory, relative);
+        if ((await fs.stat(filename)).size > MAX_FILE) throw new Error('test_artifact_too_large');
+        const bytes = await fs.readFile(filename);
+        if (bytes.length > MAX_FILE) throw new Error('test_artifact_too_large');
+        artifacts.push({ name: relative, ...await this.saveArtifact(taskId, bytes) });
+      }
+      const { code, stdout, stderr, truncated } = result;
+      return { code, stdout, stderr, truncated, version: body.version, artifacts };
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 function decode(data) {
@@ -696,6 +765,7 @@ class RemoteFiles {
     const done = new AbortController();
     let sequence = -1;
     let terminalPublished = false;
+    const isolated = body.operation === 'run_isolated_test';
     const publish = (snapshot) => {
       try { onStatus({ ...snapshot, requestId: id }); } catch { /* an activity preview must not change the command result */ }
     };
@@ -706,7 +776,7 @@ class RemoteFiles {
           operation: 'status', request_id: id,
         }, 1500, done.signal).catch(() => null);
         if (done.signal.aborted) return;
-        if (!status || status.state === 'unknown') {
+        if (!status || status.state === 'unknown' || (isolated && status.finishedAt)) {
           const receipt = await this.call(route(), taskId, 'task.status', {
             operation: 'operation_status', request_id: id,
           }, 1500, done.signal).catch(() => null);
@@ -739,6 +809,7 @@ class RemoteFiles {
       if (result.finishedAt) publish(result);
       else publish({ ...result, name: body.command, state: result.code === 0 ? 'completed' : 'failed' });
       if (!Number.isInteger(result.code)) throw Object.assign(new Error(result.error || 'command_failed'), { remoteConfirmed: true });
+      if (isolated) return result;
       const { code, stdout, stderr, truncated } = result;
       return { code, stdout, stderr, ...(truncated && { truncated }) };
     } catch (error) {
@@ -754,18 +825,18 @@ class RemoteFiles {
     }
   }
 
-  async upload(route, taskId, bytes, id = randomUUID()) {
+  async upload(route, taskId, bytes, id = randomUUID(), signal) {
     if (bytes.length > MAX_FILE) throw new Error('file_too_large');
-    const opened = await this.call(route, taskId, 'stream.open', { stream_id: id, size: bytes.length });
+    const opened = await this.call(route, taskId, 'stream.open', { stream_id: id, size: bytes.length }, undefined, signal);
     if (!Number.isSafeInteger(opened.next_offset) || opened.next_offset < 0 || opened.next_offset > bytes.length ||
         (opened.next_offset !== bytes.length && opened.next_offset % CHUNK)) throw new Error('invalid_stream_offset');
     for (let offset = opened.next_offset; offset < bytes.length; offset += CHUNK) {
       const chunk = bytes.subarray(offset, offset + CHUNK);
       await this.call(route, taskId, 'stream.chunk', {
         stream_id: id, offset, data: chunk.toString('base64'), sha256: sha(chunk),
-      });
+      }, undefined, signal);
     }
-    await this.call(route, taskId, 'stream.end', { stream_id: id, size: bytes.length, sha256: sha(bytes) });
+    await this.call(route, taskId, 'stream.end', { stream_id: id, size: bytes.length, sha256: sha(bytes) }, undefined, signal);
     return id;
   }
 
@@ -795,6 +866,19 @@ class RemoteFiles {
     return this.endpoint.request(route, taskId, 'file.patch',
       { operation: 'apply', workspace, base, stream_id: id, ...(snapshotVersion !== undefined && { snapshotVersion }) },
       120000, requestId, signal);
+  }
+
+  async syncIsolatedTest(route, taskId, workspace, command, bytes, streamId, signal) {
+    const id = await this.upload(route, taskId, bytes, streamId, signal);
+    return this.call(route, taskId, 'file.patch', {
+      operation: 'isolated_test_sync', workspace, command, stream_id: id,
+    }, 120000, signal);
+  }
+
+  runIsolatedTest(route, taskId, workspace, command, version, options) {
+    return this.runCommand(route, taskId, {
+      operation: 'run_isolated_test', workspace, command, version, timeout_ms: 300000,
+    }, options);
   }
 }
 

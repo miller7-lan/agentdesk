@@ -42,6 +42,8 @@ async function taskOutput(stateDir, task, { operation, stepId, artifact }) {
   const steps = (task.steps || []).map((step) => step.id);
   if (operation === 'task_artifacts' && !artifact) {
     return [...patches.map((id) => ({ id: 'patch:' + id, name: id + '.patch' })),
+      ...(task.isolatedTest?.code === 0 ? task.isolatedTest.artifacts || [] : [])
+        .map((item) => ({ id: 'build:' + item.stream_id, name: item.name })),
       ...steps.map((id) => ({ id: 'log:' + id, name: id + '.log' }))];
   }
   const [kind, id] = operation === 'task_log' ? ['log', stepId] : String(artifact).split(':');

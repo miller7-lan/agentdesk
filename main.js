@@ -1205,6 +1205,35 @@ async function orchestratorControl(frame) {
 }
 
 ipcMain.handle('orchestrator:control', (event, frame) => fromMainWindow(event) ? orchestratorControl(frame) : { ok: false });
+ipcMain.handle('orchestrator:save-build', async (event, frame) => {
+  if (!fromMainWindow(event) || !/^build:[0-9a-f-]{36}$/.test(frame?.artifact || '')) return { ok: false };
+  const request = { taskId: frame.taskId, projectId: frame.projectId, operation: 'task_artifacts', artifact: frame.artifact };
+  try {
+    const metadata = await orchestratorControl(request);
+    if (!metadata.ok) return metadata;
+    const { name, size, sha256 } = metadata.value;
+    if (typeof name !== 'string' || !/^[a-f0-9]{64}$/.test(sha256) ||
+        !Number.isSafeInteger(size) || size < 0 || size > 20 * 1024 * 1024) throw new Error('invalid_artifact');
+    const safeName = path.win32.basename(name).replace(/[^\p{L}\p{N} ._()-]/gu, '_');
+    const picked = await dialog.showSaveDialog(win, { title: '保存构建产物', defaultPath: safeName || 'build-artifact' });
+    if (picked.canceled || !picked.filePath) return { ok: true, cancelled: true };
+    const buffer = Buffer.alloc(size);
+    for (let offset = 0; offset < size;) {
+      const reply = await orchestratorControl({ ...request, offset });
+      if (!reply.ok) return reply;
+      const chunk = Buffer.from(reply.value.data || '', 'base64');
+      if (!chunk.length || chunk.length > 64 * 1024 || reply.value.offset !== offset ||
+          reply.value.size !== size || offset + chunk.length > size) throw new Error('invalid_artifact_chunk');
+      chunk.copy(buffer, offset);
+      offset += chunk.length;
+    }
+    if (createHash('sha256').update(buffer).digest('hex') !== sha256) throw new Error('artifact_checksum_mismatch');
+    await fs.promises.writeFile(picked.filePath, buffer);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
 ipcMain.handle('orchestrator:available', (event) => fromMainWindow(event) && Boolean(mac || enrollment || bridgeControlSocket));
 
 const localChanges = new Map();

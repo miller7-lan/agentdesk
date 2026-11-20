@@ -97,6 +97,8 @@ function summarize(tasks, filters = {}) {
   let testFailures = 0;
   let reviewConflicts = 0;
   let reassignmentsTotal = 0;
+  let windowsSyncPayloadBytes = 0;
+  let bridgeMcpRequests = 0;
   for (const task of list) {
     states[task.state] = (states[task.state] || 0) + 1;
     if (acceptedTask(task)) accepted += 1;
@@ -113,6 +115,8 @@ function summarize(tasks, filters = {}) {
     testFailures += task.testFailures || metrics.testFailures || 0;
     reviewConflicts += task.reviewConflicts || metrics.reviewConflicts || 0;
     reassignmentsTotal += reassignments(task);
+    windowsSyncPayloadBytes += task.testSyncBytes || 0;
+    for (const call of task.cliCalls || []) bridgeMcpRequests += call.bridgeMcpRequests || 0;
     for (const [role, count] of Object.entries(roleCalls(task))) {
       roleCallsTotal[role] = (roleCallsTotal[role] || 0) + count;
     }
@@ -148,6 +152,8 @@ function summarize(tasks, filters = {}) {
     reviewConflicts,
     reassignments: reassignmentsTotal,
     roleCalls: roleCallsTotal,
+    windowsSyncPayloadBytes,
+    bridgeMcpRequests,
     tokens,
     usage,
     quota,

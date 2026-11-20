@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('desk', {
   orchestrator: {
     available: () => ipcRenderer.invoke('orchestrator:available'),
     control: (frame) => ipcRenderer.invoke('orchestrator:control', frame),
+    saveBuild: (frame) => ipcRenderer.invoke('orchestrator:save-build', frame),
   },
   localChange: {
     pick: (kind) => ipcRenderer.invoke('localChange:pick', kind),
