@@ -515,13 +515,16 @@ test('the person can rank the members of a capability; the order only ranks memb
   assert.deepEqual(used, ['grok']);
 });
 
-test('a step whose member is busy moves to an idle member of the same kind of work, unless that member was chosen', async (t) => {
+test('a step whose member is busy moves to an idle member of the same kind of work, unless that member was chosen', { timeout: 15000 }, async (t) => {
   const { dir, head, mirror } = await repository(t);
   let release;
   const holding = new Promise((resolve) => { release = resolve; });
+  t.after(release);
+  const bothEntered = Promise.withResolvers();
   const used = [];
   const scheduler = schedulerFor(dir, mirror, async ({ name, prompt }) => {
     used.push([prompt.slice(0, 6), name]);
+    if (used.length === 2) bothEntered.resolve();
     if (prompt.startsWith('first')) await holding;     // gemini stays busy with the first step
     return { output: 'ok' };
   }, { acceptance: { mode: 'off' } });
@@ -535,7 +538,7 @@ test('a step whose member is busy moves to an idle member of the same kind of wo
     { id: 'two', capability: 'scout', prompt: 'second look', dependsOn: [] },
   ]);
   const running = scheduler.run(task, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await bothEntered.promise;
   assert.deepEqual(used.map(([, name]) => name).sort(), ['gemini', 'grok']);
   release();
   await running;
@@ -546,7 +549,16 @@ test('a step whose member is busy moves to an idle member of the same kind of wo
   used.length = 0;
   let releaseNamed;
   const holdingNamed = new Promise((resolve) => { releaseNamed = resolve; });
-  scheduler.adapter = async ({ name, prompt }) => { used.push([prompt.slice(0, 6), name]); if (prompt.startsWith('first')) await holdingNamed; return { output: 'ok' }; };
+  t.after(releaseNamed);
+  const namedEntered = Promise.withResolvers();
+  scheduler.adapter = async ({ name, prompt }) => {
+    used.push([prompt.slice(0, 6), name]);
+    if (prompt.startsWith('first')) {
+      namedEntered.resolve();
+      await holdingNamed;
+    }
+    return { output: 'ok' };
+  };
   const named = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'named' });
   named.base = head;
   named.planRaw = JSON.stringify([
@@ -554,18 +566,21 @@ test('a step whose member is busy moves to an idle member of the same kind of wo
     { id: 'two', capability: 'scout', role: 'gemini', prompt: 'second look', dependsOn: [] },
   ]);
   const second = scheduler.run(named, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await namedEntered.promise;
   assert.deepEqual(used.map(([, name]) => name), ['gemini']);   // the named step waits for gemini
   releaseNamed();
   await second;
   assert.deepEqual(used.map(([, name]) => name), ['gemini', 'gemini']);
 });
 
-test('the status says what a running step is doing and what a queued step waits for', async (t) => {
+test('the status says what a running step is doing and what a queued step waits for', { timeout: 15000 }, async (t) => {
   const { dir, head, mirror } = await repository(t);
   let release;
   const holding = new Promise((resolve) => { release = resolve; });
-  const scheduler = schedulerFor(dir, mirror, async () => { await holding; return { output: 'ok' }; },
+  t.after(release);
+  const entered = Promise.withResolvers();
+  const waitingMember = Promise.withResolvers();
+  const scheduler = schedulerFor(dir, mirror, async () => { entered.resolve(); await holding; return { output: 'ok' }; },
     { acceptance: { mode: 'off' }, routing: { scout: ['gemini'] } });
   t.after(() => scheduler.store.close());
   const task = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'two looks' });
@@ -577,10 +592,15 @@ test('the status says what a running step is doing and what a queued step waits 
   const other = scheduler.submit(randomUUID(), { workspace: 'mac', prompt: 'another task' });
   other.base = head;
   other.planRaw = JSON.stringify([{ id: 'x', capability: 'scout', prompt: 'other look', dependsOn: [] }]);
+  const save = scheduler.save.bind(scheduler);
+  scheduler.save = (item, state, detail, ...args) => {
+    save(item, state, detail, ...args);
+    if (item.id === other.id && detail === 'x:waiting:gemini') waitingMember.resolve();
+  };
   const first = scheduler.run(task, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  await entered.promise;
   const second = scheduler.run(other, new AbortController().signal);
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  await waitingMember.promise;
   const running = scheduler.status(task.id).live.steps[0];
   assert.equal(running.state, 'running');
   assert.equal(running.role, 'gemini');
