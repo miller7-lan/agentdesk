@@ -212,6 +212,27 @@ Windows Bridge 也可在 `ssh.jump` 配置 VPS 1 SSH 跳板（见下文）；跳
 restrict,command="/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/ssh-gateway.js /var/lib/agentdesk-orchestrator/bridge.sock" ssh-ed25519 <WINDOWS_BRIDGE_PUBLIC_KEY>
 ```
 
+## 只读挂载本机用户目录（群聊直接读）
+
+群聊里组长和成员读本机文件，走 SSH 原生只读挂载，不再逐个调用 `windows_*` 读工具：
+
+- 本机 Bridge（Mac、Windows 相同）在第二条 SSH 会话上运行一个只读 SFTP 服务（`orchestrator/sftp-readonly.js`，Node 实现，不依赖系统 `sftp-server`）。它只提供用户目录，拒绝一切写入、删除、改名和改属性；`..` 和指向用户目录外的符号链接一律拒绝；`~/.ssh`、钥匙串、浏览器资料、云服务和各 CLI 的登录、Bridge 自己的状态目录和 SSH 密钥都不列出也读不到。过滤在本机完成，VPS2 上任何进程都看不到这些文件。
+- VPS2 由单独的 `agentdesk-home-mount.service`（`home-mount.js`）用 `sshfs -o passive,ro` 挂到 `/var/lib/agentdesk-orchestrator/mounts/<bridge>`（未命名的 Bridge 是 `default`）。单独成服务是因为挂载要用 setuid 的 `fusermount3`，主控服务设置了 `NoNewPrivileges`。
+- 权限按职责：规划、诊断、验收（组长）读挂载，并保留只读 MCP 去读用户目录以外的地方；侦察、查资料、审查读挂载，挂载断开时才回退到 MCP；改代码读挂载，改动仍在 VPS2 副本里做、以补丁审核回传，用户目录以外的文件仍用带版本校验的写工具。哪个成员、哪个模型接这一步都一样。
+- 挂载断开（电脑离线、Bridge 重启）时自动回退到 MCP 读工具，任务不受影响。
+
+启用：
+
+1. VPS2：`apt-get install -y sshfs`；配置加 `"homeMounts": true`；`systemctl enable --now agentdesk-home-mount`，再重启主控。
+2. 每把 Bridge 公钥的强制命令在原 socket 后面再加挂载 socket（只有客户端请求的命令恰好是 `agentdesk-mount` 时才会用它）：
+
+```text
+restrict,command="/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/ssh-gateway.js /var/lib/agentdesk-orchestrator/bridge-mac.sock /var/lib/agentdesk-orchestrator/bridge-mac-mount.sock" ssh-ed25519 <MAC_BRIDGE_PUBLIC_KEY>
+```
+
+3. 本机 Bridge 配置加 `"mountHome": true`，重启 Bridge（Windows 是重启 AgentDesk）。
+4. 确认：`route_status` 返回 `homeMount: true`；在 VPS2 上以 agentdesk 用户 `ls /var/lib/agentdesk-orchestrator/mounts/mac` 能看到用户目录、看不到 `.ssh`。如果 `findmnt` 能看到挂载而主控的 `homeMount` 一直是 false，说明挂载没有传进主控服务的命名空间，把主控服务重启一次再看；仍不行就把情况报回来。
+
 ## macOS 连接
 
 macOS Bridge 与 Windows 可同时保持 SSH 连接。给 Mac 分配独立的 SSH 公钥和私有 socket。例如在 VPS 2 配置 `"sshBridges":["mac"]`，并为项目配置 `"sshBridge":"mac"` 和独立的 Git 镜像。Mac 的公钥强制命令使用 `bridge-mac.sock`。Mac 项目默认选用自己的 SSH 链路。需要备用时，在 VPS 2 的 `relayBridges.mac` 填入另一组 Relay 配对参数。Mac 配置中的 `relay` 保存其对端设备参数。让 VPS 1 为 Mac 单独登记一对设备，使用不同于 Windows 的设备 ID 和令牌。

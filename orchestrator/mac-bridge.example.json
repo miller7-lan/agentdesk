@@ -22,6 +22,7 @@
       ]
     }
   },
+  "mountHome": true,
   "ssh": {
     "host": "orchestrator.example.invalid",
     "port": 22,

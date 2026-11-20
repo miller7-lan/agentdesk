@@ -1,0 +1,25 @@
+[Unit]
+Description=AgentDesk read-only home folder mounts (sshfs from each Bridge)
+After=network-online.target
+PartOf=agentdesk-orchestrator.service
+
+[Service]
+Type=simple
+User=agentdesk
+Group=agentdesk
+ExecStart=/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/home-mount.js /etc/agentdesk-orchestrator/config.json
+Environment=PATH=/opt/agentdesk-orchestrator:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/var/lib/agentdesk-orchestrator
+UMask=0077
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+# sshfs mounts through the setuid fusermount3, so this unit cannot set NoNewPrivileges; it runs nothing else.
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

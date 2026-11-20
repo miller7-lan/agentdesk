@@ -159,6 +159,8 @@ class Remote extends EventEmitter {
       cfg: { knownHosts, jump }, key: config.key, certificate: config.certificate, port,
       target: config.user + '@' + targetHost, targetHost, route: choice.route,
       extraArgs: ['--'], jump,
+      // the read-only home mount asks the gateway for its socket with this one word (orchestrator/ssh-gateway.js)
+      ...(config.command === 'agentdesk-mount' && { afterTarget: ['agentdesk-mount'] }),
     });
     let child;
     try {

@@ -45,9 +45,14 @@
    - 各成员的 models 要包含最新一代模型（组长现在优先派最新的）。Codex、Grok、Antigravity 的模型表由主控自动从 CLI 读取；Claude 的要手写。把主控启动后 doctor 里看到的各成员模型列表给我看。
    - adapters.antigravity 的模型以 agy models 的实际输出为准。
    - quotaBridges 填上各台电脑 Bridge 的名称，与 sshBridges 里的名称一致（Mac 和 Windows 两台都要有）。
-7. 校验 JSON，然后 sudo systemctl restart agentdesk-orchestrator。
-8. 在 VPS2 上运行 grok --help 和 agy --help，确认 --effort 的写法，把输出给我看。
-9. Antigravity 还没登录的话：以主控服务账户和它的专用 HOME 运行一次 agy，把授权链接给我，等我在浏览器完成。完成后用 agy -p --mode plan --output-format stream-json "回答 ok" 确认，再删掉 adapters.antigravity.authRequired。
+7. 读本机走只读挂载（详见 orchestrator/OPERATIONS.md「只读挂载本机用户目录」，每一步先告诉我）：
+   - 先问我，再执行 apt-get install -y sshfs；
+   - 配置加 "homeMounts": true；
+   - 给 /etc/ssh/agentdesk-authorized-keys 里每把 Bridge 公钥的强制命令，在原 socket 后面加上对应的 -mount.sock（改之前备份这个文件）；
+   - sudo systemctl enable --now agentdesk-home-mount。
+8. 校验 JSON，然后 sudo systemctl restart agentdesk-orchestrator。
+9. 在 VPS2 上运行 grok --help 和 agy --help，确认 --effort 的写法，把输出给我看。
+10. Antigravity 还没登录的话：以主控服务账户和它的专用 HOME 运行一次 agy，把授权链接给我，等我在浏览器完成。完成后用 agy -p --mode plan --output-format stream-json "回答 ok" 确认，再删掉 adapters.antigravity.authRequired。
 确认标准：
 - systemctl is-active agentdesk-orchestrator 输出 active；journalctl 最近 50 行没有 invalid_routing、invalid_write_providers 等启动错误。
 - doctor 里的分配顺序与上面一致。
@@ -55,13 +60,14 @@
 - 把 VPS2 当前的 git 提交号和 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 的指纹告诉我，Windows 的 agent 会用它们核对。
 
 二、Mac
-1. 后台 Bridge：在 Mac 上的仓库目录执行 git pull --ff-only。用 launchctl list | grep -i agentdesk 找到标签，再执行 launchctl kickstart -k gui/$(id -u)/<标签>。
+1. 后台 Bridge：在 Mac 上的仓库目录执行 git pull --ff-only；在 Bridge 配置里加 "mountHome": true（改之前备份）。用 launchctl list | grep -i agentdesk 找到标签，再执行 launchctl kickstart -k gui/$(id -u)/<标签>。
 2. 应用：执行 npm ci && npm run dist:mac -- --arm64，用 dist/mac-arm64/AgentDesk.app 替换 /Applications/AgentDesk.app（替换前问我）。也可以用 Actions 产物 agentdesk-mac。下载 Electron 失败时按 DEPLOY.md 设置国内镜像。
 3. 重启 AgentDesk。
 确认标准（让我在界面上操作，你告诉我看哪里）：
 - launchctl print gui/$(id -u)/<标签> 显示 state = running。
 - 开机动画后进入主界面，状态栏显示 SSH 主用在线。
 - 点状态栏「额度与分工」，能看到各成员额度环，顶部没有「主控版本较旧」或「没有开放额度读取」的提示。
+- 只读挂载：在 VPS2 上（Mac 的 agent 负责）以 agentdesk 用户 ls /var/lib/agentdesk-orchestrator/mounts/<这台电脑的 Bridge 名> 能看到你的用户目录、看不到 .ssh；群聊里让组长「读一下我桌面上某个文件」，它不调用 windows_* 工具也能读到；断开 Bridge 后再问一次，它会改用 windows_* 工具。
 - 群聊输入框下面一行是：附件、@、组长模型、组长思考、方案确认、停止、发送；没有「执行者」下拉框，顶部没有步骤条。
   - 「组长模型」列出 Claude 的各个模型，默认「最新 Opus（默认）」；选 Haiku 时「组长思考」的超高、最高变灰。
   - 「方案确认」默认「小方案自动」。
@@ -121,10 +127,12 @@
 2. 让我在 GitHub Actions 手动运行「Build release artifacts」。下载 agentdesk-windows 产物，用里面的 AgentDesk-<版本>-setup.exe 覆盖安装（安装前问我；先关掉正在运行的 AgentDesk）。
 3. 第一次打开时，核对向导显示的主机指纹与 VPS2 一致，再让我确认。
 4. 如果这台电脑还运行着 Windows 端的后台 Bridge（DEPLOY.md 第 2 节有说明），按文档把它更新到同一提交并重启。
+5. 在 Windows Bridge 配置（.agentdesk 目录里的 Bridge JSON）加 "mountHome": true（改之前备份），重启 AgentDesk。
 
 三、确认标准（让我在界面上操作，你告诉我看哪里）
 - 开机动画后进入主界面，状态栏显示 SSH 主用在线。
 - 点状态栏「额度与分工」，能看到各成员额度环，顶部没有「主控版本较旧」或「没有开放额度读取」的提示。
+- 只读挂载：在 VPS2 上（Mac 的 agent 负责）以 agentdesk 用户 ls /var/lib/agentdesk-orchestrator/mounts/<这台电脑的 Bridge 名> 能看到你的用户目录、看不到 .ssh；群聊里让组长「读一下我桌面上某个文件」，它不调用 windows_* 工具也能读到；断开 Bridge 后再问一次，它会改用 windows_* 工具。
 - 群聊输入框下面一行是：附件、@、组长模型、组长思考、方案确认、停止、发送；没有「执行者」下拉框，顶部没有步骤条。
   - 「组长模型」列出 Claude 的各个模型，默认「最新 Opus（默认）」；选 Haiku 时「组长思考」的超高、最高变灰。
   - 「方案确认」默认「小方案自动」。

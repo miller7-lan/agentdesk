@@ -595,6 +595,13 @@ class WindowsOperations {
   async command(taskId, id, workspace, root, body) {
     const controller = new AbortController();
     if (body.operation === 'git_baseline') return this.baseline(root, controller.signal);
+    // Where this workspace sits inside the folder the read-only mount serves (the home folder, "/"-separated),
+    // or null when it is outside it.
+    if (body.operation === 'mount_info') {
+      const base = this.config.mountRoot || homedir();
+      const relative = path.relative(base, root);
+      return { relative: !relative || relative.startsWith('..') || path.isAbsolute(relative) ? (relative ? null : '') : relative.split(path.sep).join('/') };
+    }
     if (body.operation === 'git_review_diff') return this.reviewDiff(root, controller.signal);
     // Agents see and run only the commands this workspace lists in agentCommands (empty by default).
     const forAgents = Array.isArray(workspace.agentCommands) ? workspace.agentCommands.filter((name) => Array.isArray(workspace.commands?.[name])) : [];

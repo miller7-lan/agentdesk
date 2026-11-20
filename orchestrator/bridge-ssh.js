@@ -17,6 +17,8 @@ function createBridgeSsh({ ssh = SSH, spawnProcess = spawn, route, log = () => {
       targetHost,
       route: choice.route,
       extraArgs: ['--'],
+      // The read-only home mount asks the gateway for its socket with one fixed word (see ssh-gateway.js).
+      ...(config.command === 'agentdesk-mount' && { afterTarget: ['agentdesk-mount'] }),
       jump,
       connectTimeout: 10,
     });

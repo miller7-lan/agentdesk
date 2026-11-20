@@ -250,6 +250,7 @@
     "tokenFile": "/etc/agentdesk-orchestrator/relay.token",
     "caFile": "/etc/agentdesk-orchestrator/relay-ca.pem"
   },
+  "homeMounts": true,
   "sshBridges": [
     "mac"
   ],

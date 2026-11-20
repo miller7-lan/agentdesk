@@ -11,6 +11,7 @@
 | `main.js`、`preload.js`、`remote.js`、`src/**`，以及 Bridge 用到的 `orchestrator/windows.js`、`service.js` 的 `startBridge` | Windows 端重新打包；Mac 端应用重新打包 |
 | `orchestrator/mac-bridge.js` 及它引用的 `orchestrator/*.js` | Mac 端后台 Bridge |
 | `orchestrator/ssh-options.js`、`ssh-route.js`、`ssh-jump.js`、`bridge-ssh.js` | 桌面端重新打包；Mac 端后台 Bridge 同步文件（见 §4） |
+| `orchestrator/sftp-readonly.js`（只读挂载的 SFTP 服务）、`ssh-gateway.js`、`home-mount.js`、`agentdesk-home-mount.service` | `sftp-readonly.js`：桌面端重新打包、Mac 后台 Bridge 同步；`ssh-gateway.js`、`home-mount.js` 和 unit：VPS2（见 `orchestrator/OPERATIONS.md`「只读挂载本机用户目录」） |
 | 只改配置（路由顺序、可改代码的成员、CLI 路径、额度阈值） | 只改对应那一端的配置文件，不用发版 |
 
 同一个文件常常几端都用（`service.js` 既是 VPS2 主控，也是两端 Bridge 的实现）。逐个看改动的文件被谁 `require`，列全受影响的端。

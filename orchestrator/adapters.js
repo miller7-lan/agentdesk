@@ -158,7 +158,7 @@ function errorDetail(text) {
     || '').replace(/\s+/g, ' ').slice(0, 300);
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, readPaths = [] }) {
   if (effort !== undefined && !effortsFor(name, config, model).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
@@ -186,6 +186,9 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     if (deny > 0) args.splice(deny - 1, 2, '--allow', 'Bash');
   }
   if (sandboxed && name === 'claude' && !provider.template && !readonly) args.push('--allowedTools', 'Bash');
+  // Folders the CLI reads besides its working folder (the person's home, mounted read-only): Claude Code reads
+  // outside its working folder only where it is told to.
+  if (name === 'claude' && !provider.template) for (const folder of readPaths) args.push('--add-dir', folder);
   if (name === 'gemini' && !provider.template) {
     if (!readonly && !config.writePolicy) throw new Error('provider_write_not_enabled');
     args.push('--admin-policy', readonly ? config.reviewPolicy : config.writePolicy);
@@ -238,7 +241,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   const launch = sandboxed
     ? sandboxCommand(config.bin, args, { bin: config.sandbox.bin, cwd, home: env.HOME, writable: !readonly,
       hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [],
-      extraReadOnly: attachmentDirectory ? [attachmentDirectory] : [] })
+      extraReadOnly: [...(attachmentDirectory ? [attachmentDirectory] : []), ...readPaths] })
     : { command: config.bin, args };
   const child = spawn(launch.command, launch.args, {
     cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],

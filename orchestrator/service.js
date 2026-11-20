@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto');
 const { createServer } = require('node:net');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const Store = require('./store');
 const { Lines, Relay } = require('./transport');
@@ -388,6 +389,30 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
       delay = Math.min(60000, delay * 2);
     });
   }
+  // The person's home folder, read-only, for VPS2 to mount with sshfs (see sftp-readonly.js): a second SSH
+  // session that asks the gateway for the mount socket and carries SFTP. Opt-in with "mountHome": true.
+  let mountChild;
+  let mountRestart;
+  let mountDelay = 2000;
+  const serveSftp = config.mountHome === true && config.ssh && require('./sftp-readonly').createReadOnlySftp({
+    root: config.mountRoot || os.homedir(),
+    // the Bridge's own state (keys, database) and its SSH key are never served
+    hidden: [config.stateDir, config.ssh.key, config.ssh.certificate].filter(Boolean),
+  });
+  function connectMount() {
+    if (stopped || !serveSftp) return;
+    const session = mountChild = spawnSsh({ ...config.ssh, command: 'agentdesk-mount' });
+    session.stderr?.setEncoding('utf8').on('data', (chunk) => log('home mount SSH:', chunk.trim().slice(0, 300)));
+    session.stdin.on('error', () => session.kill());
+    session.stdout.once('data', () => { mountDelay = 2000; });
+    serveSftp(session.stdout, session.stdin);
+    session.on('error', (error) => log('home mount SSH:', error.code || error.message));
+    session.once('close', () => {
+      if (stopped) return;
+      mountRestart = setTimeout(connectMount, mountDelay * (0.8 + Math.random() * 0.2));
+      mountDelay = Math.min(60000, mountDelay * 2);
+    });
+  }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
     wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, attachments, after, group, leadEffort, leadModel, approval, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
@@ -439,6 +464,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
     });
   });
   if (config.ssh) connect();
+  if (serveSftp) connectMount();
   const maintenance = setInterval(() => {
     try { expireMessages(store); } catch (error) { log('bridge maintenance:', error.message); }
     operations.sweepStreams().catch((error) => log('stream cleanup:', error.message));
@@ -448,6 +474,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
     clearInterval(maintenance);
     stopped = true;
     clearTimeout(restart);
+    clearTimeout(mountRestart);
+    mountChild?.kill();
     control?.close(() => {
       try { store.close(); } catch {}
     });

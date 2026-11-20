@@ -7,6 +7,7 @@ const { runAdapter, addUsage, EFFORTS, effortsFor } = require('./adapters');
 const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
 const { git, worktree, patchFor } = require('./git');
 const { modelId, plannerProfiles, newestFirst, preferredModel } = require('./model-profiles');
+const { mountTable } = require('./home-mount');
 const { refreshModelCatalog } = require('./model-catalog');
 const { validAttachments, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
@@ -110,6 +111,16 @@ function planProblem(value) {
   return '';
 }
 
+// Tells a CLI where the person's computer is mounted and how to use it.
+function mountNote(mount, writes, tools) {
+  return '\n\nThe person\u2019s computer: their home folder is mounted read-only at ' + mount.home +
+    (mount.project ? '; this task\u2019s project on their computer is ' + mount.project : '') +
+    '. It is live (including changes they have not committed). Read, list and search there directly with your own tools (read files, rg, find, git --no-optional-locks log/diff/show) instead of tool calls' +
+    (tools ? '; use the windows_* read tools only for folders outside the home folder' : '') +
+    '. Credential folders are left out on purpose. Nothing there can be changed' +
+    (writes ? ': make the project\u2019s changes in your working folder (they reach the computer as a reviewed patch), and use the windows_* write tools only for files outside the project.' : '.');
+}
+
 function parsePlan(output, availableRoles = roles, router, pick, allowedRole) {
   return validateSteps(parseJson(output), availableRoles, router, pick, allowedRole);
 }
@@ -202,6 +213,7 @@ class Scheduler {
     this.store = store;
     this.files = files;
     this.adapter = adapter;
+    this.mounts = new Map();   // bridge -> { path, since }: the person's home folder, mounted read-only (service.js)
     this.teamAdapter = teamAdapter(config.docker, config.stateDir);
     retention(config.retention);   // fail at start-up on a bad retention setting, not at the first clean-up
     this.now = now;
@@ -1061,6 +1073,46 @@ event(task, state, detail) {
     return [...list].sort((a, b) => rank(a) - rank(b));
   }
 
+  // What each duty may reach on the person's computer; the same for whichever member or model takes the step.
+  // mount: read the person's home folder directly, mounted read-only (native reads, no tool calls).
+  // mcp: 'always' keeps the Bridge tools (the lead reaches folders outside the home folder; implement keeps the
+  // write tools), 'fallback' gives them only while the mount is down.
+  static DUTY_ACCESS = {
+    plan: { mount: true, mcp: 'always' }, triage: { mount: true, mcp: 'always' }, accept: { mount: true, mcp: 'always' },
+    scout: { mount: true, mcp: 'fallback' }, research: { mount: true, mcp: 'fallback' }, review: { mount: true, mcp: 'fallback' },
+    implement: { mount: true, mcp: 'always' },
+  };
+  static dutyOf(step) {
+    return step.capability || (step.write ? 'implement' : 'scout');
+  }
+
+  // Whether a Bridge's home folder is mounted right now, as this process sees the mount table (the mounts are
+  // made by agentdesk-home-mount.service, see home-mount.js). Read at most every 3 seconds.
+  mountedHome(bridge) {
+    const key = bridge || 'default';
+    if (this.mounts.has(key)) return this.mounts.get(key);
+    if (!this.config.homeMounts) return null;
+    if (!this.mountCache || this.now() - this.mountCache.at > 3000) this.mountCache = { at: this.now(), table: new Set(mountTable()) };
+    const target = path.join(this.config.stateDir, 'mounts', key);
+    return this.mountCache.table.has(target) ? { path: target } : null;
+  }
+
+  // The read-only mount of the person's home folder for this task's computer, with the task's project inside it
+  // (asked once from the Bridge). Null while the mount is down: the steps then read through the Bridge tools.
+  async mountFor(task) {
+    const mount = this.mountedHome(this.config.workspaces?.[task.workspace]?.sshBridge || '');
+    if (!mount) return null;
+    if (task.mountProject === undefined) {
+      try {
+        const info = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'mount_info', workspace: task.workspace });
+        task.mountProject = typeof info?.relative === 'string' && !info.relative.split('/').includes('..') ? info.relative : null;
+      } catch {
+        return { home: mount.path, project: null };
+      }
+    }
+    return { home: mount.path, project: task.mountProject === null ? null : path.join(mount.path, task.mountProject) };
+  }
+
   // The model a member uses when nobody named one: its newest full model; Antigravity keeps its configured
   // default (a flash level) for routine work, because a heavier model there spends the shared Gemini quota
   // much faster and the lead names one for hard steps anyway.
@@ -1481,7 +1533,11 @@ event(task, state, detail) {
     // Every step, the lead's planning included, may read the person's project and authorized folders on their
     // computer through the Bridge tools; only the lead may also use the read-only computer location. Running
     // commands stays off for planning and other read-only steps.
-    const mcp = bridgeTools ? this.config.mcp : undefined;
+    // Access by duty, not by member or model (DUTY_ACCESS): reading goes to the read-only mount when it is up.
+    const access = Scheduler.DUTY_ACCESS[Scheduler.dutyOf(step)] || Scheduler.DUTY_ACCESS.scout;
+    const mount = access.mount && (this.mounts.size || this.config.homeMounts) ? await this.mountFor(task).catch(() => null) : null;
+    const mcp = bridgeTools && (access.mcp === 'always' || !mount) ? this.config.mcp : undefined;
+    if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp));
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');
@@ -1539,6 +1595,7 @@ event(task, state, detail) {
         mcp: mcp && { socket: mcp.socket, capability,
           receipts: path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl') },
         attachmentDirectory,
+        readPaths: mount ? [mount.home] : [],
         onSession: (id) => {
           if (step.session === id) return;
           step.session = id;
@@ -2690,6 +2747,7 @@ event(task, state, detail) {
       const port = this.files.endpoint;
       const relay = port[bridge ? 'relay:' + bridge : 'relay'];
       return { route: channel, ssh: Boolean(port[bridge ? 'ssh:' + bridge : 'ssh']?.ready), relay: Boolean(relay?.ready && relay.online),
+        ...(this.config.homeMounts && { homeMount: Boolean(this.mountedHome(bridge || '')) }),
         providers: this.availableRoles(), writeProviders: (this.config.writeProviders || []).filter((role) => this.router.configured(role)),
         modelProfiles: Object.fromEntries(this.router.roles().map(role => [role, this.config.adapters[role].profiles])),
         directAttachments: true,
