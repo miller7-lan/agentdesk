@@ -312,8 +312,8 @@ class WindowsOperations {
       const project = await fs.realpath(workspace.root);
       if (!writable) {
         // Only the folders the person granted for writing in this task.
-        const locate = async (filename) => {
-          const target = await grantedPath(filename, grantedWrite, { create: true });
+        const locate = async (filename, { existing = false } = {}) => {
+          const target = await grantedPath(filename, grantedWrite, { create: !existing });
           if (!target) throw new Error('path_not_allowed');
           const relative = path.relative(project, target);
           if (relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) {
@@ -326,13 +326,13 @@ class WindowsOperations {
           const result = await editFile(body, locate);
           return { ...result, type: 'file', size: result.bytes };
         }
-        if (body.operation === 'write') {
-          const target = await locate(body.path);
-          await fs.writeFile(target, Buffer.from(String(body.content ?? ''), body.encoding === 'base64' ? 'base64' : 'utf8'));
-          const stat = await fs.stat(target);
-          return { path: target, size: stat.size, version: stat.mtimeMs + ':' + stat.size };
+        if (body.operation === 'write' && !body.stream_id && typeof body.content === 'string') {
+          const { results } = await writeBatch([{ path: body.path, version: body.version ?? null,
+            content: body.content, encoding: body.encoding }], locate);
+          if (results[0].status !== 'written') throw Error(results[0].error || 'write_failed');
+          return { type: 'file', size: results[0].bytes, version: results[0].version };
         }
-        throw new Error('read_root_readonly');
+        return this.writeAnywhere(taskId, project, body, locate);
       }
       if (body.operation === 'write_batch') {
         return writeBatch(body.items, (filename) => this.anyWritePath(project, filename));
@@ -593,8 +593,7 @@ class WindowsOperations {
       return target;
   }
 
-  async writeAnywhere(taskId, project, body) {
-    const place = (value, options) => this.anyWritePath(project, value, options);
+  async writeAnywhere(taskId, project, body, place = (value, options) => this.anyWritePath(project, value, options)) {
     const key = 'any:' + body.path;
     if (this.busy.has(key)) throw new Error('workspace_busy');
     this.busy.add(key);

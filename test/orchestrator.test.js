@@ -174,7 +174,7 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
   assert.equal(quotas[2].reason, 'signed_out');   // Grok reads its billing with the CLI's sign-in; none here
   const stopBridge = startBridge({
     config: {
-      stateDir: bridgeState, ssh: {}, readAnyFolder: true,
+      stateDir: bridgeState, ssh: {}, readAnyFolder: true, writeAnyFolder: true,
       controlWorkspace: 'project', controlSocket: path.join(dir, 'control.sock'),
       workspaces: { project: { root: workspace, write: true, commands: { smoke: [process.execPath, '-e', "console.log('test ok')"] } } },
     },
@@ -209,6 +209,17 @@ test('SSH gateway, scheduler and Windows bridge apply a reviewed diff and run an
     const steps = service.scheduler.tasks.get(task_id).steps;
     return steps.length === 3 && steps.filter((step) => step.state === 'running').length >= 2 && support.capabilities.size > 0;
   });
+  // Exercise the controller-owned receipt path without a model or an MCP-side journal.
+  const probe = randomUUID();
+  support.capabilities.set(probe, { taskId: task_id, workspace: 'project', stepId: 'receipt-probe', writeFiles: true, localTools: 'files' });
+  const target = path.join(dir, 'external-report.md');
+  await mcpRequest(support.socket, { capability: probe, operation: 'write', root: 'computer', path: target, content: 'report' });
+  const journal = (await fs.readFile(path.join(stateDir, 'logs', task_id, 'receipt-probe.receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(journal.map((row) => row.phase), ['pending', 'finished']);
+  assert.equal(journal[0].requestId, journal[1].requestId);
+  assert.equal(journal[1].ok, true);
+  assert.equal(await fs.readFile(target, 'utf8'), 'report');
+  support.capabilities.delete(probe);
   const capability = [...support.capabilities.keys()][0];
   assert.equal((await mcpRequest(support.socket, { capability, operation: 'stat', path: 'README.md' })).type, 'file');
   await assert.rejects(mcpRequest(support.socket, { capability, operation: 'write', path: 'README.md' }), /mcp_permission_denied/);

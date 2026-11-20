@@ -424,7 +424,7 @@ function start(config) {
         if (!socket.destroyed) wire.send({ ok: true, value });
       } catch (error) {
         const active = capabilities.get(frame.capability);
-        if (active && !mutationStarted && ['write','edit','write_batch','mkdir','move','delete'].includes(frame.operation)) {
+        if (active?.writeFiles && frame.root === 'computer' && !mutationStarted && ['write','edit','write_batch','mkdir','move','delete'].includes(frame.operation)) {
           const items = frame.operation === 'write_batch' ? (Array.isArray(frame.items) ? frame.items.slice(0, 32) : []) : [frame];
           const id = require('./transport').messageId();
           const journal = path.join(config.stateDir, 'logs', active.taskId, active.stepId + '.receipts.jsonl');
