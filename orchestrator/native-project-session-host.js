@@ -74,7 +74,9 @@ async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HO
     // wait for this event loop to deliver the reply. Only the child may resolve the mount.
     const cwd = stateDir;
     const command = provider === 'codex' ? 'codex' : '/usr/bin/setpriv';
-    const args = provider === 'codex' ? ['app-server'] :
+    // app-server has no --search switch; the same live web search as `codex --search exec` comes from this
+    // config override. Web reading is read-only, so every native Codex seat gets it.
+    const args = provider === 'codex' ? ['-c', 'web_search="live"', 'app-server'] :
       ['--reuid', String(account.uid), '--regid', String(account.gid), '--clear-groups', '--',
         process.execPath, path.join(__dirname, 'chat-server.js'), provider];
     const env = provider === 'codex' ? { ...process.env } : {
