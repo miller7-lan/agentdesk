@@ -50,7 +50,10 @@ function nativeDesktop() {
       stateDir: path.join(app.getPath('userData'), 'windows-native-chat'), remote,
       findProject: (id) => id ? appConfig?.value.projects.find((item) => item.id === id) : appConfig?.active,
       bridgeSettings: () => localBridgeSettings,
-      onEvent: (agent, frame) => toUi(agent === 'codex' ? 'codex:event' : 'chat:event', frame),
+      onEvent: (agent, frame) => {
+        if (agent === 'codex') toUi('codex:event', frame);
+        else toUi('chat:event', { ...frame, agent });
+      },
       onCommand: (agent, threadId, run) => toUi('local-command:update', { agent, threadId, run }),
       reviewUnknown: async () => {
         const { response } = await dialog.showMessageBox(win, {

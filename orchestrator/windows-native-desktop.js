@@ -90,7 +90,14 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, bridgeSetti
       });
       if (!record.threadId.startsWith('pending-')) {
         try { await seat.request('thread/resume', { threadId: record.threadId }); }
-        catch (error) { await seat.close().catch(() => {}); throw error; }
+        catch (error) {
+          // Codex may create a thread ID before any rollout exists. Here it explicitly confirmed
+          // that there is no history to resume; no model turn has been started on this attachment.
+          const missingHistory = record.provider === 'codex' && /\bno rollout found\b/i.test(error.message);
+          await seat.close({ confirmedIdle: missingHistory }).catch(() => {});
+          if (missingHistory) throw new Error('Codex 尚无可恢复的历史记录，已尝试释放空会话租约。请重新打开会话或新建单聊。');
+          throw error;
+        }
       }
       return seat;
     })();

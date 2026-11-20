@@ -6,7 +6,7 @@ const { NativeChannel, VERSION } = require('./native-channel');
 const { localShellSpec } = require('./windows-local-shell');
 
 const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive',
-  'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'review/start', 'skills/list',
+  'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'skills/list',
   'attachment/reset', 'attachment/chunk']);
 
 function workspacePolicy(folder, mode) {
@@ -51,6 +51,11 @@ async function openWindowsNativeSeat({
     rejectReady(reason);
     for (const call of pending.values()) call.reject(reason);
     pending.clear();
+    if (threadId && turnId) {
+      onNotification({ method: 'error', params: { threadId, willRetry: false,
+        error: { message: '连接已中断，请先核对 Windows 文件与后台命令的状态。' } } });
+      onNotification({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted' } } });
+    }
     seatClosed.emit('close');
   };
   const packet = ({ method, params }) => {
@@ -161,12 +166,13 @@ async function openWindowsNativeSeat({
     get closed() { return closed; },
     onClose: (listener) => seatClosed.once('close', listener),
     async request(method, params = {}) {
+      if (method === 'review/start') throw new Error('Windows 原生项目请在只读规划模式下发起审查。');
       if (!METHODS.has(method) || (params.threadId && threadId !== params.threadId)) throw new Error('native_provider_request_denied');
       const launch = method === 'thread/start' || method === 'thread/resume';
       if (method === 'thread/start' && threadId) throw new Error('native_provider_request_denied');
-      const isTurn = method === 'turn/start' || method === 'review/start';
+      const isTurn = method === 'turn/start';
       if (isTurn && (turnId || startingTurn)) throw new Error('该会话已有正在启动或运行的轮次。');
-      const activeMode = method === 'review/start' || params.sandboxPolicy?.type === 'readOnly' ? 'read' : mode;
+      const activeMode = params.sandboxPolicy?.type === 'readOnly' ? 'read' : mode;
       if (isTurn && activeMode === 'write' && params.approvalPolicy && params.approvalPolicy !== 'never') {
         throw new Error('原生单聊请选择完全访问或只读规划。');
       }
@@ -178,6 +184,7 @@ async function openWindowsNativeSeat({
       if (launch && provider === 'codex') {
         delete value.sandboxPolicy;
         value.sandbox = mode === 'write' ? 'workspace-write' : 'read-only';
+        if (method === 'thread/start') value.ephemeral = false;
       }
       if (launch || (method === 'turn/start' && provider === 'claude')) value.dynamicTools = toolSet;
       if (method === 'skills/list') value.cwds = [folder];
@@ -199,7 +206,7 @@ async function openWindowsNativeSeat({
     },
     async close({ confirmedIdle = false } = {}) {
       let recognized = false;
-      if (confirmedIdle && !turnId && !closed) {
+      if (confirmedIdle && !turnId && !startingTurn && !closed) {
         recognized = await worker.request('completeSftp', { binding }).catch(() => false);
       }
       fail();
