@@ -104,6 +104,12 @@ const EFFORTS = {
 // AGENTDESK_CHAT_SANDBOX (path of bwrap): the CLI runs inside bubblewrap and may use its own shell and file tools
 // in this conversation's VPS workspace, as Codex does in its sandbox. Without it those stay off.
 const SANDBOX = process.env.AGENTDESK_CHAT_SANDBOX || '';
+// Only the VPS2-side launcher sets this. Renderer/RPC fields never select the mount.
+const NATIVE_PROJECT = PROVIDER === 'claude' && process.env.AGENTDESK_CLAUDE_NATIVE_PROJECT;
+if (NATIVE_PROJECT && (!SANDBOX || !path.isAbsolute(NATIVE_PROJECT) || !fs.readFileSync('/proc/self/mountinfo', 'utf8')
+  .split('\n').some((line) => line.split(' ')[4] === NATIVE_PROJECT && line.includes(' - fuse.sshfs ')))) {
+  throw new Error('native_project_mount_unavailable');
+}
 const BIN = {
   claude: process.env.AGENTDESK_CHAT_CLAUDE_BIN || 'claude',
   grok: process.env.AGENTDESK_CHAT_GROK_BIN || 'grok',
@@ -260,7 +266,7 @@ function settleClientResponse(frame) {
 /* ---------- 工具与线程元数据 ---------- */
 function cleanTool(tool) {
   if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return null;
-  if (typeof tool.name !== 'string' || !CHAT_TOOL.test(tool.name)) return null;
+  if (typeof tool.name !== 'string' || (!CHAT_TOOL.test(tool.name) && !(NATIVE_PROJECT && tool.name === 'local_shell'))) return null;
   const inputSchema = tool.inputSchema;
   if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) return null;
   return {
@@ -306,6 +312,7 @@ function threadById(id) {
 }
 
 function workspaceFor(threadId) {
+  if (NATIVE_PROJECT) return NATIVE_PROJECT;
   fs.mkdirSync(THREADS_DIR, { recursive: true, mode: 0o700 });
   const folder = path.join(THREADS_DIR, threadId);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -450,6 +457,9 @@ async function invokeTool(turn, name, args) {
       content = readAttachmentContent(turn, args);
       output = content.filter((item) => item.type === 'text').map((item) => item.text).join('\n').slice(0, 4000);
     } else {
+    if (name === 'local_shell' && (!NATIVE_PROJECT || turn.readOnly || turn.approvalPolicy !== 'never')) {
+      throw new Error('local_shell requires a writable native Windows session');
+    }
     if (turn.readOnly && isWriteTool(name)) throw new Error('只读模式下不能使用写工具');
     if (isWriteTool(name) && turn.approvalPolicy !== 'never') {
       const decision = await clientRequest(turn, 'item/tool/requestApproval', {
@@ -622,6 +632,10 @@ function cleanupConfigs(turn) {
 }
 
 function instructions(turn) {
+  if (NATIVE_PROJECT) {
+    return `[AgentDesk Windows 单聊]\n当前工作目录是已挂载的 Windows 项目。读取、检索、编辑和写入项目文件请使用原生文件工具。Windows 命令、依赖安装、编译和测试请调用 local_shell。连接恢复时使用原 runId 核对结果。` +
+      (turn.thread.systemPrompt ? '\n' + turn.thread.systemPrompt : '');
+  }
   const root = turn.thread.localRoot || '(未提供)';
   const windows = /^[A-Za-z]:[\\/]/.test(root);
   const computer = windows ? 'Windows' : 'Mac';
@@ -660,17 +674,19 @@ function providerArgs(turn, workspace) {
   }
   const session = turn.thread.sessionId;
   if (PROVIDER === 'claude') {
+    const readTools = NATIVE_PROJECT ? ['Read', 'Glob', 'Grep', 'Skill', 'Agent'] : CLAUDE_SHELL_READ;
     const args = [
       '-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages',
-      '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--disable-slash-commands',
+      '--permission-mode', 'dontAsk', '--permission-prompts', 'none', ...(NATIVE_PROJECT ? [] : ['--disable-slash-commands']),
       '--strict-mcp-config', '--mcp-config',
       JSON.stringify({ mcpServers: { [turn.serverName]: mcpDefinition(turn) } }),
       // The bare server name and every tool name as well as the wildcard: the wildcard alone is ignored by some
       // Claude Code versions, which then deny every file tool and the chat cannot change the person's files.
       '--allowedTools', [`mcp__${turn.serverName}`, `mcp__${turn.serverName}__*`,
         ...turn.tools.map((tool) => `mcp__${turn.serverName}__${tool.name}`), ...CLAUDE_WEB,
-        ...(SANDBOX ? [...CLAUDE_SHELL_READ, ...(turn.readOnly ? [] : CLAUDE_SHELL_WRITE)] : [])].join(','),
-      '--disallowedTools', [...CLAUDE_DISALLOWED, ...(SANDBOX ? [] : CLAUDE_SHELL_READ),
+        ...(SANDBOX ? [...readTools, ...(turn.readOnly ? [] : CLAUDE_SHELL_WRITE)] : [])].join(','),
+      '--disallowedTools', [...(NATIVE_PROJECT ? ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Bash', 'BashOutput', 'KillShell'] : CLAUDE_DISALLOWED),
+        ...(SANDBOX ? [] : CLAUDE_SHELL_READ),
         ...(SANDBOX && !turn.readOnly ? [] : CLAUDE_SHELL_WRITE)].join(','),
       '--append-system-prompt', instructions(turn),
     ];
