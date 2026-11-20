@@ -1,5 +1,9 @@
 # 模型选择与本机文件
 
+新建单聊默认使用「完全访问」。Codex、Claude、Grok 和 Antigravity 的 Windows 单聊都使用本机 Windows 文件后端。打开「本机桌面」后，非只读轮次可使用桌面工具。其他权限模式仍可在输入框旁切换。
+
+Codex 单聊的「附件」可选文件，按住 Shift 可选文件夹并打包为 ZIP，也支持拖放和粘贴。附件通过 Codex App Server 上传到 VPS 工作区。
+
 ## 在 AgentDesk 选模型
 
 - Codex 单聊通过 VPS 上的 Codex app-server 读取 GPT 模型列表，模型、推理强度和速度仍由 Codex 提供。

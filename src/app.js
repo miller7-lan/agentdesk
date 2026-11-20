@@ -11,7 +11,7 @@
   if (LIVE) {
     D.projects.forEach((p) => { p.name += '（示例）'; p.example = true; });
     D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区' : 'Windows 开发机', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
-    D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', mode: 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
+    D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', mode: 'auto', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
   }
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -249,7 +249,7 @@
       return;
     }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
-    const base = { id, project, agent, mode: 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [] };
+    const base = { id, project, agent, mode: p.live ? 'auto' : 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [] };
     if (worktree) {
       // Its own branch and checkout, made before the first message so the AI never touches the project folder.
       if (!p.live || !p.configured || !window.desk?.worktrees) { toast('独立工作树需要已连接、并选好本机目录的项目'); return; }

@@ -71,7 +71,7 @@
   function sysNote(s, text, err) { s.items.push({ t: 'assist', html: `<p class="${err ? 'err-note' : 'sys-note'}">${esc(text)}</p>` }); }
   function newSession(extra = {}) {
     const session = { id: 'L' + Date.now() + Math.random().toString(36).slice(2, 6), project: 'live', agent: 'codex', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, term: [], diffs: [], ...extra };
-    if (!session.mode) session.mode = session.agent === 'codex' ? 'ask' : 'auto';
+    if (!session.mode) session.mode = 'auto';
     return session;
   }
 
@@ -848,7 +848,7 @@
     const modeSel = $('#modeSelect');
     if (s && modeSel) {
       // A conversation without its own choice starts in the mode last chosen (kept across restarts).
-      const mode = s.mode || (() => { try { return window.__desk?.store?.get('lastPermissionMode', 'ask') || 'ask'; } catch { return 'ask'; } })();
+      const mode = s.mode || 'auto';
       if (!s.mode && s.live) s.mode = mode;
       if (modeSel.value !== mode) {
         modeSel.value = mode;
@@ -1097,7 +1097,7 @@
       return;
     }
     if (!(await ensureReady(s))) return;
-    const r = await fileApi.pick();
+    const r = await fileApi.pick(folders);
     liveAtt.push(...(r.files || [])); renderAtt();
     if (!r.ok) toast('上传失败：' + r.error); else if (r.files.length) toast(`已上传 ${r.files.length} 个文件到 VPS`);
   }

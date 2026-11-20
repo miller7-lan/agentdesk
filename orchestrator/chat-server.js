@@ -93,7 +93,7 @@ const WRITE_TOOLS = new Set([
   'agentdesk_file_write', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash',
   'agentdesk_command_run',
 ]);
-const FILE_TOOL = /^agentdesk_(file|command)_[a-z]+$/;
+const CHAT_TOOL = /^(?:agentdesk_(?:file|command)_[a-z]+|desktop_[a-z_]+)$/;
 // 实测各 CLI 接受的推理强度：Claude/Antigravity 还接受 max，Grok 最高为 xhigh。
 const EFFORTS = {
   claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
@@ -259,14 +259,14 @@ function settleClientResponse(frame) {
 /* ---------- 工具与线程元数据 ---------- */
 function cleanTool(tool) {
   if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return null;
-  if (typeof tool.name !== 'string' || !FILE_TOOL.test(tool.name)) return null;
+  if (typeof tool.name !== 'string' || !CHAT_TOOL.test(tool.name)) return null;
   const inputSchema = tool.inputSchema;
   if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) return null;
   return {
     name: tool.name,
     description: typeof tool.description === 'string' ? tool.description.slice(0, 2000) : tool.name,
     inputSchema,
-    annotations: { readOnlyHint: !WRITE_TOOLS.has(tool.name) },
+    annotations: { readOnlyHint: !isWriteTool(tool.name) },
   };
 }
 
@@ -415,7 +415,7 @@ function finishAgent(turn) {
 
 /* ---------- 工具调用 ---------- */
 function isWriteTool(name) {
-  return WRITE_TOOLS.has(name);
+  return WRITE_TOOLS.has(name) || name.startsWith('desktop_');
 }
 
 function resultText(result) {
@@ -460,7 +460,20 @@ async function invokeTool(turn, name, args) {
     const result = await clientRequest(turn, 'item/tool/call', {
       threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args,
     }, TOOL_TIMEOUT);
-    output = resultText(result);
+    const images = name.startsWith('desktop_') && Array.isArray(result?.contentItems)
+      ? result.contentItems.filter((item) => item?.type === 'inputImage' &&
+          /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+=*$/i.test(item.imageUrl || ''))
+      : [];
+    if (images.length) {
+      if (images.reduce((size, item) => size + item.imageUrl.length, 0) > 6 * 1024 * 1024) {
+        throw new Error('桌面截图超过单聊传输上限，请缩小截图范围');
+      }
+      content = images.map(({ imageUrl }) => {
+        const [, mimeType, data] = /^data:([^;]+);base64,(.*)$/.exec(imageUrl);
+        return { type: 'image', mimeType, data };
+      });
+      output = '已返回本机截图。';
+    } else output = resultText(result);
     failed = result?.success === false;
     }
   } catch (error) {
@@ -616,10 +629,11 @@ function instructions(turn) {
   return `${turn.thread.systemPrompt ? turn.thread.systemPrompt + '\n\n' : ''}[AgentDesk 单聊｜本机文件]
 - 需要最新信息时可以联网搜索和读取网页。
 ${vps}
-- 用户电脑上授权过的命令：先用 agentdesk_command_list 查看，再用 agentdesk_command_run 运行（需要用户批准）；不能运行列表以外的命令。
+- 用户电脑上授权过的命令：先用 agentdesk_command_list 查看，再用 agentdesk_command_run 运行；按当前权限模式审批。
 - 你运行在一台 VPS 上，但用户的真实文件在 ${computer} 上，项目路径是：${root}
 - 读写用户文件只能调用 MCP 工具 agentdesk_file_list/read/write/mkdir/copy/move/trash（服务器名 ${turn.serverName}）。
 - 本机路径必须是 ${computer} 的绝对路径，例如 ${root}/note.txt；不要使用 VPS 的 shell 或内置 Read/Write/Bash 工具操作本机文件。
+- 可用的 desktop_* 工具在用户电脑上截图、点击或输入；只有在本机桌面开启且本轮可操作时才会提供。
 - 写文件前先读目标；创建文件后把结果路径告诉用户。覆盖已有文件必须显式传 overwrite:true。
 - 系统目录、凭据目录（如 ~/.ssh、~/.agentdesk）和 .git 内部会被拒绝，不要尝试绕过。
 - 工具返回 JSON 文本；失败时如实告诉用户，不要假装成功。
@@ -1173,7 +1187,8 @@ async function dispatch(method, params) {
         approvalPolicy,
         readOnly,
         // The attachment tool is always declared, with or without attachments, so the tool list stays the same.
-        tools: [...thread.dynamicTools.filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)), ATTACHMENT_TOOL],
+        tools: [...(params.dynamicTools === undefined ? thread.dynamicTools : normalizeTools(params.dynamicTools))
+          .filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)), ATTACHMENT_TOOL],
         attachments,
         capability: randomBytes(24).toString('hex'),
         // One name per conversation: a new name every turn changed the tool names and the system prompt, so

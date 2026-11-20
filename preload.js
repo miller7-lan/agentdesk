@@ -96,7 +96,7 @@ contextBridge.exposeInMainWorld('desk', {
     upload: (skill) => ipcRenderer.invoke('skills:upload', skill),
   },
   files: {
-    pick: () => ipcRenderer.invoke('files:pick'),
+    pick: (folders = false) => ipcRenderer.invoke('files:pick', folders),
     pickChat: (projectId, folders = false) => ipcRenderer.invoke('files:pickChat', projectId, folders),
     // Any dropped file or folder (a folder becomes one .zip), for Claude / Grok / Antigravity chats and group tasks.
     dropChat: (projectId, files) => ipcRenderer.invoke('files:dropChat', projectId,

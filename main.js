@@ -24,7 +24,10 @@ const localCommands = require('./local-commands');
 // Where the person's authorized commands are defined: the Bridge configuration (Windows runs its Bridge in the
 // app), or on a Mac the file named by agentCommandsFile in mac-remote.json (normally the Mac Bridge's config).
 const commandsFile = () => remote.cfg.agentCommandsFile || remote.cfg.orchestratorBridge || null;
-const chatToolSpecs = () => [...localFiles.specs, ...localCommands.specs];
+const chatFileTools = process.platform === 'win32' ? windowsFiles : localFiles;
+const chatFileSpecs = chatFileTools.specs.map((tool) =>
+  ({ ...tool, name: tool.name.replace(/^windows_file_/, 'agentdesk_file_') }));
+const chatToolSpecs = () => [...chatFileSpecs, ...localCommands.specs];
 const { ChatLink, AGENTS: CHAT_AGENTS } = require('./chat-link');
 const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
@@ -562,8 +565,11 @@ async function uploadOne(name, b64) {
   const [full] = await remote.upload(dir, [{ rel: safe, b64 }]);
   return { name, path: full, image: /\.(png|jpe?g|gif|webp)$/i.test(name) };
 }
-ipcMain.handle('files:pick', async () => {
-  const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: '选择要发给 Codex 的文件（任意类型，每个不超过 25 MB）' });
+ipcMain.handle('files:pick', async (_event, folders = false) => {
+  const r = await dialog.showOpenDialog(win, {
+    properties: [folders ? 'openDirectory' : 'openFile', 'multiSelections'],
+    title: '选择要发给 Codex 的附件（每个不超过 25 MB）',
+  });
   if (r.canceled) return { ok: true, files: [] };
   const out = [];
   try { for (const f of r.filePaths) { const d = await readAttachment(f, attachmentLimit); out.push(await uploadOne(d.name, d.bytes.toString('base64'))); } }
@@ -769,23 +775,30 @@ function rememberChatThread(agent, threadId, { projectId, localRoot, tools, appr
 
 function forgetChatThread(threadId) {
   chatThreads.delete(threadId);
-  for (const [turnId, turn] of chatTurns) if (turn.threadId === threadId) chatTurns.delete(turnId);
+  for (const [turnId, turn] of chatTurns) if (turn.threadId === threadId) finishChatTurn(turnId);
+}
+
+function finishChatTurn(turnId) {
+  chatTurns.delete(turnId);
+  desktop.active.delete(turnId);
 }
 
 async function chatToolTask(agent, params) {
   const mapping = chatThreads.get(params.threadId);
   const invalid = (message) => localFiles.result(false, { error: message });
   if (!mapping || mapping.agent !== agent) return invalid('单聊线程不存在或已归档，请重新打开会话');
-  if (typeof params.tool !== 'string' || !mapping.tools.has(params.tool)) return invalid('该工具在当前单聊中不可用');
   const turn = chatTurns.get(params.turnId);
   if (!turn || turn.agent !== agent || turn.threadId !== params.threadId) return invalid('单聊轮次已结束，请重试');
+  if (turn.desktopTools.has(params.tool)) return desktop.call(params);
+  if (typeof params.tool !== 'string' || !mapping.tools.has(params.tool)) return invalid('该工具在当前单聊中不可用');
   if (localCommands.isCommandTool(params.tool)) {
     if (turn.readOnly && localCommands.isRunTool(params.tool)) return invalid('只读轮次不能在本机运行命令');
     return localCommands.call(params.tool, params.arguments, { configFile: commandsFile(), localRoot: mapping.localRoot });
   }
   if (turn.readOnly && localFiles.isWriteTool(params.tool)) return invalid('只读轮次不能修改本机文件');
-  return checkpoints().around(params.turnId, params.threadId, params.tool, params.arguments,
-    () => localFiles.call(params.tool, params.arguments, (target) => shell.trashItem(target)));
+  const tool = chatFileTools === windowsFiles ? params.tool.replace(/^agentdesk_file_/, 'windows_file_') : params.tool;
+  return checkpoints().around(params.turnId, params.threadId, tool, params.arguments,
+    () => chatFileTools.call(tool, params.arguments, (target) => shell.trashItem(target)));
 }
 
 for (const [agent, link] of chatLinks) {
@@ -794,14 +807,14 @@ for (const [agent, link] of chatLinks) {
     status: 'ready', projectId: appConfig?.active?.id, agent, route: link.status().route?.route,
   }));
   link.on('down', (info) => {
-    for (const [turnId, turn] of chatTurns) if (turn.agent === agent) chatTurns.delete(turnId);
+    for (const [turnId, turn] of chatTurns) if (turn.agent === agent) finishChatTurn(turnId);
     logger?.log('chat_connection', { status: 'down', agent, route: link.status().route?.route });
     toUi('chat:down', info);
   });
   link.on('sleep', () => toUi('chat:sleep', { agent }));
   link.on('event', (message) => {
     if (message.method === 'turn/completed') {
-      chatTurns.delete(message.params?.turn?.id);
+      finishChatTurn(message.params?.turn?.id);
       finishCheckpoint(message.params?.turn?.id);
       const status = message.params?.turn?.status;
       notifyIfAway(`${CHAT_LABEL[agent]} ${status === 'failed' ? '本轮失败' : '已完成'}`,
@@ -894,7 +907,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
         rememberChatThread(agent, threadId, {
           projectId: result?.projectId ?? previous?.projectId,
           localRoot: result?.localRoot || previous?.localRoot || localRootFor(result?.projectId ?? previous?.projectId),
-          tools: Array.isArray(result?.dynamicTools) ? result.dynamicTools : previous?.tools || chatToolSpecs(),
+          tools: chatToolSpecs(),
           approvalPolicy: result?.approvalPolicy ?? previous?.approvalPolicy,
           sandboxPolicy: result?.sandboxPolicy ?? previous?.sandboxPolicy,
         });
@@ -904,6 +917,11 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
 
     if (method === 'turn/start') {
       const mapping = chatThreads.get(request.threadId);
+      if (!mapping || mapping.agent !== agent) throw Error('请重新打开单聊后再发送。');
+      const policy = request.sandboxPolicy || mapping.sandboxPolicy;
+      const readOnly = policy?.type === 'readOnly';
+      const desktopSpecs = desktop.enabled && !readOnly ? await desktop.specs().catch(() => []) : [];
+      request.dynamicTools = [...chatToolSpecs(), ...desktopSpecs];
       const attachments = request.attachments;
       let result;
       if (attachments !== undefined) {
@@ -934,12 +952,13 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       } else result = await link.request(method, request);
       const turnId = result?.turn?.id;
       if (turnId) {
-        const policy = request.sandboxPolicy || mapping?.sandboxPolicy;
         chatTurns.set(turnId, {
           agent,
           threadId: request.threadId,
-          readOnly: policy?.type === 'readOnly',
+          readOnly,
+          desktopTools: new Set(desktopSpecs.map(({ name }) => name)),
         });
+        if (desktopSpecs.length && desktop.enabled) desktop.active.set(turnId, request.threadId);
         if (mapping) {
           if (request.sandboxPolicy) mapping.sandboxPolicy = request.sandboxPolicy;
           if (request.approvalPolicy) mapping.approvalPolicy = request.approvalPolicy;
