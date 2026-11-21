@@ -40,7 +40,7 @@ function createSecret(stateDir) {
   return readSecret(stateDir);
 }
 
-function connectWorker(stateDir, secret, { onUpdate } = {}) {
+function connectWorker(stateDir, secret, { onUpdate, onEvent } = {}) {
   return new Promise((resolve, reject) => {
     const socket = connect(endpoint(stateDir));
     const wire = new Lines(socket, socket, FRAME_LIMIT);
@@ -89,6 +89,7 @@ function connectWorker(stateDir, secret, { onUpdate } = {}) {
         return;
       }
       if (frame.event === 'command') { onUpdate?.(frame.scope, frame.value); return; }
+      if (frame.event === 'lock' || frame.event === 'terminal') { onEvent?.(frame.event, frame.value); return; }
       const pendingCall = pending.get(frame.id);
       if (!pendingCall) return;
       pending.delete(frame.id);
@@ -123,6 +124,23 @@ function serveWorker(stateDir, setup = {}) {
     ...shellOptions,
   });
   const protocol = makeProtocol({ leases, shell, mount });
+  const broadcast = (event, value) => {
+    for (const client of clients) {
+      try { client.send({ event, value }); }
+      catch { client.output.destroy(); }
+    }
+  };
+  // File-lock events (waiting, released, stale write, bypassed) and terminal events go to every app window.
+  leases.locks.on('event', (value) => broadcast('lock', value));
+  const { TerminalSessions } = require('./terminal-sessions');
+  const { macSandboxProfile } = require('./windows-local-shell');
+  const terminals = setup.terminals || new TerminalSessions({
+    profile: () => process.platform === 'darwin' ? macSandboxProfile({ extra: [stateDir] }) : undefined,
+    onEvent: (value) => broadcast('terminal', value),
+  });
+  const sweep = setInterval(() => terminals.sweep(), 10 * 60_000);
+  sweep.unref();
+  const { createCheckpoint, restoreCheckpoint, list: listCheckpoints } = require('./git-checkpoints');
   const server = createServer((socket) => {
     const wire = new Lines(socket, socket, FRAME_LIMIT);
     let authed = false;
@@ -152,6 +170,41 @@ function serveWorker(stateDir, setup = {}) {
           case 'acknowledge': return leases.settle(binding, (lease) => shell.canResume(lease, { acknowledgeUnknown: true }),
             { acknowledgeFiles: true });
           case 'shell': return shell.call(binding, args, { requestId });
+          case 'capabilities': return { pty: terminals.available, locks: true, checkpoints: true, sharedWrite: true };
+          case 'endTurn': return leases.endTurn(binding);
+          case 'lockFiles': return leases.lockFiles(binding, frame.files);
+          case 'lockStatus': return leases.lockStatus(binding);
+          case 'terminal': {
+            const lease = leases.get(binding, { writable: true });
+            return terminals.call(lease.scope, args, { cwd: lease.directory });
+          }
+          // From the app window, not the model: the person takes a terminal over, types into it, hands it back.
+          case 'terminalTakeover': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return terminals.takeover(lease.scope, frame.terminalId, frame.on === true);
+          }
+          case 'terminalInput': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return terminals.write(lease.scope, frame.terminalId, frame.data, { byUser: true });
+          }
+          case 'terminalRead': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return frame.terminalId ? terminals.read(lease.scope, frame.terminalId, frame.cursor) : { terminals: terminals.list(lease.scope) };
+          }
+          case 'checkpoint': {
+            const lease = leases.get(binding, { writable: true, current: true });
+            return createCheckpoint(lease.directory, { session: lease.id.slice(0, 40).replace(/[^A-Za-z0-9_-]/g, '_'),
+              turn: String(frame.turn || Date.now()).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80), enabled: frame.enabled !== false });
+          }
+          case 'checkpoints': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return listCheckpoints(lease.directory);
+          }
+          case 'restoreCheckpoint': {
+            const lease = leases.get(binding, { writable: true, current: true });
+            const others = leases.lockStatus(binding).locks.some((item) => !item.mine);
+            return restoreCheckpoint(lease.directory, frame.ref, { othersHoldLocks: others });
+          }
           case 'prepareSftp': {
             leases.get(binding, { current: true });
             const token = randomBytes(32).toString('base64url');
@@ -200,16 +253,16 @@ function serveWorker(stateDir, setup = {}) {
     server.close();
     server.emit('error', error);
   });
-  server.once('close', () => sftp.close());
+  server.once('close', () => { sftp.close(); clearInterval(sweep); });
   listenOn(sftp, endpoint(stateDir, '-sftp'));
   return listenOn(server, endpoint(stateDir));
 }
 
-function createWorkerClient(stateDir, { onUpdate, launch = spawn, executable = process.execPath } = {}) {
+function createWorkerClient(stateDir, { onUpdate, onEvent, launch = spawn, executable = process.execPath } = {}) {
   let connection;
   let opening;
   let launching = false;
-  const connect = () => connectWorker(stateDir, createSecret(stateDir), { onUpdate });
+  const connect = () => connectWorker(stateDir, createSecret(stateDir), { onUpdate, onEvent });
   return {
     async get() {
       if (connection?.connected) return connection;

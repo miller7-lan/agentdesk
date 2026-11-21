@@ -5,6 +5,8 @@ const { Lines } = require('./transport');
 const { NativeChannel, VERSION } = require('./native-channel');
 // The local_shell the model sees matches this computer: PowerShell/CMD on Windows, zsh/bash on a Mac.
 const localShellSpec = require('./windows-local-shell').shellSpecFor();
+const { terminalSpec, lockSpec } = require('./terminal-sessions');
+const NATIVE_TOOLS = new Set(['local_shell', 'terminal', 'file_lock_acquire']);
 
 const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive',
   'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'skills/list', 'model/list',
@@ -17,8 +19,11 @@ function workspacePolicy(folder, mode) {
 
 async function openWindowsNativeSeat({
   remote, worker, identity, binding, hostPath = '/opt/agentdesk-orchestrator/native-project-session-host.js',
-  sessionKey, historyRoot, onNotification = () => {},
+  sessionKey, historyRoot, onNotification = () => {}, checkpoints = true,
 }) {
+  // What this computer's Worker offers: an interactive terminal only where node-pty is installed (gate G2).
+  const optional = (operation, fields) => Promise.resolve().then(() => worker.request(operation, fields)).catch(() => null);
+  const offered = (await optional('capabilities', {})) || {};
   let closed = false;
   let threadId = identity.threadId.startsWith('pending-') ? null : identity.threadId;
   let turnId = null;
@@ -126,10 +131,12 @@ async function openWindowsNativeSeat({
     if (frame.method && frame.id !== undefined) {
       const p = frame.params || {};
       Promise.resolve().then(async () => {
-        if (frame.method !== 'item/tool/call' || p.tool !== 'local_shell' || !threadId || p.threadId !== threadId ||
+        if (frame.method !== 'item/tool/call' || !NATIVE_TOOLS.has(p.tool) || !threadId || p.threadId !== threadId ||
             !turnId || p.turnId !== turnId || !turnWritable || !p.arguments || p.namespace) throw new Error('native_tool_not_authorized');
         const requestId = createHash('sha256').update(JSON.stringify([threadId, turnId, p.itemId || frame.id])).digest('hex');
-        const value = await worker.request('shell', { binding, args: p.arguments, requestId });
+        const value = p.tool === 'terminal' ? await worker.request('terminal', { binding, args: p.arguments })
+          : p.tool === 'file_lock_acquire' ? await worker.request('lockFiles', { binding, files: p.arguments.paths })
+            : await worker.request('shell', { binding, args: p.arguments, requestId });
         return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] };
       }).then((result) => { if (!closed) wire.send({ id: frame.id, result }); }, () => {
         if (!closed) wire.send({ id: frame.id, result: { success: false, contentItems: [
@@ -142,7 +149,12 @@ async function openWindowsNativeSeat({
       const p = frame.params || {};
       if (p.threadId !== threadId) return;
       if (frame.method === 'turn/started') turnId = p.turn.id;
-      if (frame.method === 'turn/completed') { turnId = null; turnWritable = false; }
+      if (frame.method === 'turn/completed') {
+        turnId = null;
+        turnWritable = false;
+        // Q2: this session's file locks end with its turn.
+        optional('endTurn', { binding });
+      }
       onNotification(frame);
       return;
     }
@@ -178,7 +190,7 @@ async function openWindowsNativeSeat({
       if (isTurn && activeMode === 'write' && params.approvalPolicy && params.approvalPolicy !== 'never') {
         throw new Error('原生单聊请选择完全访问或只读规划。');
       }
-      const toolSet = activeMode === 'write' ? [localShellSpec] : [];
+      const toolSet = activeMode === 'write' ? [localShellSpec, lockSpec, ...(offered.pty ? [terminalSpec()] : [])] : [];
       let value = { ...params };
       if (launch || isTurn) {
         value = { ...value, cwd: folder, approvalPolicy: 'never', sandboxPolicy: workspacePolicy(folder, activeMode) };
@@ -191,6 +203,10 @@ async function openWindowsNativeSeat({
       if (launch || (method === 'turn/start' && provider !== 'codex')) value.dynamicTools = toolSet;
       if (method === 'skills/list') value.cwds = [folder];
       if (isTurn) { startingTurn = true; turnWritable = activeMode === 'write'; }
+      // D8: before a turn that may write, record the project state under refs/agentdesk/checkpoints/*.
+      if (isTurn && activeMode === 'write' && checkpoints) {
+        await optional('checkpoint', { binding, turn: 't' + Date.now() });
+      }
       let reply;
       try { reply = await call(method, value); }
       catch (error) {

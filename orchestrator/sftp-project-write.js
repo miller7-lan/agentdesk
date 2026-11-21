@@ -67,7 +67,10 @@ function attrs(stat) {
     u32(Number(stat.mode)), u32(Math.floor(Number(stat.atimeMs) / 1000)), u32(Math.floor(Number(stat.mtimeMs) / 1000))]);
 }
 
-function createProjectSftp({ root, authorize = () => () => {} }) {
+// locks (optional, spec §6): { acquire(files) -> Promise, touched(files), stale(file) } for this connection's
+// session. Every write waits for the file lock first; the revision check below then refuses a write that is
+// based on a read older than the file now on disk (Q1).
+function createProjectSftp({ root, authorize = () => () => {}, locks = null }) {
   const base = path.resolve(root);
   if (WINDOWS ? !/^[A-Za-z]:\\.+/.test(base) : base === '/' || !path.isAbsolute(base)) throw new Error('project_sftp_requires_local_directory');
   const resolve = (input, projectRootAllowed = true) => {
@@ -105,9 +108,12 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
     };
     const verify = (target, stat, expected = observed.get(foldCase(target.file))) => {
       if (expected !== undefined && (!stat || signature(stat) !== expected)) {
-        throw fail('ECONFLICT', 'project_file_changed: ' + target.name);
+        locks?.stale(target.file);
+        throw fail('ECONFLICT', 'project_file_changed: ' + target.name + '（文件已被其他会话或程序修改，请重新读取后再写）');
       }
     };
+    const lock = async (...targets) => { if (locks) await locks.acquire(targets.map((target) => target.file)); };
+    const touched = (...targets) => locks?.touched(targets.map((target) => target.file));
     const pin = (target, optional, action) =>
       guard.withPaths([parent(target)], { path: target.file, directory: false, optional }, action);
     const handle = (fields, kind) => {
@@ -123,6 +129,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
     const update = async (entry, action) => {
       if (!entry.writable) throw fail('EACCES', 'handle_is_read_only');
       if (entry.failed) throw fail('ECONFLICT', 'project_write_outcome_unknown: ' + entry.target.name);
+      await lock(entry.target);
       await pin(entry.target, false, async () => {
         verify(entry.target, await statPath(entry.target.file), entry.revision);
         verify(entry.target, await entry.file.stat({ bigint: true }), entry.revision);
@@ -134,6 +141,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
         remember(entry.target, stat);
         entry.failed = false;
       });
+      touched(entry.target);
     };
     const setFile = async (file, metadata) => {
       if (metadata.size !== undefined) await file.truncate(metadata.size);
@@ -154,6 +162,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
           (!writable && flags & ~(FLAGS.READ)) || ((flags & FLAGS.EXCLUSIVE) && !create)) {
         throw fail('EBADMSG', 'invalid_sftp_open_flags');
       }
+      if (writable) await lock(target);
       await pin(target, create, async (exists) => {
         if (exists && writable) verify(target, await statPath(target.file));
         if (!exists && !create) throw fail('ENOENT', 'project_path_not_found');
@@ -174,11 +183,13 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
           else newHandle(id, entry);
         } catch (error) { await file.close(); throw error; }
       });
+      if (writable) touched(target);
     }
 
     async function move(id, fields, replace) {
       const source = resolve(fields.text(), false);
       const target = resolve(fields.text(), false);
+      await lock(source, target);
       await guard.withPaths([parent(source), parent(target)], null, async () => {
         const before = await statPath(source.file);
         if (!before) throw fail('ENOENT', 'project_path_not_found');
@@ -193,6 +204,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
         const moved = await statPath(target.file);
         if (moved) remember(target, moved);
       });
+      touched(source, target);
       status(id, S.OK);
     }
 
@@ -293,6 +305,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
             } catch (error) { await dir.close(); throw error; }
           });
         }
+        if ([T.SETSTAT, T.MKDIR, T.REMOVE, T.RMDIR].includes(type)) await lock(target);
         if (type === T.SETSTAT) {
           const metadata = fields.metadata();
           await pin(target, false, async () => {
@@ -304,12 +317,14 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
               remember(target, await file.stat({ bigint: true }));
             } finally { await file.close(); }
           });
+          touched(target);
           return status(id, S.OK);
         }
         await guard.withPaths([parent(target)], null, async () => {
           if (type === T.MKDIR) {
             fields.metadata();
             await fs.mkdir(target.file);
+            touched(target);
             return status(id, S.OK);
           }
           const stat = await statPath(target.file);
@@ -319,6 +334,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
           if (type === T.REMOVE) await fs.unlink(target.file);
           else await fs.rmdir(target.file);
           observed.delete(foldCase(target.file));
+          touched(target);
           return status(id, S.OK);
         });
       } catch (error) {
@@ -326,7 +342,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
           ['EACCES', 'EPERM'].includes(error.code) ? S.PERMISSION_DENIED :
             error.code === 'ENOTSUP' ? S.OP_UNSUPPORTED : error.code === 'EBADMSG' ? S.BAD_MESSAGE : S.FAILURE;
         // Native errors can contain absolute local paths. Report the virtual path only for explicit conflicts.
-        status(id, code, error.code === 'ECONFLICT' ? error.message : (error.code || 'project_operation_failed'));
+        status(id, code, ['ECONFLICT', 'ELOCKTIMEOUT'].includes(error.code) ? error.message : (error.code || 'project_operation_failed'));
       } finally { finish?.(); }
     }
 

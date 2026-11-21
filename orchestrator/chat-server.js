@@ -324,7 +324,7 @@ function settleClientResponse(frame) {
 /* ---------- 工具与线程元数据 ---------- */
 function cleanTool(tool) {
   if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return null;
-  if (typeof tool.name !== 'string' || (!CHAT_TOOL.test(tool.name) && !(NATIVE_PROJECT && tool.name === 'local_shell'))) return null;
+  if (typeof tool.name !== 'string' || (!CHAT_TOOL.test(tool.name) && !(NATIVE_PROJECT && ['local_shell', 'terminal', 'file_lock_acquire'].includes(tool.name)))) return null;
   const inputSchema = tool.inputSchema;
   if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) return null;
   return {
@@ -489,7 +489,7 @@ function finishAgent(turn) {
 
 /* ---------- 工具调用 ---------- */
 function isWriteTool(name) {
-  return WRITE_TOOLS.has(name) || name.startsWith('desktop_');
+  return WRITE_TOOLS.has(name) || name.startsWith('desktop_') || ['local_shell', 'terminal', 'file_lock_acquire'].includes(name);
 }
 
 function resultText(result) {

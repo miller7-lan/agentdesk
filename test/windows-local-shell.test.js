@@ -39,7 +39,9 @@ test('Windows local_shell runs PowerShell and CMD, journals background runs and 
   assert.equal((await launch('Add-Content -LiteralPath attempt.txt -Value once', {}, 'dedup-key')).runId, powershell.runId);
   assert.match(await fs.readFile(path.join(root, 'attempt.txt'), 'utf8'), /^once\r?\n$/);
   await assert.rejects(launch('Remove-Item -LiteralPath attempt.txt', {}, 'dedup-key'), /command_run_conflict/);
-  await assert.rejects(leases.acquire({ ...identity, provider: 'claude', threadId: 'two' }), /native_project_writer_busy/);
+  // D1: a second writer shares the project by default; only an exclusive request is turned away.
+  await assert.rejects(leases.acquire({ ...identity, provider: 'claude', threadId: 'two', exclusive: true }), /native_project_writer_busy/);
+  assert.equal((await leases.acquire({ ...identity, provider: 'claude', threadId: 'four' })).state, 'active');
   const reader = { ...identity, provider: 'claude', threadId: 'two', fullAccess: false };
   const readerBinding = { ...reader, ...await leases.acquire(reader) };
   await assert.rejects(shell.call(readerBinding, { action: 'list' }), /native_chat_read_only/);
