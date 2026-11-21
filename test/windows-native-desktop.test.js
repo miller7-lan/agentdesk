@@ -17,8 +17,8 @@ test('all full-access direct providers require the native host for a locally sel
     findWorktree: (key) => key === 'tree' ? tree : null, bridgeSettings: () => null });
   const params = { projectId: project.id, approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } };
   for (const provider of NATIVE_PROVIDERS) {
-    await assert.rejects(desktop.select(provider, 'thread/start', params), /缺少 Windows 原生单聊服务/);
-    await assert.rejects(desktop.select(provider, 'thread/start', { ...params, worktreeSession: 'tree' }), /缺少 Windows 原生单聊服务/);
+    await assert.rejects(desktop.select(provider, 'thread/start', params), /缺少原生单聊服务/);
+    await assert.rejects(desktop.select(provider, 'thread/start', { ...params, worktreeSession: 'tree' }), /缺少原生单聊服务/);
     assert.equal(await desktop.select(provider, 'thread/start', { ...params, approvalPolicy: 'on-request' }), null);
   }
   assert.equal(wakes, NATIVE_PROVIDERS.length * 2);

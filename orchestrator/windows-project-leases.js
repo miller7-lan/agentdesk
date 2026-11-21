@@ -34,14 +34,14 @@ class WindowsProjectLeases {
   }
 
   async acquire({ device, provider, threadId, root, fullAccess, projectId }) {
-    if (process.platform !== 'win32') throw new Error('windows_native_chat_required');
+    if (!['win32', 'darwin', 'linux'].includes(process.platform)) throw new Error('native_chat_platform_unsupported');
     if (!providers.has(provider) || ![device, threadId].every((part) => typeof part === 'string' &&
       part.length > 0 && part.length <= 160 && !/[\x00-\x1f]/.test(part))) throw new Error('invalid_native_chat_binding');
     const directory = await fs.realpath(root);
-    if (!/^[A-Za-z]:\\.+/.test(directory) || !(await fs.stat(directory)).isDirectory()) {
-      throw new Error('invalid_native_chat_project');
-    }
-    const key = directory.toLowerCase();
+    const local = process.platform === 'win32' ? /^[A-Za-z]:\\.+/.test(directory) : path.isAbsolute(directory) && directory !== '/';
+    if (!local || !(await fs.stat(directory)).isDirectory()) throw new Error('invalid_native_chat_project');
+    // Windows and macOS folders are usually case-insensitive; Linux (tests) is not.
+    const key = process.platform === 'linux' ? directory : directory.toLowerCase();
     const scope = JSON.stringify([device, provider, threadId, ...(projectId ? [projectId] : [])]);
     for (const lease of this.leases.values()) {
       if (lease.scope === scope) {
@@ -67,7 +67,7 @@ class WindowsProjectLeases {
   lookup(identity) {
     for (const lease of this.leases.values()) {
       if (['device', 'provider', 'threadId', 'projectId'].every((key) => lease[key] === identity[key]) &&
-          lease.key === identity.root?.toLowerCase() && lease.fullAccess === identity.fullAccess) return this.view(lease);
+          lease.key === (process.platform === 'linux' ? identity.root : identity.root?.toLowerCase()) && lease.fullAccess === identity.fullAccess) return this.view(lease);
     }
     return null;
   }

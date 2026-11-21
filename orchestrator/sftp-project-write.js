@@ -1,15 +1,23 @@
 const fs = require('node:fs/promises');
 const { constants: C } = require('node:fs');
-const path = require('node:path').win32;
 const { randomUUID } = require('node:crypto');
 const { Reader, packet, u32, u64, str, T, S } = require('./sftp-readonly');
 const { startGuard } = require('./windows-path-guard');
+const { startPosixGuard } = require('./posix-path-guard');
+
+// Windows (native chats on Windows) and macOS (native chats on a Mac; Linux for tests) share this server. They
+// differ in path syntax, in which names are allowed, in case folding and in the guard that keeps every path
+// inside the project (junctions on Windows, symbolic links on macOS).
+const WINDOWS = process.platform === 'win32';
+const path = WINDOWS ? require('node:path').win32 : require('node:path').posix;
+const foldCase = WINDOWS || process.platform === 'darwin' ? (text) => text.toLowerCase() : (text) => text;
+const NOFOLLOW = WINDOWS ? 0 : C.O_NOFOLLOW;
 
 const FLAGS = { READ: 1, WRITE: 2, APPEND: 4, CREATE: 8, TRUNCATE: 16, EXCLUSIVE: 32 };
 const META = { SIZE: 1, MODE: 4, TIMES: 8 };
 const MAX_CHUNK = 64 * 1024;
 const MAX_HANDLES = 256;
-const badName = /[\\:\x00-\x1f<>|"?*]|[. ]$|^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/iu;
+const badName = WINDOWS ? /[\\:\x00-\x1f<>|"?*]|[. ]$|^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\.|$)/iu : /[\x00]/;
 const fail = (code, message) => Object.assign(new Error(message), { code });
 
 class Fields {
@@ -60,9 +68,8 @@ function attrs(stat) {
 }
 
 function createProjectSftp({ root, authorize = () => () => {} }) {
-  if (process.platform !== 'win32') throw new Error('project_sftp_windows_required');
   const base = path.resolve(root);
-  if (!/^[A-Za-z]:\\.+/.test(base)) throw new Error('project_sftp_requires_local_directory');
+  if (WINDOWS ? !/^[A-Za-z]:\\.+/.test(base) : base === '/' || !path.isAbsolute(base)) throw new Error('project_sftp_requires_local_directory');
   const resolve = (input, projectRootAllowed = true) => {
     const names = [];
     for (const name of input.split('/')) {
@@ -71,7 +78,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
         if (!names.length) throw fail('EACCES', 'outside_project');
         names.pop();
       } else {
-        if (badName.test(name)) throw fail('EACCES', 'invalid_windows_project_path');
+        if (badName.test(name)) throw fail('EACCES', 'invalid_project_path');
         names.push(name);
       }
     }
@@ -81,7 +88,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
   const parent = ({ file }) => file === base ? base : path.dirname(file);
 
   return function serve(input, output) {
-    const guard = startGuard();
+    const guard = WINDOWS ? startGuard() : startPosixGuard(base);
     const reader = new Reader();
     const handles = new Map();
     const observed = new Map();
@@ -91,12 +98,12 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
     };
     const status = (id, code, description = '') => send(T.STATUS, u32(id), u32(code), str(description), str(''));
     const remember = (target, stat) => {
-      const key = target.file.toLowerCase();
+      const key = foldCase(target.file);
       observed.delete(key);
       observed.set(key, signature(stat));
       if (observed.size > 4096) observed.delete(observed.keys().next().value);
     };
-    const verify = (target, stat, expected = observed.get(target.file.toLowerCase())) => {
+    const verify = (target, stat, expected = observed.get(foldCase(target.file))) => {
       if (expected !== undefined && (!stat || signature(stat) !== expected)) {
         throw fail('ECONFLICT', 'project_file_changed: ' + target.name);
       }
@@ -152,7 +159,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
         if (!exists && !create) throw fail('ENOENT', 'project_path_not_found');
         if (exists && (flags & FLAGS.EXCLUSIVE)) throw fail('EEXIST', 'project_file_exists');
         const mode = writable ? flags & FLAGS.READ ? C.O_RDWR : C.O_WRONLY : C.O_RDONLY;
-        const nativeFlags = mode | (!exists ? C.O_CREAT | C.O_EXCL : 0) | (flags & FLAGS.APPEND ? C.O_APPEND : 0);
+        const nativeFlags = mode | NOFOLLOW | (!exists ? C.O_CREAT | C.O_EXCL : 0) | (flags & FLAGS.APPEND ? C.O_APPEND : 0);
         const file = await fs.open(target.file, nativeFlags, metadata.mode ?? 0o666);
         try {
           const stat = await file.stat({ bigint: true });
@@ -177,12 +184,12 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
         if (!before) throw fail('ENOENT', 'project_path_not_found');
         const destination = await statPath(target.file);
         verify(source, before);
-        if (!replace && destination && source.file.toLowerCase() !== target.file.toLowerCase()) {
+        if (!replace && destination && foldCase(source.file) !== foldCase(target.file)) {
           throw fail('EEXIST', 'project_file_exists');
         }
         if (replace) verify(target, destination);
         await guard.move(source.file, target.file, replace);
-        observed.delete(source.file.toLowerCase());
+        observed.delete(foldCase(source.file));
         const moved = await statPath(target.file);
         if (moved) remember(target, moved);
       });
@@ -289,7 +296,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
           const metadata = fields.metadata();
           await pin(target, false, async () => {
             verify(target, await statPath(target.file));
-            const file = await fs.open(target.file, C.O_RDWR);
+            const file = await fs.open(target.file, C.O_RDWR | NOFOLLOW);
             try {
               await setFile(file, metadata);
               await file.sync();
@@ -310,14 +317,14 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
           verify(target, stat);
           if (type === T.REMOVE) await fs.unlink(target.file);
           else await fs.rmdir(target.file);
-          observed.delete(target.file.toLowerCase());
+          observed.delete(foldCase(target.file));
           return status(id, S.OK);
         });
       } catch (error) {
         const code = ['ENOENT', 'ENOTDIR'].includes(error.code) ? S.NO_SUCH_FILE :
           ['EACCES', 'EPERM'].includes(error.code) ? S.PERMISSION_DENIED :
             error.code === 'ENOTSUP' ? S.OP_UNSUPPORTED : error.code === 'EBADMSG' ? S.BAD_MESSAGE : S.FAILURE;
-        // Native errors can contain absolute Windows paths. Report the virtual path only for explicit conflicts.
+        // Native errors can contain absolute local paths. Report the virtual path only for explicit conflicts.
         status(id, code, error.code === 'ECONFLICT' ? error.message : (error.code || 'project_operation_failed'));
       } finally { finish?.(); }
     }

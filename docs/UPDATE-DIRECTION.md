@@ -93,6 +93,7 @@
   - Windows 上有常驻的命令行进程；
   - 官方 CLI（Codex、Claude、Grok、Antigravity）在单聊里直接改 Windows 项目，可以编译并运行 EXE；
   - 见 [WINDOWS-NATIVE-CHAT-DEPLOY.md](WINDOWS-NATIVE-CHAT-DEPLOY.md)。
+- **Mac 原生单聊**（本轮新增，见 [MAC-NATIVE-CHAT.md](MAC-NATIVE-CHAT.md)）：Codex、Claude、Grok、Antigravity 在「完全访问」下直接读写 Mac 项目，用 `local_shell` 在 Mac 上跑任意命令；命令在 macOS 沙盒里运行，凭据目录和钥匙串挡住。
 - 合并时的冲突：两边都改了「这一步给哪些工具」的判断。保留了分支的改法：在步骤换成员之后再判断，这样工具和真正干活的成员对得上；判断规则用上面第一部分的职责规则。全部 315 项测试通过。
 
 ## 三、部署顺序与要改的配置

@@ -122,6 +122,7 @@
 - **Antigravity 真实额度**：主控用 `agy -p /usage --output-format json` 读 Gemini 组的 5 小时和每周剩余比例，读到就用真实值；读不到才按 `callLimits` 调用次数估算（额度卡片标「估算」）。看到「估算」时，在 VPS2 上以主控服务账户运行这条命令看报错。
 - **额度实时查看**：「额度与分工」打开时每 10 秒自动刷新（窗口在后台时暂停），标题旁显示「实时 · N 秒前更新」；群聊成员面板和状态栏改为每 15 秒刷新。主控端所有窗口共用一份最多 10 秒前的读数，不再每次请求都重新启动 Codex App Server、`agy /usage` 和 Grok 账单查询。
 - **Claude 实时额度**：主控用 VPS2 上 Claude CLI 登录的账号令牌（`$HOME/.claude/.credentials.json`，只在 VPS2 本机读取，只发给 api.anthropic.com）读取 `https://api.anthropic.com/api/oauth/usage`，拿到 5 小时和每周的实时用量，和 Claude Code 自己的 `/usage` 同源。这个接口 Anthropic 没有公开文档，可能变化；读不到时（用 API key 而不是账号登录、长期 setup token 权限不够、接口变化）回退到每轮对话结束时记录的用量，额度卡片会注明。
+- **Mac 原生单聊**：Mac 上「完全访问」单聊（Codex、Claude、Grok、Antigravity）像 Windows 一样直接读写本机项目，用 `local_shell` 在 Mac 上跑任意命令（zsh/bash 登录 shell），命令套 `sandbox-exec`，挡住凭据目录和钥匙串。VPS2 用和 Windows 相同的原生服务；Mac 只需更新应用。见 [MAC-NATIVE-CHAT.md](MAC-NATIVE-CHAT.md)。
 - **临时扩权**：群聊里一步因为权限被拒而没做完时，组长申请具体的权限（某个文件夹的读或写、某条命令、桌面），可以超出这台电脑配置的范围；弹窗由你选「允许这一步」「这项任务都允许」或「拒绝」。批准记录在你电脑的 Bridge 上（VPS2 无法自行授权），只对这个群聊里的这项任务有效，任务结束或 6 小时后收回；凭据目录、`.git`、绕过补丁改项目永远不开。新操作 `permission_answer`、Bridge 操作 `grants_revoke`；需要同时更新 VPS2 和各端 Bridge。
 - **节点上换模型**：群聊旁泳道卡片和分工进度里，还没开始的步骤（排队中，或方案还没确认）和等你选接手的步骤有「换模型」，打开和失败接手同一个弹窗，可以选成员、具体模型和思考程度；正在运行、已经完成和组长自己的步骤没有这个按钮。你选过的步骤不会再因为成员忙被自动挪给别人。
 - **模型列表自动跟官网更新**：主控每 6 小时（`discoverModelsHours`）重新读取各家可用模型：Codex、Grok、Antigravity 读各自 CLI，Claude 现在也会读 Anthropic 的模型列表（有 API key 用 key，否则用 VPS2 上 Claude 的登录令牌；被拒绝时保留配置里的模型）。新模型自动出现在组长模型、失败接手弹窗、额度页「+ 补充」和组长派活的候选里，已下架的自动移除，手写的说明保留。需要配置里 `"discoverModels": true`。

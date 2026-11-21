@@ -1,5 +1,7 @@
 const path = require('node:path');
+const os = require('node:os');
 const { createHash } = require('node:crypto');
+const { HIDDEN } = require('./sftp-readonly');
 const { setTimeout: delay } = require('node:timers/promises');
 const { CommandRuns } = require('./command-runs');
 
@@ -18,6 +20,24 @@ const localShellSpec = {
     },
   },
 };
+// macOS: the person's own login shell environment (zsh by default, or bash), in the project folder.
+const macLocalShellSpec = {
+  type: 'function', name: 'local_shell',
+  description: 'Run commands on the person\u2019s Mac in the active project, like a terminal there: git, npm, python, make, xcodebuild and so on. Uses zsh by default or specify bash. A long command returns runId. Use status with the saved cursors for new logs, or stop to terminate a run. Check a known run before retrying after a disconnect. Credential folders (SSH keys, keychain and the like) are not reachable from these commands.',
+  inputSchema: {
+    type: 'object', additionalProperties: false, required: ['action'],
+    properties: {
+      action: { type: 'string', enum: ['run', 'status', 'stop', 'list'] },
+      shell: { type: 'string', enum: ['zsh', 'bash'] },
+      command: { type: 'string' }, cwd: { type: 'string' },
+      env: { type: 'object', additionalProperties: { type: ['string', 'null'] } },
+      runId: { type: 'string' }, background: { type: 'boolean' },
+      stdoutCursor: { type: 'integer', minimum: 0 }, stderrCursor: { type: 'integer', minimum: 0 },
+    },
+  },
+};
+const shellSpecFor = (platform = process.platform) => platform === 'win32' ? localShellSpec : macLocalShellSpec;
+
 
 const boundedId = (value) => typeof value === 'string' && value.length <= 256 && value.length > 0 && !/[\x00-\x1f]/.test(value);
 
@@ -30,14 +50,36 @@ function environment(value) {
   for (const [key, content] of Object.entries(value)) {
     if (!/^[a-z_][a-z0-9_]{0,127}$/i.test(key) || (content !== null &&
       (typeof content !== 'string' || content.length > 8192 || content.includes('\0')))) throw new Error('invalid_local_shell_env');
-    const normalized = key.toUpperCase();
+    const normalized = process.platform === 'win32' ? key.toUpperCase() : key;
     if (Object.hasOwn(env, normalized)) throw new Error('duplicate_local_shell_env');
     env[normalized] = content;
   }
   return env;
 }
 
-function invocation(shell, script) {
+// macOS: commands run as the person, but credential folders and the keychain service stay closed: sandbox-exec
+// with a profile that allows everything else. The same folders the read-only mount hides (sftp-readonly HIDDEN),
+// AgentDesk's own folder and the native-chat worker's state.
+function macSandboxProfile({ home = os.homedir(), extra = [] } = {}) {
+  const quote = (value) => '"' + String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  const folders = [...HIDDEN.map((entry) => path.posix.join(home, entry)), path.posix.join(home, '.agentdesk'), ...extra];
+  return ['(version 1)', '(allow default)',
+    '(deny file-read* file-write* ' + folders.map((folder) => '(subpath ' + quote(folder) + ')').join(' ') + ')',
+    // the keychain is reached through this service, not through files
+    '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))'].join('\n');
+}
+
+function posixInvocation(shell = 'zsh', script, { profile } = {}) {
+  if (!['zsh', 'bash'].includes(shell)) throw new Error('invalid_local_shell');
+  const program = shell === 'bash' ? '/bin/bash' : '/bin/zsh';
+  // A login shell: the person's PATH (Homebrew, nvm, pyenv) as in their own terminal.
+  const command = [program, '-l', '-c', script];
+  if (process.platform === 'darwin') return { argv: ['/usr/bin/sandbox-exec', '-p', profile || macSandboxProfile(), ...command] };
+  return { argv: command };   // Linux: tests only
+}
+
+function invocation(shell, script, options) {
+  if (process.platform !== 'win32') return posixInvocation(shell, script, options);
   const system = path.join(process.env.SystemRoot, 'System32');
   if (shell === 'powershell') {
     const command = '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n' + script;
@@ -68,8 +110,9 @@ function result(snapshot, args = {}) {
   return output;
 }
 
-function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000 }) {
-  if (process.platform !== 'win32') throw new Error('windows_native_chat_required');
+function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000, stateDir }) {
+  if (!['win32', 'darwin', 'linux'].includes(process.platform)) throw new Error('native_chat_platform_unsupported');
+  const profile = process.platform === 'darwin' ? macSandboxProfile({ extra: stateDir ? [stateDir] : [] }) : undefined;
   const runs = new CommandRuns((scope, snapshot) => notify?.(scope, result(snapshot)), journal);
   const leaseRuns = (lease) => runs.list(lease.scope);
   return {
@@ -82,7 +125,7 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000 }) {
         const snapshot = args.action === 'stop' ? runs.cancel(lease.scope, args.runId) : runs.status(lease.scope, args.runId);
         return result(snapshot, args);
       }
-      const shell = args.shell ?? 'powershell';
+      const shell = args.shell ?? (process.platform === 'win32' ? 'powershell' : 'zsh');
       if (!boundedId(requestId) || typeof args.command !== 'string' || !args.command.trim() ||
         args.command.includes('\0') || args.command.length > (shell === 'cmd' ? 7500 : 10_000)) {
         throw new Error('invalid_local_shell_command');
@@ -97,7 +140,7 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000 }) {
         const systemModules = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
         env.PSMODULEPATH = [systemModules, process.env.PSModulePath].filter(Boolean).join(path.delimiter);
       }
-      const launch = invocation(shell, args.command);
+      const launch = invocation(shell, args.command, { profile });
       const fingerprint = createHash('sha256').update(JSON.stringify([cwd, launch, Object.entries(env).sort()])).digest('hex');
       const key = JSON.stringify([lease.scope, requestId]);
       const run = runs.start({ scope: lease.scope, key, name: 'local_shell', cwd, argv: launch.argv, timeout: null,
@@ -115,4 +158,6 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000 }) {
   };
 }
 
-module.exports = { localShellSpec, createWindowsLocalShell };
+const createLocalShell = createWindowsLocalShell;
+
+module.exports = { localShellSpec, macLocalShellSpec, shellSpecFor, macSandboxProfile, createWindowsLocalShell, createLocalShell };

@@ -42,15 +42,21 @@ const platformName = detectOs({ platform: process.platform });
 const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
 const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
 let windowsNative;
+// Native single chats: on Windows and on a Mac the official CLIs on VPS2 work directly in the local project
+// (mounted over SFTP) and run commands here with local_shell.
+function macBridgeSettings() {
+  // The Mac's Bridge runs on its own (launchd); its configuration is the file named in mac-remote.json.
+  try { const file = commandsFile(); return file ? JSON.parse(fs.readFileSync(file, 'utf8')) : null; } catch { return null; }
+}
 function nativeDesktop() {
-  if (process.platform !== 'win32' || enrollment) return null;
+  if (!['win32', 'darwin'].includes(process.platform) || enrollment) return null;
   if (!windowsNative) {
-    const { createWindowsNativeDesktop } = require('./orchestrator/windows-native-desktop');
-    windowsNative = createWindowsNativeDesktop({
-      stateDir: path.join(app.getPath('userData'), 'windows-native-chat'), remote,
+    const { createNativeDesktop } = require('./orchestrator/windows-native-desktop');
+    windowsNative = createNativeDesktop({
+      stateDir: path.join(app.getPath('userData'), process.platform === 'win32' ? 'windows-native-chat' : 'native-chat'), remote,
       findProject: (id) => id ? appConfig?.value.projects.find((item) => item.id === id) : appConfig?.active,
       findWorktree: (key) => worktrees().get(key),
-      bridgeSettings: () => localBridgeSettings,
+      bridgeSettings: () => localBridgeSettings || (mac ? macBridgeSettings() : null),
       onEvent: (agent, frame) => {
         if (agent === 'codex') toUi('codex:event', frame);
         else toUi('chat:event', { ...frame, agent });

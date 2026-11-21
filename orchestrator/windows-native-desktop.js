@@ -13,6 +13,8 @@ function sameRoot(left, right) {
   catch { return false; }
 }
 
+// Windows and macOS: the official CLI on VPS2 works directly in this computer's project (mounted over SFTP),
+// and its local_shell runs here.
 function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onCommand, reviewUnknown }) {
   const worker = createWorkerClient(stateDir, { onUpdate: (scope, run) => {
     try {
@@ -87,7 +89,7 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
           const active = status.runs.some((run) => ['running', 'cancelling', 'queued'].includes(run.state));
           if (!active && await reviewUnknown()) ready = await connection.request('acknowledge', { binding });
         }
-        if (!ready) throw new Error('Windows 项目已暂停。请先核对上次连接中的本机文件和命令。');
+        if (!ready) throw new Error('本机项目已暂停。请先核对上次连接中的本机文件和命令。');
         binding = { ...identity, ...await connection.request('acquire', { binding: identity }) };
       }
       let seat;
@@ -124,10 +126,10 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       const existing = params.threadId && records.get(params.threadId);
       if (existing) {
         if (existing.provider !== provider || (params.projectId && existing.projectId !== params.projectId)) {
-          throw new Error('该单聊属于另一个已授权的 Windows 项目。');
+          throw new Error('该单聊属于另一个已授权的本机项目。');
         }
         const project = resolveProject(existing.projectId, existing.worktreeSession);
-        if (!project || !sameRoot(project.root, existing.root)) throw new Error('Windows 项目与原会话授权目录不匹配。');
+        if (!project || !sameRoot(project.root, existing.root)) throw new Error('本机项目与原会话授权目录不匹配。');
         if (!seats.has(existing.threadId) && !await remote.wake()) throw new Error('本机终端所需的 VPS 连接未就绪，请重连后重试。');
         return attached(existing, project);
       }
@@ -136,7 +138,7 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       const project = resolveProject(params.projectId, params.worktreeSession);
       if (!project) return null;
       if (!await remote.wake()) throw new Error('本机终端所需的 VPS 连接未就绪，请重连后重试。');
-      if (!await hasHost()) throw new Error('VPS 缺少 Windows 原生单聊服务，请更新服务端后重试。');
+      if (!await hasHost()) throw new Error('VPS 缺少原生单聊服务，请更新服务端后重试。');
       const pending = { provider, worktreeSession: params.worktreeSession, projectId: project.id, root: project.root, threadId: 'pending-' + randomUUID(),
         sessionKey: createHash('sha256').update(deviceId() + ':' + randomUUID()).digest('hex') };
       const seat = await attached(pending, project);
@@ -173,4 +175,6 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
   };
 }
 
-module.exports = { createWindowsNativeDesktop };
+const createNativeDesktop = createWindowsNativeDesktop;
+
+module.exports = { createWindowsNativeDesktop, createNativeDesktop };

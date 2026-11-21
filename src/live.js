@@ -598,7 +598,9 @@
     s.items.push({ t: 'thinking', text: '思考中' });
     A.renderAll(); pet(s, 'thinking', 'UserPromptSubmit');
     if (sandbox === 'danger-full-access') {
-      if (isMac) input[0].text += '\n\n[AgentDesk：完全访问本机（macOS）]\n你可以用 agentdesk_file_* 工具读写这台 Mac 的文件，路径必须是绝对 POSIX 路径，修改会立即生效。覆盖已有文件时需 overwrite:true；写之前先读取确认。不要使用 VPS 上的文件工具。';
+      // A Mac chat is native when VPS2 has the native host (the project is the working folder, commands go through
+      // local_shell); otherwise it uses the agentdesk_file_* tools. The note covers both.
+      if (isMac) input[0].text += '\n\n[AgentDesk：完全访问本机（macOS）]\n如果你的工作目录就是这台 Mac 上的项目（原生单聊），直接用你自己的读写和搜索工具改项目，命令（git、npm、python、构建、测试）用 local_shell 在 Mac 上运行。否则用 agentdesk_file_* 工具读写 Mac 文件：绝对 POSIX 路径，覆盖已有文件需 overwrite:true，写之前先读取确认。凭据目录（如 ~/.ssh、钥匙串）不可访问；不要用 VPS 上的工具改 Mac 文件。';
       if (s.worktree) input[0].text += `\n[独立工作树] 这个会话只在 ${s.worktree.path}（分支 ${s.worktree.branch}）里改文件，不要改原项目目录；用户会在确认后合回 ${s.worktree.baseBranch}。`;
     }
     if (!s.threadId) {

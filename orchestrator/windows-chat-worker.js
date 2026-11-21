@@ -11,9 +11,19 @@ const { makeProtocol, errorResponse } = require('./windows-native-protocol');
 
 const FRAME_LIMIT = 512 * 1024;
 
-function endpoint(stateDir) {
+// Windows: a named pipe. macOS (and Linux, for tests): a Unix socket in the per-user temporary folder (socket
+// paths are limited to about 100 characters, too short for Application Support); the worker key still guards it.
+function endpoint(stateDir, suffix = '') {
   const name = createHash('sha256').update(path.resolve(stateDir).toLowerCase()).digest('hex').slice(0, 24);
-  return '\\\\.\\pipe\\agentdesk-windows-chat-' + name;
+  if (process.platform === 'win32') return '\\\\.\\pipe\\agentdesk-windows-chat-' + name + suffix;
+  return path.join(require('node:os').tmpdir(), 'agentdesk-chat-' + name + suffix + '.sock');
+}
+function listenOn(server, address) {
+  if (process.platform !== 'win32') {
+    try { if (fs.lstatSync(address).isSocket()) fs.unlinkSync(address); } catch {}
+    return server.listen(address, () => { try { fs.chmodSync(address, 0o600); } catch {} });
+  }
+  return server.listen(address);
 }
 
 function readSecret(stateDir) {
@@ -53,7 +63,7 @@ function connectWorker(stateDir, secret, { onUpdate } = {}) {
       async openSftp(binding) {
         const { token } = await connection.request('prepareSftp', { binding });
         return new Promise((resolve, reject) => {
-          const stream = connect(endpoint(stateDir) + '-sftp');
+          const stream = connect(endpoint(stateDir, '-sftp'));
           const timeout = setTimeout(() => stream.destroy(new Error('windows_chat_worker_timeout')), 5000);
           const fail = (error) => { clearTimeout(timeout); reject(error); };
           stream.once('error', fail);
@@ -103,7 +113,7 @@ function serveWorker(stateDir, setup = {}) {
   const clients = new Set();
   const acceptedStreams = new Map();
   const shell = createWindowsLocalShell({
-    leases, journal: () => path.join(stateDir, 'runs.json'),
+    leases, journal: () => path.join(stateDir, 'runs.json'), stateDir,
     notify: (scope, value) => {
       for (const client of clients) {
         try { client.send({ event: 'command', scope, value }); }
@@ -191,8 +201,8 @@ function serveWorker(stateDir, setup = {}) {
     server.emit('error', error);
   });
   server.once('close', () => sftp.close());
-  sftp.listen(endpoint(stateDir) + '-sftp');
-  return server.listen(endpoint(stateDir));
+  listenOn(sftp, endpoint(stateDir, '-sftp'));
+  return listenOn(server, endpoint(stateDir));
 }
 
 function createWorkerClient(stateDir, { onUpdate, launch = spawn, executable = process.execPath } = {}) {
@@ -231,8 +241,8 @@ function createWorkerClient(stateDir, { onUpdate, launch = spawn, executable = p
 }
 
 if (require.main === module) {
-  if (process.platform !== 'win32' || !process.argv[2]) process.exit(2);
+  if (!['win32', 'darwin'].includes(process.platform) || !process.argv[2]) process.exit(2);
   serveWorker(process.argv[2]).once('error', () => { process.exitCode = 1; });
 }
 
-module.exports = { connectWorker, createSecret, createWorkerClient, serveWorker };
+module.exports = { connectWorker, createSecret, createWorkerClient, serveWorker, endpoint };

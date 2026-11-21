@@ -44,8 +44,8 @@ async function fixture(t, serve = (root, input, output) => createProjectSftp({ r
   return { temporary, root, check, open, send, channel };
 }
 
-test('Windows project SFTP writes binary chunks, appends, truncates, and replaces a file', {
-  skip: process.platform !== 'win32', timeout: 30000,
+test('project SFTP (Windows and macOS) writes binary chunks, appends, truncates, and replaces a file', {
+  skip: false, timeout: 30000,
 }, async (t) => {
   const { root, check, open, send } = await fixture(t);
   await check(S.OK, T.MKDIR, str('subdir'), u32(0));
@@ -78,7 +78,7 @@ test('Windows project SFTP writes binary chunks, appends, truncates, and replace
 });
 
 test('suspending a project closes old SFTP handles and an acknowledged recovery rotates the generation', {
-  skip: process.platform !== 'win32', timeout: 30000,
+  skip: false, timeout: 30000,
 }, async (t) => {
   const { WindowsProjectLeases } = require('../orchestrator/windows-project-leases');
   const leases = new WindowsProjectLeases();
@@ -117,4 +117,24 @@ test('Windows project SFTP rejects external changes, project escapes, and juncti
   await fs.link(target, path.join(root, 'hard-link'));
   await check(S.PERMISSION_DENIED, T.OPEN, str('hard-link'), u32(2), u32(0));
   await assert.rejects(fs.stat(path.join(temporary, 'outside')), { code: 'ENOENT' });
+});
+
+test('on macOS the project SFTP refuses symbolic links on the way, escapes and the project root itself', {
+  skip: process.platform === 'win32', timeout: 30000,
+}, async (t) => {
+  const { temporary, root, check, open } = await fixture(t);
+  await fs.writeFile(path.join(temporary, 'outside'), 'secret');
+  await fs.mkdir(path.join(temporary, 'elsewhere'));
+  await fs.symlink(path.join(temporary, 'elsewhere'), path.join(root, 'link-dir'));
+  await fs.symlink(path.join(temporary, 'outside'), path.join(root, 'link-file'));
+  await check(S.PERMISSION_DENIED, T.OPEN, str('link-dir/new.txt'), u32(10), u32(0));   // a linked folder on the way
+  await check(S.PERMISSION_DENIED, T.MKDIR, str('link-dir/created'), u32(0));
+  await check(S.PERMISSION_DENIED, T.OPEN, str('link-file'), u32(1), u32(0));           // a linked file
+  await check(S.PERMISSION_DENIED, T.OPEN, str('../outside'), u32(1), u32(0));          // leaving the project
+  assert.deepEqual(await fs.readdir(path.join(temporary, 'elsewhere')), []);
+  assert.equal(await fs.readFile(path.join(temporary, 'outside'), 'utf8'), 'secret');
+  const file = await open('ok.txt', 26);                                                 // an ordinary file still works
+  await check(S.OK, T.WRITE, str(file), u64(0), str('hello'));
+  await check(S.OK, T.CLOSE, str(file));
+  assert.equal(await fs.readFile(path.join(root, 'ok.txt'), 'utf8'), 'hello');
 });

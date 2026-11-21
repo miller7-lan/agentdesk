@@ -3,7 +3,8 @@ const { EventEmitter } = require('node:events');
 const { createHash, randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
 const { NativeChannel, VERSION } = require('./native-channel');
-const { localShellSpec } = require('./windows-local-shell');
+// The local_shell the model sees matches this computer: PowerShell/CMD on Windows, zsh/bash on a Mac.
+const localShellSpec = require('./windows-local-shell').shellSpecFor();
 
 const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive',
   'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'skills/list', 'model/list',
@@ -54,7 +55,7 @@ async function openWindowsNativeSeat({
     if (threadId && turnId) {
       const code = /^[a-z0-9_]{2,80}$/i.test(reason?.message || '') ? reason.message : 'native_bridge_disconnected';
       onNotification({ method: 'error', params: { threadId, willRetry: false,
-        error: { code, message: '连接已中断，请先核对 Windows 文件与后台命令的状态。' } } });
+        error: { code, message: '连接已中断，请先核对本机文件与后台命令的状态。' } } });
       onNotification({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted', error: { code } } } });
     }
     seatClosed.emit('close');
@@ -132,7 +133,7 @@ async function openWindowsNativeSeat({
         return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] };
       }).then((result) => { if (!closed) wire.send({ id: frame.id, result }); }, () => {
         if (!closed) wire.send({ id: frame.id, result: { success: false, contentItems: [
-          { type: 'inputText', text: 'Windows 命令未获授权或状态有待核对。请查询原运行，遇到未知结果先核对本机。' },
+          { type: 'inputText', text: '本机命令未获授权或状态有待核对。请查询原运行，遇到未知结果先核对本机。' },
         ] } });
       }).catch(fail);
       return;
@@ -167,7 +168,7 @@ async function openWindowsNativeSeat({
     get closed() { return closed; },
     onClose: (listener) => seatClosed.once('close', listener),
     async request(method, params = {}) {
-      if (method === 'review/start') throw new Error('Windows 原生项目请在只读规划模式下发起审查。');
+      if (method === 'review/start') throw new Error('原生项目请在只读规划模式下发起审查。');
       if (!METHODS.has(method) || (params.threadId && threadId !== params.threadId)) throw new Error('native_provider_request_denied');
       const launch = method === 'thread/start' || method === 'thread/resume';
       if (method === 'thread/start' && threadId) throw new Error('native_provider_request_denied');
