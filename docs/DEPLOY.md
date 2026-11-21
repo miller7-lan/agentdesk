@@ -354,3 +354,16 @@ Windows 隔离窗口验证覆盖取消目录选择、绑定同一项目、三家
 桌面客户端在当前进程中按单聊分别保存草稿和待发附件。一次发送绑定发起时的项目、会话和附件；连接建立期间重复点击不会再创建一轮。Windows 隔离窗口回归覆盖了草稿和附件切换、双击发送、成功收尾、新建群聊、待确认、失败、取消、重试成功和同群多个独立任务。
 
 Antigravity 单聊打开时和发送前会通过本轮所用账号运行 `agy models`，从 Gemini 组读取可选模型。这项查询不发送聊天消息。已选型号下架时，客户端保留待发内容、刷新列表并提示重新选择。更新时需同步 VPS2 的 `orchestrator/chat-server.js` 与桌面应用，再重新连接单聊。群聊主控可用管理命令 `catalog` 刷新路由模型。
+
+#### VPS2 单文件绑定挂载自动恢复
+
+当 CLI 通过替换文件保存配置时，单文件绑定挂载可能仍然指向旧 inode。若 bubblewrap 在挂载根目录时报 remount 错误，用 `findmnt -rn -M "$target" -o FSROOT` 查看挂载；用 `stat -Lc '%d:%i' "$source" "$target"` 比较设备号和 inode。此处只需检查元数据。
+
+已有这类挂载的主机可安装以下组件。源文件与目标必须和该主机现有 fstab 的 bind 项一致。
+
+1. 将 `orchestrator/refresh-file-bind.sh` 安装到 `/usr/local/libexec/agentdesk-refresh-file-bind`（0755），将同目录的 `agentdesk-file-bind.service`、`agentdesk-file-bind.timer` 安装到 `/etc/systemd/system/`。
+2. 创建 root 所有、权限 0600 的 `/etc/agentdesk-file-bind.conf`，两行分别设置 `BIND_SOURCE`、`BIND_TARGET` 为实际绝对路径。把 `agentdesk-file-bind.path.example` 安装为 `/etc/systemd/system/agentdesk-file-bind.path`，将 `PathChanged` 改为同一源路径。
+3. 执行 `systemctl daemon-reload`、`systemctl enable --now agentdesk-file-bind.path agentdesk-file-bind.timer` 和 `systemctl start agentdesk-file-bind.service`。监听器响应文件变化，定时器每 30 秒左右补查一次。设备号和 inode 相同时直接返回；若卸载报告忙，保留挂载，等待重试。
+4. 用 `systemctl is-active agentdesk-file-bind.path agentdesk-file-bind.timer` 和 `systemctl show agentdesk-file-bind.service -p Result` 检查。用实际服务账户执行 `bwrap --ro-bind / / --dev /dev --proc /proc /bin/true` 验证启动。
+
+回滚自动监控时执行 `systemctl disable --now agentdesk-file-bind.path agentdesk-file-bind.timer`。现有 fstab 条目和已恢复的挂载继续生效。

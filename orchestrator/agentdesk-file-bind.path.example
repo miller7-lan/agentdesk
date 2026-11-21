@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the source of the AgentDesk file bind
+
+[Path]
+PathChanged=/absolute/path/to/source-file
+Unit=agentdesk-file-bind.service
+
+[Install]
+WantedBy=multi-user.target

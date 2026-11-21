@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh AgentDesk file bind after atomic replacement
+After=local-fs.target
+ConditionPathExists=/etc/agentdesk-file-bind.conf
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/agentdesk-file-bind.conf
+ExecStart=/usr/local/libexec/agentdesk-refresh-file-bind ${BIND_SOURCE} ${BIND_TARGET}
