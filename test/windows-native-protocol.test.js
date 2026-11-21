@@ -68,13 +68,13 @@ test('native protocol arbitrates writers and requires trusted review of unknown 
     protocolVersion: 1, operation, requestId: 'request-' + (++count), ...fields,
   }, context);
   const results = await Promise.all([call(codex, 'project.acquire'), call(claude, 'project.acquire')]);
-  assert.equal(results.filter((item) => item.ok).length, 1);
-  assert.equal(results.find((item) => !item.ok).error.code, 'LEASE_BUSY');
-  const owner = results[0].ok ? codex : claude;
-  const lease = results.find((item) => item.ok).value;
+  // D1: two writers share the project by default; their writes to one file are ordered by the file locks.
+  assert.equal(results.filter((item) => item.ok).length, 2);
+  const owner = codex;
+  const lease = results[0].value;
   for (const provider of ['grok', 'antigravity']) {
     const sameProject = { ...owner, provider, threadId: provider + '-thread' };
-    assert.equal((await call(sameProject, 'project.acquire')).error.code, 'LEASE_BUSY');
+    assert.equal((await call(sameProject, 'project.acquire', { exclusive: true })).error.code, 'LEASE_BUSY');
     assert.equal((await call({ ...sameProject, accessMode: 'read' }, 'project.acquire')).ok, true);
   }
   assert.equal((await call(owner, 'project.acquire')).value.leaseId, lease.leaseId);

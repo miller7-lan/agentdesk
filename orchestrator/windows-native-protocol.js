@@ -82,7 +82,8 @@ function makeProtocol({ leases, shell, mount }) {
       const { operation } = request;
       let value;
       const identity = { device: deviceId, provider, threadId, projectId, root: projectRoot, fullAccess: accessMode === 'write' };
-      if (operation === 'project.acquire') value = leaseView(projectId, accessMode, await leases.acquire(identity));
+      // D1: writers share a project by default; a request may still ask for it alone (exclusive).
+      if (operation === 'project.acquire') value = leaseView(projectId, accessMode, await leases.acquire({ ...identity, exclusive: request.exclusive === true }));
       else {
         if (![projectOperations, mountOperations, shellOperations].some((group) => group.has(operation))) throw problem('UNSUPPORTED_OPERATION');
         if (!validLease(request.leaseId) || !Number.isSafeInteger(request.generation) || request.generation < 1) throw problem('INVALID_REQUEST');
