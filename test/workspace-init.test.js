@@ -86,7 +86,8 @@ test('D7: a folder inside a repository uses the parent repository; existing file
   fs.mkdirSync(path.join(repo, 'packages', 'app'), { recursive: true });
   git(repo, 'init', '-q');
   const sub = await initializeWorkspace(path.join(repo, 'packages', 'app'));
-  assert.deepEqual(sub, { kind: 'subdirectory', gitRoot: repo, subdirectory: path.join('packages', 'app') });
+  const realRepo = await fs.promises.realpath(repo);
+  assert.deepEqual(sub, { kind: 'subdirectory', gitRoot: realRepo, subdirectory: path.join('packages', 'app') });
   assert.equal(fs.existsSync(path.join(repo, 'packages', 'app', '.git')), false);
   assert.equal((await initializeWorkspace(repo)).kind, 'repository');
 
@@ -104,7 +105,7 @@ test('D7: a folder inside a repository uses the parent repository; existing file
   const config = new AppConfig(path.join(folder, 'config.json'));
   await config.load();
   await config.saveProject(undefined, { name: 'App', kind: 'local' }, path.join(repo, 'packages', 'app'));
-  assert.equal(config.active.localRoot, repo);
+  assert.equal(config.active.localRoot, realRepo);
   assert.equal(config.active.workdir, path.join('packages', 'app'));
 });
 

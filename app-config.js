@@ -76,11 +76,15 @@ async function initialCommit(root, options = gitOptions()) {
 async function initializeWorkspace(root) {
   const options = gitOptions();
   if (refusedRoot(root)) throw new Error('不能把磁盘根目录、用户主目录或系统目录作为项目。');
+  // Both sides through the native realpath: on Windows a path may arrive in 8.3 form (RUNNER~1) while Git
+  // reports the long form, and comparing them as text would make a repository root look like a subfolder.
+  const chosen = await fs.realpath(root);
   try {
-    const { stdout } = await exec('git', ['-C', root, 'rev-parse', '--show-toplevel'], options);
+    const { stdout } = await exec('git', ['-C', chosen, 'rev-parse', '--show-toplevel'], options);
     const top = await fs.realpath(stdout.trim());
-    if (top === root) return { kind: 'repository', gitRoot: top };
-    return { kind: 'subdirectory', gitRoot: top, subdirectory: path.relative(top, root) };
+    const same = process.platform === 'win32' || process.platform === 'darwin' ? top.toLowerCase() === chosen.toLowerCase() : top === chosen;
+    if (same) return { kind: 'repository', gitRoot: top };
+    return { kind: 'subdirectory', gitRoot: top, subdirectory: path.relative(top, chosen) };
   } catch (error) {
     if (error.code !== 128 || !/not a git repository/i.test(error.stderr || '')) throw error;
     // A broken repository must not be silently reinitialized.
