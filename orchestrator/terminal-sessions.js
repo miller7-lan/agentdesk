@@ -13,7 +13,21 @@ const SCREEN_LINES = 60;
 const IDLE_CLOSE_MS = 6 * 60 * 60_000;
 
 function loadPty() {
-  try { return require('node-pty'); } catch { return null; }
+  let pty;
+  try { pty = require('node-pty'); } catch { return null; }
+  // macOS: node-pty runs prebuilds/<platform>-<arch>/spawn-helper for every terminal. npm can install it without
+  // the execute bit (node-pty 1.1.0), which fails each spawn with "posix_spawnp failed"; restore it when allowed.
+  if (process.platform === 'darwin') {
+    try {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const helper = path.join(path.dirname(require.resolve('node-pty/package.json')), 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper')
+        .replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
+      const mode = fs.statSync(helper).mode;
+      if ((mode & 0o111) !== 0o111) fs.chmodSync(helper, mode | 0o755);
+    } catch {}
+  }
+  return pty;
 }
 
 // The shell the terminal starts, matching the computer: PowerShell or CMD on Windows, a zsh or bash login shell

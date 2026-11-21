@@ -6,7 +6,7 @@
   "main": "main.js",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "prepare:desktop": "node scripts/prepare-desktop.js",
+    "prepare:desktop": "node scripts/fix-node-pty.js && node scripts/prepare-desktop.js",
     "prestart": "npm run prepare:desktop",
     "start": "electron .",
     "predist": "npm run prepare:desktop -- --win",
@@ -14,7 +14,8 @@
     "predist:mac": "npm run prepare:desktop -- --mac",
     "dist:mac": "electron-builder --mac dir",
     "predist:mac:release": "npm run prepare:desktop -- --mac",
-    "dist:mac:release": "electron-builder --mac dmg zip"
+    "dist:mac:release": "electron-builder --mac dmg zip",
+    "postinstall": "node scripts/fix-node-pty.js"
   },
   "build": {
     "appId": "local.agentdesk.ui",
