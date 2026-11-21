@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld('desk', {
     available: () => ipcRenderer.invoke('orchestrator:available'),
     control: (frame) => ipcRenderer.invoke('orchestrator:control', frame),
     saveBuild: (frame) => ipcRenderer.invoke('orchestrator:save-build', frame),
+    // Q4: a downloaded group patch, checked against its sha256 before it is kept.
+    savePatch: (frame) => ipcRenderer.invoke('orchestrator:save-patch', frame),
   },
   localChange: {
     pick: (kind) => ipcRenderer.invoke('localChange:pick', kind),

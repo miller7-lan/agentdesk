@@ -55,7 +55,8 @@ test('terminals through the Worker: window and AI share one terminal, takeover, 
   skip: process.platform !== 'linux' && !realPty, timeout: 60_000,
 }, async (t) => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-terminal-worker-'));
-  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-terminal-project-'));
+  // The real path: on macOS /var is a link to /private/var, and leases compare real paths.
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ad-terminal-project-')));
   const terminals = new TerminalSessions({ pty: realPty || fakePty(), onEvent: (event) => events.push(event) });
   const events = [];
   createSecret(stateDir);

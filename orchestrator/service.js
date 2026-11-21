@@ -441,6 +441,8 @@ function start(config) {
           // Commands run in the person's real project, so only scout and code-changing steps may use them,
           // and only the commands that workspace lists in agentCommands.
           if (!scope.runCommands) throw new Error('mcp_permission_denied: this step cannot run local commands');
+          // O2 (groupFeatures.applyPause): a new command waits while a patch is being applied to this project.
+          if (frame.operation === 'run') await scheduler.waitForApply(scope.workspace, scope.signal);
           value = frame.operation === 'commands'
             ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', stepId: scope.stepId, workspace: scope.workspace })
             : await files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, {
@@ -571,7 +573,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];

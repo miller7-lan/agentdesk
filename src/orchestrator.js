@@ -1093,12 +1093,39 @@ window.__groupReady = (async () => {
       // where they would otherwise sit beside the replacement steps as if the work were duplicated.
       const boardSteps = steps.filter((step) => step.state !== 'skipped' && step.capability !== 'triage');
       const board = stepBoard(task, boardSteps);
+      // Q5 (groupFeatures.timeline): the board, the local test and the acceptance summary take their place in time
+      // with everything else; the board sits where it last changed. Off: the old fixed order.
+      const timeline = routeState.groupFeatures?.timeline === true;
+      const deferred = [];
+      const place = (at, html) => { if (timeline) deferred.push({ at, html }); else messages.push(html); };
+      const boardAt = () => {
+        const times = boardSteps.flatMap((step) => [step.finishedAt, step.startedAt]).concat(task.updatedAt)
+          .map((value) => Date.parse(value || '')).filter(Number.isFinite);
+        return times.length ? new Date(Math.max(...times)).toISOString() : task.time;
+      };
       if (board && filter !== 'mine' && (!filterSelect.value || boardSteps.some((step) => step.role === filterSelect.value))) {
-        messages.push(messageRow('lead', '分工进度', board, 'board'));
+        place(boardAt(), messageRow('lead', '分工进度', board, 'board'));
       }
       if (!task.redacted && !isExample(state.group) && filter !== 'mine' && !filterSelect.value &&
           (task.state === 'testing' || task.detail === 'isolated_test_sync' || task.testResult || (task.command && terminal.has(task.state)))) {
-        messages.push(messageRow('local', '本机测试', localTestActivity(task)));
+        place(task.testResult?.at || task.updatedAt, messageRow('local', '本机测试', localTestActivity(task)));
+      }
+      // Requirement 7: the project reached the cloud (checked by sha256), and a downloaded patch passed its check.
+      if (!task.redacted && filter !== 'mine' && !filterSelect.value && task.snapshotNotice && routeState.groupFeatures?.snapshotNotice) {
+        const n = task.snapshotNotice;
+        deferred.push({ at: n.at, html: messageRow('local', '项目已上传云端', `<p class="upload-ok">✓ 项目已上传到云端并校验通过：${n.changedFiles} 个文件含未提交改动${n.skipped ? `，跳过 ${n.skipped} 个敏感文件（如 .env、密钥）` : ''}。<span class="mono">sha256 ${esc(n.sha256)}</span></p>`) });
+      }
+      const downloaded = group.patchNotices?.[task.id];
+      if (downloaded && filter !== 'mine' && !filterSelect.value) {
+        deferred.push({ at: downloaded.at, html: messageRow('local', '补丁已下载', `<p class="upload-ok">✓ 补丁已下载到本机并校验通过：${downloaded.fileCount} 个文件，${downloaded.bytes} 字节。<span class="mono">sha256 ${esc(downloaded.sha256.slice(0, 12))}</span></p><p class="group-system">保存在 ${esc(downloaded.path)}。点「应用补丁」把它写入项目。</p>`) });
+      }
+      // Requirement 4: planning failed — the reason and single chats the person can open right away.
+      if (!task.redacted && task.directAdvice && filter !== 'mine' && !filterSelect.value && routeState.groupFeatures?.planFailureAdvice) {
+        const advice = task.directAdvice;
+        const access = { fullAccess: '完全访问', readOnly: '只读' };
+        deferred.push({ at: advice.at, html: messageRow('lead', '下一步建议', `<div class="step-summary"><p><b>规划没有成功：</b>${esc(advice.reason)}。可以先用单聊试试：</p>${
+          (advice.options || []).map((option, index) => `<div class="task-addition"><p><b>${esc(memberName(option.role))}</b>${option.model ? ' · ' + esc(option.model) : ''} · ${access[option.access] || ''} · ${esc(option.why || '')}</p><div class="task-actions"><button type="button" class="btn${index === 0 ? ' primary' : ''}" data-direct-advice="${esc(task.id + ':' + index)}">在单聊打开</button></div></div>`).join('')
+        }</div>`) });
       }
       // What the person said while the work was under way, how the lead applied it, and each member's closing
       // report. Merge them in the order they happened: an old report must not appear below a newer message and
@@ -1188,11 +1215,18 @@ window.__groupReady = (async () => {
           }
         }
       }
+      for (const entry of deferred) addLate(entry.at, entry.html);
       late.sort((a, b) => a.at - b.at || a.order - b.order);
       for (const entry of late) messages.push(entry.html);
       if (filter !== 'mine' && task.acceptance?.verdict && (!filterSelect.value || filterSelect.value === 'lead')) {
-        messages.push(messageRow('lead', '验收总结 · ' + acceptanceLabel(task),
-          `<div class="step-summary"><p>${esc(task.acceptance.summary || acceptanceLabel(task))}</p></div>`, 'summary'));
+        const summaryRow = messageRow('lead', '验收总结 · ' + acceptanceLabel(task),
+          `<div class="step-summary"><p>${esc(task.acceptance.summary || acceptanceLabel(task))}</p></div>`, 'summary');
+        // Q5: in time order the acceptance summary is placed when it was given, not pinned to the end.
+        if (timeline) {
+          const at = Date.parse(task.acceptance.at || '');
+          const index = Number.isFinite(at) ? late.findIndex((entry) => entry.at > at) : -1;
+          if (index >= 0) messages.splice(messages.length - (late.length - index), 0, summaryRow); else messages.push(summaryRow);
+        } else messages.push(summaryRow);
       }
       const reply = ended ? '' : `<button class="task-text-link group-reference" type="button" data-reference="${esc(task.id)}">引用</button>`;
       return messages.length ? `<div class="dispatch-thread" data-message-id="${esc(task.id)}">${messages.join('')}${reply}</div>` : '';
@@ -1598,6 +1632,7 @@ window.__groupReady = (async () => {
           <button class="btn" type="button" data-task-id="${esc(task.id)}" data-task-view="graph">查看调度图</button>
           <button class="btn" type="button" data-task-operation="status" ${busy || !online ? 'disabled' : ''}>刷新</button>
           ${!task.redacted && task.detail === 'patches_ready' ? `<button class="btn primary" type="button" data-task-operation="apply" ${busy || !online ? 'disabled' : ''}>应用补丁</button>` : ''}
+          ${!task.redacted && task.detail === 'patches_ready' && routeState.groupFeatures?.patchDownload ? `<button class="btn" type="button" data-task-operation="patch_download" ${busy || !online ? 'disabled' : ''} title="把云端补丁下载到这台电脑并校验（断网后重新连上时也可以用）">下载补丁</button>` : ''}
           ${!task.redacted && task.pendingRequest ? `<button class="btn" type="button" data-task-operation="reconcile" ${busy || !online ? 'disabled' : ''}>核对操作</button>` : ''}
           ${!task.redacted && task.state && !terminal.has(task.state) ? `<button class="btn danger" type="button" data-task-operation="cancel" ${busy || !online ? 'disabled' : ''}>取消任务</button>` : ''}
           ${!groupEnded(currentGroup()) && !task.redacted && task.prompt && terminal.has(task.state) ? '<button class="btn" type="button" data-task-operation="draft">重跑…</button>' : ''}
@@ -1988,6 +2023,15 @@ window.__groupReady = (async () => {
       if (isExample(group.id)) {
         if (operation === 'cancel') updateTask(group, id, { state: 'cancelled', detail: 'cancelled' });
         if (operation === 'apply') updateTask(group, id, { state: 'completed', detail: '演示补丁已应用。' });
+      } else if (operation === 'patch_download') {
+        // Q4: the patch stays on VPS2 while the computer is offline; once connected it is downloaded and checked.
+        const patch = await control('patch_download', { taskId: id });
+        const saved = await api.savePatch(patch);
+        if (!saved?.ok) throw new Error(saved?.error === 'patch_checksum_mismatch' ? '补丁校验失败，已丢弃，请重试。' : (saved?.error || '补丁保存失败'));
+        if (current !== generation) return;
+        (group.patchNotices ||= {})[id] = { at: new Date().toISOString(), path: saved.path, sha256: patch.sha256, bytes: patch.bytes, fileCount: patch.fileCount };
+        A.toast('补丁已下载并校验通过');
+        render();
       } else {
         if (operation !== 'status') {
           const answer = await control(operation, { taskId: id });
@@ -2515,6 +2559,20 @@ window.__groupReady = (async () => {
       const action = event.target.closest('[data-task-operation]');
       if (task) selectTask(task.dataset.taskId, task.dataset.taskView);
       if (action) taskAction(action.dataset.taskOperation);
+      // Requirement 4: open one of the lead's suggested single chats, with the suggested first message ready.
+      const adviceButton = event.target.closest('[data-direct-advice]');
+      if (adviceButton) {
+        const [taskId, index] = adviceButton.dataset.directAdvice.split(':');
+        const option = currentGroup()?.records?.get(taskId)?.directAdvice?.options?.[Number(index)];
+        if (!option) return;
+        Promise.resolve(A.newDirect(state.group, option.role)).then(() => {
+          const box = $('#input');
+          if (box && !box.value.trim()) { box.value = option.prompt || ''; box.dispatchEvent(new Event('input')); }
+          const mode = $('#modeSelect');
+          if (mode) { mode.value = option.access === 'readOnly' ? 'plan' : 'auto'; mode.dispatchEvent(new Event('change')); }
+        }).catch((error) => A.toast(error.message));
+        return;
+      }
       const directButton = event.target.closest('[data-direct-provider]');
       if (directButton) {
         const provider = directButton.dataset.directProvider;

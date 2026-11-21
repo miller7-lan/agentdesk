@@ -73,7 +73,7 @@ function usedPercent(entry) {
   return values.length ? Math.max(...values) : null;
 }
 
-function validateRoutes(overrides = {}) {
+function validateRoutes(overrides = {}, { anyLead = false } = {}) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('invalid_routing');
   const routes = { ...DEFAULT_ROUTES };
   for (const [capability, list] of Object.entries(overrides)) {
@@ -85,6 +85,8 @@ function validateRoutes(overrides = {}) {
     routes[capability] = [...list];
   }
   // The lead rule is checked after merging overrides so no configuration can widen Claude's role.
+  // Q1 (groupFeatures.anyLead): any member may lead (plan, triage, accept) and Claude may do member work.
+  if (anyLead) return routes;
   for (const [capability, list] of Object.entries(routes)) {
     if (list.includes(LEAD_ROLE) && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_routing:' + capability + ':lead_reserved');
     if (['triage', 'accept'].includes(capability) && (list.length !== 1 || list[0] !== LEAD_ROLE)) {
@@ -101,7 +103,8 @@ class Router {
     this.now = now;
     if (config.writeProviders !== undefined && (!Array.isArray(config.writeProviders) ||
         config.writeProviders.some((role) => !ROLES.includes(role)))) throw new Error('invalid_write_providers');
-    this.routes = validateRoutes(config.routing);
+    this.features = require('./group-features').groupFeatures(config.groupFeatures);
+    this.routes = validateRoutes(config.routing, { anyLead: this.features.anyLead });
     this.quotaPolicy = validateQuotaPolicy(config.quotaPolicy);
     this.blocked = new Map();   // role -> { until, reason }
     this.quota = {};            // role -> percent used (fullest window); absent when the CLI reports no quota
@@ -114,10 +117,16 @@ class Router {
   }
 
   // Unknown quota counts as available; an exhausted quota is still caught from the CLI's own error.
-  quotaAllows(role, capability) {
+  // leadChain (groupFeatures.leadChainQuota, N3): the members of the task's lead chain. Above the soft line
+  // they only take the lead's work (plan, triage, accept); members outside the chain stop only at the hard line.
+  quotaAllows(role, capability, leadChain) {
     const used = this.quota[role];
     const { soft, hard, keepFor } = this.quotaPolicy[role];
     if (used === undefined || used < soft) return true;
+    if (this.features.leadChainQuota && Array.isArray(leadChain)) {
+      if (used >= hard) return false;
+      return leadChain.includes(role) ? capability !== undefined && LEAD_CAPABILITIES.has(capability) : true;
+    }
     return used < hard && capability !== undefined && keepFor.includes(capability);
   }
 
@@ -163,13 +172,13 @@ class Router {
     this.blocked.set(role, { until: this.now() + ms, reason });
   }
 
-  candidates(capability, exclude = []) {
+  candidates(capability, exclude = [], leadChain) {
     return (this.routes[capability] || []).filter((role) =>
-      !exclude.includes(role) && this.available(role) && this.quotaAllows(role, capability));
+      !exclude.includes(role) && this.available(role) && this.quotaAllows(role, capability, leadChain));
   }
 
-  pick(capability, exclude = []) {
-    return this.candidates(capability, exclude)[0] || null;
+  pick(capability, exclude = [], leadChain) {
+    return this.candidates(capability, exclude, leadChain)[0] || null;
   }
 
   canWrite(role) {
@@ -180,7 +189,8 @@ class Router {
     const now = this.now();
     return {
       routes: this.routes,
-      lead: LEAD_ROLE,
+      lead: this.features.anyLead ? null : LEAD_ROLE,
+      anyLead: this.features.anyLead,
       leadCapabilities: [...LEAD_CAPABILITIES],
       quotaUsed: this.quota,
       quotaPolicy: this.quotaPolicy,

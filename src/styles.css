@@ -558,3 +558,6 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .terminal-body { position: relative; flex: 1; min-height: 0; padding: 4px 6px; }
 .terminal-screen { position: absolute; inset: 4px 6px; }
 .chip#terminalBtn.on { background: var(--accent-soft); color: var(--accent); }
+
+/* 群聊 v7：上传云端与补丁下载成功提示 */
+.upload-ok { color: #2e7d4f; }

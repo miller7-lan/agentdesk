@@ -308,6 +308,27 @@ ipcMain.handle('device:info', (event) => {
   } catch (error) { return { ok: false, error: error.message }; }
 });
 
+// Q4 / requirement 7: a group patch downloaded from VPS2 is kept only when its bytes match the sha256 the
+// orchestrator sent; the window then says it arrived. The project is not changed here (that is "应用补丁").
+ipcMain.handle('orchestrator:save-patch', async (event, frame = {}) => {
+  if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+  try {
+    const { taskId, patch, sha256 } = frame || {};
+    if (typeof taskId !== 'string' || !/^[\w-]{1,80}$/.test(taskId) || typeof patch !== 'string' || !/^[0-9a-f]{64}$/.test(sha256 || '')) {
+      return { ok: false, error: 'invalid_patch' };
+    }
+    const bytes = Buffer.from(patch, 'base64');
+    if (createHash('sha256').update(bytes).digest('hex') !== sha256) return { ok: false, error: 'patch_checksum_mismatch' };
+    const folder = path.join(os.homedir(), '.agentdesk', 'patches');
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const file = path.join(folder, taskId + '.patch');
+    fs.writeFileSync(file + '.tmp', bytes, { mode: 0o600 });
+    fs.renameSync(file + '.tmp', file);
+    logger?.audit('patch_download', { taskId, bytes: bytes.length, status: 'ok' });
+    return { ok: true, path: file, bytes: bytes.length };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440,
@@ -1316,7 +1337,7 @@ const orchestrationOperations = new Set([
   'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'approve_addition', 'handover_choose', 'permission_answer',
   'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
   'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance',
-  'status_snapshot', 'cli_upgrade', 'cli_upgrade_status',
+  'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download',
 ]);
 const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
 

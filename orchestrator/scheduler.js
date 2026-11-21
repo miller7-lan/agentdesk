@@ -148,7 +148,7 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
     const dependsOn = step.dependsOn === undefined ? [] : step.dependsOn;
     if (capability !== undefined) {
       if (!router || !Object.hasOwn(CAPABILITIES, capability)) throw new Error('invalid_plan');
-      if (role === LEAD_ROLE && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_plan:lead_capability');
+      if (role === LEAD_ROLE && !router.features?.anyLead && !LEAD_CAPABILITIES.has(capability)) throw new Error('invalid_plan:lead_capability');
       if (!(router.routes[capability].includes(role) && availableRoles.includes(role) &&
         router.quotaAllows(role, capability) && allowedRole(role))) role = choose(capability);
       if (!role) {
@@ -161,7 +161,7 @@ function validateSteps(plan, availableRoles, router, pick, allowedRole = () => t
         const authors = dependsOn.map((id) => writers.get(id)).filter(Boolean);
         if (authors.includes(role)) role = choose(capability, authors) || role;
       }
-    } else if (role === LEAD_ROLE) {
+    } else if (role === LEAD_ROLE && !router?.features?.anyLead) {
       throw new Error('invalid_plan:lead_capability');
     }
     if (!/^[a-z0-9_-]{1,32}$/.test(step.id) || ids.has(step.id) || !availableRoles.includes(role) ||
@@ -215,6 +215,59 @@ function publicTask(task) {
   };
 }
 
+// Requirement 4: planning failures that leave the person without a plan.
+function planningFailure(detail) {
+  return /^(plan_failed|plan_failed_repeatedly|no_executor:plan|executor_waiting:plan|invalid_plan)/.test(String(detail || ''));
+}
+
+// Rule-based single-chat suggestions, so the advice never depends on a lead that just failed: the members that
+// are available now, each on its default model, with the full-access or read-only mode the task needs and the
+// request as the first message.
+function directAdvice(self, task, detail) {
+  const reasons = {
+    plan_failed: '组长这次没能给出可用的方案',
+    plan_failed_repeatedly: '组长连续多次没能给出可用的方案',
+    no_executor: '现在没有可以担任组长的成员（未配置或未登录）',
+    executor_waiting: '能担任组长的成员暂时不可用（额度或登录）',
+    invalid_plan: '组长给出的方案格式不对',
+  };
+  const key = Object.keys(reasons).find((name) => String(detail).startsWith(name)) || 'plan_failed';
+  const readOnly = task.mode === 'chat' || task.mode === 'plan';
+  const order = [...new Set([...(self.router.routes?.implement || []), ...(self.router.routes?.scout || []),
+    ...(self.router.roles?.() || [])])];
+  const roles = order.filter((role) => ['codex', 'claude', 'grok', 'antigravity'].includes(role) &&
+    self.router.available?.(role) !== false).slice(0, 3);
+  const prompt = clip(String(task.prompt || ''), 2000);
+  return {
+    at: new Date(self.now ? self.now() : Date.now()).toISOString(),
+    reason: reasons[key], detail: clip(String(detail || ''), 200),
+    options: roles.map((role, index) => ({
+      role, model: self.defaultModelFor ? self.defaultModelFor(role) || null : null,
+      access: readOnly ? 'readOnly' : 'fullAccess',
+      project: task.project || null, workspace: task.workspace || null,
+      prompt: index === 0 ? prompt : prompt + (readOnly ? '' : '\n\n（先说明你的做法，再动手修改。）'),
+      why: index === 0 ? '这类工作排在第一位的成员' : '另一个能做这类工作的成员，可作对照',
+    })),
+  };
+}
+
+// Q1 (groupFeatures.anyLead): Claude stays reserved for the lead's work only while any-lead is off.
+function leadReserved(self, role) {
+  return role === LEAD_ROLE && !self.features?.anyLead;
+}
+
+// N3 (groupFeatures.leadChainQuota): who may lead this task — the configured plan/triage/accept routes plus the
+// members the person put in those chains. Undefined while the switch is off (the fixed policy then applies).
+function leadChainOf(self, task) {
+  if (!self.features?.leadChainQuota) return undefined;
+  const roles = new Set();
+  for (const capability of LEAD_CAPABILITIES) {
+    for (const role of self.router.routes?.[capability] || []) roles.add(role);
+    for (const entry of self.orderEntries(task, capability)) roles.add(entry.role);
+  }
+  return [...roles];
+}
+
 class Scheduler {
   constructor({ config, store, files, adapter = runAdapter, now = () => Date.now() }) {
     this.config = config;
@@ -226,6 +279,7 @@ class Scheduler {
     retention(config.retention);   // fail at start-up on a bad retention setting, not at the first clean-up
     this.now = now;
     this.router = new Router(config, now);
+    this.features = this.router.features;   // group chat v7 switches (group-features.js)
     this.modelCatalog = null;      // last result of asking each CLI which models its login can use
     this.modelCatalogReading = null;
     this.acceptance = validateAcceptance(config.acceptance);
@@ -561,6 +615,11 @@ event(task, state, detail) {
   }
 
   save(task, state, detail, record = true, data) {
+    // Requirement 4 (groupFeatures.planFailureAdvice): when group planning fails, the task carries a short reason
+    // and two or three single-chat attempts the person can open directly.
+    if (this.features?.planFailureAdvice && ['failed', 'awaiting_details'].includes(state) && planningFailure(detail)) {
+      task.directAdvice = directAdvice(this, task, detail);
+    }
     // Access the person granted on their computer ends with the task.
     if (task.bridgeGrants && terminal.has(state) && !terminal.has(task.state)) {
       this.files?.call?.(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'grants_revoke', workspace: task.workspace }, 30000)?.catch?.(() => {});
@@ -672,7 +731,7 @@ event(task, state, detail) {
     if (mode === 'duo' && body.provider) throw new Error('duo_uses_group_routing');
     const directWriter = this.config.writeProviders?.includes(body.provider);
     if (mode === 'edit' && (!directWriter || !this.router.configured(body.provider))) throw new Error('provider_write_not_enabled');
-    if (body.provider === LEAD_ROLE && !(directWriter && ['edit', 'chat'].includes(mode))) throw new Error('claude_reserved');
+    if (body.provider === LEAD_ROLE && leadReserved(this, LEAD_ROLE) && !(directWriter && ['edit', 'chat'].includes(mode))) throw new Error('claude_reserved');
     if ((body.provider !== undefined && !ROLES.includes(body.provider)) ||
         (body.model !== undefined && (!body.provider || typeof body.model !== 'string' ||
           !modelId.test(body.model)))) throw new Error('invalid_model_selection');
@@ -736,7 +795,7 @@ event(task, state, detail) {
     let entry = this.store.get('broadcasts', id);
     if (entry && (entry.owner !== owner || entry.key !== key)) throw new Error('task_id_conflict');
     if (!entry) {
-      const providers = this.availableRoles().filter((role) => role !== LEAD_ROLE &&
+      const providers = this.availableRoles().filter((role) => !leadReserved(this, role) &&
         this.router.quotaAllows(role, 'scout') && this.ownerAllows({ owner }, role).allowed).slice(0, 5);
       if (!providers.length) throw new Error('no_executor:scout');
       entry = { key, owner, tasks: providers.map((provider) => ({ provider, id: randomUUID() })) };
@@ -767,7 +826,7 @@ event(task, state, detail) {
 
   addDuoReviews(task, steps) {
     if (task.mode !== 'duo') return;
-    const configured = this.router.routes.review.filter((role) => role !== LEAD_ROLE && this.router.configured(role));
+    const configured = this.router.routes.review.filter((role) => !leadReserved(this, role) && this.router.configured(role));
     if (configured.length < 2) throw new Error('duo_requires_two_reviewers');
     // Each review has one distinct provider. Preserve a planned review when it already fills a slot.
     const reviews = steps.filter((step) => step.capability === 'review');
@@ -778,7 +837,7 @@ event(task, state, detail) {
       used.add(review.role);
     }
     while (used.size < 2) {
-      const role = this.pickForTask(task, 'review', [...used, LEAD_ROLE]);
+      const role = this.pickForTask(task, 'review', [...used, ...(leadReserved(this, LEAD_ROLE) ? [LEAD_ROLE] : [])]);
       if (!role) throw new Error('executor_waiting:review');
       const writer = steps.findLast((step) => step.write);
       let index = steps.length;
@@ -978,7 +1037,7 @@ event(task, state, detail) {
       'Reply with JSON alone: {"summary":"one sentence for the person","steps":{"<id>":{"action":"continue|guide|stop","guidance":"...","model":"exact id"}},"add":[]}.',
       JSON.stringify(context),
     ].join('\n');
-    const step = { id: 'revise-' + ((task.revisions || []).length), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task) };
+    const step = { id: 'revise-' + ((task.revisions || []).length), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task, 'triage', lead) };
     const folder = path.join(this.config.stateDir, 'worktrees', task.id, 'group-planner');
     const cwd = await stat(folder).then(() => folder, () => path.join(this.config.stateDir, 'worktrees', task.id));
     await mkdir(cwd, { recursive: true, mode: 0o700 });
@@ -1209,8 +1268,8 @@ event(task, state, detail) {
         const parsed = Scheduler.parseEntry(entry);
         if (!parsed || !this.router.configured(parsed.role)) return false;
         if (parsed.model && !Object.hasOwn(this.config.adapters[parsed.role]?.profiles?.models || {}, parsed.model)) return false;
-        if (lead) return parsed.role === LEAD_ROLE;
-        return parsed.role !== LEAD_ROLE && (!CAPABILITIES[capability].write || this.router.canWrite(parsed.role));
+        if (lead) return this.features?.anyLead || parsed.role === LEAD_ROLE;
+        return !leadReserved(this, parsed.role) && (!CAPABILITIES[capability].write || this.router.canWrite(parsed.role));
       });
     });
   }
@@ -1293,18 +1352,20 @@ event(task, state, detail) {
 
   // Who can take this kind of work now: the configured route plus the members the person added to it.
   candidatesFor(task, capability, exclude = [], fill = false) {
-    const base = this.balanced(task, capability, this.router.candidates(capability, exclude));
+    const leadChain = leadChainOf(this, task);
+    const lead = LEAD_CAPABILITIES.has(capability);
+    const base = this.balanced(task, capability, this.router.candidates(capability, exclude, leadChain));
     const added = [...new Set(this.orderEntries(task, capability).map((entry) => entry.role))].filter((role) =>
-      !base.includes(role) && !exclude.includes(role) && role !== LEAD_ROLE && this.router.configured(role) &&
-      this.router.available(role) && this.router.quotaAllows(role, capability) &&
+      !base.includes(role) && !exclude.includes(role) && (lead ? this.features?.anyLead : !leadReserved(this, role)) &&
+      this.router.configured(role) && this.router.available(role) && this.router.quotaAllows(role, capability, leadChain) &&
       (!CAPABILITIES[capability]?.write || this.router.canWrite(role)));
     const chain = this.ordered(task, capability, [...base, ...added]);
-    if (chain.length || !fill || LEAD_CAPABILITIES.has(capability)) return chain;
+    if (chain.length || !fill || lead) return chain;
     // Filled in: when no member of the chain can take the work at all (quota, login, not set up), every other
     // configured member that can do it steps in, on its newest model, so the step does not sit waiting. A member
     // that is only busy is not filled in for: that wait is short and keeps the configured split.
-    return this.router.roles().filter((role) => role !== LEAD_ROLE && !exclude.includes(role) &&
-      this.router.available(role) && this.router.quotaAllows(role, capability) &&
+    return this.router.roles().filter((role) => !leadReserved(this, role) && !exclude.includes(role) &&
+      this.router.available(role) && this.router.quotaAllows(role, capability, leadChain) &&
       (!CAPABILITIES[capability]?.write || this.router.canWrite(role)));
   }
 
@@ -2239,6 +2300,16 @@ event(task, state, detail) {
     }
     task.snapshot = { head, version, base };
     task.groupPlan.base = base;
+    // Requirement 7 (groupFeatures.snapshotNotice): the project reached the cloud and was checked (sha256).
+    if (this.features?.snapshotNotice) {
+      let changed = 0;
+      if (bytes.length) {
+        try { changed = (await git(path.join(root, 'project-snapshot'), ['diff', '--name-only', head, base], signal)).split('\n').filter(Boolean).length; }
+        catch {}
+      }
+      task.snapshotNotice = { at: new Date(this.now()).toISOString(), changedFiles: changed, skipped: task.snapshotSkipped?.length || 0,
+        bytes: bytes.length, sha256: version.slice(0, 12), head: head.slice(0, 12) };
+    }
     this.save(task, 'planning', 'project_snapshot_ready');
   }
 
@@ -2298,7 +2369,7 @@ event(task, state, detail) {
         this.waitForExecutor(task, 'plan');
         return;
       }
-      const model = this.leadModelFor(task);
+      const model = this.leadModelFor(task, 'plan', lead);
       const retained = plan.executor;
       const step = retained?.role === lead && retained.requestedModel === model ? retained
         : { id: 'group-planner', role: lead, capability: 'plan', write: false, model, requestedModel: model };
@@ -2479,7 +2550,7 @@ event(task, state, detail) {
     }
     const round = acceptSteps.length + 1;
     const step = {
-      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true, model: this.leadModelFor(task, 'accept'),
+      id: 'accept-' + round, role: lead, capability: 'accept', write: false, usesBrief: true, model: this.leadModelFor(task, 'accept', lead),
       state: 'queued', attempts: 0,
       dependsOn: task.steps.filter((item) => !this.isAcceptStep(item) && item.state === 'completed').map((item) => item.id),
       prompt: 'You are the lead accepting this task. Decide whether the work satisfies the request and the plan.',
@@ -2921,7 +2992,7 @@ event(task, state, detail) {
     task.lastStepFailure = failed.map((step) => ({ step: step.id, role: step.role, model: step.model, capability: step.capability,
       error: clip(step.error || error.message, 600), tried: step.history, round: step.reassigns, limit: MAX_REASSIGN }));
     // The lead may switch to another member or another model of the same member; these are the choices.
-    task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => role !== LEAD_ROLE), this.config.adapters);
+    task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => !leadReserved(this, role)), this.config.adapters);
     task.pendingTriage ||= { reason: 'step_failed', applied: Boolean(task.applied) };
     return true;
   }
@@ -2939,7 +3010,7 @@ event(task, state, detail) {
       for (const model of [...new Set([preferred, ...newestFirst(models)])].filter(Boolean)) pairs.push([role, model]);
       if (!models.length) pairs.push([role, '']);
     }
-    return pairs.find(([role, model]) => !tried.has(role + '@' + model) && role !== LEAD_ROLE &&
+    return pairs.find(([role, model]) => !tried.has(role + '@' + model) && !leadReserved(this, role) &&
       (!step.write || this.router.canWrite(role)) && this.ownerAllows(task, role).allowed) || null;
   }
 
@@ -3055,7 +3126,7 @@ event(task, state, detail) {
       JSON.stringify({ request: clip(task.prompt, 2000), step: { id: step.id, role: step.role, capability: step.capability, prompt: clip(step.prompt, 800), error: clip(step.error || '', 400) },
         denials: step.denials }),
     ].join('\n');
-    const decider = { id: 'access-' + step.id + '-' + ((step.accessAsked || []).length + 1), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task, 'triage') };
+    const decider = { id: 'access-' + step.id + '-' + ((step.accessAsked || []).length + 1), role: lead, capability: 'triage', write: false, model: this.leadModelFor(task, 'triage', lead) };
     const folder = path.join(this.config.stateDir, 'worktrees', task.id);
     await mkdir(folder, { recursive: true, mode: 0o700 });
     const { output } = await this.execute(task, decider, folder, signal, prompt);
@@ -3117,7 +3188,7 @@ event(task, state, detail) {
       if (terminal.has(task.state) || body.stop === true) throw new Error('step_finished');
       if (LEAD_CAPABILITIES.has(step.capability)) throw new Error('invalid_handover');
       const role = body.role;
-      if (typeof role !== 'string' || role === LEAD_ROLE || !this.router.configured(role) || (step.write && !this.router.canWrite(role))) throw new Error('invalid_handover');
+      if (typeof role !== 'string' || leadReserved(this, role) || !this.router.configured(role) || (step.write && !this.router.canWrite(role))) throw new Error('invalid_handover');
       if (body.model !== undefined && (typeof body.model !== 'string' || !Object.hasOwn(this.config.adapters[role]?.profiles?.models || {}, body.model))) throw new Error('invalid_handover');
       if (step.role !== role) delete step.session;
       step.role = role;
@@ -3136,7 +3207,7 @@ event(task, state, detail) {
       this.save(task, task.state, step.id + ':stopped_by_person');
     } else {
       const role = body.role;
-      if (typeof role !== 'string' || role === LEAD_ROLE || !this.router.configured(role) || (step.write && !this.router.canWrite(role))) throw new Error('invalid_handover');
+      if (typeof role !== 'string' || leadReserved(this, role) || !this.router.configured(role) || (step.write && !this.router.canWrite(role))) throw new Error('invalid_handover');
       if (body.model !== undefined && (typeof body.model !== 'string' || !Object.hasOwn(this.config.adapters[role]?.profiles?.models || {}, body.model))) throw new Error('invalid_handover');
       this.moveStep(task, step, role, body.model, body.effort, 'chosen');
     }
@@ -3149,7 +3220,7 @@ event(task, state, detail) {
 
   // The executor the lead named, when it can take this capability now; otherwise undefined.
   namedExecutor(task, capability, executor) {
-    if (typeof executor !== 'string' || executor === LEAD_ROLE) return undefined;
+    if (typeof executor !== 'string' || leadReserved(this, executor)) return undefined;
     return this.candidatesFor(task, capability, []).includes(executor) && this.ownerAllows(task, executor).allowed
       ? executor : undefined;
   }
@@ -3274,7 +3345,13 @@ event(task, state, detail) {
   // The lead's model: the one the person picked for this group, else the configured leadModel, else the newest
   // Opus, else the lead's default. It is always passed to the CLI, so the lead never falls back to whatever model
   // the CLI's own sign-in defaults to (which can be a small one).
-  leadModelFor(task, capability = 'plan') {
+  leadModelFor(task, capability = 'plan', role = LEAD_ROLE) {
+    // Q1: a lead other than Claude uses the model the person listed for it in that chain, else its own default.
+    if (role && role !== LEAD_ROLE) {
+      const own = this.config.adapters[role]?.profiles?.models || {};
+      if (task?.leadModel && Object.hasOwn(own, task.leadModel)) return task.leadModel;
+      return this.orderModels(task, capability, role)[0] || this.orderModels(task, 'plan', role)[0] || this.defaultModelFor(role);
+    }
     const profiles = this.config.adapters[LEAD_ROLE]?.profiles;
     const models = Object.keys(profiles?.models || {});
     if (task?.leadModel && models.includes(task.leadModel)) return task.leadModel;
@@ -3315,14 +3392,14 @@ event(task, state, detail) {
     }
     // The brief was captured when the step failed; refresh the model choices in case the config changed since.
     if (escalation.reason === 'step_failed') {
-      task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => role !== LEAD_ROLE), this.config.adapters);
+      task.reassignOptions = plannerProfiles(this.availableRoles().filter((role) => !leadReserved(this, role)), this.config.adapters);
     }
     let step = escalation.stepId && task.steps.find((item) => item.id === escalation.stepId);
     if (!step) {
       const reassign = escalation.reason === 'step_failed';
       const round = reassign ? task.reassignRounds + '-' + (task.lastStepFailure?.[0]?.step || 'step') : (task.triageRounds || 0) + 1;
       step = {
-        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true, model: this.leadModelFor(task, 'triage'),
+        id: (reassign ? 'reassign-' : 'triage-') + round, role: lead, capability: 'triage', write: false, usesBrief: true, model: this.leadModelFor(task, 'triage', lead),
         state: 'queued', attempts: 0, dependsOn: [], reason: escalation.reason,
         prompt: 'Diagnose this escalation and choose exactly one next action.',
         brief: buildTriageBrief(task, escalation.reason),
@@ -3495,6 +3572,29 @@ event(task, state, detail) {
     return steps;
   }
 
+  // O2 (groupFeatures.applyPause): while a patch is written into the person's project, new local commands for
+  // that project wait; running commands and terminals are not touched. The wait ends after 60 s at most, so a
+  // stuck apply never blocks commands for good.
+  holdApply(workspace) {
+    if (!this.features?.applyPause) return () => {};
+    this.applying ||= new Map();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    this.applying.set(workspace, gate);
+    return () => { if (this.applying.get(workspace) === gate) this.applying.delete(workspace); release(); };
+  }
+
+  async waitForApply(workspace, signal, limitMs = 60_000) {
+    const gate = this.applying?.get(workspace);
+    if (!gate) return { waited: false };
+    let timer;
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), limitMs); });
+    const aborted = signal ? new Promise((resolve) => signal.addEventListener('abort', () => resolve('aborted'), { once: true })) : null;
+    const outcome = await Promise.race([gate.then(() => 'applied'), timeout, ...(aborted ? [aborted] : [])]);
+    clearTimeout(timer);
+    return { waited: true, outcome };
+  }
+
   async apply(task, force = false) {
     if (!task || task.state !== 'needs_review' || task.pendingRequest || this.running.has(task.id) ||
       !['patches_ready', 'accepted_with_risk'].includes(task.detail)) {
@@ -3518,8 +3618,11 @@ event(task, state, detail) {
       task.pendingRequest = messageId();
       task.pendingKind = 'patch';
       this.save(task, 'applying', 'patch_started');
-      task.applied = await this.files.patch(this.bridgeRoute(task.workspace), task.id, task.workspace, task.snapshot?.head || task.base,
-        Buffer.concat(patches), task.pendingRequest, controller.signal, task.snapshot?.version);
+      const releaseApply = this.holdApply(task.workspace);
+      try {
+        task.applied = await this.files.patch(this.bridgeRoute(task.workspace), task.id, task.workspace, task.snapshot?.head || task.base,
+          Buffer.concat(patches), task.pendingRequest, controller.signal, task.snapshot?.version);
+      } finally { releaseApply(); }
       delete task.pendingRequest;
       delete task.pendingKind;
       if (task.command && !isolated && !controller.signal.aborted) {
@@ -3669,6 +3772,7 @@ event(task, state, detail) {
         providers: this.availableRoles(), writeProviders: (this.config.writeProviders || []).filter((role) => this.router.configured(role)),
         modelProfiles: Object.fromEntries(this.router.roles().map(role => [role, this.config.adapters[role].profiles])),
         directAttachments: true,
+        groupFeatures: this.features,
         // How work is handed out right now, so the desktop can show who takes what and why others are skipped.
         team: { ...this.router.status(), configured: this.router.roles(),
           authRequired: this.router.roles().filter((role) => this.config.adapters[role]?.authRequired) },
@@ -3694,6 +3798,21 @@ event(task, state, detail) {
     const sameProject = named && this.isProjectMember(task?.project, named);
     if (named && this.config.workspaces[task?.workspace]?.sshBridge !== named && !sameProject) throw new Error('unknown_task');
     const owner = route === 'admin' || (named && task?.owner === named);
+    // Q4 / requirement 7 (groupFeatures.patchDownload): the reviewed patch, kept on VPS2 while the computer was
+    // offline, downloaded to the computer with its sha256 so the desktop can check it before saying it arrived.
+    if (body.operation === 'patch_download') {
+      if (!this.features?.patchDownload) throw new Error('unsupported_operation');
+      if (!task || !owner) throw new Error('task_access_denied');
+      if (task.state !== 'needs_review' || !['patches_ready', 'accepted_with_risk'].includes(task.detail)) throw new Error('patch_not_ready');
+      const writers = (task.steps || []).filter((step) => step.write && step.paths?.length && !step.supersededBy);
+      return Promise.all(writers.map((step) => readFile(path.join(this.config.stateDir, 'worktrees', task.id, step.id + '.patch')))).then((parts) => {
+        const patch = Buffer.concat(parts);
+        if (patch.length > 3 * 1024 * 1024) throw new Error('patch_too_large');
+        const files = [...new Set(writers.flatMap((step) => step.paths || []))];
+        return { taskId: task.id, base: task.snapshot?.head || task.base, sha256: createHash('sha256').update(patch).digest('hex'),
+          bytes: patch.length, files: files.slice(0, 200), fileCount: files.length, patch: patch.toString('base64') };
+      });
+    }
     if (['task_diff', 'task_log', 'task_artifacts', 'task_activity'].includes(body.operation)) {
       if (!task || !owner) throw new Error('task_access_denied');
       if (body.operation === 'task_activity') return stepActivity(this.config.stateDir, task, body.stepId);
