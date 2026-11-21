@@ -16,6 +16,12 @@ class WindowsProjectLeases {
   constructor(journal, { locks } = {}) {
     this.locks = locks || new FileLockManager();
     this.watchers = new Map();
+    // Bypass detection watches a project only while one of its files is locked: an open directory watch keeps
+    // the folder busy on Windows (it could not be renamed or deleted), so it is not held longer than needed.
+    this.locks.on('event', (event) => {
+      if (event.type === 'acquired') this.watchFor(event.path);
+      else if (event.type === 'released') this.unwatchIdle();
+    });
     this.leases = new Map();
     this.channels = new Map();
     this.reconciling = new Set();
@@ -168,10 +174,7 @@ class WindowsProjectLeases {
         };
       },
     })(input, output);
-    // Detect writes to locked files that do not come through AgentDesk (they cannot be stopped, only reported).
-    const unwatch = this.watchProject(lease);
     const done = channel.done.finally(() => {
-      unwatch();
       this.locks.release(lease.id, 'disconnected');
       this.channels.delete(lease.id);
       if ((wrote && !clean) || lease.fileOperation) lease.unknownFiles = true;
@@ -189,21 +192,20 @@ class WindowsProjectLeases {
     return mounted;
   }
 
-  watchProject(lease) {
-    const key = lease.key;
-    let entry = this.watchers.get(key);
-    if (!entry) {
-      entry = { count: 0, close: this.locks.watchProject(lease.directory) };
-      this.watchers.set(key, entry);
+  // Detect writes to locked files that do not come through AgentDesk (they cannot be stopped, only reported).
+  watchFor(file) {
+    const lease = [...this.leases.values()].find((item) => !path.relative(item.directory, file).startsWith('..'));
+    if (!lease || this.watchers.has(lease.key)) return;
+    this.watchers.set(lease.key, { directory: lease.directory, close: this.locks.watchProject(lease.directory) });
+  }
+
+  unwatchIdle() {
+    const held = this.locks.status().locks.map((item) => item.path);
+    for (const [key, entry] of this.watchers) {
+      if (held.some((file) => !path.relative(entry.directory, file).startsWith('..'))) continue;
+      entry.close();
+      this.watchers.delete(key);
     }
-    entry.count += 1;
-    let closed = false;
-    return () => {
-      if (closed) return;
-      closed = true;
-      entry.count -= 1;
-      if (!entry.count) { entry.close(); this.watchers.delete(key); }
-    };
   }
 
   // Q2: a session's locks end with its turn (or earlier after 30 s without a write).
