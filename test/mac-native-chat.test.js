@@ -37,12 +37,18 @@ test('on a Mac local_shell runs a login shell in the project, keeps its results 
   await assert.rejects(shell.call(readOnly, { action: 'run', shell: 'bash', command: 'true' }, { requestId: 'r' }), /native_chat_read_only/);
 });
 
-test('on a Mac the commands are sandboxed away from credential folders and the keychain', () => {
-  const profile = macSandboxProfile({ home: '/Users/me', extra: ['/Users/me/Library/Application Support/AgentDesk/native-chat'] });
-  for (const folder of ['/Users/me/.ssh', '/Users/me/.aws', '/Users/me/Library/Keychains', '/Users/me/.agentdesk', '/Users/me/.codex',
-    '/Users/me/Library/Application Support/AgentDesk/native-chat']) assert.ok(profile.includes('(subpath "' + folder + '")'), folder);
-  assert.match(profile, /\(allow default\)/);
-  assert.match(profile, /com\.apple\.SecurityServer/);
+test('on a Mac the commands have the person\'s own access; only AgentDesk\'s own secrets stay closed', () => {
+  const profile = macSandboxProfile({ home: '/Users/me', extra: ['/opt/bridge-state'] });
+  for (const folder of ['/Users/me/.agentdesk', '/Users/me/Library/Application Support/AgentDesk', '/opt/bridge-state']) {
+    assert.ok(profile.includes('(subpath "' + folder + '")'), folder);
+  }
+  for (const folder of ['/Users/me/.ssh', '/Users/me/.aws', '/Users/me/.npmrc', '/Users/me/Library/Keychains']) {
+    assert.ok(!profile.includes(folder), folder + ' is open, so git push, npm and cloud CLIs work');
+  }
+  assert.doesNotMatch(profile, /SecurityServer/);                     // the keychain is reachable
+  const strict = macSandboxProfile({ home: '/Users/me', strict: true });   // still available when wanted
+  assert.ok(strict.includes('(subpath "/Users/me/.ssh")'));
+  assert.match(strict, /SecurityServer/);
   assert.equal(shellSpecFor('darwin').inputSchema.properties.shell.enum.join(), 'zsh,bash');
   assert.equal(shellSpecFor('win32').inputSchema.properties.shell.enum.join(), 'powershell,cmd');
 });

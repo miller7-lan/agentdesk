@@ -96,13 +96,13 @@
 
 二点五、Mac 原生单聊（按 docs/MAC-NATIVE-CHAT.md 的「验收」逐项做，每项先告诉我要做什么）：
 - 确认 VPS2 有 /opt/agentdesk-orchestrator/native-project-session-host.js，以及 sshfs 和 unshare（没有就按 docs/WINDOWS-NATIVE-CHAT-DEPLOY.md 部署，先问我）。
-- Codex、Claude、Grok、Antigravity 各开一个「完全访问」单聊，检查：直接读项目、改文件落盘、git status 和测试命令有真实输出、长命令能停止、cat ~/.ssh/config 和 security find-generic-password 被拒绝、断线恢复后能查到原命令结果。
+- Codex、Claude、Grok、Antigravity 各开一个「完全访问」单聊，检查：直接读项目、改文件落盘、git status 和测试命令有真实输出、长命令能停止、在测试仓库 git push 测试分支能成功、ls ~/.agentdesk 被拒绝、断线恢复后能查到原命令结果。
 
 三、做完后给我一份汇报：
 - VPS2 和 Mac 各自完成了什么、确认标准是否都通过；VPS2 的 git 提交号和主机指纹。
 - 附件测试：列一张表，行是 Codex、Claude、Grok、Antigravity、群聊，列是图片、xlsx 或 pdf、文件夹、粘贴，每格写通过或失败原因。
 - 群聊新功能：组长模型、方案确认、@成员、改方向、派遣单聊（排版、指导、交回群聊、按模型分开和复用）、泳道连线，每项写通过或失败原因。
-- Mac 原生单聊（只在 Mac 汇报里）：四个模型各一行，列是读项目、改文件、git 和测试、停止长命令、凭据被拒、断线恢复，每格写通过或失败原因。
+- Mac 原生单聊（只在 Mac 汇报里）：四个模型各一行，列是读项目、改文件、git 和测试、停止长命令、git push、AgentDesk 密钥被拒、断线恢复，每格写通过或失败原因。
 - 需要我处理的事项：Antigravity 授权、callLimits 数字确认等。
 - 失败项：附上日志或报错原文，并说明是否已回滚。
 ````

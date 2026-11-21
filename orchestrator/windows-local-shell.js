@@ -23,7 +23,7 @@ const localShellSpec = {
 // macOS: the person's own login shell environment (zsh by default, or bash), in the project folder.
 const macLocalShellSpec = {
   type: 'function', name: 'local_shell',
-  description: 'Run commands on the person\u2019s Mac in the active project, like a terminal there: git, npm, python, make, xcodebuild and so on. Uses zsh by default or specify bash. A long command returns runId. Use status with the saved cursors for new logs, or stop to terminate a run. Check a known run before retrying after a disconnect. Credential folders (SSH keys, keychain and the like) are not reachable from these commands.',
+  description: 'Run commands on the person\u2019s Mac in the active project, like a terminal there: git, npm, python, make, xcodebuild and so on. Uses zsh by default or specify bash. A long command returns runId. Use status with the saved cursors for new logs, or stop to terminate a run. Check a known run before retrying after a disconnect. Commands have the person\u2019s own access (SSH keys and the keychain included, so git push works); only AgentDesk\u2019s own folders are closed.',
   inputSchema: {
     type: 'object', additionalProperties: false, required: ['action'],
     properties: {
@@ -57,16 +57,19 @@ function environment(value) {
   return env;
 }
 
-// macOS: commands run as the person, but credential folders and the keychain service stay closed: sandbox-exec
-// with a profile that allows everything else. The same folders the read-only mount hides (sftp-readonly HIDDEN),
-// AgentDesk's own folder and the native-chat worker's state.
-function macSandboxProfile({ home = os.homedir(), extra = [] } = {}) {
+// macOS: commands run as the person with everything open — SSH keys, the keychain, ~/.npmrc, cloud logins — so
+// git push, npm and the like work and the task gets done. Only AgentDesk's own secrets stay closed (sandbox-exec):
+// ~/.agentdesk (the Bridge's SSH key to VPS2), the app's data folder (the native-chat worker key) and any extra
+// folder the caller names. No task needs them, and with them a model could act as this computer towards VPS2.
+// `strict: true` also closes the credential folders the read-only mount hides (sftp-readonly HIDDEN) and the keychain.
+function macSandboxProfile({ home = os.homedir(), extra = [], strict = false } = {}) {
   const quote = (value) => '"' + String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-  const folders = [...HIDDEN.map((entry) => path.posix.join(home, entry)), path.posix.join(home, '.agentdesk'), ...extra];
+  const own = [path.posix.join(home, '.agentdesk'), path.posix.join(home, 'Library', 'Application Support', 'AgentDesk'), ...extra];
+  const folders = strict ? [...HIDDEN.map((entry) => path.posix.join(home, entry)), ...own] : own;
   return ['(version 1)', '(allow default)',
     '(deny file-read* file-write* ' + folders.map((folder) => '(subpath ' + quote(folder) + ')').join(' ') + ')',
     // the keychain is reached through this service, not through files
-    '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))'].join('\n');
+    ...(strict ? ['(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd"))'] : [])].join('\n');
 }
 
 function posixInvocation(shell = 'zsh', script, { profile } = {}) {
