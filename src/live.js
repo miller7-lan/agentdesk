@@ -708,7 +708,7 @@
     }
     switch (c) {
       case '/new': clear(); A.newDirect(undefined, agent); return true;
-      case '/review': ta.value = `请审查 ${rootOf(s)} 中尚未提交的改动：先用一次 ssh_exec 运行 git status --short 和 git diff，然后按严重程度列出问题、风险和建议。不要修改任何文件。`; A.autosize(); return false;
+      case '/review': ta.value = `请审查 ${rootOf(s)} 中尚未提交的改动：先查看本机项目已授权的命令，若可用则读取 git status 和 git diff；也可以用本机文件工具核对改动。按严重程度列出问题、风险和建议，说明未能核对的部分。不要修改任何文件。`; A.autosize(); return false;
       case '/compact': clear(); if (!s?.threadId) { toast('当前会话还没有内容'); return true; }
         ensureReady(s).then((ok) => ok && subscribe(s)).then(() => cx.request('thread/compact/start', { threadId: s.threadId }))
           .then((r) => toast(r?.ok ? '已开始压缩上下文' : '压缩失败：' + (r?.error || ''))); return true;

@@ -5,14 +5,16 @@
 ## 1. 安装应用并选定版本
 
 1. 向 VPS2 管理员确认线上提交、SSH 主机和端口，以及从服务器控制台核验过的 ED25519 主机公钥和指纹。更新顺序为 **VPS2 主控 → Mac Bridge → Mac 应用**。只用单聊时可以跳过 Bridge。
-2. 在 Mac 执行 `uname -m`。Apple Silicon 使用 `arm64`，Intel 使用 `x86_64` 对应的 `x64` 构建。已上线的群聊版本为 `6402f7687864fac61d52331cfe514aa948253a5b`，其通用 [macOS 安装包](https://github.com/miller7-lan/agentdesk/actions/runs/44749806359/artifacts/14635410265) 由 GitHub Actions 构建，连接参数由各设备自行配置。
+2. 在 Mac 执行 `uname -m`。Apple Silicon 使用 `arm64`，Intel 使用 `x86_64` 对应的 `x64` 构建。在目标提交的 [跨平台构建记录](https://github.com/miller7-lan/agentdesk/actions/workflows/release.yml) 下载同一运行的 `agentdesk-mac` 或 `agentdesk-windows`。安装包可能共用版本号，请核对运行的完整提交 SHA；连接参数由各设备自行配置。
 3. 解压 Actions 产物，打开对应架构的 DMG。更新已有安装时先退出 AgentDesk，备份旧版 `/Applications/AgentDesk.app` 到独立目录，再将新版拖入「应用程序」。沿用 `~/.agentdesk` 和 `~/Library/Application Support/AgentDesk` 中已有的数据。
 4. 如果缺少目标架构的安装包，用 Node.js 24 在 Mac 从同一提交构建。
 
 ```sh
 git clone https://github.com/miller7-lan/agentdesk.git "$HOME/AgentDesk-src"
 cd "$HOME/AgentDesk-src"
-git switch --detach 6402f7687864fac61d52331cfe514aa948253a5b
+git fetch origin
+# 将下面的 SHA 替换为所选构建页面的完整提交号
+git switch --detach "替换为所选构建的提交号"
 npm ci
 # Apple Silicon
 npm run dist:mac -- --arm64 --publish never
@@ -20,6 +22,8 @@ npm run dist:mac -- --arm64 --publish never
 ```
 
 本机编译时从 `dist` 中对应架构的目录安装 `AgentDesk.app`。分发包的签名和公证见 [签名与发布](SIGNING.md)。
+
+首次绑定本机项目时选择实际工作文件夹。普通目录会初始化本地 Git 仓库，已有仓库或仓库子目录沿用已有版本记录。文件仍在原目录，提交和推送由用户决定。单聊沿用绑定；群聊另按 Bridge 和 VPS 主控配置选择项目。
 
 ## 2. 登记设备 SSH 公钥
 
