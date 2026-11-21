@@ -44,7 +44,8 @@
       "windows-files.js",
       "local-change.js",
       "orchestrator/*.js",
-      "updates.js"
+      "updates.js",
+      "device-identity.js"
     ],
     "win": {
       "target": [

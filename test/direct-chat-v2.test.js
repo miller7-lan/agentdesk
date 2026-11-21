@@ -14,7 +14,11 @@ const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 
 function temporary(t, prefix = 'agentdesk-v2-') {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  // Hooks run in the order they were added, so this runs before the clients close: never let a busy folder fail it.
+  t.after(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    try { fs.rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); } catch {}
+  });
   return folder;
 }
 
@@ -230,6 +234,8 @@ test('A16: on one device four sessions run their CLI, the fifth waits in line un
   }
   assert.ok(fs.readdirSync(path.join(env.state, 'slots', 'active')).some((name) => name.includes(threads[4])));
   for (const id of threads.slice(1)) await chat.request('turn/interrupt', { threadId: id });
+  for (const id of turns.slice(1)) await chat.waitFor('turn/completed', (params) => params.turn.id === id, 8000);
+  chat.close();
 });
 
 test('status/read reports CLI version with source and time, and a missing quota as unknown (not 0%)', async (t) => {

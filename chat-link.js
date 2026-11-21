@@ -19,8 +19,9 @@ const DEFAULTS = {
 };
 
 class ChatLink extends EventEmitter {
-  constructor({ agent, config, spawnProcess = spawn, timing = {} } = {}) {
+  constructor({ agent, config, spawnProcess = spawn, timing = {}, deviceHello } = {}) {
     super();
+    this.deviceHello = deviceHello;
     if (!AGENTS.has(agent)) throw new Error('unknown_chat_agent');
     this.agent = agent;
     this.cfg = { ...DEFAULTS, ...loadConfig(), ...(config || {}) };
@@ -169,9 +170,13 @@ class ChatLink extends EventEmitter {
       }
     });
 
+    // D6: the device hello. The server compares it with the identity of this computer's key; a v1 server ignores it.
+    let device = null;
+    try { device = this.deviceHello?.(); } catch {}
     this.request('initialize', {
       clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: require('./package.json').version },
       capabilities: {},
+      ...(device && { device }),
     }, { internal: true, timeoutMs: this.timing.handshake }).then((info) => {
       if (this.child !== child) return;
       this.ready = true;

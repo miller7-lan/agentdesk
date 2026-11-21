@@ -1209,8 +1209,12 @@
     const s = sess(state.active);
     if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
     if (isChat(s)) {
+      // D9: success is shown only after the server's receipt; before that the pill says where the file is.
+      const label = (file) => file.upload?.state === 'received' ? '✓ 已上传（服务器已校验）'
+        : file.upload?.state === 'uploading' ? `上传中 ${Math.round((file.upload.progress || 0) * 100)}%`
+          : file.upload?.state === 'failed' ? '上传失败，发送时会重试' : '仅在本机，未上传';
       $('#attachList').innerHTML = (s.chatAttachments || []).map(file =>
-        `<button type="button" class="attach-pill" data-live-chat-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
+        `<button type="button" class="attach-pill${file.upload?.state === 'received' ? ' ok' : file.upload?.state === 'failed' ? ' failed' : ''}" data-live-chat-attachment="${esc(file.id)}" title="${esc(label(file))}；点击移除">${esc(file.name)} · ${esc(label(file))} ×</button>`).join('');
       return;
     }
     $('#attachList').innerHTML = (s?.codexAttachments || []).map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
@@ -1230,12 +1234,26 @@
   }, true);
   // Claude / Grok / Antigravity chats: any file type, up to MAX_ATTACH per message; a folder arrives as one .zip.
   const MAX_ATTACH = 10;
+  // Direct chat v2 (D9): attachments go to the server as soon as they are chosen, when the conversation exists.
+  function uploadNow(s, files) {
+    if (!files.length || !s.threadId || !fileApi.uploadChat) return;
+    fileApi.uploadChat(agentOf(s), s.threadId, files.map((file) => file.id)).catch(() => {});
+  }
+  window.desk?.chat?.onAttachment?.((event) => {
+    for (const s of D.sessions || []) {
+      const file = (s.chatAttachments || []).find((item) => item.id === event.id);
+      if (!file) continue;
+      file.upload = { state: event.state, progress: event.progress, receivedAt: event.receivedAt, error: event.error };
+      if (state.active === s.id && !state.group) renderAtt();
+    }
+  });
   function addChatFiles(s, { files = [], errors = [] }) {
     const current = s.chatAttachments || [];
     const accepted = files.slice(0, Math.max(0, MAX_ATTACH - current.length));
     s.chatAttachments = [...current, ...accepted];
     for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
     if (state.active === s.id && !state.group) renderAtt();
+    uploadNow(s, accepted);
     const folders = accepted.filter((file) => file.folder);
     if (errors.length || accepted.length < files.length) toast(errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
     else if (folders.length) toast(folders.map((file) => `${file.name}：已打包 ${file.folder.files} 个文件${file.folder.skipped.length ? `（跳过 ${file.folder.skipped.slice(0, 3).join('、')}${file.folder.skipped.length > 3 ? ' 等' : ''}）` : ''}`).join('；'));

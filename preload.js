@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('desk', {
     complete: () => ipcRenderer.invoke('onboarding:complete'),
     reset: () => ipcRenderer.invoke('onboarding:reset'),
   },
+  device: { info: () => ipcRenderer.invoke('device:info') },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     add: (project) => ipcRenderer.invoke('projects:add', project),
@@ -100,6 +101,8 @@ contextBridge.exposeInMainWorld('desk', {
   files: {
     pick: (folders = false, projectId) => ipcRenderer.invoke('files:pick', folders, projectId),
     pickChat: (projectId, folders = false) => ipcRenderer.invoke('files:pickChat', projectId, folders),
+    // Direct chat v2: upload staged attachments to their conversation now; states arrive through chat.onAttachment.
+    uploadChat: (agent, threadId, ids) => ipcRenderer.invoke('files:uploadChat', agent, threadId, ids),
     // Any dropped file or folder (a folder becomes one .zip), for Claude / Grok / Antigravity chats and group tasks.
     dropChat: (projectId, files) => ipcRenderer.invoke('files:dropChat', projectId,
       [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),
@@ -145,6 +148,7 @@ contextBridge.exposeInMainWorld('desk', {
     wake: (agent) => ipcRenderer.invoke('chat:wake', agent),
     reconnect: (agent) => ipcRenderer.invoke('chat:reconnect', agent),
     onEvent: on('chat:event'),
+    onAttachment: on('chat:attachment'),
     onServerRequest: on('chat:server-request'),
     onStatus: on('chat:status-event'),
     onDown: on('chat:down'),

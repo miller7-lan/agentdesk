@@ -99,7 +99,9 @@ function finishCheckpoint(turnId) {
 }
 const filePolicies = new Map();
 // Claude / Grok / Antigravity 单聊：线程在 VPS 上，工具调用回到本机执行
-const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent })]));
+const deviceIdentity = require('./device-identity');
+const deviceHello = () => deviceIdentity.hello({ appVersion: app.getVersion(), capabilities: ['attachmentsV2', 'statusSubscribe', 'localShell', 'nativeSeat'] });
+const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent, deviceHello })]));
 const chatThreads = new Map();
 const chatTurns = new Map();
 
@@ -292,6 +294,17 @@ ipcMain.handle('projects:initialCommit', async (event, { id } = {}) => {
   if (!project?.localRoot) return { ok: false, error: '找不到该本机项目。' };
   try { return { ok: true, ...await require('./app-config').retryInitialCommit(project.localRoot) }; }
   catch (error) { return { ok: false, error: error.message }; }
+});
+
+// D6: what the person gives the administrator for `ad device approve` (public keys only; no private key is read).
+ipcMain.handle('device:info', (event) => {
+  if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+  try {
+    const keys = {};
+    for (const agent of CHAT_AGENTS) keys['chat-' + agent] = chatLinks.get(agent)?.key;
+    keys.codex = remote.cfg.codexKey;
+    return { ok: true, ...deviceIdentity.registrationInfo(keys) };
+  } catch (error) { return { ok: false, error: error.message }; }
 });
 
 function createWindow() {
@@ -1022,6 +1035,67 @@ ipcMain.handle('chat:reconnect', (event, agent) => {
   try { return chatLink(agent).reconnect(); } catch { return false; }
 });
 
+// D9: upload a staged attachment to its conversation now, and report each state to the window. Success is shown
+// only from the server's commit receipt (size and sha256 checked, stored, bound to this device and session).
+async function uploadChatAttachmentV2(link, agent, threadId, id) {
+  const file = chatAttachments.get(id);
+  if (!file) throw Error('invalid_attachment');
+  const state = file.v2?.threadId === threadId ? file.v2 : null;
+  if (state?.state === 'received') return state.attachmentId;
+  if (state?.uploading) return state.uploading;
+  const notify = (fields) => toUi('chat:attachment', { agent, threadId, id, name: file.item.name, size: file.item.size, ...fields });
+  const job = (async () => {
+    let attachmentId = state?.attachmentId;
+    let offset = 0;
+    if (attachmentId) {
+      // Resume where the server stopped (after a failure or a reconnect).
+      const listed = await link.request('attachment/list', { threadId });
+      const known = listed?.data?.find((entry) => entry.attachmentId === attachmentId);
+      if (known?.state === 'received') offset = file.bytes.length;
+      else if (known?.state === 'uploading') offset = known.nextOffset;
+      else attachmentId = undefined;
+    }
+    if (!attachmentId) {
+      const begun = await link.request('attachment/begin', { threadId, name: file.item.name, size: file.item.size, sha256: file.item.sha256 });
+      attachmentId = begun.attachmentId;
+    }
+    file.v2 = { threadId, attachmentId, state: 'uploading', uploading: file.v2?.uploading };
+    notify({ state: 'uploading', progress: file.bytes.length ? offset / file.bytes.length : 0 });
+    while (offset < file.bytes.length) {
+      const chunk = file.bytes.subarray(offset, offset + 192 * 1024);
+      const answer = await link.request('attachment/chunk', { threadId, attachmentId, offset, data: chunk.toString('base64') });
+      offset = answer.nextOffset;
+      notify({ state: 'uploading', progress: offset / file.bytes.length });
+    }
+    const receipt = await link.request('attachment/commit', { threadId, attachmentId });
+    if (receipt?.state !== 'received' || receipt.sha256 !== file.item.sha256 || receipt.size !== file.item.size) throw Error('attachment_receipt_mismatch');
+    file.v2 = { threadId, attachmentId, state: 'received', receivedAt: receipt.receivedAt };
+    notify({ state: 'received', attachmentId, receivedAt: receipt.receivedAt, sha256: receipt.sha256 });
+    return attachmentId;
+  })();
+  file.v2 = { ...(file.v2 || { threadId }), threadId, uploading: job };
+  try { return await job; }
+  catch (error) {
+    file.v2 = { threadId, attachmentId: file.v2?.attachmentId, state: 'failed' };
+    notify({ state: 'failed', error: error.message });
+    throw error;
+  }
+}
+
+ipcMain.handle('files:uploadChat', async (event, agent, threadId, ids) => {
+  if (!fromMainWindow(event) || !hostConfirmed() || typeof threadId !== 'string' || !Array.isArray(ids)) return { ok: false, error: 'invalid_request' };
+  const mapping = chatThreads.get(threadId);
+  const link = chatLinks.get(agent);
+  if (!mapping || mapping.agent !== agent || !link) return { ok: false, error: 'invalid_request' };
+  if (link.info?.features?.attachmentsV2 !== true) return { ok: true, v2: false };
+  const results = [];
+  for (const id of ids.slice(0, maxAttachments)) {
+    try { results.push({ id, attachmentId: await uploadChatAttachmentV2(link, agent, threadId, id), state: 'received' }); }
+    catch (error) { results.push({ id, state: 'failed', error: error.message }); }
+  }
+  return { ok: true, v2: true, results };
+});
+
 ipcMain.handle('chat:request', async (event, agent, method, params) => {
   try {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
@@ -1092,7 +1166,23 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       request.dynamicTools = [...chatToolSpecs(), ...desktopSpecs];
       const attachments = request.attachments;
       let result;
-      if (attachments !== undefined) {
+      // Direct chat v2: the server keeps only a hash of the project path, so the path goes with every turn; and
+      // attachments are sent as server-confirmed ids (D9) instead of raw chunks with the turn.
+      const v2 = !native && link.info?.features?.attachmentsV2 === true;
+      if (v2) request.localRoot = mapping.localRoot;
+      if (v2 && attachments !== undefined) {
+        if (!validAttachments(attachments)) throw Error('invalid_attachment');
+        const ids = [];
+        for (const item of attachments) {
+          const file = chatAttachments.get(item.id);
+          if (!file || file.projectId !== mapping.projectId || file.item.sha256 !== item.sha256) throw Error('invalid_attachment');
+          ids.push(await uploadChatAttachmentV2(link, agent, request.threadId, item.id));
+        }
+        delete request.attachments;
+        request.attachmentIds = ids;
+        result = await link.request(method, request);
+        for (const item of attachments) chatAttachments.delete(item.id);
+      } else if (attachments !== undefined) {
         if (!mapping || mapping.agent !== agent || !validAttachments(attachments)) throw Error('invalid_attachment');
         const files = attachments.map(item => {
           const file = chatAttachments.get(item.id);

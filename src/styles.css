@@ -238,6 +238,8 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .attach-list { display: flex; flex-wrap: wrap; gap: 5px; padding: 9px 12px 0; }
 .attach-list:empty { display: none; }
 .attach-pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; background: var(--accent-soft); color: var(--accent); padding: 2px 8px; border-radius: 9px; cursor: pointer; }
+.attach-pill.ok { background: color-mix(in srgb, #2e9e5b 16%, transparent); color: #2e7d4f; }
+.attach-pill.failed { background: color-mix(in srgb, #d9534f 16%, transparent); color: #b33a36; }
 .hint { color: var(--muted); font-size: 11px; }
 .hint:empty { display: none; }
 .send:hover:not(:disabled) { filter: brightness(1.1); }
