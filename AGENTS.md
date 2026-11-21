@@ -9,3 +9,4 @@ Electron 桌面端（Windows、macOS）+ VPS2 上的编排主控（Claude 当组
 - 分工和额度规则在 `orchestrator/routing.js`；Claude 只做规划、诊断、验收，这条由代码强制。
 - 真实 IP、私钥、令牌、密码只放在各端配置或 GitHub secret 里，仓库只放 `*.example.json`。
 - 用户界面文字和文档用中文。
+- 单聊 v2（设备登记、每设备 SQLite、文件锁、附件回执、状态、升级、窄启动器）：`docs/DIRECT-CHAT-V2.md`；客户端接口 `docs/DIRECT-CHAT-V2-API.md`。`ad device approve/revoke` 只改登记表，SSH key 行由管理员手动写。

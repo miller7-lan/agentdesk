@@ -49,6 +49,10 @@ flowchart LR
 - 权限按轮次的 `approvalPolicy` / `sandboxPolicy` 生效：只读规划只暴露 `list`/`read`，其余模式可弹出审批卡，`never` 直接执行。本机路径仅允许家目录、`/Volumes` 和临时目录，拒绝系统目录、凭据目录；`.git` 可读不可写；写入拒绝符号链接目标，采用临时文件加 `rename` 原子替换。
 - 状态保存在 VPS 2 的 `chat-<provider>.json`（0600），只含线程元数据，不含消息正文。App 重启后 Codex 历史仍由 `thread/list` 恢复；Claude/Grok/Antigravity 的 v1 不在 App 侧保留历史列表。
 
+## 单聊 v2
+
+按设备开启的单聊 v2：设备身份由 SSH 强制命令注入并以登记表为准，每台设备独立 SQLite 与工作区，多会话共享写入并由本机文件锁排队，附件以服务端回执确认，额度/版本带来源和新鲜度推送。见 [DIRECT-CHAT-V2.md](DIRECT-CHAT-V2.md) 与 [客户端 API](DIRECT-CHAT-V2-API.md)。
+
 ## 任务执行
 
 1. Orchestrator 将任务和关联事件写入 SQLite。任务可使用自动协作，或指定 CLI 与模型 ID。

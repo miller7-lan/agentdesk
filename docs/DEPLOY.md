@@ -313,6 +313,10 @@ ssh -F none -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
 2. 需要移除 VPS1 权限时，恢复 `authorized_keys` 备份或删掉跳板那一行。
 3. 应用/Bridge 可回滚到备份副本；VPS2 没有改动。
 
+## 5. 单聊 v2（按设备开启）
+
+先读 [DIRECT-CHAT-V2.md](DIRECT-CHAT-V2.md)。顺序：VPS2 部署新代码（§1）→ 用 `ad device approve` 登记设备（只改登记表、打印 key 行）→ 管理员备份后手动写 key 行（G1）→ 更新该设备客户端 → `ad device v2 <deviceId> on`。全部设备切换前保留 v1；关闭开关即回滚。CLI 升级执行器（G3）和窄启动器（G4）另行确认后才安装或切换。
+
 ## 不变的规则
 
 - 真实 IP、SSH 私钥、Relay 令牌、登记密码只放在各端的配置或 GitHub secret 里。仓库只放 `*.example.json`；`agentdesk-server.json`、`agentdesk-enrollment.json`、`remote.json` 都在 `.gitignore` 里。
