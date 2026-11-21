@@ -70,9 +70,9 @@ class SessionWorktrees {
   async create(projectId, projectRoot, sessionId) {
     if (!ID.test(sessionId)) throw new Error('invalid_session');
     if (this.records[sessionId]) return this.records[sessionId];
-    const repo = (await git(projectRoot, ['rev-parse', '--show-toplevel'])).stdout.trim();
-    if (!repo) throw new Error('项目目录不是 Git 仓库，不能使用独立工作树');
-    const base = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await require('./app-config').validateGitRoot(projectRoot);
+    const base = (await git(repo, ['rev-parse', '--verify', 'HEAD'], { allowFail: true })).stdout.trim();
+    if (!base) throw new Error('独立工作树需要一次 Git 提交；也可以取消独立工作树，直接在当前目录单聊。');
     const baseBranch = (await git(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { allowFail: true })).stdout.trim();
     if (!baseBranch) throw new Error('项目当前不在任何分支上（detached HEAD），请先切换到分支');
     const branch = 'agentdesk/' + sessionId;

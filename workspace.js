@@ -109,6 +109,7 @@ class Workspace extends EventEmitter {
     if (!root) return { repo: false, files: [] };
     const top = await git(root, ['rev-parse', '--show-toplevel']);
     if (!top.ok) return { repo: false, files: [], error: /not a git repository/i.test(top.err) ? '' : top.err };
+    if (path.relative(root, top.out.trim()) !== '') return { repo: false, files: [] };
     const st = await git(root, ['status', '--porcelain=v1', '-uall', '-z']);
     if (!st.ok) return { repo: true, files: [], error: st.err };
     const files = new Map();

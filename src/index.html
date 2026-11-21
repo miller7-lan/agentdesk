@@ -322,7 +322,7 @@
     <form id="workspaceForm" class="group-project-form">
       <button class="task-text-link" id="workspaceNew" type="button">添加工作区</button>
       <label>项目名称 <input id="workspaceName" maxlength="60" required /></label>
-      <label>工作区类型 <select id="workspaceKind"><option value="local">本机 Git 仓库</option><option value="remote">云端</option></select></label>
+      <label>工作区类型 <select id="workspaceKind"><option value="local">本机文件夹（自动初始化 Git）</option><option value="remote">云端</option></select></label>
       <label><span><input id="workspacePick" type="checkbox" /> 重新选择本机目录</span><small id="workspaceExisting"></small></label>
       <label>云端 Git 目录 <input id="workspaceRemote" placeholder="/srv/git/project" maxlength="1024" /></label>
       <label>主控工作区标识 <input id="workspaceBinding" maxlength="64" /></label>

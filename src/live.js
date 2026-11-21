@@ -1332,7 +1332,7 @@
     if (!W.access.ok) { body.innerHTML = noAccessHtml(); return; }
     const c = W.changes;
     if (!c) { body.innerHTML = '<div class="empty-note">正在读取改动…</div>'; return; }
-    if (!c.repo) { body.innerHTML = `<div class="empty-note">${esc(localRoot)} 还不是 Git 仓库。<br>让 Codex 运行 <code>git init</code> 后，这里会列出每个改动文件。</div>`; return; }
+    if (!c.repo) { body.innerHTML = `<div class="empty-note">${esc(localRoot)} 可在「文件」中查看。Git 改动面板适用于仓库根目录。</div>`; return; }
     const tot = c.files.reduce((a, f) => [a[0] + f.add, a[1] + f.del], [0, 0]);
     let html = `<div class="chg-head"><span class="chg-branch">${svg('term')}${esc(c.branch || '')}</span><span>${c.files.length} 个文件</span>
       <span class="a">+${tot[0]}</span><span class="d">−${tot[1]}</span><span class="grow"></span><button class="icon-btn" data-ch="refresh" title="刷新">↻</button></div>`;

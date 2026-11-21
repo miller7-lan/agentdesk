@@ -211,7 +211,7 @@ ipcMain.handle('onboarding:advance', async (event, { step, fingerprint } = {}) =
     const project = appConfig.active;
     try {
       if (!project || project.kind === 'local' && !project.localRoot) throw new Error('请先选择工作区。');
-      if (project.localRoot) await require('./app-config').validateGitRoot(project.localRoot);
+      if (project.localRoot) await require('./app-config').validateDirectory(project.localRoot);
     } catch (error) { return { ok: false, error: error.message }; }
   }
   try {
@@ -259,7 +259,7 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       if (operation === 'add' || operation === 'update') {
         let localRoot;
         if (kind === 'local' && (pickLocal || operation === 'add')) {
-          const picked = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择 Git 工作区' });
+          const picked = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择本机工作文件夹（普通文件夹将初始化 Git）' });
           if (picked.canceled) return { ok: false, cancelled: true };
           [localRoot] = picked.filePaths;
         }

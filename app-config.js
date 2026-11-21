@@ -18,14 +18,43 @@ function remoteDirectory(value) {
     !/[\x00-\x1f\\]/.test(value) && !value.split('/').includes('..');
 }
 
-async function validateGitRoot(value) {
+async function validateDirectory(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('请选择工作区的绝对目录。');
   const resolved = await fs.realpath(value);
   if (!(await fs.stat(resolved)).isDirectory()) throw new Error('工作区必须是目录。');
+  return resolved;
+}
+
+function gitOptions() {
+  const env = { ...process.env, LC_ALL: 'C' };
+  for (const key of Object.keys(env)) {
+    if (/^GIT_(DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY)$/i.test(key)) delete env[key];
+  }
+  return { timeout: 10000, windowsHide: true, env };
+}
+
+async function initializeWorkspace(root) {
+  const options = gitOptions();
   try {
-    const { stdout } = await exec('git', ['--no-optional-locks', '-C', resolved, 'rev-parse', '--show-toplevel'], {
-      timeout: 5000, windowsHide: true,
-    });
+    await exec('git', ['-C', root, 'rev-parse', '--show-toplevel'], options);
+  } catch (error) {
+    if (error.code !== 128 || !/not a git repository/i.test(error.stderr || '')) throw error;
+    // A broken repository must not be silently reinitialized.
+    try {
+      await fs.lstat(path.join(root, '.git'));
+    } catch (statError) {
+      if (statError.code !== 'ENOENT') throw statError;
+      await exec('git', ['-C', root, 'init', '--quiet'], options);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function validateGitRoot(value) {
+  const resolved = await validateDirectory(value);
+  try {
+    const { stdout } = await exec('git', ['--no-optional-locks', '-C', resolved, 'rev-parse', '--show-toplevel'], gitOptions());
     if (await fs.realpath(stdout.trim()) !== resolved) throw new Error('nested_workspace');
   } catch {
     throw new Error('请选择 Git 仓库的根目录。');
@@ -128,7 +157,8 @@ class AppConfig {
       if (!name || name.length > 60 || !['local', 'remote'].includes(kind)) throw new Error('请填写有效的项目名称和类型。');
       if (remoteCwd && !remoteDirectory(remoteCwd)) throw new Error('远程目录必须是服务器上的绝对路径。');
       if (orchestratorWorkspace && (typeof orchestratorWorkspace !== 'string' || !projectId.test(orchestratorWorkspace))) throw new Error('主控工作区标识无效。');
-      const root = kind === 'local' ? await validateGitRoot(localRoot ?? current?.localRoot) : undefined;
+      const root = kind === 'local' ? await validateDirectory(localRoot ?? current?.localRoot) : undefined;
+      if (root && localRoot) await initializeWorkspace(root);
       const project = {
         id: id || groupId || randomUUID(), name, kind,
         ...(root && { localRoot: root }),
@@ -157,4 +187,4 @@ class AppConfig {
   }
 }
 
-module.exports = { AppConfig, atomicWrite, migrate, contained, remoteDirectory, validateGitRoot };
+module.exports = { AppConfig, atomicWrite, migrate, contained, remoteDirectory, validateDirectory, validateGitRoot };
