@@ -590,12 +590,12 @@ ipcMain.handle('ws:diff', (_e, rel) => ws.diff(rel).catch((e) => ({ error: e.mes
 // 技能：本机技能列表；用到时把该技能目录上传到 VPS（同一次连接内按签名缓存）
 const skillCache = new Map();
 ipcMain.handle('skills:local', () => ws.localSkills().catch(() => []));
-ipcMain.handle('skills:upload', async (_e, skill) => {
+ipcMain.handle('skills:upload', async (_e, skill, projectId) => {
   try {
     const approved = (await ws.localSkills()).find(({ folder, name }) => folder === skill?.folder && name === skill?.name);
     if (!approved) throw new Error('找不到本机技能。');
     const pack = await ws.packSkill(approved.dir);
-    const workspace = currentRemoteDirectory();
+    const workspace = currentRemoteDirectory(projectId);
     if (!workspace) throw new Error('请配置远程工作区目录。');
     const root = path.posix.join(workspace, '.agentdesk-skills');
     const dest = path.posix.join(root, skill.folder.replace(/[^\w.-]/g, '_'));
@@ -611,22 +611,22 @@ ipcMain.handle('skills:upload', async (_e, skill) => {
 remote.on('codex-down', () => skillCache.clear());
 
 // 附件：选择或粘贴的文件上传到 VPS 的 .agentdesk-uploads（VPS 端 7 天后自动清理）
-async function uploadOne(name, b64) {
-  const safe = Date.now() + '-' + String(name).replace(/[^\w.\-一-龥]/g, '_').slice(-80);
-  const workspace = currentRemoteDirectory();
+async function uploadOne(name, b64, projectId) {
+  const safe = randomUUID() + '-' + String(name).replace(/[^\w.\-一-龥]/g, '_').slice(-80);
+  const workspace = currentRemoteDirectory(projectId);
   if (!workspace) throw new Error('请配置远程工作区目录。');
   const dir = path.posix.join(workspace, '.agentdesk-uploads');
   const [full] = await remote.upload(dir, [{ rel: safe, b64 }]);
   return { name, path: full, image: /\.(png|jpe?g|gif|webp)$/i.test(name) };
 }
-ipcMain.handle('files:pick', async (_event, folders = false) => {
+ipcMain.handle('files:pick', async (_event, folders = false, projectId = appConfig?.active?.id) => {
   const r = await dialog.showOpenDialog(win, {
     properties: [folders ? 'openDirectory' : 'openFile', 'multiSelections'],
     title: '选择要发给 Codex 的附件（每个不超过 25 MB）',
   });
   if (r.canceled) return { ok: true, files: [] };
   const out = [];
-  try { for (const f of r.filePaths) { const d = await readAttachment(f, attachmentLimit); out.push(await uploadOne(d.name, d.bytes.toString('base64'))); } }
+  try { for (const f of r.filePaths) { const d = await readAttachment(f, attachmentLimit); out.push(await uploadOne(d.name, d.bytes.toString('base64'), projectId)); } }
   catch (e) { return { ok: false, error: String(e.message || e), files: out }; }
   return { ok: true, files: out };
 });
@@ -718,21 +718,22 @@ ipcMain.handle('checkpoints:list', (event, threadId) =>
 ipcMain.handle('files:forgetChat', (event, id) => fromMainWindow(event) && chatAttachments.delete(id));
 // 拖入的文件：测试目录内的文件/文件夹直接引用路径（Codex 能通过 ssh_exec 访问）；
 // 其他文件上传到 VPS；外部文件夹不上传（体积不可控），提示用户
-ipcMain.handle('files:drop', async (_e, paths) => {
+ipcMain.handle('files:drop', async (_e, paths, projectId = appConfig?.active?.id) => {
+  const root = localRootFor(projectId);
   const files = [], mentions = [], errors = [];
   for (const p of (Array.isArray(paths) ? paths : []).slice(0, 20)) {
     try {
-      const rel = ws.relIfInside(p);
+      const rel = ws.relIfInside(p, root);
       if (rel !== null) { mentions.push(rel); continue; }
       // Any file; a folder outside the test folder is packed into one .zip.
       const d = await readAttachment(p, attachmentLimit);
-      files.push(await uploadOne(d.name, d.bytes.toString('base64')));
+      files.push(await uploadOne(d.name, d.bytes.toString('base64'), projectId));
     } catch (e) { errors.push(`${path.basename(p)}：${e.message || e}`); }
   }
   return { files, mentions, errors };
 });
-ipcMain.handle('files:uploadData', async (_e, name, b64) => {
-  try { if (typeof b64 !== 'string' || b64.length > Math.ceil(attachmentLimit / 3) * 4) throw new Error('文件超过 25 MB'); return { ok: true, file: await uploadOne(name, b64) }; }
+ipcMain.handle('files:uploadData', async (_e, name, b64, projectId = appConfig?.active?.id) => {
+  try { if (typeof b64 !== 'string' || b64.length > Math.ceil(attachmentLimit / 3) * 4) throw new Error('文件超过 25 MB'); return { ok: true, file: await uploadOne(name, b64, projectId) }; }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), host: remote.cfg.host, localWorkspace: ws.root, projectId: appConfig?.active?.id }));

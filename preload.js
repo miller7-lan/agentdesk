@@ -94,19 +94,19 @@ contextBridge.exposeInMainWorld('desk', {
   },
   skills: {
     local: () => ipcRenderer.invoke('skills:local'),
-    upload: (skill) => ipcRenderer.invoke('skills:upload', skill),
+    upload: (skill, projectId) => ipcRenderer.invoke('skills:upload', skill, projectId),
   },
   files: {
-    pick: (folders = false) => ipcRenderer.invoke('files:pick', folders),
+    pick: (folders = false, projectId) => ipcRenderer.invoke('files:pick', folders, projectId),
     pickChat: (projectId, folders = false) => ipcRenderer.invoke('files:pickChat', projectId, folders),
     // Any dropped file or folder (a folder becomes one .zip), for Claude / Grok / Antigravity chats and group tasks.
     dropChat: (projectId, files) => ipcRenderer.invoke('files:dropChat', projectId,
       [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),
     pasteChat: (projectId, name, b64) => ipcRenderer.invoke('files:pasteChat', projectId, name, b64),
     forgetChat: (id) => ipcRenderer.invoke('files:forgetChat', id),
-    uploadData: (name, b64) => ipcRenderer.invoke('files:uploadData', name, b64),
+    uploadData: (name, b64, projectId) => ipcRenderer.invoke('files:uploadData', name, b64, projectId),
     // 从资源管理器拖进来的文件：在预加载脚本里取真实路径，交给主进程处理
-    drop: (files) => ipcRenderer.invoke('files:drop', [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean)),
+    drop: (files, projectId) => ipcRenderer.invoke('files:drop', [...files].map((f) => { try { return webUtils.getPathForFile(f); } catch { return ''; } }).filter(Boolean), projectId),
   },
   // A single chat in its own Git worktree (session-worktrees.js).
   worktrees: {

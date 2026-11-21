@@ -207,10 +207,10 @@ class Workspace extends EventEmitter {
   }
 
   // 绝对路径在测试目录内 → 返回相对路径（用 / 分隔），否则返回 null
-  relIfInside(p) {
-    if (!this.root || typeof p !== 'string' || !path.isAbsolute(p)) return null;
+  relIfInside(p, targetRoot = this.root) {
+    if (!targetRoot || typeof p !== 'string' || !path.isAbsolute(p)) return null;
     try {
-      const root = fs.realpathSync(this.root);
+      const root = fs.realpathSync(targetRoot);
       const absolute = fs.realpathSync(p);
       return contained(root, absolute) ? path.relative(root, absolute).split(path.sep).join('/') : null;
     } catch { return null; }

@@ -298,6 +298,11 @@
       state.panel = state.directPanel;
     }
     const prev = state.active;
+    if (prev !== id) {
+      if (sess(prev)) sess(prev).draft = $('#input').value;
+      $('#input').value = sess(id)?.draft || '';
+      autosize();
+    }
     state.active = id;
     window.AgentDeskProjects?.select(sess(id)?.project);
     L()?.onOpen?.(prev, id);

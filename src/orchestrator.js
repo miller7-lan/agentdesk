@@ -191,12 +191,34 @@ window.__groupReady = (async () => {
   // Several group chats per project: the first keeps the project's id, the others are "<project>~<suffix>".
   // A task belongs to the group it was sent from (task.group); tasks without one belong to the first group.
   const projectIdOf = (id) => String(id ?? '').split('~')[0];
+  const endedGroups = new Set(temporary ? [] : store.get('endedGroups', []));
+  function groupEnded(group) {
+    if (!group) return false;
+    if (!group.records.size) return endedGroups.has(group.id);
+    const tasks = [...group.records.values()];
+    if (tasks.some(task => !terminalTask.has(task.state))) return false;
+    // A successful retry settles the failed/cancelled task it continued, including earlier attempts.
+    const settled = new Set();
+    for (const task of tasks) {
+      if (task.state !== 'completed') continue;
+      let id = task.id;
+      while (id && !settled.has(id)) {
+        settled.add(id);
+        id = group.records.get(id)?.replyTo;
+      }
+    }
+    return tasks.every(task => settled.has(task.id));
+  }
+  $('#groupStartNext').addEventListener('click', () => {
+    const group = currentGroup();
+    if (groupEnded(group)) A.openGroup(createGroup(group.project, { another: true }));
+  });
   const groupNames = new Map(Object.entries(temporary ? {} : store.get('groupNames', {})));
   const belongs = (group, task) => task.group ? task.group === group.id : group.id === projectIdOf(group.id);
   function addGroup(id, tasks = []) {
     if (!A.proj(id) || groups.has(id)) return;
     groups.set(id, {
-      id, project: projectIdOf(id), records: new Map(tasks.map((task) => [task.id, task])), selected: tasks.at(-1)?.id,
+      id, project: projectIdOf(id), records: new Map(tasks.map((task) => [task.id, { ...task, group: task.group || id }])), selected: tasks.at(-1)?.id,
       approvals: new Map(), output: null, reference: null,
       draft: '', provider: '', model: '', taskError: '', statusError: '', pending: null, planReply: null,
     });
@@ -261,7 +283,7 @@ window.__groupReady = (async () => {
     if (!/^group-[a-f0-9-]+$/.test(projectId)) return false;
     if ([...groups.keys()].some((id) => projectIdOf(id) === projectId)) return false;
     const index = savedProjects.findIndex((project) => project.id === projectId);
-    if (index === -1) return false;
+    if (index === -1 || A.proj(projectId)?.configured) return false;
     const dropped = A.D.sessions.filter((session) => session.project === projectId);
     const activeDropped = dropped.some((session) => session.id === state.active);
     savedProjects.splice(index, 1);
@@ -283,11 +305,13 @@ window.__groupReady = (async () => {
     const records = window.__agentThreads?.threadsOf?.(id) || [];
     const projectId = projectIdOf(id);
     const lastInProject = ![...groups.keys()].some((key) => key !== id && projectIdOf(key) === projectId);
-    const groupProject = lastInProject && savedProjects.some((project) => project.id === projectId);
+    const groupProject = !A.proj(projectId)?.configured && lastInProject && savedProjects.some((project) => project.id === projectId);
     const localChats = groupProject ? A.D.sessions.filter((session) => session.project === projectId).length : 0;
     const message = `删除「${nameOf(id)}」？\n\n将从本机一并删除：\n· 这个群聊的消息和任务列表\n· 组长派遣给成员的 ${records.length} 个只读记录（${records.map((s) => s.title).join('、') || '无'}）${groupProject ? `\n· 群聊项目「${A.proj(projectId)?.name || ''}」和它的 ${localChats} 个单聊会话` : ''}\n\n主控上的任务不会被删除；正在执行的任务会继续执行。此操作不能撤销。`;
     if (!window.confirm(message)) return false;
     groups.delete(id);
+    endedGroups.delete(id);
+    if (!temporary) store.set('endedGroups', [...endedGroups]);
     groupNames.delete(id);
     delete workbench[id];
     if (!temporary) store.set('groupWorkbench', workbench);
@@ -321,6 +345,8 @@ window.__groupReady = (async () => {
     if (!window.confirm(message)) return false;
     const now = Date.now();
     for (const [id, group] of groups) {
+      if (groupEnded(group)) endedGroups.add(id);
+      else endedGroups.delete(id);
       group.records.clear();
       group.expanded?.clear();
       group.summaryOpen?.clear();
@@ -340,6 +366,7 @@ window.__groupReady = (async () => {
     store.set('groupTasksByProject', savedByGroup);
     store.set('groupLastSeen', Object.fromEntries(lastSeen));
     store.set('groupClearedAt', Object.fromEntries(clearedAt));
+    if (!temporary) store.set('endedGroups', [...endedGroups]);
     store.set('macTask', null);
     localStorage.removeItem('agentdesk.macTask');
     displayedCounts.clear();
@@ -366,6 +393,7 @@ window.__groupReady = (async () => {
     attachList.hidden = !files.length;
   }
   function addGroupFiles(group, { files = [], errors = [] }) {
+    if (groupEnded(group)) { for (const file of files) fileApi.forgetChat(file.id); return; }
     group.attachments ||= [];
     const added = files.slice(0, Math.max(0, MAX_ATTACH - group.attachments.length));
     group.attachments.push(...added);
@@ -375,6 +403,7 @@ window.__groupReady = (async () => {
   }
   async function withGroupProject(work) {
     const group = currentGroup();
+    if (groupEnded(group)) return;
     const project = appProjectOf(group);
     if (!group || isExample(group.id) || !project || !fileApi?.pickChat) { A.toast('请先为这个项目连接主控，再添加附件。'); return; }
     try { addGroupFiles(group, await work(project)); } catch (error) { A.toast(error.message); }
@@ -491,8 +520,8 @@ window.__groupReady = (async () => {
 
   function persist(group) {
     if (isExample(group.id) || temporary) return;
-    const records = [...group.records.values()].filter((task) => !task.redacted).map(({ id, prompt, provider, model, time, state, updatedAt }) =>
-      ({ id, prompt, provider, model, time, state, updatedAt }));
+    const records = [...group.records.values()].filter((task) => !task.redacted).map(({ id, prompt, provider, model, time, state, updatedAt, createdAt, replyTo, group }) =>
+      ({ id, prompt, provider, model, time, state, updatedAt, createdAt, replyTo, group }));
     if (group.id === liveProject) store.set('groupTasks', records);
     else {
       savedByGroup[group.id] = records;
@@ -502,7 +531,7 @@ window.__groupReady = (async () => {
 
   function updateTask(group, id, summary, complete = false) {
     const previous = group.records.get(id) || {};
-    const local = complete ? { prompt: previous.prompt, time: previous.time } : previous;
+    const local = complete ? { prompt: previous.prompt, time: previous.time, replyTo: previous.replyTo, group: previous.group } : previous;
     const task = { ...local, ...summary, id };
     if (isCleared(group.id, task)) return;
     group.records.set(id, task);
@@ -989,6 +1018,7 @@ window.__groupReady = (async () => {
   let laneLocateAt = 0;
   function renderTimeline() {
     const group = currentGroup();
+    const ended = groupEnded(group);
     const { records } = group;
     const broadcasts = new Set();
     const atBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 70;
@@ -1023,9 +1053,9 @@ window.__groupReady = (async () => {
         ].filter(Boolean).join(' · '))}</span>
         ${badges.length ? `<span class="group-task-badges">${badges.map((badge) => `<span>${esc(badge)}</span>`).join('')}</span>` : ''}
         ${quotaCharge(task, { compact: true })}
-      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_permission').map((step) => `<div class="task-addition"><p>组长申请给 ${esc(memberName(step.role))} 临时开「${esc(ACCESS_NAMES[step.permissionRequest?.kind] || '')}」。</p><div class="task-actions"><button type="button" class="btn primary" data-permission-open="${esc(task.id + ':' + step.id)}">查看并批准</button></div></div>`).join('') : ''}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => `<div class="task-addition"><p>${esc(memberName(step.role))} 这一步没完成，等你选接手的模型。</p><div class="task-actions"><button type="button" class="btn primary" data-handover-open="${esc(task.id + ':' + step.id)}">选择接手的模型</button></div></div>`).join('') : ''}${task.state === 'failed' && !task.redacted ? `<div class="task-failure">
-        <p><b>为什么失败：</b>${esc(failureReason(task))}</p>
-        <div class="task-actions"><button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>
+      </button>${!task.redacted && task.state && !terminal.has(task.state) && task.state !== 'needs_review' ? `<div class="task-stop-row"><button type="button" class="task-stop" data-stop-task="${esc(task.id)}" title="停止这个任务：正在运行的成员会被停下，已经生成的补丁不会应用">${svg('x')}停止任务</button></div>` : ''}${liveLine(task)}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_permission').map((step) => `<div class="task-addition"><p>组长申请给 ${esc(memberName(step.role))} 临时开「${esc(ACCESS_NAMES[step.permissionRequest?.kind] || '')}」。</p><div class="task-actions"><button type="button" class="btn primary" data-permission-open="${esc(task.id + ':' + step.id)}">查看并批准</button></div></div>`).join('') : ''}${!task.redacted ? (task.steps || []).filter((step) => step.state === 'waiting_choice').map((step) => `<div class="task-addition"><p>${esc(memberName(step.role))} 这一步没完成，等你选接手的模型。</p><div class="task-actions"><button type="button" class="btn primary" data-handover-open="${esc(task.id + ':' + step.id)}">选择接手的模型</button></div></div>`).join('') : ''}${['failed', 'cancelled'].includes(task.state) && !task.redacted ? `<div class="task-failure">
+        <p>${task.state === 'cancelled' ? '任务已取消，可在本群补充要求或重新安排。' : '<b>为什么失败：</b>' + esc(failureReason(task))}</p>
+        <div class="task-actions">${ended ? '' : `<button type="button" class="btn primary" data-retry-task="${esc(task.id)}">让组长重新来</button>`}
         <button type="button" class="task-text-link" data-task-id="${esc(task.id)}" data-task-view="terminal">看输出 ${svg('chev')}</button></div></div>` : ''}`;
       const messages = [];
       const requiresReview = task.detail === 'patches_ready' || task.pendingRequest;
@@ -1164,7 +1194,7 @@ window.__groupReady = (async () => {
         messages.push(messageRow('lead', '验收总结 · ' + acceptanceLabel(task),
           `<div class="step-summary"><p>${esc(task.acceptance.summary || acceptanceLabel(task))}</p></div>`, 'summary'));
       }
-      const reply = `<button class="task-text-link group-reference" type="button" data-reference="${esc(task.id)}">引用</button>`;
+      const reply = ended ? '' : `<button class="task-text-link group-reference" type="button" data-reference="${esc(task.id)}">引用</button>`;
       return messages.length ? `<div class="dispatch-thread" data-message-id="${esc(task.id)}">${messages.join('')}${reply}</div>` : '';
     }).join('') + approvalCards(group);
 
@@ -1231,7 +1261,11 @@ window.__groupReady = (async () => {
     setHtml($('#sbResources'), resourceLabels().map(({ label, warning }) =>
       `<button type="button" class="sb-item clickable sb-resource${warning ? ' resource-warning' : ''}">${esc(label)}</button>`).join(''));
     const canSend = isExample(state.group) || (supported && (currentGroup().planReply ? connected : hasRoute()));
-    $('#groupSend').disabled = busy || !canSend || !recipientReady;
+    const ended = groupEnded(currentGroup());
+    form.hidden = ended;
+    $('#groupEnded').hidden = !ended;
+    input.disabled = ended;
+    $('#groupSend').disabled = ended || busy || !canSend || !recipientReady;
     const active = activeTasks(currentGroup());
     $('#groupStop').hidden = !active.length;
     $('#groupStop').title = active.length > 1 ? `停止这个群聊里正在进行的 ${active.length} 个任务中最新的一个` : '停止这个群聊里正在进行的任务';
@@ -1566,7 +1600,7 @@ window.__groupReady = (async () => {
           ${!task.redacted && task.detail === 'patches_ready' ? `<button class="btn primary" type="button" data-task-operation="apply" ${busy || !online ? 'disabled' : ''}>应用补丁</button>` : ''}
           ${!task.redacted && task.pendingRequest ? `<button class="btn" type="button" data-task-operation="reconcile" ${busy || !online ? 'disabled' : ''}>核对操作</button>` : ''}
           ${!task.redacted && task.state && !terminal.has(task.state) ? `<button class="btn danger" type="button" data-task-operation="cancel" ${busy || !online ? 'disabled' : ''}>取消任务</button>` : ''}
-          ${!task.redacted && task.prompt && terminal.has(task.state) ? '<button class="btn" type="button" data-task-operation="draft">重跑…</button>' : ''}
+          ${!groupEnded(currentGroup()) && !task.redacted && task.prompt && terminal.has(task.state) ? '<button class="btn" type="button" data-task-operation="draft">重跑…</button>' : ''}
         </div>
         ${events.length ? `<ol class="task-events">${events.map((event) => `<li>${statusName(event.state)}</li>`).join('')}</ol>` : ''}
         ${reassignments(task).map((note) => `<p class="task-reassigned">${esc(note)}</p>`).join('')}
@@ -1938,6 +1972,7 @@ window.__groupReady = (async () => {
     const id = task?.id;
     if (!task || task.redacted && operation !== 'status') return;
     if (operation === 'draft') {
+      if (groupEnded(group)) return;
       if (group.planReply) { A.toast('请先结束当前规划回复'); return; }
       if (input.value.trim()) { A.toast('请先处理当前草稿'); return; }
       input.value = (task.provider && mentions[task.provider] ? '@' + mentions[task.provider] + ' ' : '') + task.prompt;
@@ -2101,10 +2136,17 @@ window.__groupReady = (async () => {
     }
     const operation = kind === 'compact' ? 'compact_project' : kind === 'broadcast' ? 'broadcast'
       : ['review_only', 'chat', 'edit'].includes(mode) ? 'submit' : 'start_plan';
+    const parent = group.reference ? group.records.get(group.reference) : latestTask(group);
+    if (!kind && parent && !parent.redacted && ['failed', 'cancelled'].includes(parent.state) && parent.prompt && !prompt.includes(parent.prompt)) {
+      const lastStep = parent.steps?.filter(step => step.output).at(-1);
+      const context = '\n\n上次任务（' + statusName(parent.state) + '）：' + parent.prompt +
+        (lastStep ? '\n最后一步的记录：' + String(lastStep.output).slice(-1000) : '');
+      prompt += context.slice(0, Math.max(0, 12000 - prompt.length));
+    }
     return {
       operation,
       request: {
-        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: group.reference || latestTask(group)?.id || undefined, group: group.id,
+        prompt, mode, reviewOf, via: 'desktop', project: projectOf(group), replyTo: parent?.id, group: group.id,
         leadEffort: $('#groupLeadEffort')?.value || undefined,
         leadModel: $('#groupLeadModel')?.value || undefined,
         approval: $('#groupApproval')?.value || undefined,
@@ -2144,7 +2186,7 @@ window.__groupReady = (async () => {
     event.preventDefault();
     const group = currentGroup();
     const draft = input.value.trim();
-    if (!group || !draft || busy) return;
+    if (!group || groupEnded(group) || !draft || busy) return;
     if (group.planReply) {
       const { id, revision } = group.planReply;
       if (!isExample(group.id) && !connected) return;
@@ -2315,7 +2357,7 @@ window.__groupReady = (async () => {
     const id = event.target.closest('[data-retry-task]')?.dataset.retryTask;
     const group = currentGroup();
     const task = id && group?.records.get(id);
-    if (!task || busy) return;
+    if (!task || busy || groupEnded(group)) return;
     group.reference = task.id;
     input.value = `${task.prompt || ''}\n\n（上一次没完成：${failureReason(task)}。请组长换个办法重新安排。）`;
     form.requestSubmit();
@@ -2400,7 +2442,7 @@ window.__groupReady = (async () => {
         return;
       }
       const reference = event.target.closest('[data-reference]');
-      if (reference && !group.planReply) {
+      if (reference && !group.planReply && !groupEnded(group)) {
         group.reference = reference.dataset.reference;
         setRecipient(group);
         input.focus();

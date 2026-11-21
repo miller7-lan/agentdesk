@@ -126,7 +126,8 @@
       attachments.delete(s);
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
-      if (A.state.active === s.id && !A.state.group && input.value.trim() === draft) {
+      if (s.draft?.trim() === draft) s.draft = '';
+      if (A.state.active === s.id && input.value.trim() === draft) {
         input.value = ''; A.autosize();
       }
       update(s, s.items.at(-1), task);

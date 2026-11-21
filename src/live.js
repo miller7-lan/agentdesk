@@ -30,7 +30,7 @@
   const byThread = new Map();
   const W = { access: null, tree: [], treeTruncated: false, changes: null, diffCache: new Map(), open: new Set(), collapsedDirs: new Set(store.get('collapsedDirs', [])), sel: null, preview: null };
   let skills = { cloud: [], local: [] };
-  let liveAtt = [];                       // 待发送附件 [{name, path, image}]
+  const startingTurns = new WeakSet();
   let usage = null;
 
   /* ---------- 工具函数 ---------- */
@@ -514,7 +514,7 @@
     };
   }
 
-  async function buildInput(text) {
+  async function buildInput(text, files, projectId) {
     const input = [{ type: 'text', text, text_elements: [] }];
     const chips = [];
     const names = [...new Set([...text.matchAll(/\$([\w:.\-]+)/g)].map((x) => x[1]))];
@@ -524,13 +524,13 @@
       if (cloud && !local) { input.push({ type: 'skill', name: cloud.name, path: cloud.path }); chips.push({ label: '$' + n, kind: 'skill', title: '云端技能' }); }
       else if (local) {
         toast(`正在上传本地技能 ${n}…`);
-        const r = await skApi.upload(local);
+        const r = await skApi.upload(local, projectId);
         if (!r.ok) { toast('本地技能上传失败：' + r.error); continue; }
         input.push({ type: 'skill', name: local.name, path: r.path }); chips.push({ label: '$' + n, kind: 'skill local', title: '本地技能（已上传到 VPS）' });
       }
     }
     const others = [];
-    for (const f of liveAtt) {
+    for (const f of files) {
       if (f.image) input.push({ type: 'localImage', path: f.path });
       else others.push(f);
       chips.push({ label: (f.image ? '图片 ' : '附件 ') + f.name, kind: 'file', title: f.path });
@@ -541,19 +541,26 @@
 
   async function send(s, fromButton, options = {}) {
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.send(s, fromButton);
+    if (startingTurns.has(s)) return false;
+    startingTurns.add(s);
+    try { return await sendTurn(s, fromButton, options); }
+    finally { startingTurns.delete(s); }
+  }
+
+  async function sendTurn(s, fromButton, options) {
     const ta = $('#input');
     const fromQueue = options.fromQueue === true;
     const text = fromQueue ? options.text : ta.value.trim();
     const agent = agentOf(s);
     const chat = isChat(s);
-    const attachments = fromQueue ? [] : chat ? (s.chatAttachments || []) : [];
+    const attachments = fromQueue ? [] : [...(chat ? s.chatAttachments || [] : s.codexAttachments || [])];
     const api = apiFor(agent);
     if (!fromQueue && (s.busy || s.steerFlushing)) {
       if (text) return steer(s, text);
       if (fromButton) return interrupt(s);
       return false;
     }
-    if (!text && !(chat ? attachments.length : liveAtt.length)) return false;
+    if (!text && !attachments.length) return false;
     if (!fromQueue && text.startsWith('/') && runCommand(text)) return false;
     const { approvalPolicy, sandbox, sandboxPolicy } = fromQueue
       ? (options.policy || s.chatPolicy || modeToPolicy($('#modeSelect').value))
@@ -568,12 +575,11 @@
     const serviceTier = !chat && model ? $('#tierSelect').value || undefined : undefined;
     if (chat) s.chatPolicy = { approvalPolicy, sandboxPolicy };
     if (!(await ensureReady(s))) return false;
-    if (!chat && !fromQueue) { ta.value = ''; A.autosize(); }
+    const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     const { input, chips } = chat
       ? { input: [{ type: 'text', text: text || '请查看随附的文件。', text_elements: [] }],
         chips: fromQueue ? [] : attachments.map(file => ({ label: '附件 ' + file.name, kind: 'file', title: file.name })) }
-      : await buildInput(text);
-    if (!chat && !fromQueue) { liveAtt = []; renderAtt(); }
+      : await buildInput(text, attachments, projectId);
     if (s.title === '新会话') s.title = (text || '附件').slice(0, 24);
     if (!fromQueue) s.items.push({ t: 'user', text, chips });
     s.busy = true; s.status = 'running'; s.time = '刚刚';
@@ -584,7 +590,6 @@
       if (s.worktree) input[0].text += `\n[独立工作树] 这个会话只在 ${s.worktree.path}（分支 ${s.worktree.branch}）里改文件，不要改原项目目录；用户会在确认后合回 ${s.worktree.baseBranch}。`;
       else if (!chat && !isMac) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。优先用 glob 找文件、grep 查找文本、edit 做精确替换。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
-    const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
       s.localRoot = s.worktree?.path || A.proj(s.project)?.localRoot || localRoot;
       const params = chat
@@ -604,11 +609,13 @@
       };
     const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
-    if (chat && !fromQueue) {
-      s.chatAttachments = [];
-      if (state.active === s.id && !state.group) {
+    if (!fromQueue) {
+      const key = chat ? 'chatAttachments' : 'codexAttachments';
+      s[key] = (s[key] || []).filter(file => !attachments.includes(file));
+      if (s.draft?.trim() === text) s.draft = '';
+      if (state.active === s.id) {
         if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
-        renderAtt();
+        if (!state.group) renderAtt();
       }
     }
     s.turnId = r.result.turn.id;
@@ -985,7 +992,7 @@
     const usageEl = $('#sbUsage'); if (usageEl) usageEl.hidden = chat;
     if (chat) {
       $('#tierWrap').hidden = true;
-      if (liveAtt.length) { liveAtt = []; renderAtt(); }
+
     } else {
       $('#ctxHint').hidden = false;
     }
@@ -1168,7 +1175,7 @@
         `<button type="button" class="attach-pill" data-live-chat-attachment="${esc(file.id)}" title="移除附件">${esc(file.name)} ×</button>`).join('');
       return;
     }
-    $('#attachList').innerHTML = liveAtt.map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
+    $('#attachList').innerHTML = (s?.codexAttachments || []).map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
   }
   $('#attachList').addEventListener('click', (e) => {
     const id = e.target.closest('[data-live-chat-attachment]')?.dataset.liveChatAttachment;
@@ -1181,7 +1188,7 @@
       return;
     }
     const p = e.target.closest('[data-li]'); if (!p) return;
-    e.stopImmediatePropagation(); liveAtt.splice(+p.dataset.li, 1); renderAtt();
+    e.stopImmediatePropagation(); sess(state.active)?.codexAttachments?.splice(+p.dataset.li, 1); renderAtt();
   }, true);
   // Claude / Grok / Antigravity chats: any file type, up to MAX_ATTACH per message; a folder arrives as one .zip.
   const MAX_ATTACH = 10;
@@ -1206,8 +1213,8 @@
       return;
     }
     if (!(await ensureReady(s))) return;
-    const r = await fileApi.pick(folders);
-    liveAtt.push(...(r.files || [])); renderAtt();
+    const r = await fileApi.pick(folders, s.project);
+    (s.codexAttachments ||= []).push(...(r.files || [])); renderAtt();
     if (!r.ok) toast('上传失败：' + r.error); else if (r.files.length) toast(`已上传 ${r.files.length} 个文件到 VPS`);
   }
   ta.addEventListener('paste', async (e) => {
@@ -1225,8 +1232,8 @@
     }
     if (!(await ensureReady(session))) return;
     for (const f of pasted) {
-      const r = await fileApi.uploadData(pastedName(f), await fileToBase64(f));
-      if (r.ok) { liveAtt.push(r.file); renderAtt(); } else toast('上传失败：' + r.error);
+      const r = await fileApi.uploadData(pastedName(f), await fileToBase64(f), session.project);
+      if (r.ok) { (session.codexAttachments ||= []).push(r.file); renderAtt(); } else toast('上传失败：' + r.error);
     }
   });
 
@@ -1283,22 +1290,26 @@
     }
     const list = [...e.dataTransfer.files];
     if (!list.length) return;
-    await addDropped(list);
+    await addDropped(list, session);
   }, true);
-  async function addDropped(list) {
-    if (!(await ensureReady())) return;
+  async function addDropped(list, session) {
+    if (!(await ensureReady(session))) return;
     toast(`正在处理 ${list.length} 个文件…`);
-    applyDropResult(await fileApi.drop(list));
+    applyDropResult(await fileApi.drop(list, session.project), session);
   }
-  function applyDropResult(r) {
-    (r.mentions || []).forEach((p) => mention(p));
-    if (r.files?.length) { liveAtt.push(...r.files); renderAtt(); }
+  function applyDropResult(r, session = sess(state.active)) {
+    if (!session) return;
+    for (const p of r.mentions || []) {
+      if (session.id === state.active) mention(p);
+      else session.draft = ((session.draft || '') + ' ' + pathFor(session, p)).trimStart() + ' ';
+    }
+    if (r.files?.length) { (session.codexAttachments ||= []).push(...r.files); renderAtt(); }
     const parts = [];
     if (r.files?.length) parts.push(`已上传 ${r.files.length} 个附件到 VPS`);
     if (r.mentions?.length) parts.push(`已引用 ${r.mentions.length} 个测试目录内的路径`);
     if (r.errors?.length) parts.push(r.errors.join('；'));
     toast(parts.join('，') || '没有可添加的文件');
-    ta.focus();
+    if (!state.group && session.id === state.active) ta.focus();
   }
   // 右侧文件树的节点可以拖到对话区
   $('#panelBody').addEventListener('dragstart', (e) => {
@@ -1351,7 +1362,9 @@
     for (const p of W.open) if (!W.diffCache.has(p) && c.files.some((f) => f.path === p)) loadDiff(p);
   }
   async function loadDiff(p) {
+    const revision = workspaceRevision;
     W.diffCache.set(p, ''); const r = await wsApi.diff(p);
+    if (revision !== workspaceRevision) return;
     W.diffCache.set(p, r.text || r.error || ''); if (state.panel === 'diff') A.renderPanel();
   }
   function renderTermPanel(body) {
@@ -1420,7 +1433,10 @@
       const p = nd.dataset.path;
       if (nd.dataset.dir) { W.collapsedDirs.has(p) ? W.collapsedDirs.delete(p) : W.collapsedDirs.add(p); store.set('collapsedDirs', [...W.collapsedDirs]); A.renderPanel(); return; }
       W.sel = p; W.preview = { text: '载入中…' }; A.renderPanel();
-      W.preview = await wsApi.read(p); if (W.sel === p) A.renderPanel();
+      const revision = workspaceRevision;
+      const preview = await wsApi.read(p);
+      if (revision !== workspaceRevision || W.sel !== p) return;
+      W.preview = preview; A.renderPanel();
     }
   }, true);
 
@@ -1435,7 +1451,12 @@
       if (revision !== workspaceRevision) return;
       W.changes = c; W.tree = t.items || []; W.treeTruncated = !!t.truncated;
       W.diffCache.clear();
-      if (W.sel && state.panel === 'files' && W.tree.some((n) => n.path === W.sel)) W.preview = await wsApi.read(W.sel);
+      if (W.sel && state.panel === 'files' && W.tree.some((n) => n.path === W.sel)) {
+        const selected = W.sel;
+        const preview = await wsApi.read(selected);
+        if (revision !== workspaceRevision) return;
+        if (selected === W.sel) W.preview = preview;
+      }
       if (state.group) {
         if (A.proj(state.group)?.live && state.panelOpen && state.panel === 'files') A.renderPanel();
         return;
@@ -1506,7 +1527,6 @@
       W.open.clear();
       W.diffCache.clear();
       skills.cloud = [];
-      liveAtt = [];
       renderAtt();
       if (ready) {
         loadSkills().catch(() => {});

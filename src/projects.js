@@ -34,7 +34,7 @@
       if ((old.has(project) || priorExamples.has(project)) && !valid.has(project)) D.sessions.splice(index, 1);
     }
     snapshot = result;
-    if (A.state.group ? !valid.has(A.state.group) : !A.sess(A.state.active)) openProject(result.activeProject);
+    if (A.state.group ? !valid.has(A.state.group.split('~')[0]) : !A.sess(A.state.active)) openProject(result.activeProject);
     if (dialog.open) render();
     A.renderAll();
   }
