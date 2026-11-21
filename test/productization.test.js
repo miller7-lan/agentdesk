@@ -84,7 +84,9 @@ test('binding a plain directory initializes Git once and keeps existing files un
   const fields = { name: 'Notes', kind: 'local' };
   await config.saveProject(undefined, fields, root);
   assert.equal(await validateGitRoot(root), config.active.localRoot);
-  assert.equal((await new Workspace(root).changes()).files[0].untracked, true);
+  const changes = await new Workspace(root).changes();
+  assert.equal(changes.repo, true, JSON.stringify(changes));
+  assert.deepEqual(changes.files.map(file => [file.path, file.untracked]), [['notes.txt', true]], JSON.stringify(changes));
   await assert.rejects(git(root, ['rev-parse', '--verify', 'HEAD']));
   const nested = path.join(root, 'subfolder');
   await mkdir(nested);
