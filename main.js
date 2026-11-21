@@ -62,6 +62,7 @@ function nativeDesktop() {
         else toUi('chat:event', { ...frame, agent });
       },
       onCommand: (agent, threadId, run) => toUi('local-command:update', { agent, threadId, run }),
+      onTerminal: (event) => toUi('terminal:event', event),
       reviewUnknown: async () => {
         const { response } = await dialog.showMessageBox(win, {
           type: 'warning', message: '上次断线时有本机操作的结果未确认。',
@@ -930,6 +931,21 @@ ipcMain.handle('local-command:cancel', async (event, agent, threadId, id) => {
   if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string' || typeof id !== 'string') return null;
   const native = await nativeDesktop()?.commands(agent, threadId, 'stop', id);
   return native === undefined ? commandRuns.cancel(commandScope(agent, threadId), id) : native;
+});
+
+// Interactive terminals of native conversations (D4): the chat window's panel. The Worker owns the processes, so
+// they keep running when the conversation is switched or the window is closed.
+const TERMINAL_OPS = new Set(['capabilities', 'list', 'read', 'open', 'input', 'takeover', 'resize', 'signal', 'close']);
+ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) => {
+  if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string' || !TERMINAL_OPS.has(op) ||
+      !fields || typeof fields !== 'object' || Array.isArray(fields)) return { ok: false, error: 'invalid_request' };
+  try {
+    const native = nativeDesktop();
+    if (!native) return { ok: false, error: 'terminal_unavailable' };
+    const value = await native.terminal(agent, threadId, op, fields);
+    if (value === undefined) return { ok: false, error: 'terminal_needs_native_chat' };
+    return { ok: true, value };
+  } catch (error) { return { ok: false, error: error.message }; }
 });
 
 function forgetChatThread(threadId) {

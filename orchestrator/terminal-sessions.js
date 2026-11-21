@@ -74,7 +74,10 @@ class TerminalSessions {
         terminal.base += drop;
         terminal.truncated = true;
       }
-      this.onEvent({ type: 'output', scope, terminalId: terminal.id, cursor: terminal.base + terminal.buffer.length });
+      // The chunk travels with the event so the window can show it at once; `cursor` is the offset after it, so a
+      // window that missed a chunk notices the gap and reads from its own cursor instead.
+      this.onEvent({ type: 'output', scope, terminalId: terminal.id, cursor: terminal.base + terminal.buffer.length,
+        data: data.length <= 64 * 1024 ? data : undefined });
     });
     child.onExit(({ exitCode }) => {
       terminal.exited = true;

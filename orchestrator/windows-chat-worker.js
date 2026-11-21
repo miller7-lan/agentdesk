@@ -138,6 +138,11 @@ function serveWorker(stateDir, setup = {}) {
     profile: () => process.platform === 'darwin' ? macSandboxProfile({ extra: [stateDir] }) : undefined,
     onEvent: (value) => broadcast('terminal', value),
   });
+  if (setup.terminals) {
+    // A caller-provided TerminalSessions (tests, packaged smoke checks) still streams its events to the windows.
+    const own = terminals.onEvent;
+    terminals.onEvent = (value) => { try { own?.(value); } catch {} broadcast('terminal', value); };
+  }
   const sweep = setInterval(() => terminals.sweep(), 10 * 60_000);
   sweep.unref();
   const { createCheckpoint, restoreCheckpoint, list: listCheckpoints } = require('./git-checkpoints');
@@ -186,6 +191,25 @@ function serveWorker(stateDir, setup = {}) {
           case 'terminalInput': {
             const lease = leases.get(binding, { allowSuspended: true });
             return terminals.write(lease.scope, frame.terminalId, frame.data, { byUser: true });
+          }
+          // The person's own terminal actions from the chat window (open, resize, Ctrl+C, close). They work while the
+          // lease is suspended too: the terminal belongs to the person, not to a model turn.
+          case 'terminalOpen': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            if (!lease.fullAccess) throw new Error('native_chat_read_only');
+            return terminals.open(lease.scope, { cwd: lease.directory, shell: frame.shell, cols: frame.cols, rows: frame.rows });
+          }
+          case 'terminalResize': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return terminals.resize(lease.scope, frame.terminalId, frame.cols, frame.rows);
+          }
+          case 'terminalSignal': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return terminals.signal(lease.scope, frame.terminalId, frame.signal);
+          }
+          case 'terminalClose': {
+            const lease = leases.get(binding, { allowSuspended: true });
+            return terminals.close(lease.scope, frame.terminalId);
           }
           case 'terminalRead': {
             const lease = leases.get(binding, { allowSuspended: true });

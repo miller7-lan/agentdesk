@@ -1,0 +1,92 @@
+name: Terminal packaging check
+
+# The interactive terminal (node-pty + xterm.js) on real Windows x64 and macOS arm64 runners: install the locked
+# dependencies, run the test suite with the real node-pty, package the app unsigned, then check the packaged
+# app itself — node-pty loading in the Electron runtime from the asar, the real Worker driving PowerShell/CMD or
+# zsh/bash, and xterm rendering in the app window. Nothing is signed, published or released here.
+on:
+  push:
+    branches:
+      - feat/direct-chat-v2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Tests with the real node-pty
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/github-test-reporter.mjs --test-reporter-destination=stdout "test/*.test.js"
+      - name: Package (macOS arm64, unsigned)
+        if: matrix.platform == 'mac'
+        run: npm run predist:mac && npx electron-builder --mac dir --arm64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Package (Windows x64, unsigned)
+        if: matrix.platform == 'windows'
+        run: npm run predist && npx electron-builder --win dir --x64 --publish never
+      - name: Locate the packaged app
+        id: app
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = mac ]; then
+            root="dist/mac-arm64/AgentDesk.app"
+            echo "exe=$root/Contents/MacOS/AgentDesk" >> "$GITHUB_OUTPUT"
+            echo "resources=$root/Contents/Resources" >> "$GITHUB_OUTPUT"
+            echo "dir=dist/mac-arm64" >> "$GITHUB_OUTPUT"
+          else
+            echo "exe=dist/win-unpacked/AgentDesk.exe" >> "$GITHUB_OUTPUT"
+            echo "resources=dist/win-unpacked/resources" >> "$GITHUB_OUTPUT"
+            echo "dir=dist/win-unpacked" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Packaged app — real terminals through the Worker
+        shell: bash
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
+        run: |
+          set -o pipefail
+          "${{ steps.app.outputs.exe }}" scripts/packaged-terminal-smoke.js "${{ steps.app.outputs.resources }}" | tee terminal-smoke-${{ matrix.platform }}.jsonl
+      - name: Packaged app — xterm in the app window
+        shell: bash
+        run: |
+          set -o pipefail
+          npm install --no-save --no-audit --no-fund playwright-core@1.65.1
+          node scripts/packaged-ui-smoke.js "${{ steps.app.outputs.exe }}" | tee ui-smoke-${{ matrix.platform }}.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: terminal-smoke-${{ matrix.platform }}
+          if-no-files-found: ignore
+          path: |
+            terminal-smoke-*.jsonl
+            ui-smoke-*.jsonl
+            terminal-ui-smoke.png
+      - name: Zip the packaged app
+        if: success()
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = mac ]; then ditto -c -k --keepParent "dist/mac-arm64/AgentDesk.app" agentdesk-terminal-mac-arm64.zip
+          else (cd dist && 7z a -tzip ../agentdesk-terminal-windows-x64.zip win-unpacked > /dev/null); fi
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: agentdesk-terminal-${{ matrix.platform }}
+          retention-days: 14
+          path: agentdesk-terminal-*.zip

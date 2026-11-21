@@ -32,3 +32,13 @@ for (const name of ['LICENSE', 'NOTICE']) {
   const source = path.join(pkg, name);
   if (fs.existsSync(source)) fs.copyFileSync(source, path.join(destination, name));
 }
+
+// The terminal view (src/vendor/xterm) must be the same xterm.js release the lockfile installs.
+for (const [file, pkgName, source] of [['xterm.js', '@xterm/xterm', 'lib/xterm.js'], ['addon-fit.js', '@xterm/addon-fit', 'lib/addon-fit.js'],
+  ['xterm.css', '@xterm/xterm', 'css/xterm.css']]) {
+  const installed = path.join(root, 'node_modules', pkgName, source);
+  if (!fs.existsSync(installed)) continue;
+  const strip = (text) => text.replace(/\n\/\/# sourceMappingURL=.*\n?$/, '\n').replace(/\s+$/, '');
+  const vendored = fs.readFileSync(path.join(root, 'src', 'vendor', 'xterm', file), 'utf8');
+  assert.equal(strip(vendored), strip(fs.readFileSync(installed, 'utf8')), `src/vendor/xterm/${file} differs from ${pkgName}`);
+}

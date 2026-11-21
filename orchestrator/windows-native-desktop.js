@@ -15,13 +15,25 @@ function sameRoot(left, right) {
 
 // Windows and macOS: the official CLI on VPS2 works directly in this computer's project (mounted over SFTP),
 // and its local_shell runs here.
-function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onCommand, reviewUnknown }) {
-  const worker = createWorkerClient(stateDir, { onUpdate: (scope, run) => {
-    try {
-      const [, provider, threadId] = JSON.parse(scope);
-      onCommand(provider, threadId, { ...run, id: run.runId, code: run.exitCode });
-    } catch {}
-  } });
+function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onCommand, reviewUnknown,
+  onTerminal = () => {} }) {
+  const worker = createWorkerClient(stateDir, {
+    onUpdate: (scope, run) => {
+      try {
+        const [, provider, threadId] = JSON.parse(scope);
+        onCommand(provider, threadId, { ...run, id: run.runId, code: run.exitCode });
+      } catch {}
+    },
+    // Terminal events (output, exit, takeover) go to the chat window of the conversation the terminal belongs to.
+    onEvent: (kind, value) => {
+      if (kind !== 'terminal' || typeof value?.scope !== 'string') return;
+      try {
+        const [, provider, threadId] = JSON.parse(value.scope);
+        const { scope, ...event } = value;
+        onTerminal({ provider, threadId, ...event });
+      } catch {}
+    },
+  });
   const file = path.join(stateDir, 'threads.json');
   const records = new Map();
   try {
@@ -178,6 +190,32 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       const value = await connection.request('shell', { binding: { ...identity, ...binding }, args: { action, runId } });
       const normalize = (run) => ({ ...run, id: run.runId, code: run.exitCode });
       return action === 'list' ? value.runs.map(normalize) : normalize(value);
+    },
+    // The interactive terminals of one native conversation (D4). The Worker keeps them running when this window
+    // or the whole app is closed; reopening the conversation finds them again here.
+    async terminal(provider, threadId, op, fields = {}) {
+      const record = records.get(threadId);
+      if (!record || record.provider !== provider) return undefined;
+      const project = resolveProject(record.projectId, record.worktreeSession);
+      if (!project || !sameRoot(project.root, record.root)) throw new Error('本机项目与原会话授权目录不匹配。');
+      const identity = { device: deviceId(), provider, threadId, projectId: project.id, root: project.root, fullAccess: true };
+      const connection = await worker.get();
+      if (op === 'capabilities') return connection.request('capabilities', {});
+      const found = await connection.request('lookup', { binding: identity });
+      if (!found) throw new Error('这个会话的本机授权已结束，请重新打开会话。');
+      const binding = { ...identity, ...found };
+      const id = typeof fields.terminalId === 'string' ? fields.terminalId : undefined;
+      switch (op) {
+        case 'list': return connection.request('terminalRead', { binding });
+        case 'read': return connection.request('terminalRead', { binding, terminalId: id, cursor: fields.cursor });
+        case 'open': return connection.request('terminalOpen', { binding, shell: fields.shell, cols: fields.cols, rows: fields.rows });
+        case 'input': return connection.request('terminalInput', { binding, terminalId: id, data: fields.data });
+        case 'takeover': return connection.request('terminalTakeover', { binding, terminalId: id, on: fields.on === true });
+        case 'resize': return connection.request('terminalResize', { binding, terminalId: id, cols: fields.cols, rows: fields.rows });
+        case 'signal': return connection.request('terminalSignal', { binding, terminalId: id, signal: fields.signal || 'SIGINT' });
+        case 'close': return connection.request('terminalClose', { binding, terminalId: id });
+        default: throw new Error('invalid_terminal_operation');
+      }
     },
     disconnect: () => worker.disconnect(),
   };
