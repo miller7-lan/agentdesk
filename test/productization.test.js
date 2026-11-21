@@ -55,6 +55,25 @@ test('switches two local repositories and one cloud project without exposing fil
   await assert.rejects(ws.read('example'), /超出工作区/);
 });
 
+test('binds a group project once and keeps its identity across restarts', async (t) => {
+  const folder = await sandbox(t);
+  const repo = path.join(folder, 'repo');
+  await mkdir(repo);
+  await git(repo, ['init'], new AbortController().signal);
+  const file = path.join(folder, 'config.json');
+  const config = new AppConfig(file);
+  await config.load();
+  const id = 'group-' + require('node:crypto').randomUUID();
+  const fields = { name: 'Example', kind: 'local' };
+  await config.saveProject(undefined, fields, repo, id);
+  await assert.rejects(config.saveProject(undefined, fields, repo, id));
+  await assert.rejects(config.saveProject(undefined, fields, repo, 'live'));
+  const restored = new AppConfig(file);
+  await restored.load();
+  assert.equal(restored.active.id, id);
+  assert.equal(restored.active.localRoot, await validateGitRoot(repo));
+});
+
 test('rejects paths outside the local workspace and nested non-root Git directories', async (t) => {
   const folder = await sandbox(t);
   const root = path.join(folder, 'repo');

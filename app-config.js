@@ -116,10 +116,12 @@ class AppConfig {
     return operation;
   }
 
-  async saveProject(id, fields, localRoot) {
+  async saveProject(id, fields, localRoot, groupId) {
     return this.mutate(async (draft) => {
       const current = draft.projects.find((project) => project.id === id);
       if (id && !current) throw new Error('找不到该项目。');
+      if (groupId !== undefined && (id || !/^group-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(groupId) ||
+          draft.projects.some(project => project.id === groupId))) throw new Error('项目绑定已更改，请重新打开项目。');
       const candidate = { ...current, ...fields };
       const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
       const { kind, remoteCwd, orchestratorWorkspace } = candidate;
@@ -128,7 +130,7 @@ class AppConfig {
       if (orchestratorWorkspace && (typeof orchestratorWorkspace !== 'string' || !projectId.test(orchestratorWorkspace))) throw new Error('主控工作区标识无效。');
       const root = kind === 'local' ? await validateGitRoot(localRoot ?? current?.localRoot) : undefined;
       const project = {
-        id: id || randomUUID(), name, kind,
+        id: id || groupId || randomUUID(), name, kind,
         ...(root && { localRoot: root }),
         ...(remoteCwd && { remoteCwd }),
         ...(orchestratorWorkspace && { orchestratorWorkspace }),

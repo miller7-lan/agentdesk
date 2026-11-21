@@ -263,7 +263,7 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
           if (picked.canceled) return { ok: false, cancelled: true };
           [localRoot] = picked.filePaths;
         }
-        await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot);
+        await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot, request.groupId);
       } else await appConfig[operation](id);
       activateProject();
       logger?.audit('project_change', { operation, projectId: id || appConfig.active?.id, status: 'ok' });

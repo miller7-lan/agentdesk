@@ -19,12 +19,14 @@
   function apply(result) {
     if (!result || !Array.isArray(result.projects)) return;
     const old = new Set(D.projects.filter((item) => item.configured).map(({ id }) => id));
-    const records = result.projects.map((item) => ({
-      ...item, branch: 'main', live: true, configured: true,
-    }));
+    const records = result.projects.map((item) => {
+      const serverProject = D.projects.find(project => project.id === item.id)?.serverProject;
+      return { ...item, ...(serverProject && { serverProject }), branch: 'main', live: true, configured: true };
+    });
     // Built-in demos are only useful before a real workspace is configured.
     const priorExamples = new Set(D.projects.filter(item => item.example).map(item => item.id));
-    const retained = D.projects.filter((item) => !item.configured && item.id !== 'live' && (!records.length || !item.example));
+    const configuredIds = new Set(records.map(item => item.id));
+    const retained = D.projects.filter((item) => !configuredIds.has(item.id) && !item.configured && item.id !== 'live' && (!records.length || !item.example));
     D.projects.splice(0, D.projects.length, ...records, ...retained);
     const valid = new Set(D.projects.map(({ id }) => id));
     for (let index = D.sessions.length - 1; index >= 0; index--) {
@@ -154,7 +156,17 @@
   window.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) menu.hidden = true; });
   window.addEventListener('keydown', event => { if (event.key === 'Escape') menu.hidden = true; });
   api.onChanged(apply);
-  window.AgentDeskProjects = { select, openSettings: () => $('#workspaceSettings').click() };
+  async function bindForDirect(project) {
+    const result = await api.add({ groupId: project.id, name: project.name, kind: 'local',
+      orchestratorWorkspace: project.serverProject || '' });
+    if (!result.ok) {
+      if (!result.cancelled) A.toast(result.error);
+      return false;
+    }
+    apply(result);
+    return true;
+  }
+  window.AgentDeskProjects = { select, bindForDirect, openSettings: () => $('#workspaceSettings').click() };
   api.list().then((result) => {
     if (!result.ok) return;
     apply(result);

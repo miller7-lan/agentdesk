@@ -241,9 +241,14 @@
 
   async function newDirect(project = (state.group && projectIdOf(state.group)) || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex', { worktree = false } = {}) {
     project = projectIdOf(project);
-    const p = proj(project);
+    let p = proj(project);
     if (!p) return;
-    agent = AGENT_NAMES[agent] ? agent : 'codex';
+    if (!Object.hasOwn(AGENT_NAMES, agent)) { toast('该 AI 尚未启用原生单聊'); return; }
+    if (LIVE && !p.configured && p.id.startsWith('group-')) {
+      if (!await window.AgentDeskProjects?.bindForDirect(p)) return;
+      p = proj(project);
+    }
+    if (LIVE && !p.live) { toast('这是示例项目，请在已连接的工作区开始单聊'); return; }
     if (agent !== 'codex' && p.live && !p.configured) {
       toast('请先为这个项目选择本机目录，再开始 ' + agentName(agent) + ' 单聊');
       return;
@@ -458,7 +463,12 @@
   function send(ev) {
     // Enter 与发送按钮走同一路径：运行中空输入 = 停止；有输入 = 插话/发送
     const fromButton = !ev || ev.type === 'click' || ev.type === 'keydown';
-    if (sess(state.active)?.live) return L()?.send(sess(state.active), fromButton);
+    const active = sess(state.active);
+    if (active?.live) return L()?.send(active, fromButton);
+    if (LIVE && (!active || !proj(active.project)?.example)) {
+      toast('此对话未连接 CLI，请在项目中重新新建单聊并选择工作区');
+      return;
+    }
     if (state.busy) { // 停止
       clearTimeout(state.timer);
       const s = sess(state.active);

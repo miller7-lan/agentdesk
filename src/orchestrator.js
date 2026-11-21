@@ -10,7 +10,10 @@ window.__groupReady = (async () => {
   const temporary = await enrollment?.required();
   const supported = Boolean(api && (await api.available()));
   const liveProject = 'live';
-  const isExample = (id) => !A.proj(id)?.live;
+  const isExample = (id) => {
+    const project = A.proj(id);
+    return !project?.live || (project.id.startsWith('group-') && !project.serverProject);
+  };
   const isLiveGroup = () => Boolean(state.group && A.proj(state.group)?.live);
   const projectOf = (group) => A.proj(group.id)?.serverProject;
   const members = {

@@ -64,7 +64,7 @@
   function rootOf(s = sess(state.active)) {
     return (s?.live && s.localRoot) || A.proj(s?.project)?.localRoot || localRoot;
   }
-  const pathFor = (s, r) => isMac ? rootOf(s) + '/' + r : localRoot + '\\' + String(r).replace(/\//g, '\\');
+  const pathFor = (s, r) => isMac ? rootOf(s) + '/' + r : rootOf(s) + '\\' + String(r).replace(/\//g, '\\');
   let rafPending = false;
   function render() { if (rafPending) return; rafPending = true; requestAnimationFrame(() => { rafPending = false; A.renderAll(); }); }
   const isActive = (s) => s && s.id === state.active;
@@ -558,6 +558,14 @@
     const { approvalPolicy, sandbox, sandboxPolicy } = fromQueue
       ? (options.policy || s.chatPolicy || modeToPolicy($('#modeSelect').value))
       : modeToPolicy($('#modeSelect').value);
+    // Snapshot this turn before waking a CLI: the user may switch chats during the handshake.
+    const sel = $('#modelSelect');
+    const profile = chatProfiles.get(s.project)?.[agent];
+    const model = chat ? (Object.hasOwn(profile?.models || {}, s.model) ? s.model : undefined)
+      : (sel.dataset.live ? sel.value : undefined);
+    const effort = chat ? (profile?.models?.[model]?.efforts?.includes(s.effort) ? s.effort : undefined)
+      : (model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined);
+    const serviceTier = !chat && model ? $('#tierSelect').value || undefined : undefined;
     if (chat) s.chatPolicy = { approvalPolicy, sandboxPolicy };
     if (!(await ensureReady(s))) return false;
     if (!chat && !fromQueue) { ta.value = ''; A.autosize(); }
@@ -574,15 +582,7 @@
     if (sandbox === 'danger-full-access') {
       if (isMac) input[0].text += '\n\n[AgentDesk：完全访问本机（macOS）]\n你可以用 agentdesk_file_* 工具读写这台 Mac 的文件，路径必须是绝对 POSIX 路径，修改会立即生效。覆盖已有文件时需 overwrite:true；写之前先读取确认。不要使用 VPS 上的文件工具。';
       if (s.worktree) input[0].text += `\n[独立工作树] 这个会话只在 ${s.worktree.path}（分支 ${s.worktree.branch}）里改文件，不要改原项目目录；用户会在确认后合回 ${s.worktree.baseBranch}。`;
-      else if (!chat) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。优先用 glob 找文件、grep 查找文本、edit 做精确替换。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
-    }
-    const sel = $('#modelSelect');
-    const model = chat
-      ? (fromQueue ? (s.model || undefined) : (sel.value || undefined))
-      : (sel.dataset.live ? sel.value : undefined);
-    if (chat && !fromQueue) {
-      s.model = model;
-      s.effort = $('#effortWrap').hidden ? undefined : ($('#effortSelect').value || undefined);
+      else if (!chat && !isMac) input[0].text += '\n\n[AgentDesk：完全访问]\n访问这台 Windows 的文件，请用 windows_file_* 工具和本机绝对路径。优先用 glob 找文件、grep 查找文本、edit 做精确替换。VPS 上的命令只用于 VPS，本机桌面用 desktop_*。如果旧会话未注册 windows_file_*，请提示用户新建会话。';
     }
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     if (!s.threadId) {
@@ -596,12 +596,11 @@
       if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
     const turnParams = chat
-      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort: s.effort,
+      ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort,
         ...(attachments.length && { attachments }) }
       : {
         threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
-        effort: model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined,
-        serviceTier: model && $('#tierSelect').value ? $('#tierSelect').value : undefined,
+        effort, serviceTier,
       };
     const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
@@ -864,7 +863,7 @@
     }
     models = all.filter((m) => !m.hidden);
     const active = sess(state.active);
-    const shown = isChat(active) ? models.length > 0 : renderModels();
+    const shown = isChat(active) || window.__providerDirect?.handles(active) ? models.length > 0 : renderModels();
     syncSession(active);
     return shown;
   }
@@ -898,7 +897,7 @@
     }).catch(() => {}).finally(() => {
       chatProfileLoads.delete(project);
       const active = sess(state.active);
-      if (active && isChat(active) && active.project === project) syncSession(active);
+      if (chatProfiles.has(project) && isChat(active) && active.project === project) syncSession(active);
     });
     chatProfileLoads.set(project, loading);
   }
@@ -916,7 +915,7 @@
       ef.innerHTML = list.map((effort) =>
         `<option value="${esc(effort)}">推理：${esc(EFFORT_ZH[effort] || effort)}</option>`).join('');
     }
-    if (!list.includes(s.effort)) s.effort = list.includes(model.defaultEffort) ? model.defaultEffort : list[0];
+    if (chatProfiles.has(s.project) && !list.includes(s.effort)) s.effort = list.includes(model.defaultEffort) ? model.defaultEffort : list[0];
     ef.value = s.effort || '';
     $('#effortWrap').hidden = !list.length;
   }
@@ -934,7 +933,7 @@
       sel.disabled = !options.length;
     }
     // 新会话没有选择时用配置里的 defaultModel，其次第一个模型；这样具体版本和推理强度一进来就可见。
-    if (!options.some(([id]) => id === s.model)) {
+    if (chatProfiles.has(s.project) && !options.some(([id]) => id === s.model)) {
       s.model = options.some(([id]) => id === profile?.defaultModel) ? profile.defaultModel : options[0]?.[0];
     }
     sel.value = s.model || '';
