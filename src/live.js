@@ -115,7 +115,7 @@
       if (!(await ensureReady(s))) return { ok: false, error: `${agentName(agent)} 未连接` };
       last = await apiFor(agent).request('thread/resume', { threadId: s.threadId, ...params,
         ...(agent === 'codex' && A.proj(s.project)?.configured && { projectId: s.project }) });
-      if (last.ok) return last;
+      if (last.ok) { s.windowsNative = last.result?.windowsNative === true; return last; }
       if (!/active writer/i.test(last.error || '')) break;
     }
     return last;
@@ -608,6 +608,7 @@
         : { projectId, approvalPolicy, sandbox, approvalsReviewer: 'user', model, ...(s.worktree && { worktreeSession: s.worktree.key || s.id }) };
       const r = await api.request('thread/start', params);
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
+      s.windowsNative = r.result.windowsNative === true;
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
       if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
@@ -1575,7 +1576,21 @@
   }
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
-  function reconnectActive() {
+  async function reconnectActive() {
+    const session = sess(state.active);
+    if (!state.group && session?.windowsNative && session.threadId) {
+      const reply = await resumeThread(session);
+      if (!reply.ok) { toast('恢复会话失败：' + reply.error); return; }
+      session.subscribed = true;
+      session.turnId = reply.result.activeTurnId || null;
+      session.busy = !!session.turnId;
+      session.status = session.busy ? 'running' : 'idle';
+      if (session.busy) thinking(session, '正在继续原任务…');
+      await restoreLocalCommands(session);
+      A.renderAll();
+      toast(session.busy ? '已接回正在运行的任务' : '已恢复原会话');
+      return;
+    }
     const agent = activeAgent();
     if (agent !== 'codex' && chatApi) {
       if (chatStatus[agent]?.state === 'sleeping') { chatApi.wake(agent); toast(`正在唤醒 ${agentName(agent)}…`); }
@@ -1642,7 +1657,7 @@
     if (agent === 'codex') ready = false;
     else if (!sleep && chatStatus[agent]) chatStatus[agent] = { ...chatStatus[agent], state: 'error', detail: why };
     for (const s of D.sessions) {
-      if (!s.live || agentOf(s) !== agent) continue;
+      if (!s.live || agentOf(s) !== agent || (agent !== 'codex' && s.windowsNative)) continue;
       s.subscribed = false;
       if (s.busy) fail(s, why);
     }

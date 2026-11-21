@@ -203,6 +203,7 @@ async function openWindowsNativeSeat({
         threadId = actual;
       }
       if (method === 'thread/archive' || method === 'thread/unsubscribe') await this.close({ confirmedIdle: !turnId });
+      if (launch) return { ...reply, windowsNative: true, activeTurnId: turnId };
       return reply;
     },
     async close({ confirmedIdle = false } = {}) {
