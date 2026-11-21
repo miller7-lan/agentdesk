@@ -571,7 +571,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -583,7 +583,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         const body = { operation, route, revision, reply, project, after, stepId, artifact, action, reason, source,
           ...(operation === 'task_artifacts' && offset !== undefined && { offset }),
           ...(operation === 'handover_choose' && { stop, role, model, effort }),
-          ...(operation === 'set_step_models' && { models }) };
+          ...(operation === 'set_step_models' && { models }),
+          ...(operation === 'cli_upgrade' && { provider, target: 'latest' }) };
         // The person allowed access beyond this computer's configuration: it is recorded here, on their computer,
         // before VPS2 hears of it — VPS2 cannot create such a grant by itself.
         if (operation === 'permission_answer' && ['step', 'task'].includes(reply) && grant && typeof grant === 'object') {

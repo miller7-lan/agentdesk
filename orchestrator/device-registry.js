@@ -146,6 +146,8 @@ function approve(file, { deviceId, platform, label, pubkey, channels, bridge, by
   else device.keys.push({ fingerprint: key.fingerprint, type: key.type, channels: wanted });
   Object.assign(device, { label: name, state: 'approved', approvedAt: new Date().toISOString(), approvedBy: String(by).slice(0, 64),
     ...(legacyTag !== undefined && { legacyTag }) });
+  // The Bridge name lets the orchestrator recognise this device's control requests (e.g. a CLI upgrade, Q5).
+  if (wanted.includes('bridge') && bridge) device.bridges = [...new Set([...(device.bridges || []), bridge])];
   record(registry, { action: 'approve', deviceId, platform, fingerprint: key.fingerprint, channels: wanted, by: device.approvedBy });
   save(file, registry);
   return { device: structuredClone(device), suggestedKeyLines: suggestedKeyLines(device, key.publicKey, wanted, { bridge }) };
@@ -189,6 +191,13 @@ function setDirectChatV2(file, deviceId, enabled) {
   record(registry, { action: enabled ? 'v2_on' : 'v2_off', deviceId });
   save(file, registry);
   return structuredClone(device);
+}
+
+// The approved device a named Bridge belongs to, if any.
+function deviceForBridge(file, bridge) {
+  if (typeof bridge !== 'string' || !bridge) return null;
+  try { return load(file).devices.find((device) => device.state === 'approved' && (device.bridges || []).includes(bridge)) || null; }
+  catch { return null; }
 }
 
 function list(file) {
@@ -237,7 +246,7 @@ function codexWorkspace({ env = process.env, stateRoot = env.AGENTDESK_STATE || 
 
 module.exports = {
   DEFAULT_REGISTRY, PLATFORMS, CHANNELS, validDeviceId, parsePublicKey, load, save, approve, revoke, rename,
-  setDirectChatV2, list, lookup, identityFromEnv, suggestedKeyLines, deviceStateDir, codexWorkspace, parseChannels,
+  setDirectChatV2, list, lookup, deviceForBridge, identityFromEnv, suggestedKeyLines, deviceStateDir, codexWorkspace, parseChannels,
 };
 
 if (require.main === module) {

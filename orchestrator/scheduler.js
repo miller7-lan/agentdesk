@@ -373,6 +373,10 @@ class Scheduler {
     return this.refreshQuota(10_000);
   }
 
+  cliUpgradeSpool() {
+    return this.config.cliUpgrade?.spool || path.join(this.config.stateDir || '/var/lib/agentdesk-orchestrator', 'cli-upgrade');
+  }
+
   decorateQuota(list) {
     list = this.withEstimates(list);
     const cached = this.quotaSnapshot || [];
@@ -3615,6 +3619,36 @@ event(task, state, detail) {
       return this.diagnosticStatus({ named, admin: route === 'admin' }).then(({ clis }) => clis);
     }
     if (body.operation === 'resource_status' && (route === 'admin' || named)) return hostResources();
+    // Direct chat v2 status (spec §9): every value with its source, measured time and freshness.
+    if (body.operation === 'status_snapshot' && (route === 'admin' || named)) {
+      if (named && !(Array.isArray(this.config.quotaBridges) && this.config.quotaBridges.includes(named))) throw new Error('quota_access_denied');
+      return this.readQuotaLive(body.liveOnly === true).then((list) => {
+        const { quotaItems, item } = require('./status-hub');
+        const now = Date.now();
+        const availability = this.router.roles().map((role) => item({ provider: role, kind: 'availability',
+          value: { available: this.router.available(role), authRequired: Boolean(this.config.adapters[role]?.authRequired) },
+          source: 'orchestrator', observedAt: now, now }));
+        const cliUpgrade = require('./cli-upgrade');
+        const upgrading = cliUpgrade.upgradeStatus({ spool: this.cliUpgradeSpool() }).upgrading;
+        const upgrades = Object.keys(cliUpgrade.PROVIDERS).map((role) => item({ provider: role, kind: 'upgrade',
+          value: { upgrading: upgrading.includes(role) }, source: 'cli_upgrade_spool', observedAt: now, now }));
+        return { items: [...quotaItems(list, { now }), ...availability, ...upgrades], observedAt: new Date(now).toISOString() };
+      });
+    }
+    // Q5: any approved device may ask for a CLI upgrade. The request is only queued; a separate root runner
+    // (not installed until gate G3 is confirmed) performs it.
+    if (body.operation === 'cli_upgrade' && (route === 'admin' || named)) {
+      const registry = require('./device-registry');
+      const device = route === 'admin' ? { state: 'approved', deviceId: 'admin', label: 'admin' }
+        : registry.deviceForBridge(this.config.deviceRegistry || registry.DEFAULT_REGISTRY, named);
+      if (!device) throw new Error('device_not_approved');
+      const cliUpgrade = require('./cli-upgrade');
+      const queued = cliUpgrade.requestUpgrade({ spool: this.cliUpgradeSpool(), provider: body.provider, target: body.target || 'latest', device });
+      return { ...queued, runnerInstalled: cliUpgrade.upgradeStatus({ spool: this.cliUpgradeSpool() }).runnerInstalled };
+    }
+    if (body.operation === 'cli_upgrade_status' && (route === 'admin' || named)) {
+      return require('./cli-upgrade').upgradeStatus({ spool: this.cliUpgradeSpool() });
+    }
     if (body.operation === 'quota_status') {
       if (route === 'admin') {
         return this.readQuotaLive(body.liveOnly === true).then((list) => this.decorateQuota(list));

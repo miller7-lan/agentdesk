@@ -1300,6 +1300,7 @@ const orchestrationOperations = new Set([
   'routes', 'select_route', 'submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'approve_addition', 'handover_choose', 'permission_answer',
   'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
   'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance',
+  'status_snapshot', 'cli_upgrade', 'cli_upgrade_status',
 ]);
 const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
 
