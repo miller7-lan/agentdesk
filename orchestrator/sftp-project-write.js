@@ -164,7 +164,7 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
         try {
           const stat = await file.stat({ bigint: true });
           if (!stat.isFile() || stat.nlink !== 1n) throw fail('EACCES', 'project_path_denied');
-          const entry = { kind: 'file', target, file, writable, revision: signature(stat) };
+          const entry = { kind: 'file', target, file, writable, append: Boolean(flags & FLAGS.APPEND), revision: signature(stat) };
           if (flags & FLAGS.TRUNCATE) { await file.truncate(0); await file.sync(); }
           const current = await file.stat({ bigint: true });
           entry.revision = signature(current);
@@ -248,7 +248,8 @@ function createProjectSftp({ root, authorize = () => () => {} }) {
             const buffer = fields.bytes();
             if (buffer.length > MAX_CHUNK) throw fail('EBADMSG', 'sftp_write_chunk_too_large');
             await update(entry, async () => {
-              const { bytesWritten } = await entry.file.write(buffer, 0, buffer.length, offset);
+              // macOS pwrite ignores O_APPEND; a null position writes with the append flag respected.
+              const { bytesWritten } = await entry.file.write(buffer, 0, buffer.length, entry.append ? null : offset);
               if (bytesWritten !== buffer.length) throw fail('EIO', 'partial_project_write: ' + entry.target.name);
             });
             return status(id, S.OK);
