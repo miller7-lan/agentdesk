@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('desk', {
     update: (project) => ipcRenderer.invoke('projects:update', project),
     remove: (id) => ipcRenderer.invoke('projects:remove', { id }),
     select: (id) => ipcRenderer.invoke('projects:select', { id }),
+    initialCommit: (id) => ipcRenderer.invoke('projects:initialCommit', { id }),
     onChanged: on('projects:changed'),
   },
   orchestrator: {

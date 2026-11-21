@@ -33,22 +33,82 @@ function gitOptions() {
   return { timeout: 10000, windowsHide: true, env };
 }
 
+// Folders that are never a project (spec §7.1): the disk root, the home folder itself and system folders.
+function refusedRoot(root, { home = require('node:os').homedir(), platform = process.platform } = {}) {
+  const normal = path.resolve(root);
+  const fold = platform === 'win32' || platform === 'darwin' ? (value) => value.toLowerCase() : (value) => value;
+  if (normal === path.parse(normal).root || fold(normal) === fold(path.resolve(home))) return true;
+  const system = platform === 'win32'
+    ? [process.env.SystemRoot || 'C:\\Windows', process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'C:\\ProgramData']
+    : ['/System', '/Library', '/bin', '/sbin', '/usr', '/etc', '/private/etc', '/dev', '/proc', '/sys', '/boot', '/Applications'];
+  return system.some((folder) => { const rel = path.relative(fold(folder), fold(normal)); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); });
+}
+
+const GITIGNORE = ['.DS_Store', 'Thumbs.db', 'desktop.ini', '*.log', '.env', '.env.*', '!.env.example', 'node_modules/', ''].join('\n');
+
+// The person's own Git identity, from their configuration. Q4: without it nothing is committed, and AgentDesk
+// neither writes any gitconfig nor commits under its own name.
+async function gitIdentity(root, options = gitOptions()) {
+  const read = async (key) => {
+    try { return (await exec('git', ['-C', root, 'config', '--get', key], options)).stdout.trim(); } catch { return ''; }
+  };
+  const [name, email] = await Promise.all([read('user.name'), read('user.email')]);
+  return name && email ? { name, email } : null;
+}
+
+async function initialCommit(root, options = gitOptions()) {
+  if (!await gitIdentity(root, options)) return { committed: false, reason: 'missing_identity' };
+  try {
+    await exec('git', ['-C', root, 'add', '--', '.gitignore'], options);
+    // Hooks and signing are not bypassed; when they fail, the repository stays initialized without the commit.
+    await exec('git', ['-C', root, 'commit', '--quiet', '-m', '初始化仓库（AgentDesk）', '--', '.gitignore'], options);
+    return { committed: true };
+  } catch (error) {
+    return { committed: false, reason: 'commit_failed', detail: String(error.stderr || error.message).trim().slice(0, 300) };
+  }
+}
+
+// D7 / Q3 / Q4 (spec §7). Returns what was done so the app can tell the person:
+//   repository   the folder is a repository root: nothing written
+//   subdirectory the folder is inside a repository: the parent repository is used, nothing written
+//   empty        a brand-new empty folder: git init, .gitignore, and a first commit when the identity exists
+//   existing     a folder with any entry (even only .DS_Store / Thumbs.db / desktop.ini): git init only
 async function initializeWorkspace(root) {
   const options = gitOptions();
+  if (refusedRoot(root)) throw new Error('不能把磁盘根目录、用户主目录或系统目录作为项目。');
   try {
-    await exec('git', ['-C', root, 'rev-parse', '--show-toplevel'], options);
+    const { stdout } = await exec('git', ['-C', root, 'rev-parse', '--show-toplevel'], options);
+    const top = await fs.realpath(stdout.trim());
+    if (top === root) return { kind: 'repository', gitRoot: top };
+    return { kind: 'subdirectory', gitRoot: top, subdirectory: path.relative(top, root) };
   } catch (error) {
     if (error.code !== 128 || !/not a git repository/i.test(error.stderr || '')) throw error;
     // A broken repository must not be silently reinitialized.
     try {
       await fs.lstat(path.join(root, '.git'));
+      throw error;
     } catch (statError) {
-      if (statError.code !== 'ENOENT') throw statError;
-      await exec('git', ['-C', root, 'init', '--quiet'], options);
-      return;
+      if (statError !== error && statError.code !== 'ENOENT') throw statError;
+      if (statError === error) throw new Error('该目录里的 .git 已损坏，AgentDesk 不会重新初始化它，请先修复。');
     }
-    throw error;
   }
+  // Q3: only a folder with no entry at all counts as brand new; hidden and system files count as content.
+  const empty = (await fs.readdir(root)).length === 0;
+  await exec('git', ['-C', root, 'init', '--quiet'], options);
+  if (!empty) return { kind: 'existing', gitRoot: root, gitignore: false, committed: false };
+  await fs.writeFile(path.join(root, '.gitignore'), GITIGNORE, { flag: 'wx' });
+  const commit = await initialCommit(root, options);
+  return { kind: 'empty', gitRoot: root, gitignore: true, ...commit };
+}
+
+// The "已设置，补做首个提交" button: only for a repository AgentDesk initialized empty that still has no commit.
+async function retryInitialCommit(root) {
+  const options = gitOptions();
+  try { await exec('git', ['-C', root, 'rev-parse', '--verify', '-q', 'HEAD'], options); return { committed: false, reason: 'already_has_commits' }; }
+  catch {}
+  const entries = (await fs.readdir(root)).filter((name) => name !== '.git');
+  if (entries.length !== 1 || entries[0] !== '.gitignore') return { committed: false, reason: 'not_a_fresh_repository' };
+  return initialCommit(root, options);
 }
 
 async function validateGitRoot(value) {
@@ -157,11 +217,18 @@ class AppConfig {
       if (!name || name.length > 60 || !['local', 'remote'].includes(kind)) throw new Error('请填写有效的项目名称和类型。');
       if (remoteCwd && !remoteDirectory(remoteCwd)) throw new Error('远程目录必须是服务器上的绝对路径。');
       if (orchestratorWorkspace && (typeof orchestratorWorkspace !== 'string' || !projectId.test(orchestratorWorkspace))) throw new Error('主控工作区标识无效。');
-      const root = kind === 'local' ? await validateDirectory(localRoot ?? current?.localRoot) : undefined;
-      if (root && localRoot) await initializeWorkspace(root);
+      let root = kind === 'local' ? await validateDirectory(localRoot ?? current?.localRoot) : undefined;
+      let workdir = current?.workdir;
+      if (root && localRoot) {
+        this.lastInit = await initializeWorkspace(root);
+        // D7: a folder inside a repository uses the parent repository; the chosen folder is the working folder.
+        if (this.lastInit.kind === 'subdirectory') { root = this.lastInit.gitRoot; workdir = this.lastInit.subdirectory; }
+        else workdir = undefined;
+      }
       const project = {
         id: id || groupId || randomUUID(), name, kind,
         ...(root && { localRoot: root }),
+        ...(root && workdir && { workdir }),
         ...(remoteCwd && { remoteCwd }),
         ...(orchestratorWorkspace && { orchestratorWorkspace }),
       };
@@ -187,4 +254,4 @@ class AppConfig {
   }
 }
 
-module.exports = { AppConfig, atomicWrite, migrate, contained, remoteDirectory, validateDirectory, validateGitRoot };
+module.exports = { AppConfig, atomicWrite, migrate, contained, remoteDirectory, validateDirectory, validateGitRoot, initializeWorkspace, retryInitialCommit, refusedRoot, GITIGNORE };

@@ -270,16 +270,29 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
           if (picked.canceled) return { ok: false, cancelled: true };
           [localRoot] = picked.filePaths;
         }
+        appConfig.lastInit = undefined;
         await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot, request.groupId);
       } else await appConfig[operation](id);
       activateProject();
       logger?.audit('project_change', { operation, projectId: id || appConfig.active?.id, status: 'ok' });
-      return { ok: true, ...appConfig.list() };
+      // What binding the folder did to Git (D7/Q3/Q4), so the window can tell the person.
+      const init = (operation === 'add' || operation === 'update') ? appConfig.lastInit : undefined;
+      return { ok: true, ...appConfig.list(), ...(init && { init }) };
     } catch (error) {
       return { ok: false, error: error.message };
     }
   });
 }
+
+// "已设置，补做首个提交": commits .gitignore in a repository AgentDesk initialized empty, once the person's own
+// Git identity exists (Q4). It never writes any gitconfig.
+ipcMain.handle('projects:initialCommit', async (event, { id } = {}) => {
+  if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+  const project = appConfig?.value.projects.find((item) => item.id === id);
+  if (!project?.localRoot) return { ok: false, error: '找不到该本机项目。' };
+  try { return { ok: true, ...await require('./app-config').retryInitialCommit(project.localRoot) }; }
+  catch (error) { return { ok: false, error: error.message }; }
+});
 
 function createWindow() {
   win = new BrowserWindow({

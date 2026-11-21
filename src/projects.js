@@ -119,7 +119,29 @@
     apply(result);
     dialog.close();
     openProject(result.activeProject);
+    reportInit(result.init, result.activeProject);
   });
+  // Tells the person what binding the folder did to Git (spec §7): nothing, the parent repository, or git init.
+  function reportInit(init, projectId) {
+    if (!init) return;
+    const messages = {
+      repository: '',
+      subdirectory: `所选文件夹在一个 Git 仓库里，将使用父仓库（工作目录：${init.subdirectory}）。`,
+      existing: '已在该文件夹执行 git init；现有文件未提交（显示为未跟踪），也没有创建 .gitignore。',
+      empty: init.committed ? '已初始化新仓库：创建 .gitignore 并完成首个提交（只含 .gitignore，未添加远程）。'
+        : init.reason === 'missing_identity' ? '已初始化新仓库并创建 .gitignore。未提交：缺少 Git 身份（user.name / user.email）。'
+          : '已初始化新仓库并创建 .gitignore。首个提交未完成：' + (init.detail || init.reason || ''),
+    };
+    const text = messages[init.kind];
+    if (!text) return;
+    if (init.kind === 'empty' && !init.committed && init.reason === 'missing_identity' && api.initialCommit) {
+      const retry = window.confirm(text + '\n\n请先在终端设置 git config user.name 和 user.email。设置好后点“确定”补做首个提交，或点“取消”稍后再说。');
+      if (retry) api.initialCommit(projectId).then((answer) => A.toast(answer.ok && answer.committed ? '已补做首个提交。'
+        : '仍未提交：' + (answer.error || (answer.reason === 'missing_identity' ? '缺少 Git 身份' : answer.reason)))).catch((error) => A.toast(error.message));
+      return;
+    }
+    A.toast(text);
+  }
   async function removeProject(id) {
     const project = snapshot?.projects.find(item => item.id === id);
     if (!project || !window.confirm(`从 AgentDesk 删除「${project.name}」？本机文件和远程仓库会保留。`)) return;
