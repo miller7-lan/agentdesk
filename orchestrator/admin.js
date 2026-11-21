@@ -23,7 +23,29 @@ function parseFlags(tokens) {
   return { flags, positional };
 }
 
+// `device` runs locally against the registry file (as root), not through the orchestrator socket.
+// N1: it only changes the registry and prints suggested authorized_keys lines; it never writes SSH files.
+function deviceCommand([action, deviceId, ...rest]) {
+  const registry = require('./device-registry');
+  const file = process.env.AGENTDESK_DEVICES || registry.DEFAULT_REGISTRY;
+  const { flags, positional } = parseFlags(rest);
+  const notice = '本命令只修改设备登记表，未改动任何 SSH 授权文件。请先在 /root/backups/ 备份 authorized_keys，再手动增删上面的 key 行。';
+  if (action === 'list') return { registry: file, devices: registry.list(file) };
+  if (action === 'approve' && deviceId) {
+    const result = registry.approve(file, { deviceId, platform: flags.platform, label: flags.label, pubkey: flags.pubkey,
+      channels: flags.channels, bridge: flags.bridge, legacyTag: flags['legacy-tag'], by: process.env.SUDO_USER || process.env.USER || 'admin' });
+    return { ...result, notice };
+  }
+  if (action === 'revoke' && deviceId) return { ...registry.revoke(file, deviceId, { by: process.env.SUDO_USER || 'admin' }), notice };
+  if (action === 'rename' && deviceId && positional[0]) return registry.rename(file, deviceId, positional.join(' '));
+  if (action === 'v2' && deviceId && ['on', 'off'].includes(positional[0])) return registry.setDirectChatV2(file, deviceId, positional[0] === 'on');
+  throw new Error('Usage: admin.js - device list | approve <deviceId> --platform darwin|win32 --label <名称> --pubkey \'<公钥>\' ' +
+    '[--channels chat-claude,chat-grok,chat-antigravity,codex,bridge] [--bridge <name>] [--legacy-tag <tag>] | revoke <deviceId> | ' +
+    'rename <deviceId> <名称> | v2 <deviceId> on|off');
+}
+
 async function main([socketPath, command, id, argument, ...rest]) {
+  if (command === 'device') return deviceCommand([id, argument, ...rest].filter((value) => value !== undefined));
   const send = (frame) => request(socketPath, { ...frame, bridge: process.env.AGENTDESK_BRIDGE || undefined }, 920000);
   const files = new RemoteFiles({
     request: (_route, task_id, kind, body) => send({ operation: 'bridge', task_id, kind, body }),
@@ -100,7 +122,7 @@ async function main([socketPath, command, id, argument, ...rest]) {
     await fs.writeFile(argument, bytes, { flag: 'wx', mode: 0o600 });
     return { path: argument, size: bytes.length };
   }
-  throw new Error('Usage: admin.js <socket> ls | doctor | gc | maintenance [on|off] [reason] | quotas | report [--since ISO] [--until ISO] [--owner O] [--project P] [--tag T] [--format json|table|csv] | benchmark <benchmark-id> [--format json|table|csv] | submit <workspace> <prompt> [test-command] [--tag T] [--project P] [--benchmark-id ID] [--arm single|multi] | status <task-id> [after] | cancel <task-id> | apply <task-id> | reconcile <task-id> | route <ssh|relay> | bridge <task-id> <kind> <json> | upload <task-id> <file> [stream-id] | download <task-id> <output> <json>');
+  throw new Error('Usage: admin.js <socket> device … | ls | doctor | gc | maintenance [on|off] [reason] | quotas | report [--since ISO] [--until ISO] [--owner O] [--project P] [--tag T] [--format json|table|csv] | benchmark <benchmark-id> [--format json|table|csv] | submit <workspace> <prompt> [test-command] [--tag T] [--project P] [--benchmark-id ID] [--arm single|multi] | status <task-id> [after] | cancel <task-id> | apply <task-id> | reconcile <task-id> | route <ssh|relay> | bridge <task-id> <kind> <json> | upload <task-id> <file> [stream-id] | download <task-id> <output> <json>');
 }
 
 main(process.argv.slice(2)).then((value) => {

@@ -72,16 +72,38 @@ if (!PROVIDERS.has(PROVIDER)) {
 }
 
 const STATE_DIR = process.env.AGENTDESK_CHAT_STATE || '/var/lib/agentdesk-orchestrator';
-const THREADS_DIR = path.join(STATE_DIR, 'chat-workspace', 'threads');
 const incoming = new Map();
-const device = process.env.AGENTDESK_CHAT_DEVICE || '';
-if (device && !/^[a-z0-9_]{1,20}$/.test(device)) throw new Error('invalid chat device');
-const instance = device ? `chat-${PROVIDER}-${device}` : `chat-${PROVIDER}`;
 const nativeProject = process.env.AGENTDESK_NATIVE_PROJECT ||
   (PROVIDER === 'claude' && process.env.AGENTDESK_CLAUDE_NATIVE_PROJECT);
+// Direct chat v2: the forced command of the device's key injects AGENTDESK_DEVICE / AGENTDESK_PLATFORM; the
+// device registry says whether that device is approved and switched to v2. Keys without AGENTDESK_DEVICE keep
+// the v1 behaviour (AGENTDESK_CHAT_DEVICE names the old state file). Native seats are launched elsewhere.
+const deviceRegistry = require('./device-registry');
+const IDENTITY = nativeProject ? { legacy: true, legacyTag: '' } : deviceRegistry.identityFromEnv(process.env);
+const V2 = !nativeProject && IDENTITY.state === 'approved' && IDENTITY.v2 === true;
+const PROTOCOL_VERSION = 2;
+const MIN_CLIENT_PROTOCOL = 1;
+// The tag of the v1 state file: the old forced-command tag, or the registry's legacyTag for a registered key.
+const device = (() => {
+  if (IDENTITY.legacy) return IDENTITY.legacyTag || '';
+  if (IDENTITY.legacyTag && IDENTITY.legacyTag !== 'default') return IDENTITY.legacyTag;
+  if (IDENTITY.legacyTag === 'default') return '';
+  return IDENTITY.deviceId ? 'd' + createHash('sha256').update(IDENTITY.deviceId).digest('hex').slice(0, 12) : '';
+})();
+if (device && !/^[a-z0-9_]{1,20}$/.test(device)) throw new Error('invalid chat device');
+const store = V2 ? new (require('./direct-chat-store').DirectChatStore)(STATE_DIR, IDENTITY.deviceId) : null;
+const THREADS_DIR = V2 ? path.join(store.directory, 'threads') : path.join(STATE_DIR, 'chat-workspace', 'threads');
+const LEGACY_THREADS_DIR = path.join(STATE_DIR, 'chat-workspace', 'threads');
+const instance = V2 ? `chat-${PROVIDER}-v2-${createHash('sha256').update(IDENTITY.deviceId).digest('hex').slice(0, 12)}`
+  : device ? `chat-${PROVIDER}-${device}` : `chat-${PROVIDER}`;
 const runtimeDir = nativeProject && (process.env.AGENTDESK_NATIVE_RUNTIME || process.env.AGENTDESK_CLAUDE_NATIVE_RUNTIME) || STATE_DIR;
 const SOCKET = path.join(runtimeDir, `${instance}.sock`);
 const STATE_FILE = path.join(STATE_DIR, `${instance}.json`);
+// The v1 state file a v2 device's threads are copied from once (originals stay where they are).
+const LEGACY_STATE_FILE = V2 && IDENTITY.legacyTag
+  ? path.join(STATE_DIR, IDENTITY.legacyTag === 'default' ? `chat-${PROVIDER}.json` : `chat-${PROVIDER}-${IDENTITY.legacyTag}.json`) : null;
+const ATTACHMENT_DAYS = 7;
+let helloDevice = null;               // the client's device hello, once it matched the key's identity
 // Claude Code reports the account's rate limits on every headless turn. The direct chat writes them where
 // quota_status already reads them (adapters.claude.quotaFile), so the 5-hour and weekly windows stay current.
 const CLAUDE_QUOTA_FILE = process.env.AGENTDESK_CHAT_CLAUDE_QUOTA || path.join(STATE_DIR, 'claude-quotas.json');
@@ -152,6 +174,27 @@ function fail(message, code = -32603) {
 function initialState() { return { version: 1, threads: {} }; }
 
 function loadState() {
+  if (V2) {
+    // One-time copy of this device's v1 threads into its own SQLite. Their scratch folders stay in place, so a
+    // CLI that keys its history on the working directory (Claude) can still resume them.
+    const migration = 'legacy-json-' + PROVIDER;
+    if (LEGACY_STATE_FILE && !store.migrated(migration)) {
+      try {
+        const legacy = JSON.parse(fs.readFileSync(LEGACY_STATE_FILE, 'utf8'));
+        const threads = {};
+        for (const [id, thread] of Object.entries(legacy?.threads || {})) {
+          if (!/^(claude|grok|antigravity)-[0-9a-f-]{36}$/.test(id) || thread?.provider !== PROVIDER) continue;
+          threads[id] = { ...thread, deviceId: IDENTITY.deviceId, legacyWorkspace: path.join(LEGACY_THREADS_DIR, id), migratedAt: Date.now() };
+        }
+        store.saveSessions(PROVIDER, { ...store.loadSessions(PROVIDER), ...threads });
+        store.audit('migrate_v1_threads', null, { provider: PROVIDER, count: Object.keys(threads).length });
+      } catch (error) {
+        if (error.code !== 'ENOENT') log('legacy_state_copy_failed', error.message);
+      }
+      store.markMigrated(migration);
+    }
+    return { version: 1, threads: store.loadSessions(PROVIDER) };
+  }
   let text;
   try { text = fs.readFileSync(STATE_FILE, 'utf8'); }
   catch (error) {
@@ -175,12 +218,24 @@ const state = loadState();
 const activeTurns = new Map();       // threadId -> turn
 const capabilities = new Map();      // capability -> turn
 let antigravityTurn = null;          // Antigravity shares one user-level MCP config, so only one turn at a time
+// v2 with the sandbox: each Antigravity turn gets its own MCP config bound over the user-level file, so turns
+// of different conversations no longer wait for each other (spec §6.1).
+const ISOLATED_ANTIGRAVITY = V2 && PROVIDER === 'antigravity' && Boolean(process.env.AGENTDESK_CHAT_SANDBOX);
+// D15 / Q6: a v2 turn counts as a session with a CLI process; the limit applies while the CLI runs.
+const seatSlots = V2 && process.env.AGENTDESK_SEAT_LIMITS !== 'off'
+  ? new (require('./seat-slots').SeatSlots)({ directory: process.env.AGENTDESK_SEAT_SLOTS || path.join(STATE_DIR, 'direct-chat', 'slots'),
+    pollMs: Number(process.env.AGENTDESK_SEAT_POLL_MS || 500) }) : null;
 const pendingClient = new Map();     // JSON-RPC id -> { turn, resolve, reject, timer }
 let nextClientId = 1;
 let stdoutClosed = false;
 let shuttingDown = false;
 
 function persist() {
+  if (V2) {
+    try { store.saveSessions(PROVIDER, state.threads); }
+    catch (error) { log('state_write_failed', error.message); }
+    return;
+  }
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
     const temporary = `${STATE_FILE}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
@@ -311,11 +366,19 @@ function readOnlyOf(sandboxPolicy) {
 
 function threadById(id) {
   if (typeof id !== 'string' || !/^(claude|grok|antigravity)-[0-9a-f-]{36}$/.test(id)) return null;
-  return state.threads[id] || null;
+  const thread = state.threads[id] || null;
+  // Belt and braces: a v2 store only holds this device's sessions, but a row from elsewhere is never served.
+  if (thread && V2 && thread.deviceId !== IDENTITY.deviceId) throw fail('SESSION_NOT_OWNED', -32003);
+  return thread;
 }
 
 function workspaceFor(threadId) {
   if (NATIVE_PROJECT) return NATIVE_PROJECT;
+  const legacy = V2 && state.threads[threadId]?.legacyWorkspace;
+  if (legacy && path.dirname(legacy) === LEGACY_THREADS_DIR) {
+    fs.mkdirSync(legacy, { recursive: true, mode: 0o700 });
+    return legacy;
+  }
   fs.mkdirSync(THREADS_DIR, { recursive: true, mode: 0o700 });
   const folder = path.join(THREADS_DIR, threadId);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -577,6 +640,21 @@ function writeMcpConfig(turn, workspace) {
   } else if (PROVIDER === 'antigravity') {
     // Antigravity reads MCP servers from the user home, not the project folder.
     const folder = path.join(HOME, '.gemini', 'config');
+    if (ISOLATED_ANTIGRAVITY) {
+      // The user-level file must exist as a regular file to be bound over; its content is left untouched.
+      fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+      const target = path.join(folder, 'mcp_config.json');
+      try { fs.writeFileSync(target, '{}\n', { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+      if (fs.realpathSync(target) !== target || !fs.statSync(target).isFile()) throw new Error('antigravity_config_unavailable');
+      const privateDir = path.join(store.directory, 'runtime');
+      fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+      const source = path.join(privateDir, turn.id + '.agy-mcp.json');
+      turn.nativeAntigravityConfig = { source, target };
+      fs.writeFileSync(source, JSON.stringify({
+        mcpServers: { [turn.serverName]: { ...mcpDefinition(turn), disabled: false } },
+      }), { mode: 0o600 });
+      return;
+    }
     if (NATIVE_PROJECT) {
       const target = path.join(folder, 'mcp_config.json');
       if (fs.realpathSync(target) !== target || !fs.statSync(target).isFile()) throw new Error('native_antigravity_config_unavailable');
@@ -619,6 +697,10 @@ function writeMcpConfig(turn, workspace) {
 }
 
 function cleanupConfigs(turn) {
+  if (ISOLATED_ANTIGRAVITY && turn.nativeAntigravityConfig) {
+    try { fs.unlinkSync(turn.nativeAntigravityConfig.source); } catch {}
+    return;
+  }
   if (NATIVE_PROJECT) {
     if (turn.nativeGrokConfig) {
       try { fs.unlinkSync(turn.nativeGrokConfig.source); } catch {}
@@ -668,22 +750,25 @@ function instructions(turn) {
     return `[AgentDesk Windows 单聊]\n当前工作目录是已挂载的 Windows 项目。读取、检索、编辑和写入项目文件请使用原生文件工具。Windows 命令、依赖安装、编译和测试请调用 local_shell。连接恢复时使用原 runId 核对结果。` +
       (turn.thread.systemPrompt ? '\n' + turn.thread.systemPrompt : '');
   }
-  const root = turn.thread.localRoot || '(未提供)';
-  const windows = /^[A-Za-z]:[\\/]/.test(root);
+  const root = turn.localRoot ?? turn.thread.localRoot ?? '';
+  const shown = root || '(未提供)';
+  // v2: the platform comes from the key's registered device, not from the path the client sent.
+  const windows = V2 ? IDENTITY.platform === 'win32' : /^[A-Za-z]:[\\/]/.test(root);
   const computer = windows ? 'Windows' : 'Mac';
+  const deviceLine = V2 ? `- 本会话只属于设备「${IDENTITY.label}」（${windows ? 'Windows' : 'macOS'}）；本机工具调用只会送到这台设备，不会转到其他设备。\n` : '';
   const workspace = workspaceFor(turn.threadId);
   const vps = SANDBOX
     ? `- 你可以在 VPS 上的会话工作目录 ${workspace} 里使用 shell 和自带的读写工具（运行命令、跑测试、下载依赖），它在沙盒里（只读轮次不能写）；这里不是用户电脑。`
     : '- VPS 上的 shell 和自带文件工具未开启。';
   return `${turn.thread.systemPrompt ? turn.thread.systemPrompt + '\n\n' : ''}[AgentDesk 单聊｜本机文件]
-- 需要最新信息时可以联网搜索和读取网页。
+${deviceLine}- 需要最新信息时可以联网搜索和读取网页。
 ${vps}
 - 用户电脑上授权过的命令：先用 agentdesk_command_list 查看，再用 agentdesk_command_run 运行；按当前权限模式审批。
-- 你运行在一台 VPS 上，但用户的真实文件在 ${computer} 上，项目路径是：${root}
+- 你运行在一台 VPS 上，但用户的真实文件在 ${computer} 上，项目路径是：${shown}
 - 读写用户文件只能调用 MCP 工具 agentdesk_file_list/read/write/mkdir/copy/move/trash（服务器名 ${turn.serverName}）。
 - 在本机查找文件时优先用 agentdesk_file_glob 传路径和通配符，查找文本用 agentdesk_file_grep，可传 context 查看上下文。局部改动优先用 agentdesk_file_edit，传入唯一匹配的原文和新文。
 - 同时处理多个本机文件时，优先用 agentdesk_file_read_batch 和 agentdesk_file_write_batch。写入用读到的版本，创建用 null。检查逐项结果再决定是否重试。
-- 本机路径必须是 ${computer} 的绝对路径，例如 ${root}/note.txt；不要使用 VPS 的 shell 或内置 Read/Write/Bash 工具操作本机文件。
+- 本机路径必须是 ${computer} 的绝对路径，例如 ${shown}/note.txt；不要使用 VPS 的 shell 或内置 Read/Write/Bash 工具操作本机文件。
 - 可用的 desktop_* 工具在用户电脑上截图、点击或输入；只有在本机桌面开启且本轮可操作时才会提供。
 - 写文件前先读目标；创建文件后把结果路径告诉用户。覆盖已有文件必须显式传 overwrite:true。
 - 系统目录、凭据目录（如 ~/.ssh、~/.agentdesk）和 .git 内部会被拒绝，不要尝试绕过。
@@ -1063,6 +1148,8 @@ function finishTurn(turn, code, startupError) {
   if (startupError) turn.childError = startupError;
   activeTurns.delete(turn.threadId);
   if (antigravityTurn === turn) antigravityTurn = null;
+  turn.slotAbort?.abort(new Error('turn_finished'));
+  turn.releaseSlot?.();
   capabilities.delete(turn.capability);
   rejectPending(turn, new Error('turn_finished'));
   if (turn.child?.pid) {
@@ -1090,7 +1177,11 @@ function finishTurn(turn, code, startupError) {
   turn.thread.updatedAt = Date.now();
   persist();
   cleanupConfigs(turn);
-  if (turn.attachmentDirectory) fs.rm(turn.attachmentDirectory, { recursive: true, force: true }, error => {
+  if (V2) {
+    store.audit('turn_finished', turn.threadId, { turnId: turn.id, status });
+    if (status === 'completed' || status === 'failed' || status === 'interrupted') pushStatus();
+  }
+  if (turn.attachmentDirectory && !turn.keepAttachments) fs.rm(turn.attachmentDirectory, { recursive: true, force: true }, error => {
     if (error) log('attachment_cleanup_failed', error.code);
   });
   turn.finished = true;
@@ -1106,12 +1197,190 @@ function finishTurn(turn, code, startupError) {
   log('turn_done', turn.id, status, message || '');
 }
 
+/* ---------- v2：设备、状态与附件 ---------- */
+const { StatusHub } = require('./status-hub');
+let statusSubscribed = false;
+const statusHub = new StatusHub({ readers: {
+  version: () => new Promise((resolve) => {
+    require('node:child_process').execFile(BIN, ['--version'], { timeout: 5000, env: childEnvironment({}) }, (error, stdout) => {
+      const text = String(stdout || '').trim().split('\n')[0].slice(0, 120);
+      resolve([{ provider: PROVIDER, kind: 'version', value: error || !text ? null : text, source: 'cli_version',
+        observedAt: error || !text ? null : Date.now(), error: error ? 'version_read_failed' : null, periodMs: 3_600_000 }]);
+    });
+  }),
+  quota: async () => {
+    if (PROVIDER !== 'claude') return [];
+    // The per-turn snapshot Claude Code reports (rate_limit_event); the orchestrator adds the live readings.
+    try {
+      const snapshot = JSON.parse(fs.readFileSync(CLAUDE_QUOTA_FILE, 'utf8'));
+      const buckets = (snapshot.buckets || []).filter((bucket) => bucket && (bucket.fiveHour || bucket.weekly));
+      return [{ provider: 'claude', kind: 'quota', value: buckets.length ? { buckets } : null, source: 'snapshot',
+        observedAt: buckets.length ? snapshot.observedAt : null, periodMs: 300_000 }];
+    } catch (error) {
+      return [{ provider: 'claude', kind: 'quota', value: null, source: 'snapshot', error: error.code === 'ENOENT' ? null : 'quota_read_failed' }];
+    }
+  },
+} });
+statusHub.on('updated', (items) => { if (statusSubscribed) notify('status/updated', { items }); });
+function pushStatus() { if (statusSubscribed) statusHub.refresh({ force: true }).catch(() => {}); }
+
+// Requests other than initialize are refused for keys whose device is not approved (or was revoked since).
+function checkDevice(method) {
+  if (IDENTITY.legacy) return;
+  // A pending, revoked or mismatched device may still say hello and read status, nothing else (A15).
+  if (method === 'initialize' || method === 'status/read') return;
+  if (IDENTITY.error) throw fail(IDENTITY.error, -32001);
+  const current = deviceRegistry.lookup(process.env.AGENTDESK_DEVICES || deviceRegistry.DEFAULT_REGISTRY, IDENTITY.deviceId);
+  if (!current || current.state !== 'approved') throw fail(current?.state === 'revoked' ? 'DEVICE_REVOKED' : 'DEVICE_NOT_APPROVED', -32001);
+  if (V2 && !helloDevice && method !== 'initialize') throw fail('HELLO_REQUIRED', -32001);
+}
+
+function checkHello(params) {
+  const hello = params?.device;
+  if (hello === undefined) {
+    if (V2) throw fail('UPGRADE_REQUIRED', -32002);
+    return null;
+  }
+  if (!hello || typeof hello !== 'object' || Array.isArray(hello) || !deviceRegistry.validDeviceId(hello.deviceId) ||
+      !deviceRegistry.PLATFORMS.has(hello.platform) || !Number.isSafeInteger(hello.protocolVersion)) throw fail('INVALID_DEVICE_HELLO', -32602);
+  if (hello.protocolVersion < MIN_CLIENT_PROTOCOL) throw fail('UPGRADE_REQUIRED', -32002);
+  // The key's identity is authoritative; a different deviceId or platform in the hello is refused outright.
+  if (!IDENTITY.legacy && (hello.deviceId !== IDENTITY.deviceId || hello.platform !== IDENTITY.platform)) {
+    throw fail('DEVICE_MISMATCH', -32001);
+  }
+  const capabilities = Array.isArray(hello.capabilities) ? hello.capabilities.filter((name) => typeof name === 'string').slice(0, 32) : [];
+  return { deviceId: hello.deviceId, platform: hello.platform, protocolVersion: hello.protocolVersion, capabilities,
+    appVersion: typeof hello.appVersion === 'string' ? hello.appVersion.slice(0, 40) : undefined };
+}
+
+function projectHash(localRoot) {
+  return createHash('sha256').update(IDENTITY.deviceId + '\0' + localRoot).digest('hex');
+}
+
+function sessionAttachmentDir(threadId) {
+  const folder = path.join(store.directory, 'attachments', threadId);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  return folder;
+}
+
+function attachmentView(item) {
+  if (!item) return null;
+  let nextOffset = item.state === 'uploading' ? 0 : item.size;
+  if (item.state === 'uploading') { try { nextOffset = fs.statSync(item.file + '.part').size; } catch {} }
+  return { attachmentId: item.id, threadId: item.sessionId, name: item.name, size: item.size, sha256: item.sha256, state: item.state,
+    nextOffset, receivedAt: item.receivedAt ? new Date(item.receivedAt).toISOString() : null,
+    expiresAt: new Date(item.expiresAt).toISOString(), ...(item.error && { error: item.error }) };
+}
+
+function sweepAttachmentsV2() {
+  for (const item of store.expiredAttachments()) {
+    for (const file of [item.file, item.file + '.part', item.file + '.txt']) { try { fs.unlinkSync(file); } catch {} }
+    store.updateAttachment(item.id, { state: 'expired' });
+  }
+}
+
+function sessionAttachment(params, states) {
+  const thread = threadById(params.threadId);
+  if (!thread) throw fail('thread_not_found');
+  const item = typeof params.attachmentId === 'string' && idPattern.test(params.attachmentId) ? store.attachment(params.attachmentId) : null;
+  // Another session's (or another device's) attachment looks the same as one that does not exist.
+  if (!item || item.sessionId !== thread.id) throw fail('attachment_not_found');
+  if (states && !states.includes(item.state)) throw fail('attachment_state_' + item.state);
+  return { thread, item };
+}
+
+async function dispatchV2(method, params) {
+  switch (method) {
+    case 'attachment/begin': {
+      const thread = threadById(params.threadId);
+      if (!thread) throw fail('thread_not_found');
+      const name = typeof params.name === 'string' ? params.name : '';
+      if (!validAttachments([{ id: randomUUID(), name, sha256: params.sha256, size: params.size }])) throw fail('invalid_attachment');
+      const open = store.attachments(thread.id).filter((item) => ['uploading', 'received'].includes(item.state));
+      if (open.length >= maxAttachments * 3) throw fail('too_many_attachments');
+      const id = randomUUID();
+      const file = path.join(sessionAttachmentDir(thread.id), id + '-' + name.replace(/[^\p{L}\p{N}_.-]/gu, '_'));
+      fs.writeFileSync(file + '.part', '', { flag: 'wx', mode: 0o600 });
+      const now = Date.now();
+      store.putAttachment({ id, sessionId: thread.id, name, size: params.size, sha256: params.sha256, file, createdAt: now,
+        expiresAt: now + ATTACHMENT_DAYS * 86_400_000 });
+      return attachmentView(store.attachment(id));
+    }
+    case 'attachment/chunk': {
+      const { item } = sessionAttachment(params, ['uploading']);
+      const { offset, data } = params;
+      if (!Number.isSafeInteger(offset) || offset < 0 || typeof data !== 'string' || data.length > 350000) throw fail('invalid_attachment');
+      const bytes = Buffer.from(data, 'base64');
+      if (bytes.toString('base64') !== data) throw fail('invalid_attachment');
+      const part = item.file + '.part';
+      const current = fs.statSync(part).size;
+      // Resumable: a chunk the server already has is acknowledged; a gap is refused.
+      if (offset + bytes.length <= current) return { attachmentId: item.id, nextOffset: current };
+      if (offset !== current || current + bytes.length > item.size) throw fail('attachment_offset_mismatch');
+      fs.appendFileSync(part, bytes);
+      return { attachmentId: item.id, nextOffset: current + bytes.length };
+    }
+    case 'attachment/commit': {
+      const { thread, item } = sessionAttachment(params, ['uploading', 'received']);
+      if (item.state === 'received') return attachmentView(item);
+      const part = item.file + '.part';
+      const bytes = fs.readFileSync(part);
+      if (bytes.length !== item.size || createHash('sha256').update(bytes).digest('hex') !== item.sha256) {
+        store.updateAttachment(item.id, { state: 'failed', error: 'ATTACHMENT_HASH_MISMATCH' });
+        fs.rmSync(part, { force: true });
+        throw fail('ATTACHMENT_HASH_MISMATCH');
+      }
+      fs.renameSync(part, item.file);
+      fs.chmodSync(item.file, 0o400);
+      try { writeTextCopy(fs, item.file, item.name, bytes); } catch (error) { log('attachment_text_copy_failed', error.message); }
+      const done = store.updateAttachment(item.id, { state: 'received', received: item.size, receivedAt: Date.now() });
+      store.audit('attachment_received', thread.id, { attachmentId: item.id, size: item.size, sha256: item.sha256 });
+      return attachmentView(done);
+    }
+    case 'attachment/abort': {
+      const { item } = sessionAttachment(params, ['uploading', 'received', 'failed']);
+      for (const file of [item.file, item.file + '.part', item.file + '.txt']) { try { fs.unlinkSync(file); } catch {} }
+      store.deleteAttachment(item.id);
+      return {};
+    }
+    case 'attachment/list': {
+      const thread = threadById(params.threadId);
+      if (!thread) throw fail('thread_not_found');
+      sweepAttachmentsV2();
+      return { data: store.attachments(thread.id).map(attachmentView) };
+    }
+    default:
+      return undefined;
+  }
+}
+
 /* ---------- JSON-RPC 方法 ---------- */
 async function dispatch(method, params) {
+  checkDevice(method);
+  if (V2 && method.startsWith('attachment/') && method !== 'attachment/reset') {
+    const value = await dispatchV2(method, params);
+    if (value !== undefined) return value;
+  }
   switch (method) {
-    case 'initialize':
+    case 'initialize': {
+      if (!IDENTITY.error) helloDevice = checkHello(params) || helloDevice;
       pruneExpiredThreads();
-      return { serverInfo: { name: `agentdesk-chat-${PROVIDER}`, version: '1.0.0' }, capabilities: {} };
+      if (V2) { sweepAttachmentsV2(); store.pruneAudit(); store.audit('hello', null, { appVersion: helloDevice?.appVersion }); }
+      return {
+        serverInfo: { name: `agentdesk-chat-${PROVIDER}`, version: '1.0.0' }, capabilities: {},
+        protocolVersion: PROTOCOL_VERSION,
+        ...(!IDENTITY.legacy && { device: { deviceId: IDENTITY.deviceId, platform: IDENTITY.platform ?? null, state: IDENTITY.state,
+          directChatV2: V2, ...(IDENTITY.error && { error: IDENTITY.error }) } }),
+        features: { attachmentsV2: V2, status: true, sessionList: V2, seatLimits: Boolean(seatSlots), isolatedAntigravity: ISOLATED_ANTIGRAVITY },
+      };
+    }
+
+    case 'status/read':
+      return { items: await statusHub.refresh({ force: params?.force === true }) };
+
+    case 'status/subscribe':
+      statusSubscribed = params?.enabled !== false;
+      return { items: await statusHub.refresh(), subscribed: statusSubscribed };
 
     case 'thread/start': {
       const id = `${PROVIDER}-${randomUUID()}`;
@@ -1130,6 +1399,13 @@ async function dispatch(method, params) {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
+      if (V2) {
+        // v2 keeps only a hash of the local path; the client sends the path again with every turn.
+        thread.deviceId = IDENTITY.deviceId;
+        thread.projectHash = thread.localRoot ? projectHash(thread.localRoot) : null;
+        thread.localRoot = '';
+        store.audit('session_open', id, { provider: PROVIDER, projectId: thread.projectId, sandbox: thread.sandboxPolicy.type });
+      }
       state.threads[id] = thread;
       workspaceFor(id);
       persist();
@@ -1148,11 +1424,16 @@ async function dispatch(method, params) {
         localRoot: thread.localRoot,
         projectId: thread.projectId,
         systemPrompt: thread.systemPrompt,
+        ...(V2 && { projectHash: thread.projectHash, deviceId: thread.deviceId }),
       };
     }
 
     case 'thread/list':
-      return { data: [] };
+      // v2: this device's own sessions (metadata only); v1 keeps no list on the app side.
+      if (!V2) return { data: [] };
+      return { data: Object.values(state.threads).map((thread) => ({ id: thread.id, title: thread.title || '', projectId: thread.projectId,
+        projectHash: thread.projectHash, createdAt: thread.createdAt, updatedAt: thread.updatedAt, active: activeTurns.has(thread.id) }))
+        .sort((a, b) => b.updatedAt - a.updatedAt) };
 
     case 'thread/name/set': {
       const thread = threadById(params.threadId);
@@ -1178,7 +1459,8 @@ async function dispatch(method, params) {
 
     case 'attachment/reset':
       if (!threadById(params.threadId)) throw fail('thread_not_found');
-      incoming.clear();
+      // Only this conversation's pending uploads; another conversation's uploads are left alone.
+      for (const [id, upload] of incoming) if (upload.threadId === params.threadId) incoming.delete(id);
       return {};
 
     case 'attachment/chunk': {
@@ -1204,7 +1486,13 @@ async function dispatch(method, params) {
       const thread = threadById(params.threadId);
       if (!thread) throw fail('thread_not_found');
       if (activeTurns.has(thread.id)) throw fail('turn_in_progress');
-      if (PROVIDER === 'antigravity' && antigravityTurn) throw fail('turn_in_progress');
+      if (PROVIDER === 'antigravity' && antigravityTurn && !ISOLATED_ANTIGRAVITY) throw fail('turn_in_progress');
+      // v2: the local path comes with each turn and must be the project the session was opened for.
+      let turnRoot = thread.localRoot;
+      if (V2 && thread.projectHash) {
+        if (typeof params.localRoot !== 'string' || projectHash(params.localRoot.slice(0, 4096)) !== thread.projectHash) throw fail('PROJECT_MISMATCH', -32003);
+        turnRoot = params.localRoot.slice(0, 4096);
+      }
       const input = Array.isArray(params.input) ? params.input : [];
       let text = input.filter((item) => item?.type === 'text' && typeof item.text === 'string')
         .map((item) => item.text).join('\n').trim();
@@ -1218,7 +1506,24 @@ async function dispatch(method, params) {
       const turnId = randomUUID();
       let attachmentDirectory;
       let attachments;
-      if (params.attachments !== undefined) {
+      let keepAttachments = false;
+      if (V2 && params.attachmentIds !== undefined) {
+        // D9: only attachments the server confirmed (state received) for this very session can go with a turn.
+        if (!Array.isArray(params.attachmentIds) || params.attachmentIds.length > maxAttachments ||
+            new Set(params.attachmentIds).size !== params.attachmentIds.length) throw fail('invalid_attachment');
+        const inputs = params.attachmentIds.map((attachmentId) => {
+          const { item } = sessionAttachment({ threadId: thread.id, attachmentId }, ['received', 'attached']);
+          return { name: item.name, path: item.file, ...(fs.existsSync(item.file + '.txt') && { text: item.file + '.txt' }), id: item.id };
+        });
+        for (const entry of inputs) store.updateAttachment(entry.id, { state: 'attached' });
+        attachments = inputs.map(({ id, ...entry }) => entry);
+        attachmentDirectory = sessionAttachmentDir(thread.id);
+        keepAttachments = true;
+        if (attachments.length) {
+          text += attachmentNote(attachments) + `\nRead each attachment with the MCP tool ${ATTACHMENT_TOOL.name} (file: its name)` +
+            (SANDBOX ? ' or open its path directly.' : '; your own file tools cannot reach these paths.');
+        }
+      } else if (params.attachments !== undefined) {
         if (!validAttachments(params.attachments)) throw fail('invalid_attachment');
         const files = params.attachments.map(item => {
           const upload = incoming.get(item.id);
@@ -1248,6 +1553,8 @@ async function dispatch(method, params) {
       const turn = {
         id: turnId,
         attachmentDirectory,
+        keepAttachments,
+        localRoot: turnRoot,
         threadId: thread.id,
         thread,
         text,
@@ -1278,10 +1585,23 @@ effort,
         redact(value) { return String(value ?? '').replaceAll(this.capability, '<redacted>'); },
       };
       activeTurns.set(thread.id, turn);
-      if (PROVIDER === 'antigravity') antigravityTurn = turn;
+      if (PROVIDER === 'antigravity' && !ISOLATED_ANTIGRAVITY) antigravityTurn = turn;
       capabilities.set(turn.capability, turn);
       notify('turn/started', { threadId: thread.id, turn: { id: turn.id, status: 'inProgress' } });
-      setImmediate(() => startTurn(turn));
+      if (V2) store.audit('turn_started', thread.id, { turnId, sandbox: sandboxPolicy.type, approval: approvalPolicy,
+        attachments: attachments?.length || 0 });
+      if (!seatSlots) setImmediate(() => startTurn(turn));
+      else {
+        // D15 / Q6: wait for a free slot (6 on the machine, 4 per device) and tell the client its place in line.
+        turn.slotAbort = new AbortController();
+        seatSlots.acquire({ device: IDENTITY.deviceId, session: thread.id, signal: turn.slotAbort.signal,
+          onQueued: (position) => notify('turn/queued', { threadId: thread.id, turnId, position }) })
+          .then((release) => {
+            if (turn.done) { release(); return; }
+            turn.releaseSlot = release;
+            startTurn(turn);
+          }, (error) => { if (!turn.done) finishTurn(turn, null, 'seat_queue_failed: ' + error.message); });
+      }
       return { turn: { id: turn.id } };
     }
 
