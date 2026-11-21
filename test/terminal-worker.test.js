@@ -61,7 +61,12 @@ test('terminals through the Worker: window and AI share one terminal, takeover, 
   createSecret(stateDir);
   const server = serveWorker(stateDir, { terminals });
   await new Promise((resolve) => server.once('listening', resolve));
-  t.after(() => { server.close(); fs.rmSync(stateDir, { recursive: true, force: true }); fs.rmSync(project, { recursive: true, force: true }); });
+  // Real shells keep the process alive: end them even when an assertion fails, so the run cannot hang.
+  t.after(() => {
+    terminals.closeAll();
+    server.close();
+    try { fs.rmSync(stateDir, { recursive: true, force: true }); fs.rmSync(project, { recursive: true, force: true }); } catch {}
+  });
   const secret = createSecret(stateDir);
   const received = [];
   const first = await connectWorker(stateDir, secret, { onEvent: (kind, value) => received.push([kind, value]) });

@@ -157,6 +157,14 @@ class TerminalSessions {
     return { terminalId: id, state: 'closed' };
   }
 
+  // Ends every terminal (Worker shutdown, tests).
+  closeAll() {
+    for (const terminal of [...this.terminals.values()]) {
+      try { if (!terminal.exited) terminal.process.kill(); } catch {}
+      this.terminals.delete(terminal.id);
+    }
+  }
+
   list(scope) { return [...this.terminals.values()].filter((item) => item.scope === scope).map((item) => this.view(item)); }
 
   // Terminals nobody used for hours are closed; exited ones are forgotten after the same time.

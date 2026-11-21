@@ -111,4 +111,5 @@ async function main() {
   log('done', { ok: true });
 }
 
-main().then(() => process.exit(0), (error) => { log('failed', { error: error.stack || error.message }); console.log('::error::' + String(error.stack || error.message).replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, '%0A').slice(0, 1500)); process.exit(1); });
+main().then(() => process.exit(0), (error) => {
+  // process.exit ends the shells too; nothing is left running on the runner. log('failed', { error: error.stack || error.message }); console.log('::error::' + String(error.stack || error.message).replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, '%0A').slice(0, 1500)); process.exit(1); });
