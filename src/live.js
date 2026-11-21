@@ -567,14 +567,26 @@
       : modeToPolicy($('#modeSelect').value);
     // Snapshot this turn before waking a CLI: the user may switch chats during the handshake.
     const sel = $('#modelSelect');
-    const profile = chatProfiles.get(s.project)?.[agent];
-    const model = chat ? (Object.hasOwn(profile?.models || {}, s.model) ? s.model : undefined)
-      : (sel.dataset.live ? sel.value : undefined);
+    const profile = profileFor(s);
+    let model = chat ? s.model : undefined;
+    if (chat && agent !== 'antigravity' && !Object.hasOwn(profile?.models || {}, model)) model = undefined;
+    if (!chat) model = sel.dataset.live ? sel.value : undefined;
     const effort = chat ? (profile?.models?.[model]?.efforts?.includes(s.effort) ? s.effort : undefined)
       : (model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined);
     const serviceTier = !chat && model ? $('#tierSelect').value || undefined : undefined;
     if (chat) s.chatPolicy = { approvalPolicy, sandboxPolicy };
     if (!(await ensureReady(s))) return false;
+    if (agent === 'antigravity') {
+      try {
+        const current = await readAntigravityModels(s);
+        if (model && !Object.hasOwn(current.models, model)) {
+          const note = 'Antigravity 当前账号已不提供 ' + model + '。模型列表已更新，请确认新选择后再发送。';
+          sysNote(s, note, true); A.renderAll(); toast(note);
+          return false;
+        }
+        model ||= current.defaultModel || Object.keys(current.models)[0];
+      } catch (error) { toast(error.message); return false; }
+    }
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
     const { input, chips } = chat
       ? { input: [{ type: 'text', text: text || '请查看随附的文件。', text_elements: [] }],
@@ -806,6 +818,11 @@
       }
     }
     const s = sess(id);
+    if (isChat(s) && agentOf(s) === 'antigravity') {
+      ensureReady(s).then(connected => {
+        if (connected) return readAntigravityModels(s);
+      }).catch(error => { if (state.active === s.id && !state.group) toast(error.message); });
+    }
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.onOpen(s);
     if (s && s.live && s.history && !s.loaded) openHistory(s);
     if (s && s.live) { if (agentOf(s) === 'codex') renderTokens(s); restoreLocalCommands(s); }
@@ -908,8 +925,28 @@
     });
     chatProfileLoads.set(project, loading);
   }
+  const agyProfiles = new WeakMap();
+  const agyReads = new WeakMap();
+  function profileFor(s) {
+    return agentOf(s) === 'antigravity' ? agyProfiles.get(s) : chatProfiles.get(s?.project)?.[agentOf(s)];
+  }
+  function readAntigravityModels(s) {
+    if (agyReads.has(s)) return agyReads.get(s);
+    const request = chatApi.request('antigravity', 'model/list', s.threadId ? { threadId: s.threadId } : {}).then(reply => {
+      const data = reply?.result?.data;
+      if (!reply?.ok || !Array.isArray(data) || !data.length)
+        throw Error('读取 Antigravity 单聊模型失败：' + (reply?.error || '单聊服务未返回目录，请重新连接或更新 VPS 单聊服务。'));
+      const profile = { defaultModel: reply.result.defaultModel,
+        models: Object.fromEntries(data.map(entry => [entry.id, { label: entry.label || entry.id }])) };
+      agyProfiles.set(s, profile);
+      if (state.active === s.id && !state.group) syncSession(s);
+      return profile;
+    }).finally(() => agyReads.delete(s));
+    agyReads.set(s, request);
+    return request;
+  }
   function chatProfileModel(s) {
-    const profile = chatProfiles.get(s?.project)?.[agentOf(s)];
+    const profile = profileFor(s);
     return profile?.models?.[s?.model] || {};
   }
   function applyChatEfforts(s) {
@@ -929,7 +966,7 @@
   function applyChatModels(s) {
     const sel = $('#modelSelect');
     const agent = agentOf(s);
-    const profile = chatProfiles.get(s.project)?.[agent];
+    const profile = profileFor(s);
     const options = Object.entries(profile?.models || {});
     const signature = [s.project, agent, ...options.map(([id, p]) => `${id}:${p?.label || ''}`)].join('|');
     if (sel.dataset.live || sel.dataset.chatSig !== signature) {
@@ -940,7 +977,7 @@
       sel.disabled = !options.length;
     }
     // 新会话没有选择时用配置里的 defaultModel，其次第一个模型；这样具体版本和推理强度一进来就可见。
-    if (chatProfiles.has(s.project) && !options.some(([id]) => id === s.model)) {
+    if (profile && !options.some(([id]) => id === s.model)) {
       s.model = options.some(([id]) => id === profile?.defaultModel) ? profile.defaultModel : options[0]?.[0];
     }
     sel.value = s.model || '';

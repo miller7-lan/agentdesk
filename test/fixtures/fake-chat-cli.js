@@ -7,6 +7,10 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
 const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === 'models') {
+  process.stdout.write('gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n');
+  process.exit(0);
+}
 const provider = args.includes('--mcp-config') ? 'claude'
   : args.includes('streaming-messages-json') ? 'grok' : 'antigravity';
 

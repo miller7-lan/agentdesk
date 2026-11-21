@@ -248,6 +248,13 @@ function defaultHandler(state) {
   };
 }
 
+test('Antigravity single chat lists the local CLI catalog without starting a model turn', async (t) => {
+  const client = await new ChatClient(t, 'antigravity', temporary(t)).start();
+  const result = await client.request('model/list', {});
+  assert.deepEqual(result.data, [{ id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' }]);
+  assert.equal(result.defaultModel, result.data[0].id);
+});
+
 test('initialize, thread/start and a streaming turn', async (t) => {
   const dir = temporary(t);
   const client = await new ChatClient(t, 'claude', dir).start();

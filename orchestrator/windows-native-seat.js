@@ -6,7 +6,7 @@ const { NativeChannel, VERSION } = require('./native-channel');
 const { localShellSpec } = require('./windows-local-shell');
 
 const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive',
-  'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'skills/list',
+  'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'skills/list', 'model/list',
   'attachment/reset', 'attachment/chunk']);
 
 function workspacePolicy(folder, mode) {

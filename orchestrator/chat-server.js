@@ -1296,8 +1296,13 @@ effort,
     case 'turn/steer':
       throw fail('steer_unsupported');
 
-    case 'model/list':
-      return { data: [] };
+    case 'model/list': {
+      if (PROVIDER !== 'antigravity') return { data: [] };
+      const { discoverModels } = require('./model-catalog');
+      const catalog = await discoverModels(PROVIDER, { bin: BIN, env: childEnvironment({}) });
+      if (!catalog.models.length) throw fail('Antigravity 没有返回可用的 Gemini 模型');
+      return { data: catalog.models, defaultModel: catalog.defaultModel };
+    }
     case 'skills/list':
       return { data: [] };
     case 'account/rateLimits/read':
