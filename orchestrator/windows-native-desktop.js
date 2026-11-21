@@ -13,7 +13,7 @@ function sameRoot(left, right) {
   catch { return false; }
 }
 
-function createWindowsNativeDesktop({ stateDir, remote, findProject, bridgeSettings, onEvent, onCommand, reviewUnknown }) {
+function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onCommand, reviewUnknown }) {
   const worker = createWorkerClient(stateDir, { onUpdate: (scope, run) => {
     try {
       const [, provider, threadId] = JSON.parse(scope);
@@ -40,14 +40,26 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, bridgeSetti
       records.set(record.threadId, record);
     } finally { try { fs.unlinkSync(temp); } catch {} }
   };
-  function resolveProject(projectId) {
+  function resolveProject(projectId, worktreeSession) {
     const project = findProject(projectId);
-    const bridge = bridgeSettings();
-    if (!project?.localRoot || !project.orchestratorWorkspace || !bridge?.ssh ||
-        bridge.ssh.host !== remote.cfg.host || Number(bridge.ssh.port || 22) !== Number(remote.cfg.port || 22)) return null;
-    const config = Object.hasOwn(bridge.workspaces || {}, project.orchestratorWorkspace) && bridge.workspaces[project.orchestratorWorkspace];
-    if (!config?.root || config.write !== true || !sameRoot(config.root, project.localRoot)) return null;
-    return { id: project.id, root: fs.realpathSync.native(config.root) };
+    if (project?.kind !== 'local' || !project.localRoot) return null;
+    if (project.orchestratorWorkspace) {
+      const bridge = bridgeSettings();
+      const config = bridge?.workspaces?.[project.orchestratorWorkspace];
+      if (!bridge?.ssh || bridge.ssh.host !== remote.cfg.host ||
+          Number(bridge.ssh.port || 22) !== Number(remote.cfg.port || 22) ||
+          config?.write !== true || !sameRoot(config.root, project.localRoot)) {
+        throw new Error('该项目的 Bridge 写入授权与本机目录不匹配，请检查项目绑定。');
+      }
+    }
+    if (worktreeSession !== undefined) {
+      const tree = typeof worktreeSession === 'string' && findWorktree(worktreeSession);
+      if (!tree || tree.projectId !== project.id || !sameRoot(tree.repo, project.localRoot)) {
+        throw new Error('独立工作树与当前项目不匹配。');
+      }
+      return { id: project.id, root: fs.realpathSync.native(tree.path) };
+    }
+    return { id: project.id, root: fs.realpathSync.native(project.localRoot) };
   }
   async function hasHost() {
     if (Date.now() - checkedAt < 10_000) return capability;
@@ -114,15 +126,18 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, bridgeSetti
         if (existing.provider !== provider || (params.projectId && existing.projectId !== params.projectId)) {
           throw new Error('该单聊属于另一个已授权的 Windows 项目。');
         }
-        const project = resolveProject(existing.projectId);
+        const project = resolveProject(existing.projectId, existing.worktreeSession);
         if (!project || !sameRoot(project.root, existing.root)) throw new Error('Windows 项目与原会话授权目录不匹配。');
+        if (!seats.has(existing.threadId) && !await remote.wake()) throw new Error('本机终端所需的 VPS 连接未就绪，请重连后重试。');
         return attached(existing, project);
       }
-      if (method !== 'thread/start' || params.worktreeSession !== undefined || params.approvalPolicy !== 'never' ||
+      if (method !== 'thread/start' || params.approvalPolicy !== 'never' ||
           (params.sandboxPolicy?.type !== 'dangerFullAccess' && params.sandbox !== 'danger-full-access')) return null;
-      const project = resolveProject(params.projectId);
-      if (!project || !(await hasHost())) return null;
-      const pending = { provider, projectId: project.id, root: project.root, threadId: 'pending-' + randomUUID(),
+      const project = resolveProject(params.projectId, params.worktreeSession);
+      if (!project) return null;
+      if (!await remote.wake()) throw new Error('本机终端所需的 VPS 连接未就绪，请重连后重试。');
+      if (!await hasHost()) throw new Error('VPS 缺少 Windows 原生单聊服务，请更新服务端后重试。');
+      const pending = { provider, worktreeSession: params.worktreeSession, projectId: project.id, root: project.root, threadId: 'pending-' + randomUUID(),
         sessionKey: createHash('sha256').update(deviceId() + ':' + randomUUID()).digest('hex') };
       const seat = await attached(pending, project);
       return {
@@ -144,7 +159,7 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, bridgeSetti
     async commands(provider, threadId, action, runId) {
       const record = records.get(threadId);
       if (!record || record.provider !== provider) return undefined;
-      const project = resolveProject(record.projectId);
+      const project = resolveProject(record.projectId, record.worktreeSession);
       if (!project || !sameRoot(project.root, record.root)) return action === 'list' ? [] : null;
       const identity = { device: deviceId(), provider, threadId, projectId: project.id, root: project.root, fullAccess: true };
       const connection = await worker.get();

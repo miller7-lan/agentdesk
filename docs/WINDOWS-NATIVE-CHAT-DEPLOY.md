@@ -1,6 +1,6 @@
 # Windows 原生单聊部署与验收
 
-本流程适用于在 Windows 应用里通过 VPS2 的 Codex、Claude、Grok Build 和 Antigravity CLI 开发真实项目。Windows 全访问单聊使用已经配置为可写的 Bridge 项目。项目路径由当前 Windows 配置解析，只有本机项目目录与 Bridge 根目录一致、SSH 主机和端口匹配时才进入原生链路。VPS2 启动器未安装时，现有客户端仍可使用旧链路。
+本流程适用于在 Windows 应用里通过 VPS2 的 Codex、Claude、Grok Build 和 Antigravity CLI 开发真实项目。Windows 用户在项目设置中选择本机文件夹后，新建完全访问单聊即可使用 Windows 本机终端。具名 Bridge 工作区仍会校验主机、端口、目录和写入授权。独立工作树使用主进程登记的目录。启动器不可用时会提示修复；旧线路的对话可保留历史，启用本机终端需新建完全访问单聊。
 
 ## 已验证的故障与修复
 

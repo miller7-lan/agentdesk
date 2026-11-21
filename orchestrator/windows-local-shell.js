@@ -92,6 +92,11 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000 }) {
       }
       const cwd = path.resolve(lease.directory, args.cwd || '.');
       const env = environment(args.env);
+      // PowerShell 7 can put its incompatible modules first when launching Windows PowerShell 5.
+      if (shell === 'powershell' && !Object.hasOwn(env, 'PSMODULEPATH')) {
+        const systemModules = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+        env.PSMODULEPATH = [systemModules, process.env.PSModulePath].filter(Boolean).join(path.delimiter);
+      }
       const launch = invocation(shell, args.command);
       const fingerprint = createHash('sha256').update(JSON.stringify([cwd, launch, Object.entries(env).sort()])).digest('hex');
       const key = JSON.stringify([lease.scope, requestId]);

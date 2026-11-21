@@ -32,6 +32,9 @@ test('Windows local_shell runs PowerShell and CMD, journals background runs and 
   const cmd = await launch('echo %FIXTURE% && exit /b 7', { shell: 'cmd', env: { FIXTURE: 'cmd-value' } }, 'cmd');
   assert.equal(cmd.stdout.trim(), 'cmd-value');
   assert.equal(cmd.exitCode, 7);
+  const hash = await launch("Set-Content probe.txt 'test'; (Get-FileHash probe.txt).Hash", {}, 'hash');
+  assert.equal(hash.exitCode, 0);
+  assert.match(hash.stdout.trim(), /^[A-F0-9]{64}$/i);
   const powershell = await launch('Add-Content -LiteralPath attempt.txt -Value once', {}, 'dedup-key');
   assert.equal((await launch('Add-Content -LiteralPath attempt.txt -Value once', {}, 'dedup-key')).runId, powershell.runId);
   assert.match(await fs.readFile(path.join(root, 'attempt.txt'), 'utf8'), /^once\r?\n$/);

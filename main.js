@@ -49,6 +49,7 @@ function nativeDesktop() {
     windowsNative = createWindowsNativeDesktop({
       stateDir: path.join(app.getPath('userData'), 'windows-native-chat'), remote,
       findProject: (id) => id ? appConfig?.value.projects.find((item) => item.id === id) : appConfig?.active,
+      findWorktree: (key) => worktrees().get(key),
       bridgeSettings: () => localBridgeSettings,
       onEvent: (agent, frame) => {
         if (agent === 'codex') toUi('codex:event', frame);
@@ -740,7 +741,7 @@ ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), ho
 ipcMain.handle('codex:request', async (event, method, params) => {
   try {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
-    const { projectId, ...request } = params || {};
+    const { projectId, worktreeSession, ...request } = params || {};
     const native = await nativeDesktop()?.select('codex', method, params);
     if (native) return { ok: true, result: await native.request(method, request) };
     params = request;
@@ -765,6 +766,9 @@ ipcMain.handle('codex:request', async (event, method, params) => {
         desktopThreads.delete(params.threadId);
       }
       const fullAccess = params.approvalPolicy === 'never' && params.sandboxPolicy?.type === 'dangerFullAccess';
+      if (fullAccess && nativeDesktop() && codexCommandRoots.get(params.threadId)?.root) {
+        throw new Error('此会话使用旧线路。要启用 Windows 本机终端，请在该项目新建完全访问单聊。原对话保留。');
+      }
       filePolicies.set(params.threadId, { policy: readOnly ? 'read' : fullAccess ? 'full' : 'ask',
         binding: codexCommandRoots.get(params.threadId) });
     }
@@ -1060,6 +1064,10 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       const mapping = chatThreads.get(request.threadId);
       if (!mapping || mapping.agent !== agent) throw Error('请重新打开单聊后再发送。');
       const policy = request.sandboxPolicy || mapping.sandboxPolicy;
+      if (!native && nativeDesktop() && mapping.commandRoot && policy?.type === 'dangerFullAccess' &&
+          (request.approvalPolicy ?? mapping.approvalPolicy) === 'never') {
+        throw new Error('此会话使用旧线路。要启用 Windows 本机终端，请在该项目新建完全访问单聊。原对话保留。');
+      }
       const readOnly = policy?.type === 'readOnly';
       const desktopSpecs = desktop.enabled && !readOnly ? await desktop.specs().catch(() => []) : [];
       request.dynamicTools = [...chatToolSpecs(), ...desktopSpecs];
