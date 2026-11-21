@@ -43,6 +43,7 @@ async function openWindowsNativeSeat({
   let bytesPending = 0;
   let next = 0;
   let folder;
+  let timeout;
   let resolveReady;
   let rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -87,6 +88,13 @@ async function openWindowsNativeSeat({
     try {
       const control = JSON.parse(data.toString());
       if (control.protocolVersion !== VERSION) throw new Error('native_protocol_version_mismatch');
+      // D15 / Q6: the machine or this device is at its limit; the seat waits in line (no mount timeout meanwhile).
+      if (control.state === 'queued' && Number.isSafeInteger(control.position)) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => fail(new Error('native_seat_queue_timeout')), 30 * 60_000);
+        onNotification({ method: 'agentdesk/seatQueued', params: { threadId: threadId || identity.threadId, position: control.position } });
+        return;
+      }
       if (control.state !== 'ready' || typeof control.mountPath !== 'string' ||
           !/^\/var\/tmp\/agentdesk-native-seat-[\w-]+\/windows-chat-mounts\/project-[\w-]+$/.test(control.mountPath)) {
         throw new Error(typeof control.code === 'string' && /^[a-z_]+$/.test(control.code) ? control.code : 'invalid_native_mount_status');
@@ -164,7 +172,7 @@ async function openWindowsNativeSeat({
     if (frame.error) entry.reject(new Error(frame.error.message));
     else entry.resolve(frame.result);
   });
-  const timeout = setTimeout(() => fail(new Error('native_mount_timeout')), 45_000);
+  timeout = setTimeout(() => fail(new Error('native_mount_timeout')), 45_000);
   try {
     await ready;
     clearTimeout(timeout);

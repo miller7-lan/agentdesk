@@ -18,7 +18,9 @@ const STATES = new Set(['pending', 'approved', 'revoked']);
 // A client-generated UUID, or one of the legacy tags already used in forced commands (e.g. windows, lenovo_actjm6t3).
 const DEVICE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const CHAT_PROVIDERS = ['claude', 'grok', 'antigravity'];
-const CHANNELS = new Set([...CHAT_PROVIDERS.map((name) => 'chat-' + name), 'codex', 'bridge']);
+// 'seat' (the P7 narrow launcher) belongs in root's authorized_keys and is never in the default set (gate G4).
+const CHANNELS = new Set([...CHAT_PROVIDERS.map((name) => 'chat-' + name), 'codex', 'bridge', 'seat']);
+const DEFAULT_CHANNELS = [...CHAT_PROVIDERS.map((name) => 'chat-' + name), 'codex'];
 const KEY_TYPES = new Set(['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
   'sk-ssh-ed25519@openssh.com', 'sk-ecdsa-sha2-nistp256@openssh.com']);
 const HISTORY_LIMIT = 200;
@@ -95,7 +97,7 @@ function shellQuote(value) { return /^[A-Za-z0-9_./:@=-]+$/.test(value) ? value 
 
 // The lines an administrator may add to the AgentDesk authorized keys file by hand. Identity is injected by
 // the forced command, so the client cannot choose it. `restrict` turns off forwarding, PTY and agent use.
-function suggestedKeyLines(device, publicKey, channels = [...CHANNELS].filter((name) => name !== 'bridge'), { bridge } = {}) {
+function suggestedKeyLines(device, publicKey, channels = DEFAULT_CHANNELS, { bridge } = {}) {
   const env = `/usr/bin/env AGENTDESK_DEVICE=${device.deviceId} AGENTDESK_PLATFORM=${device.platform}`;
   const lines = [];
   for (const channel of channels) {
@@ -103,17 +105,19 @@ function suggestedKeyLines(device, publicKey, channels = [...CHANNELS].filter((n
     let command;
     if (channel.startsWith('chat-')) command = `${env} ${INSTALL}/agent-chat.sh ${channel.slice(5)}`;
     else if (channel === 'codex') command = `${env} ${INSTALL}/codex-desktop.sh`;
+    else if (channel === 'seat') command = `${env} ${INSTALL}/node ${INSTALL}/agentdesk-seat.js`;
     else {
       if (!/^[a-z][a-z0-9-]{0,31}$/.test(bridge || '')) throw fail('bridge_name_required');
       command = `${env} ${INSTALL}/node ${INSTALL}/ssh-gateway.js ${DEFAULT_STATE}/bridge-${bridge}.sock ${DEFAULT_STATE}/bridge-${bridge}-mount.sock`;
     }
-    lines.push({ channel, line: `restrict,command="${command}" ${publicKey} agentdesk-${device.deviceId}-${channel}` });
+    lines.push({ channel, target: channel === 'seat' ? 'root 账户的 authorized_keys（G4，需另行确认）' : 'agentdesk 账户的 AgentDesk authorized keys 文件',
+      line: `restrict,command="${command}" ${publicKey} agentdesk-${device.deviceId}-${channel}` });
   }
   return lines;
 }
 
 function parseChannels(value) {
-  if (value === undefined || value === '') return [...CHANNELS].filter((name) => name !== 'bridge');
+  if (value === undefined || value === '') return [...DEFAULT_CHANNELS];
   const list = String(value).split(',').map((item) => item.trim()).filter(Boolean);
   if (!list.length || list.some((item) => !CHANNELS.has(item))) throw fail('invalid_channel', String(value));
   return [...new Set(list)];

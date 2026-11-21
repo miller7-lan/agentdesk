@@ -222,6 +222,9 @@ let antigravityTurn = null;          // Antigravity shares one user-level MCP co
 // of different conversations no longer wait for each other (spec §6.1).
 const ISOLATED_ANTIGRAVITY = V2 && PROVIDER === 'antigravity' && Boolean(process.env.AGENTDESK_CHAT_SANDBOX);
 // D15 / Q6: a v2 turn counts as a session with a CLI process; the limit applies while the CLI runs.
+const cliUpgrade = require('./cli-upgrade');
+const CLI_UPGRADE_SPOOL = process.env.AGENTDESK_CLI_UPGRADE_SPOOL || path.join(STATE_DIR, 'cli-upgrade');
+const UPGRADE_POLL_MS = Number(process.env.AGENTDESK_UPGRADE_POLL_MS || 2000);
 const seatSlots = V2 && process.env.AGENTDESK_SEAT_LIMITS !== 'off'
   ? new (require('./seat-slots').SeatSlots)({ directory: process.env.AGENTDESK_SEAT_SLOTS || path.join(STATE_DIR, 'direct-chat', 'slots'),
     pollMs: Number(process.env.AGENTDESK_SEAT_POLL_MS || 500) }) : null;
@@ -1590,18 +1593,22 @@ effort,
       notify('turn/started', { threadId: thread.id, turn: { id: turn.id, status: 'inProgress' } });
       if (V2) store.audit('turn_started', thread.id, { turnId, sandbox: sandboxPolicy.type, approval: approvalPolicy,
         attachments: attachments?.length || 0 });
-      if (!seatSlots) setImmediate(() => startTurn(turn));
-      else {
-        // D15 / Q6: wait for a free slot (6 on the machine, 4 per device) and tell the client its place in line.
+      // Q5 / §9.3: while this CLI is being upgraded, new turns wait (running turns are not touched); then the
+      // D15 / Q6 slot: 6 sessions on the machine, 4 per device, with the place in line reported to the client.
+      (async () => {
+        if (cliUpgrade.isUpgrading(PROVIDER, { spool: CLI_UPGRADE_SPOOL })) {
+          notify('turn/queued', { threadId: thread.id, turnId, reason: 'cli_upgrading' });
+          while (!turn.done && cliUpgrade.isUpgrading(PROVIDER, { spool: CLI_UPGRADE_SPOOL })) await new Promise((resolve) => setTimeout(resolve, UPGRADE_POLL_MS));
+        }
+        if (turn.done) return;
+        if (!seatSlots) { startTurn(turn); return; }
         turn.slotAbort = new AbortController();
-        seatSlots.acquire({ device: IDENTITY.deviceId, session: thread.id, signal: turn.slotAbort.signal,
-          onQueued: (position) => notify('turn/queued', { threadId: thread.id, turnId, position }) })
-          .then((release) => {
-            if (turn.done) { release(); return; }
-            turn.releaseSlot = release;
-            startTurn(turn);
-          }, (error) => { if (!turn.done) finishTurn(turn, null, 'seat_queue_failed: ' + error.message); });
-      }
+        const release = await seatSlots.acquire({ device: IDENTITY.deviceId, session: thread.id, signal: turn.slotAbort.signal,
+          onQueued: (position) => notify('turn/queued', { threadId: thread.id, turnId, position }) });
+        if (turn.done) { release(); return; }
+        turn.releaseSlot = release;
+        startTurn(turn);
+      })().catch((error) => { if (!turn.done) finishTurn(turn, null, 'turn_queue_failed: ' + error.message); });
       return { turn: { id: turn.id } };
     }
 

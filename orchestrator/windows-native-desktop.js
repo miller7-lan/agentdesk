@@ -137,11 +137,19 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
           (params.sandboxPolicy?.type !== 'dangerFullAccess' && params.sandbox !== 'danger-full-access')) return null;
       const project = resolveProject(params.projectId, params.worktreeSession);
       if (!project) return null;
-      if (!await remote.wake()) throw new Error('本机终端所需的 VPS 连接未就绪，请重连后重试。');
-      if (!await hasHost()) throw new Error('VPS 缺少原生单聊服务，请更新服务端后重试。');
+      // D14: when the native seat cannot be had for a NEW conversation, it starts on the MCP tools instead and
+      // says so. Same device, nothing replayed; an existing native conversation is never switched silently.
+      const fallback = (reason) => {
+        onEvent(provider, { method: 'agentdesk/fallback', params: { reason, at: new Date().toISOString() } });
+        return null;
+      };
+      if (!await remote.wake()) return fallback('VPS 连接未就绪');
+      if (!await hasHost().catch(() => false)) return fallback('VPS 缺少原生单聊服务');
       const pending = { provider, worktreeSession: params.worktreeSession, projectId: project.id, root: project.root, threadId: 'pending-' + randomUUID(),
         sessionKey: createHash('sha256').update(deviceId() + ':' + randomUUID()).digest('hex') };
-      const seat = await attached(pending, project);
+      let seat;
+      try { seat = await attached(pending, project); }
+      catch (error) { return fallback('原生会话启动失败：' + String(error.message).slice(0, 120)); }
       return {
         async request(name, request) {
           try {

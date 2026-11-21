@@ -376,7 +376,24 @@
     const p = m.params || {};
     if (m.method === 'account/rateLimits/updated') { usage = p.rateLimits || p; renderUsage(); A.renderSidebar(); return; }
     if (m.method === 'skills/changed') { loadSkills(); return; }
+    // Direct chat v2 notices: MCP fallback (D14), waiting in line (D15/Q6) or behind a CLI upgrade (Q5), status pushes.
+    if (m.method === 'agentdesk/fallback') {
+      toast(`本机原生会话不可用，已改用 MCP 工具（${p.reason || '原因未知'}）：模型自带的读写和 Bash 不能直接作用于本机项目，本机终端与 local_shell 仍可用。`);
+      return;
+    }
+    if (m.method === 'status/updated') { window.dispatchEvent(new CustomEvent('agentdesk-status', { detail: p.items || [] })); return; }
     const s = p.threadId && byThread.get(p.threadId);
+    if (s && m.method === 'turn/queued') {
+      sysNote(s, p.reason === 'cli_upgrading' ? '该 AI 的 CLI 正在升级，本轮排队，升级完成后自动开始。'
+        : `并发已满（全机 6 个、每台设备 4 个），本轮排在第 ${p.position} 位。`);
+      if (isActive(s)) A.renderAll();
+      return;
+    }
+    if (s && m.method === 'agentdesk/seatQueued') {
+      sysNote(s, `并发已满，本机原生会话排在第 ${p.position} 位。`);
+      if (isActive(s)) A.renderAll();
+      return;
+    }
     if (m.method === 'thread/tokenUsage/updated' && s) {
       s.tokens = p.tokenUsage; if (isActive(s)) renderTokens(s); return;
     }

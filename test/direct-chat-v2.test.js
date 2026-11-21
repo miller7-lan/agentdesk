@@ -261,3 +261,22 @@ test('codex-desktop workspace: v2 devices get their own rebuilt folder, others k
   assert.equal(run('', ''), path.join(env.state, 'desktop-workspace'));
   assert.throws(() => run(MAC, 'win32'));
 });
+
+test('Q5: while a CLI is being upgraded its new turns wait, then run on the new version', async (t) => {
+  const env = setup(t);
+  const spool = path.join(env.state, 'cli-upgrade');
+  fs.mkdirSync(path.join(spool, 'state'), { recursive: true });
+  const marker = path.join(spool, 'state', 'claude.upgrading');
+  fs.writeFileSync(marker, 'request');
+  const chat = await client(t, 'claude', env, MAC, 'darwin', { AGENTDESK_UPGRADE_POLL_MS: '50' });
+  await chat.request('initialize', hello(MAC, 'darwin'));
+  const id = await open(chat);
+  const started = await chat.request('turn/start', { threadId: id, localRoot: '/Users/example/project', input: [{ type: 'text', text: 'SCENARIO:TEXT' }] });
+  const queued = await chat.waitFor('turn/queued', (params) => params.turnId === started.turn.id);
+  assert.equal(queued.reason, 'cli_upgrading');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(chat.notifications('turn/completed').length, 0, 'still waiting');
+  fs.unlinkSync(marker);
+  const done = await chat.waitFor('turn/completed', (params) => params.turn.id === started.turn.id, 12000);
+  assert.equal(done.turn.status, 'completed');
+});

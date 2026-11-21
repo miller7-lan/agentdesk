@@ -31,6 +31,7 @@ async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HO
   const stop = new AbortController();
   let child;
   let mounted;
+  let releaseSlot;
   const abort = () => stop.abort(new Error('native_channel_closed'));
   const send = (type, data) => {
     try { pipe.send(type, data); } catch { abort(); }
@@ -55,6 +56,15 @@ async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HO
       if (!uid || !gid) throw new Error('native_provider_profile_requires_service_account');
       account = { uid, gid };
       await fs.chown(stateDir, uid, gid);
+    }
+    // D15 / Q6: a seat is a session with a mount and a CLI. Joined when the launcher switches it on (the P7
+    // narrow launcher does, with the device identity of the key); v1 launches keep their old behaviour.
+    if (process.env.AGENTDESK_SEAT_LIMITS === 'on') {
+      const { SeatSlots } = require('./seat-slots');
+      const device = /^[A-Za-z0-9_-]{1,64}$/.test(process.env.AGENTDESK_DEVICE || '') ? process.env.AGENTDESK_DEVICE : '_native';
+      const slots = new SeatSlots({ directory: path.join(historyRoot === HOST_STATE ? HOST_STATE : stateDir, 'direct-chat', 'slots'), owner: account });
+      releaseSlot = await slots.acquire({ device, session: sessionKey || path.basename(stateDir), signal: stop.signal,
+        onQueued: (position) => send('c', JSON.stringify({ protocolVersion: VERSION, state: 'queued', position })) });
     }
     mounted = await mountProject({ stateDir, input: sftpIn, output: sftpOut, account, readOnly: mode === 'read', signal: stop.signal });
     let providerState = path.join(stateDir, 'provider-state');
@@ -114,6 +124,7 @@ async function serveNativeProject({ provider, mode, sessionKey, historyRoot = HO
     send('c', JSON.stringify({ protocolVersion: VERSION, state: 'failed', code: error.message.split(':')[0] }));
     throw error;
   } finally {
+    releaseSlot?.();
     child?.kill();
     await mounted?.close();
     // The only writable mount has already been detached. Retain the official CLI profiles outside stateDir.
