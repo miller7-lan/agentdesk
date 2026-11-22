@@ -1,4 +1,4 @@
-// Interactive terminals of a native single chat (D4): one panel above the composer, one tab per terminal.
+// Interactive terminals of a native single chat (D4): the workspace panel’s Terminal tab, one tab per terminal.
 // The terminals run in the local Worker on this computer; the AI drives them with its `terminal` tool and the
 // person sees the same terminal here, can type into it, take it over (the AI's input is then refused) and hand
 // it back. Switching chats or closing the window only detaches this view; the processes keep running and the
@@ -66,6 +66,27 @@
     if (view) requestAnimationFrame(() => fit(view));
   }
 
+  function terminalTheme() {
+    const css = getComputedStyle(panel);
+    const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+    const light = document.documentElement.dataset.theme !== 'dark';
+    return { background: color('--panel', '#eef3f6'), foreground: color('--text', '#222b32'),
+      cursor: color('--accent', '#167565'), cursorAccent: color('--panel', '#eef3f6'),
+      selectionBackground: light ? '#1675a533' : '#67d4be44',
+      black: light ? '#34434e' : '#697885', brightBlack: light ? '#586b78' : '#acb4c0',
+      red: light ? '#ad354b' : '#f291a5', brightRed: light ? '#ad354b' : '#f291a5',
+      green: light ? '#26734c' : '#7bceaa', brightGreen: light ? '#26734c' : '#7bceaa',
+      yellow: light ? '#85620c' : '#edbf72', brightYellow: light ? '#85620c' : '#edbf72',
+      blue: light ? '#226ea4' : '#78b8ed', brightBlue: light ? '#226ea4' : '#78b8ed',
+      magenta: light ? '#8052a3' : '#c8a1ef', brightMagenta: light ? '#8052a3' : '#c8a1ef',
+      cyan: light ? '#167987' : '#78cad6', brightCyan: light ? '#167987' : '#78cad6',
+      white: light ? '#485863' : '#dce3e6', brightWhite: light ? '#222b32' : '#ffffff' };
+  }
+
+  function updateTheme() {
+    for (const view of views.values()) view.term.options.theme = terminalTheme();
+  }
+
   function fit(view) {
     if (!open || view.el.hidden || !view.fit) return;
     try { view.fit.fit(); } catch {}
@@ -77,7 +98,7 @@
     el.className = 'terminal-screen';
     body.appendChild(el);
     const term = new window.Terminal({ convertEol: false, cursorBlink: true, fontSize: 12, scrollback: 5000,
-      fontFamily: mac ? 'Menlo, monospace' : 'Cascadia Mono, Consolas, monospace', theme: { background: '#1e1e1e' } });
+      fontFamily: mac ? 'Menlo, monospace' : 'Cascadia Mono, Consolas, monospace', theme: terminalTheme() });
     const FitAddon = window.FitAddon?.FitAddon;
     const fitAddon = FitAddon ? new FitAddon() : null;
     if (fitAddon) term.loadAddon(fitAddon);
@@ -136,14 +157,28 @@
     return loading;
   }
 
-  function show(on) {
-    open = on;
-    panel.hidden = !on;
-    button.classList.toggle('on', on);
-    if (on) refresh();
+  function sync() {
+    const wasOpen = !panel.hidden;
+    open = A.state.panelOpen && A.state.panel === 'terminal' && !A.state.group;
+    const interactive = open && Boolean(A.sess(A.state.active)?.live);
+    panel.hidden = !interactive;
+    $('#panelBody').hidden = interactive;
+    button.classList.toggle('on', interactive);
+    button.hidden = Boolean(A.state.group);
+    if (interactive) {
+      if (!wasOpen || conversation()?.key !== current?.key) refresh();
+      const view = views.get(active);
+      if (view) requestAnimationFrame(() => fit(view));
+    }
+    return interactive;
   }
 
-  button.addEventListener('click', () => show(!open));
+  function show(on) {
+    if (on) A.showPanel('terminal');
+    else { A.state.panelOpen = false; A.store.set('panelOpen', false); A.applyLayout(); sync(); }
+  }
+
+  button.addEventListener('click', () => show(true));
   $('#terminalHide').addEventListener('click', () => show(false));
   $('#terminalNew').addEventListener('click', async () => {
     try {
@@ -210,8 +245,7 @@
   // The panel follows the conversation that is open: switching chats detaches the views (not the processes).
   setInterval(() => {
     // Group chat has no terminal panel; the panel comes back with the single chat.
-    panel.hidden = !open || Boolean(A.state.group);
-    button.hidden = Boolean(A.state.group);
+    sync();
     const next = conversation();
     if ((next?.key || null) !== (current?.key || null)) {
       if (!next) { current = null; detach(); return; }
@@ -219,5 +253,7 @@
     }
   }, 500);
   new ResizeObserver(() => { const view = views.get(active); if (view) fit(view); }).observe(body);
-  window.AgentDeskTerminal = { show, refresh };
+  new MutationObserver(updateTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'style'] });
+  window.AgentDeskTerminal = { show, refresh, sync };
+  sync();
 })();

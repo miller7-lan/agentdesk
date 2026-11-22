@@ -581,6 +581,7 @@
       b.setAttribute('aria-pressed', String(active));
     });
     const body = $('#panelBody');
+    if (window.AgentDeskTerminal?.sync()) return;
     if (state.group) {
       $('#diffBadge').textContent = '';
       if (G().renderPanel(state.panel, body)) return;
