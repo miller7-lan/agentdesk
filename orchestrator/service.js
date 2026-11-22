@@ -343,7 +343,7 @@ function start(config) {
           }
         } else if (['locations', 'read', 'read_batch', 'list', 'stat', 'search', 'grep', 'glob', 'grep_context'].includes(frame.operation)) {
           checkFileIntent(scope, frame, false);
-          if (scope.localTools && scope.localTools !== 'files') throw new Error('mcp_permission_denied');
+          if (scope.localTools && !['files', 'local', 'local-write'].includes(scope.localTools)) throw new Error('mcp_permission_denied');
           const anyFolder = frame.root === 'computer';
           if (anyFolder && scope.readAnyFolder !== true) throw new Error('mcp_permission_denied: this step cannot read the whole computer');
           if (frame.operation === 'read_batch') validateFileBatch(frame.items, false);
@@ -352,7 +352,8 @@ function start(config) {
             query: frame.query, offset: frame.offset, version: frame.version, caseSensitive: frame.caseSensitive === true,
             ...(['glob', 'grep_context'].includes(frame.operation) && { glob: frame.glob, context: frame.context }),
             ...(anyFolder && { anyFolder: true }),
-            ...(scope.localTools === 'files' && { externalOnly: true }),
+            // A writer reads the project in its working tree; reading steps of group chat v7 (local) read the live project (M1).
+            ...(['files', 'local-write'].includes(scope.localTools) && { externalOnly: true }),
             ...(frame.operation === 'read_batch' && { items: frame.items }),
           });
           if (frame.operation === 'locations' && Array.isArray(value?.locations)) {
@@ -407,7 +408,8 @@ function start(config) {
             record('finished', result);
             return result;
           };
-          const target = { stepId: scope.stepId, workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path };
+          const target = { stepId: scope.stepId, workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path,
+            ...(scope.backupOutside && { backup: true }) };
           if (frame.operation === 'write_batch') {
             validateFileBatch(frame.items, true);
             value = await mutate({ ...target, operation: 'write_batch', items: frame.items });
@@ -437,6 +439,20 @@ function start(config) {
             value = await mutate({ ...target, operation: frame.operation,
               ...(frame.operation !== 'mkdir' && { version: current ?? null }), ...(frame.operation === 'move' && { destination: frame.destination }) });
           }
+        } else if (frame.operation === 'shell') {
+          // Group chat v7 (localStages / localCopy): any command, in the live project or in the writer's local copy.
+          if (!scope.anyCommand) throw new Error('mcp_permission_denied: this step cannot run commands on the person\'s computer');
+          if (scope.currentPlan && !scope.currentPlan()) throw Error('plan_superseded');
+          await scheduler.waitForApply(scope.workspace, scope.signal);   // O2
+          value = await scheduler.groupShell(scope, frame, (body) => files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, body,
+            { signal: scope.signal, onStatus: commandProgress(config.stateDir, scope.taskId, scope.stepId) }));
+          const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
+          value = { ...value, stdout: tail(value.stdout), stderr: tail(value.stderr) };
+        } else if (frame.operation === 'env_fix') {
+          // Group chat v7 (envFix): an environment fix in the live project (P1, R2, R3).
+          if (!scope.envFix) throw new Error('mcp_permission_denied: this step cannot apply environment fixes');
+          if (scope.currentPlan && !scope.currentPlan()) throw Error('plan_superseded');
+          value = await scheduler.envFix(scope, { patch: frame.patch, reason: frame.reason, platformSource: frame.platformSource === true });
         } else if (frame.operation === 'commands' || frame.operation === 'run') {
           // Commands run in the person's real project, so only scout and code-changing steps may use them,
           // and only the commands that workspace lists in agentCommands.
@@ -447,6 +463,7 @@ function start(config) {
             ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', stepId: scope.stepId, workspace: scope.workspace })
             : await files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, {
               operation: 'run', stepId: scope.stepId, workspace: scope.workspace, command: frame.command, permission: 'agent', timeout_ms: 300000,
+              ...(scope.credentialSandbox && { credentialSandbox: true }),
             }, { signal: scope.signal, onStatus: commandProgress(config.stateDir, scope.taskId, scope.stepId) });
           if (frame.operation === 'run') {
             const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
@@ -553,7 +570,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, fixId, backupId, workspace: requestedWorkspace }) => {
       try {
         if (operation === 'attachment_state') {
           wire.send({ ok: true, value: config.stateDir });
@@ -573,7 +590,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -586,7 +603,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           ...(operation === 'task_artifacts' && offset !== undefined && { offset }),
           ...(operation === 'handover_choose' && { stop, role, model, effort }),
           ...(operation === 'set_step_models' && { models }),
-          ...(operation === 'cli_upgrade' && { provider, target: 'latest' }) };
+          ...(operation === 'cli_upgrade' && { provider, target: 'latest' }),
+          ...(operation === 'env_fix_revert' && { fixId }), ...(operation === 'outside_restore' && { backupId }) };
         // The person allowed access beyond this computer's configuration: it is recorded here, on their computer,
         // before VPS2 hears of it — VPS2 cannot create such a grant by itself.
         if (operation === 'permission_answer' && ['step', 'task'].includes(reply) && grant && typeof grant === 'object') {
@@ -606,7 +624,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
             Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf, attachments, group, leadEffort, leadModel, approval, autoHandover, routeOrder });
           }
         }
-        const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : 10000);
+        const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : ['env_fix_revert', 'outside_restore'].includes(operation) ? 180000 : 10000);
         wire.send({ ok: true, value: answer });
       } catch (error) {
         if (!socket.destroyed) wire.send({ ok: false, error: error.message });

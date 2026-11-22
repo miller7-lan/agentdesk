@@ -26,6 +26,9 @@ const operations = {
   windows_read_files_batch: ['read_batch', ['items']],
   windows_write_files_batch: ['write_batch', ['items']],
   local_desktop: ['desktop', ['tool', 'arguments']],
+  // group chat v7 (localStages / localCopy / envFix): exposed only in the scopes below
+  local_shell_run: ['shell', ['script']],
+  local_env_fix: ['env_fix', ['patch', 'reason']],
 };
 
 const descriptions = {
@@ -41,6 +44,8 @@ const descriptions = {
   delete: 'Move a file or folder on the person\'s computer (root "computer") to the trash.',
   commands: 'List the commands the person allows agents to run in their project.',
   run: 'Run one allowed command in the person\'s real project, as it is now (your changes are not applied there). Use it to reproduce problems or inspect the local environment. Returns exit code, stdout and stderr.',
+  shell: 'Run any command on the person\'s computer (zsh/bash on a Mac, PowerShell/cmd on Windows). Reading, review, diagnosis and acceptance steps run it in the person\'s real project as it is now; a step that changes code runs it in its local copy of the project, which holds your current changes (changes the command makes there come back to your working tree). On a Mac credential folders and AgentDesk\'s own folders are closed to it (and, in the copy, the original project); on Windows nothing is closed: say so if it matters. Returns exit code, stdout and stderr.',
+  env_fix: 'Apply an environment fix to the person\'s real project: a unified diff (git format, paths relative to the project root) that makes the project run on this computer (toolchain, dependencies, paths, line endings, platform-specific code). Use it only for environment problems, not for the task\'s own logic. Credential folders, .git and AgentDesk\'s folders are refused. The previous content is kept so the person can undo it; the fix is also carried into the cloud working trees. Afterwards run the check again.',
   desktop: 'Operate the authorized local desktop. Start with desktop_screenshot or desktop_snapshot. Use the desktop tool name and its arguments, for example desktop_screenshot with {}.',
 };
 
@@ -64,7 +69,7 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
   return {
   name,
   description: descriptions[action],
-  annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete', 'desktop'].includes(action) },
+  annotations: { readOnlyHint: !['run', 'write', 'mkdir', 'move', 'delete', 'desktop', 'shell', 'env_fix'].includes(action) },
   inputSchema: {
     type: 'object',
     properties: {
@@ -78,6 +83,12 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
         arguments: { type: 'object' } } : {}),
       ...(action === 'write' ? { content: { type: 'string' }, encoding: { type: 'string', enum: ['utf8', 'base64'] }, version: { type: 'string', description: 'Current version from windows_stat_file; omit for a new file.' } } : {}),
       ...(action === 'move' ? { destination: { type: 'string', description: 'Absolute path of the new location.' } } : {}),
+      ...(action === 'shell' ? { script: { type: 'string', description: 'The command line to run.' },
+        shell: { type: 'string', enum: ['zsh', 'bash', 'powershell', 'cmd'] }, cwd: { type: 'string', description: 'Folder relative to the project (or copy) root.' },
+        timeout_ms: { type: 'integer', minimum: 1000, maximum: 900000 } } : {}),
+      ...(action === 'env_fix' ? { patch: { type: 'string', description: 'Unified diff, paths relative to the project root.' },
+        reason: { type: 'string', description: 'Why this is an environment problem on this computer.' },
+        platformSource: { type: 'boolean', description: 'True when the fix changes platform-specific source code (R3).' } } : {}),
     },
     required,
     additionalProperties: false,
@@ -85,11 +96,16 @@ const tools = Object.entries(operations).map(([name, [action, required]]) => {
   };
 });
 
+// Scopes: files, commands, desktop (as before); local — a reading/review/acceptance step in the live project
+// (files, commands, any command, environment fixes); local-write — a code-changing step (files outside the
+// project, commands, any command in its local copy).
 function toolsFor(scope) {
   return tools.filter(({ name }) => {
     const [operation] = operations[name];
     if (operation === 'desktop') return scope === 'desktop';
-    if (!scope) return true;
+    if (operation === 'env_fix') return scope === 'local';
+    if (operation === 'shell') return scope === 'local' || scope === 'local-write';
+    if (!scope || scope === 'local' || scope === 'local-write') return true;
     if (scope === 'commands') return operation === 'commands' || operation === 'run';
     return scope === 'files' && operation !== 'commands' && operation !== 'run';
   });
@@ -199,7 +215,11 @@ if (require.main === module) {
             content: args.content, encoding: args.encoding, destination: args.destination,
             ...(operation === 'edit' && { oldText: args.oldText, newText: args.newText, replaceAll: args.replaceAll }),
             ...(['glob', 'grep_context'].includes(operation) && { glob: args.glob, context: args.context }),
-            ...(batch && { items: args.items }) }, operation === 'run' ? 320000 : 35000);
+            ...(batch && { items: args.items }),
+            ...(operation === 'shell' && { script: args.script, shell: args.shell, cwd: args.cwd, timeout_ms: args.timeout_ms }),
+            ...(operation === 'env_fix' && { patch: args.patch, reason: args.reason, platformSource: args.platformSource === true }) },
+          operation === 'run' ? 320000 : operation === 'shell' ? Math.min(1600000, (Number.isSafeInteger(args.timeout_ms) ? args.timeout_ms : 300000) + 660000)
+            : operation === 'env_fix' ? 200000 : 35000);
           if (MUTATIONS.has(operation)) writeReceipt(process.env.AGENTDESK_MCP_RECEIPTS, receiptFor(operation, args, frame.id, value));
           const failedBatch = operation === 'write_batch' && value.results.some(({ status }) => status !== 'written');
           if (operation === 'write_batch') value.results.forEach((item, index) => {

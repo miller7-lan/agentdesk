@@ -1123,9 +1123,30 @@ window.__groupReady = (async () => {
       if (!task.redacted && task.directAdvice && filter !== 'mine' && !filterSelect.value && routeState.groupFeatures?.planFailureAdvice) {
         const advice = task.directAdvice;
         const access = { fullAccess: '完全访问', readOnly: '只读' };
-        deferred.push({ at: advice.at, html: messageRow('lead', '下一步建议', `<div class="step-summary"><p><b>规划没有成功：</b>${esc(advice.reason)}。可以先用单聊试试：</p>${
+        const by = advice.source === 'lead' ? `<p class="group-system">由 ${esc(memberName(advice.by))}${advice.byModel ? ' · ' + esc(advice.byModel) : ''} 总结（组长链中的下一位）。</p>` : '';
+        deferred.push({ at: advice.at, html: messageRow('lead', '下一步建议', `<div class="step-summary"><p><b>规划没有成功：</b>${esc(advice.reason)}。可以先用单聊试试：</p>${by}${
           (advice.options || []).map((option, index) => `<div class="task-addition"><p><b>${esc(memberName(option.role))}</b>${option.model ? ' · ' + esc(option.model) : ''} · ${access[option.access] || ''} · ${esc(option.why || '')}</p><div class="task-actions"><button type="button" class="btn${index === 0 ? ' primary' : ''}" data-direct-advice="${esc(task.id + ':' + index)}">在单聊打开</button></div></div>`).join('')
         }</div>`) });
+      }
+      // Group chat v7 (envFix): every environment fix on this computer, why, which files, whether it reached the
+      // cloud, and an undo button (P1, R1–R3, E8, E10).
+      if (!task.redacted && filter !== 'mine' && !filterSelect.value && Array.isArray(task.envFixes) && routeState.groupFeatures?.envFix) {
+        const stages = { test: '测试', triage: '诊断', review: '审查', accept: '验收', scout: '核验' };
+        const cloud = { synced: '已回传云端', pending: '待回传云端（连上后自动回传）', conflict: '回传云端时有冲突，交给诊断', not_needed: '补丁已应用，无需回传' };
+        for (const fix of task.envFixes) {
+          const state = fix.reverted ? '已撤销' : fix.state === 'applied' ? '已写入本机项目' : fix.state === 'unknown' ? '结果未知，连上后核对' : fix.state === 'failed' ? '没有写入：' + esc(fix.error || '') : '写入中';
+          const undo = fix.state === 'applied' && !fix.reverted ? `<div class="task-actions"><button type="button" class="btn" data-env-revert="${esc(task.id + ':' + fix.id)}">撤销这次修复</button></div>` : '';
+          deferred.push({ at: fix.appliedAt || fix.at, html: messageRow('local', '环境修复（' + (stages[fix.stage] || fix.stage) + '阶段）', `<div class="step-summary"><p>${fix.state === 'applied' && !fix.reverted ? '<span class="upload-ok">✓</span> ' : ''}${state}${fix.state === 'applied' ? ' · ' + esc(cloud[fix.cloud] || fix.cloud || '') : ''}${fix.platformSource ? ' · 平台相关源码' : ''}</p><p>${esc(fix.reason || '')}</p><p class="group-system mono">${(fix.files || []).map(esc).join('，')}</p>${undo}</div>`) });
+        }
+      }
+      // Group chat v7 (localCopy): the writer's local copy, and what the platform does or does not enforce.
+      if (!task.redacted && filter !== 'mine' && !filterSelect.value && Array.isArray(task.copyNotices) && routeState.groupFeatures?.localCopy) {
+        const text = { created: '已在本机建立改写副本', unavailable: '没有建立本机副本，改写只在云端进行，本机测试在补丁应用后进行', original_changed: '副本里的命令运行期间原项目有改动（Windows 未强制隔离）' };
+        const reasons = { too_large: '项目超过 2 GB', disk_space: '剩余空间不足副本的 2 倍', needs_git_root: '项目根目录不是 Git 仓库根' };
+        for (const notice of task.copyNotices) {
+          const labels = notice.enforcement?.labels?.length ? notice.enforcement.labels : notice.enforcement?.platform === 'mac' ? ['Mac：sandbox 禁止副本里的命令写原项目，并挡凭据目录'] : [];
+          deferred.push({ at: notice.at, html: messageRow('local', '本机副本', `<p>${esc(text[notice.kind] || notice.kind)}${notice.reason ? '（' + esc(reasons[notice.reason] || notice.reason) + '）' : ''}</p>${labels.map((label) => `<p class="group-system">${esc(label)}</p>`).join('')}`) });
+        }
       }
       // What the person said while the work was under way, how the lead applied it, and each member's closing
       // report. Merge them in the order they happened: an old report must not appear below a newer message and
@@ -1843,6 +1864,8 @@ window.__groupReady = (async () => {
       gemini_not_configured: 'VPS 2 尚未配置 Gemini 执行服务。',
       antigravity_not_configured: 'VPS 2 尚未配置 Antigravity。',
       unsupported_operation: '群聊规划需要更新主控和本机连接组件。',
+      bridge_update_required: '这台电脑上的连接组件版本较旧，需要更新客户端后才能用这项功能。',
+      env_fix_changed_since: '修复之后这些文件又改过，不能自动撤销。',
       invalid_plan_reply: '请输入 1 至 2000 字的回复。',
       plan_changed: '方案已更新，请按最新一轮的问题或方案操作。',
       invalid_plan: '组长未能生成可用的方案，请从任务详情重试。',
@@ -2559,6 +2582,18 @@ window.__groupReady = (async () => {
       const action = event.target.closest('[data-task-operation]');
       if (task) selectTask(task.dataset.taskId, task.dataset.taskView);
       if (action) taskAction(action.dataset.taskOperation);
+      // Group chat v7 (envFix): undo one environment fix (only while its files are as the fix left them).
+      const revertButton = event.target.closest('[data-env-revert]');
+      if (revertButton) {
+        const [taskId, fixId] = revertButton.dataset.envRevert.split(':');
+        const group = currentGroup();
+        run(async () => {
+          await control('env_fix_revert', { taskId, fixId });
+          A.toast('环境修复已撤销');
+          await syncTask(group, taskId);
+        }, group);
+        return;
+      }
       // Requirement 4: open one of the lead's suggested single chats, with the suggested first message ready.
       const adviceButton = event.target.closest('[data-direct-advice]');
       if (adviceButton) {

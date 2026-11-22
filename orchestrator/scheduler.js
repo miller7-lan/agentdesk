@@ -617,9 +617,14 @@ event(task, state, detail) {
   save(task, state, detail, record = true, data) {
     // Requirement 4 (groupFeatures.planFailureAdvice): when group planning fails, the task carries a short reason
     // and two or three single-chat attempts the person can open directly.
-    if (this.features?.planFailureAdvice && ['failed', 'awaiting_details'].includes(state) && planningFailure(detail)) {
+    if (this.features?.planFailureAdvice && ['failed', 'awaiting_details'].includes(state) && planningFailure(detail) &&
+        !(task.directAdvice?.source === 'lead' && task.directAdvice.detail === clip(String(detail || ''), 200))) {
       task.directAdvice = directAdvice(this, task, detail);
+      // groupFeatures.leadAdvice: the next member of the lead chain rewrites it; the rule-based advice stays meanwhile.
+      if (this.features?.leadAdvice) Promise.resolve().then(() => this.adviseByLead(task, detail)).catch(() => {});
     }
+    // The local copies of a task's code-changing steps (groupFeatures.localCopy) go when the task ends.
+    if (task.localCopies && terminal.has(state)) this.removeCopies(task);
     // Access the person granted on their computer ends with the task.
     if (task.bridgeGrants && terminal.has(state) && !terminal.has(task.state)) {
       this.files?.call?.(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'grants_revoke', workspace: task.workspace }, 30000)?.catch?.(() => {});
@@ -1496,6 +1501,7 @@ event(task, state, detail) {
   tick() {
     const now = this.now();
     try { this.watchStalls(); } catch (error) { console.error('stall watch:', error.message); }
+    if (this.features?.envFix) this.reconcileEnvFixes().catch((error) => console.error('env fixes:', error.message));
     if (!this.lastCleanupAt || now - this.lastCleanupAt >= 3600_000) {
       this.lastCleanupAt = now;
       this.cleanupNow().catch((error) => console.error('cleanup:', error.message));
@@ -1947,7 +1953,11 @@ event(task, state, detail) {
     // Access the person allowed for this step or the whole task (answerPermission) widens the step's tools.
     const granted = new Set([...(step.extraAccess || []), ...(task.extraAccess || [])]);
     const grantedTools = granted.has('desktop') ? 'desktop' : granted.has('commands') ? 'commands' : granted.has('files_write') || granted.has('files_read') ? 'files' : undefined;
-    const localTools = task.snapshot ? grantedTools || step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined;
+    // Group chat v7 (localStages, writeAnywhere, localCopy, envFix, credentialSandbox): what the step may do on the
+    // person's computer; nothing when those switches are off.
+    const local = this.stepAccess(task, step, grantedTools);
+    const localTools = local.localTools || (task.snapshot ? grantedTools || step.localTools || (leadDuty || (!step.write && !mount) ? 'files' : undefined) : undefined);
+    prompt += this.accessNote(local);
     const mcp = bridgeTools && (task.snapshot ? Boolean(localTools) : access.mcp === 'always' || !mount || granted.size > 0)
       ? this.config.mcp : undefined;
     if (mount) prompt += mountNote(mount, Boolean(step.write), Boolean(mcp), Boolean(task.snapshot));
@@ -1964,6 +1974,8 @@ event(task, state, detail) {
     if (mcp) mcp.capabilities.set(capability, { taskId: task.id, workspace: task.workspace, stepId: step.id, signal: stepSignal,
       recordMcp: () => { if (call) call.bridgeMcpRequests += 1; },
       localTools,
+      anyCommand: Boolean(local.anyCommand), localCopy: Boolean(local.localCopy), envFix: Boolean(local.envFix),
+      credentialSandbox: Boolean(local.credentialSandbox), backupOutside: Boolean(local.backupOutside), liveProject: Boolean(local.liveProject),
       deliveryTarget: step.deliveryTarget, localDrives: step.localDrives,
       fileIntent: step.fileIntent, intentPath: step.intentPath, intentDestination: step.intentDestination,
       currentPlan: () => task.fileRevision === fileRevision && !stepSignal.aborted,
@@ -1974,7 +1986,7 @@ event(task, state, detail) {
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
       readAnyFolder: true,
-      writeFiles: granted.has('files_write') && !readOnlyMode(task.mode) || (!task.snapshot || localTools === 'files') &&
+      writeFiles: Boolean(local.writeAnywhere) || granted.has('files_write') && !readOnlyMode(task.mode) || (!task.snapshot || localTools === 'files') &&
         step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
     try {
       const useTeam = task.mode === 'team' && task.groupPlan?.approved && step.role === 'codex' && step.write && this.teamAdapter;
@@ -2131,6 +2143,8 @@ event(task, state, detail) {
         const taken = new Set();
         const wave = [];
         for (const step of ready) {
+          // G-P1: after a failed parallel wave the task goes on one step at a time.
+          if (this.features?.stageGroups && task.serialAfterFailure && wave.length) break;
           if (taken.has(step.role)) this.spillOver(task, step, taken);
           if (taken.has(step.role)) continue;
           taken.add(step.role);
@@ -2152,6 +2166,7 @@ event(task, state, detail) {
           return;
         }
         const failed = results.find((result) => result.status === 'rejected');
+        if (failed && wave.length > 1 && this.features?.stageGroups) task.serialAfterFailure = true;
         if (failed) {
           // Straight to the next model (no lead review) while the group allows it; the lead after three
           // handovers; the person's choice after that, or at once when automatic handover is off.
@@ -2663,7 +2678,16 @@ event(task, state, detail) {
     this.save(task, task.state, 'review_conflict');
   }
 
+  // G-P1 (groupFeatures.stageGroups): a code-changing step holds its project's write token (one writer per project);
+  // a reading step takes one of the read slots (6 in all, 4 per computer). Off: as before.
   async runStep(task, step, repo, root, signal) {
+    if (!this.features?.stageGroups) return this.runStepInner(task, step, repo, root, signal);
+    const release = step.write ? await this.writeToken(task.workspace, signal, { taskId: task.id, role: step.role })
+      : await this.readSlot(task, signal);
+    try { return await this.runStepInner(task, step, repo, root, signal); } finally { release(); }
+  }
+
+  async runStepInner(task, step, repo, root, signal) {
     // A review of a writer's work must look at that writer's uncommitted changes, so it shares the
     // writer's worktree. Any change made while the reviewer runs is detected and rejected below.
     let sharedWriter;
@@ -2692,6 +2716,7 @@ event(task, state, detail) {
       await git(folder, ['apply', '--index', '--binary', patch], signal);
     }
     const before = readonlyStep ? await worktreeState(folder, signal) : undefined;
+    const envFixSeq = task.envFixSeq || 0;   // an environment fix carried into this tree (envFix) is not the reviewer's change
     const savedState = () => ['awaiting_acceptance', 'triaging'].includes(task.state) ? task.state : 'running';
     const receiptsFile = path.join(this.config.stateDir, 'logs', task.id, step.id + '.receipts.jsonl');
     if (!step.attempts) await writeFile(receiptsFile, '', { mode: 0o600 });
@@ -2753,7 +2778,7 @@ event(task, state, detail) {
         const verdict = ['review', 'accept'].includes(step.capability) ? parseReviewVerdict(output) : null;
         if (verdict) step.verdict = verdict;
         if (readonlyStep) {
-          if (await worktreeState(folder, signal) !== before) throw new Error('readonly_step_changed_files');
+          if (await worktreeState(folder, signal) !== before && (task.envFixSeq || 0) === envFixSeq) throw new Error('readonly_step_changed_files');
           // The writer's patch belongs to the writer step; a review must not claim it.
           step.paths = [];
           if (sharedWriter) step.reviewedStep = sharedWriter.id;
@@ -2933,6 +2958,8 @@ event(task, state, detail) {
       this.save(task, 'needs_review', 'isolated_test_unchanged_failure');
       return 'failed';
     }
+    // P1 (groupFeatures.envFix): first an env-check step may fix this computer's environment; then the test runs again.
+    if (this.scheduleEnvCheck(task, evidence, [evidence.stderr, evidence.stdout].filter(Boolean).join('\n'))) return 'rework';
     const limit = this.acceptance.maxRework;
     if (writers.length === 1 && evidence.repairRounds < limit) {
       evidence.repairRounds += 1;
@@ -3800,6 +3827,18 @@ event(task, state, detail) {
     const owner = route === 'admin' || (named && task?.owner === named);
     // Q4 / requirement 7 (groupFeatures.patchDownload): the reviewed patch, kept on VPS2 while the computer was
     // offline, downloaded to the computer with its sha256 so the desktop can check it before saying it arrived.
+    // G-P2d: undo an environment fix (envFix); R1: put back a file outside the project that a step changed.
+    if (body.operation === 'env_fix_revert' || body.operation === 'outside_restore') {
+      if (!this.features?.envFix && !this.features?.writeAnywhere) throw new Error('unsupported_operation');
+      if (!task || !owner) throw new Error('task_access_denied');
+      if (body.operation === 'env_fix_revert') {
+        if (typeof body.fixId !== 'string') throw new Error('invalid_env_fix_id');
+        return this.revertEnvFix(task, body.fixId);
+      }
+      if (typeof body.backupId !== 'string' || !/^[a-f0-9-]{36}$/.test(body.backupId)) throw new Error('invalid_backup_id');
+      return this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'outside_restore', workspace: task.workspace, backupId: body.backupId }, 60000)
+        .catch((error) => { throw require('./group-stages').bridgeError(error); });
+    }
     if (body.operation === 'patch_download') {
       if (!this.features?.patchDownload) throw new Error('unsupported_operation');
       if (!task || !owner) throw new Error('task_access_denied');
@@ -3889,5 +3928,8 @@ event(task, state, detail) {
     throw new Error('unsupported_operation');
   }
 }
+
+// Group chat v7, second tranche (group-stages.js), each part behind its own switch.
+Object.assign(Scheduler.prototype, require('./group-stages').stageMethods);
 
 module.exports = { Scheduler, parsePlan, publicTask };

@@ -10,7 +10,10 @@ const { attachmentRoot, idPattern } = require('./attachments');
 const { readBatch, writeBatch, editFile } = require('./file-batch');
 const { searchFiles } = require('./file-search');
 const { installSnapshot, buildCopy, regularFile } = require('./test-snapshot');
+const { GroupLocal } = require('./group-local');
 
+const GROUP_OPERATIONS = new Set(['group_shell', 'copy_sync', 'copy_diff', 'copy_remove', 'env_fix_apply', 'env_fix_revert', 'outside_restore']);
+const GROUP_PROJECT_WRITES = new Set(['env_fix_apply', 'env_fix_revert']);
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;
 const MAX_PROJECT_SNAPSHOT = 8 * 1024 * 1024;
@@ -112,6 +115,16 @@ function allowedAnywhere(candidate) {
 
 const allowedAnywherePath = (value) => { try { allowedAnywhere(value); return true; } catch { return false; } };
 
+// N2 alone (group chat v7 environment fixes inside the project): credential folders and files, AgentDesk's own
+// folders and .git stay closed; the project itself may lie anywhere.
+function n2Allowed(candidate, extra = []) {
+  const value = fold(candidate);
+  if (HOME_DENY.some((root) => under(value, fold(root)))) return false;
+  if (extra.some((root) => root && under(value, fold(root)))) return false;
+  if (DENY_FILES.has(path.basename(candidate).toLowerCase())) return false;
+  return !candidate.split(path.sep).some((part) => part.toLowerCase() === '.git');
+}
+
 // Inside a folder the person granted for a task (see WindowsOperations.addGrant): the configured limits (allowed
 // roots, system folders, the any-folder switches) do not apply there, but credential folders and files and .git
 // never open. Symbolic links are resolved first, so they cannot lead outside the granted folder.
@@ -203,6 +216,12 @@ class WindowsOperations {
     this.busyStreams = new Set();
     this.activeTests = new Set();
     this.busy = new Set();
+    // Group chat v7 on this computer (group-local.js); VPS2 asks for it only with the matching group switch on.
+    this.group = new GroupLocal({
+      git: (...args) => this.git(...args), projectSnapshot: (root, signal) => this.projectSnapshot(root, signal),
+      allowedPath: (target) => n2Allowed(target, [config.stateDir]), stream: (taskId, id) => this.stream(taskId, id),
+      streamPath: (id) => this.streamPath(id), saveArtifact: (taskId, bytes) => this.saveArtifact(taskId, bytes), commands: this.commands,
+    }, { stateDir: config.stateDir, config });
   }
 
   async call(frame) {
@@ -334,14 +353,26 @@ class WindowsOperations {
         }
         return this.writeAnywhere(taskId, project, body, locate);
       }
-      if (body.operation === 'write_batch') {
-        return writeBatch(body.items, (filename) => this.anyWritePath(project, filename));
-      }
+      // R1 (group chat v7): the previous content of a file outside the project is kept before a step changes it.
+      const backups = [];
+      const place = async (filename, options) => {
+        const target = await this.anyWritePath(project, filename, options);
+        if (body.backup === true) {
+          const backup = await this.group.backupOutside(taskId, target);
+          if (backup) backups.push(backup);
+        }
+        return target;
+      };
+      const finish = async (value) => {
+        for (const backup of backups) await this.group.noteOutside(taskId, backup).catch(() => {});
+        return backups.length && value && typeof value === 'object' ? { ...value, backups: backups.map((backup) => backup.id) } : value;
+      };
+      if (body.operation === 'write_batch') return finish(await writeBatch(body.items, place));
       if (body.operation === 'edit') {
-        const result = await editFile(body, (filename) => this.anyWritePath(project, filename));
-        return { ...result, type: 'file', size: result.bytes };
+        const result = await editFile(body, place);
+        return finish({ ...result, type: 'file', size: result.bytes });
       }
-      return this.writeAnywhere(taskId, project, body);
+      return finish(await this.writeAnywhere(taskId, project, body, place));
     }
     if (body.root !== undefined && body.root !== 'project') throw new Error('read_root_readonly');
     const starting = kind === 'command.execute' && body.operation === 'run' ? { taskId, cancelled: false } : null;
@@ -371,9 +402,17 @@ class WindowsOperations {
         this.desktop.active.delete(requestId);
       }
     }
+    const groupOperation = kind === 'command.execute' && GROUP_OPERATIONS.has(body.operation);
+    // Group commands and the step's local copy do not hold the project: reading steps run side by side, and a
+    // patch waits for nothing (VPS2 holds new commands back while it applies, O2).
+    if (groupOperation && !GROUP_PROJECT_WRITES.has(body.operation)) return this.group.call(taskId, requestId, workspace, root, body);
     if (this.busy.has(root)) throw new Error('workspace_busy');
     this.busy.add(root);
     try {
+      if (groupOperation) {
+        if (!workspace.write) throw new Error('workspace_write_denied');
+        return await this.group.call(taskId, requestId, workspace, root, body);
+      }
       if (kind === 'command.execute') return await this.command(taskId, requestId, workspace, root, body);
       if (!workspace.write) throw new Error('workspace_write_denied');
       if (kind === 'file.write') return await this.write(taskId, root, body);
@@ -385,6 +424,7 @@ class WindowsOperations {
   }
 
   async sweepStreams(now = Date.now()) {
+    await this.group.sweep(now).catch(() => {});
     for (const stream of this.store.all('streams')) {
       if (stream.id && stream.updated < now - 24 * 60 * 60 * 1000 && !this.busyStreams.has(stream.id)) {
         this.busyStreams.add(stream.id);
@@ -836,7 +876,10 @@ class WindowsOperations {
         !Number.isSafeInteger(body.timeout_ms) || body.timeout_ms < 1 || body.timeout_ms > 900000) {
       throw new Error('command_not_authorized');
     }
-    const result = await this.commands.start({ scope: taskId, key: id, name: body.command, argv: spec, cwd: root, timeout: body.timeout_ms });
+    // M2 (group chat v7, credentialSandbox): on a Mac the command runs with credential and AgentDesk folders closed.
+    const argv = body.credentialSandbox === true && this.group.platform.platform === 'mac'
+      ? this.group.platform.wrap(spec, { credentials: true, extra: [this.config.stateDir].filter(Boolean) }) : spec;
+    const result = await this.commands.start({ scope: taskId, key: id, name: body.command, argv, cwd: root, timeout: body.timeout_ms });
     const { code, stdout, stderr, truncated } = result;
     if (code === null) throw new Error(result.error);
     if (body.progress === true) return result;
@@ -906,6 +949,8 @@ class RemoteFiles {
     let sequence = -1;
     let terminalPublished = false;
     const isolated = body.operation === 'run_isolated_test';
+    // Group chat v7: the group command's own reply (location, enforcement, a change of the original) is the result.
+    const grouped = body.operation === 'group_shell';
     const publish = (snapshot) => {
       try { onStatus({ ...snapshot, requestId: id }); } catch { /* an activity preview must not change the command result */ }
     };
@@ -916,7 +961,7 @@ class RemoteFiles {
           operation: 'status', request_id: id,
         }, 1500, done.signal).catch(() => null);
         if (done.signal.aborted) return;
-        if (!status || status.state === 'unknown' || (isolated && status.finishedAt)) {
+        if (!status || status.state === 'unknown' || ((isolated || grouped) && status.finishedAt)) {
           const receipt = await this.call(route(), taskId, 'task.status', {
             operation: 'operation_status', request_id: id,
           }, 1500, done.signal).catch(() => null);
@@ -951,6 +996,10 @@ class RemoteFiles {
       if (!Number.isInteger(result.code)) throw Object.assign(new Error(result.error || 'command_failed'), { remoteConfirmed: true });
       if (isolated) return result;
       const { code, stdout, stderr, truncated } = result;
+      if (grouped) {
+        const { location, enforcement, originalChanged } = result;
+        return { code, stdout, stderr, ...(truncated && { truncated }), location, enforcement, ...(originalChanged && { originalChanged }) };
+      }
       return { code, stdout, stderr, ...(truncated && { truncated }) };
     } catch (error) {
       if (!terminalPublished) publish({
