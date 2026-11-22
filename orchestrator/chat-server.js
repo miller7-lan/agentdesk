@@ -890,8 +890,10 @@ function childEnvironment(turn) {
 }
 
 function syncGrokAuth() {
-  if (PROVIDER !== 'grok' || NATIVE_PROJECT) return;
-  const source = path.join(STATE_DIR, 'homes', 'grok', '.grok', 'auth.json');
+  if (PROVIDER !== 'grok') return;
+  // Native seats store conversation state separately from the service's CLI profiles.
+  const profileRoot = NATIVE_PROJECT ? '/var/lib/agentdesk-orchestrator' : STATE_DIR;
+  const source = path.join(profileRoot, 'homes', 'grok', '.grok', 'auth.json');
   const target = path.join(HOME, '.grok', 'auth.json');
   try {
     const origin = fs.statSync(source);
