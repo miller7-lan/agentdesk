@@ -576,3 +576,11 @@ test('audit: on a Mac the copy lives where the sandbox lets its commands work (n
   assert.ok(!closed.some((folder) => root === folder || root.startsWith(folder + '/')), root + ' must not be closed');
   assert.equal(copiesRootFor('windows', 'C:\\state'), path.join('C:\\state', 'group-copies'));
 });
+
+test('the Bridge answers group_capabilities without holding the project (what LOCAL-DEPLOY.md §4.3 checks)', async (t) => {
+  const { call } = project(t);
+  const value = await call('command.execute', { operation: 'group_capabilities' });
+  assert.equal(value.groupLocal, 1);
+  assert.equal(value.backups, true);
+  assert.equal(value.platform, process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux');
+});
