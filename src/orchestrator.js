@@ -407,7 +407,12 @@ window.__groupReady = (async () => {
   async function withGroupProject(work) {
     const group = currentGroup();
     if (groupEnded(group)) return;
-    const project = appProjectOf(group);
+    let project = appProjectOf(group);
+    // A group project created from the orchestrator before projects were set up automatically: set it up now.
+    if (!project && group && !isExample(group.id)) {
+      const entry = A.proj(group.id);
+      if (entry?.serverProject && await window.AgentDeskProjects?.ensureRegistered?.(entry)) project = appProjectOf(group);
+    }
     if (!group || isExample(group.id) || !project || !fileApi?.pickChat) { A.toast('请先为这个项目连接主控，再添加附件。'); return; }
     try { addGroupFiles(group, await work(project)); } catch (error) { A.toast(error.message); }
   }
@@ -2685,6 +2690,12 @@ window.__groupReady = (async () => {
     event.target.reset();
     projectDialog.close();
     A.openGroup(project.id);
+    // Created from the orchestrator: the project is set up straight away, so attachments and single chats work.
+    if (binding && !temporary) {
+      Promise.resolve(window.AgentDeskProjects?.ensureRegistered?.(project)).then((ok) => {
+        if (ok) A.toast(`项目「${name}」已建好，可以直接添加附件、开始单聊`);
+      }).catch((error) => A.toast(error.message));
+    }
   });
 
   function openRoutes() {

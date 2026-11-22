@@ -68,6 +68,23 @@ async function main() {
     const attachNotice = await page.evaluate(() => window.AgentDeskAttachNotice?.added([{ name: 'a.txt' }], 'chat') || null);
     console.log(JSON.stringify({ step: 'attach-notice', text: attachNotice }));
     assert.equal(attachNotice, '已添加 1 个附件（先存在本机，发送消息时一起上传）');
+    // A group project created from the orchestrator: before it is set up, attachments are refused (the problem);
+    // set up the way the app now does it automatically (a cloud project bound to the orchestrator workspace, no
+    // folder picker), attachments are accepted — in the packaged app's real main process.
+    const project = await page.evaluate(async () => {
+      const id = 'group-' + crypto.randomUUID();
+      const tiny = btoa('agentdesk');
+      const before = await window.desk.files.pasteChat(id, 'a.txt', tiny);
+      const added = await window.desk.projects.add({ groupId: id, name: 'CI 群聊项目', kind: 'remote', orchestratorWorkspace: 'mac' });
+      const after = await window.desk.files.pasteChat(id, 'a.txt', tiny);
+      return { before: before.files.length, beforeError: before.errors[0] || null, added: added.ok,
+        registered: Boolean(added.projects?.some((item) => item.id === id && item.kind === 'remote' && item.orchestratorWorkspace === 'mac' && !item.localRoot)),
+        after: after.files.length, afterErrors: after.errors };
+    });
+    console.log(JSON.stringify({ step: 'group-project-attachments', ...project }));
+    assert.equal(project.before, 0, 'an unregistered project must not take attachments');
+    assert.ok(project.added && project.registered, 'the project is registered without a folder');
+    assert.equal(project.after, 1, 'attachments work once the project is set up: ' + JSON.stringify(project.afterErrors));
     await page.screenshot({ path: path.resolve('terminal-ui-smoke.png') }).catch(() => {});
   } finally {
     await app?.close().catch(() => {});

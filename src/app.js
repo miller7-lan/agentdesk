@@ -245,7 +245,9 @@
     if (!p) return;
     if (!Object.hasOwn(AGENT_NAMES, agent)) { toast('该 AI 尚未启用原生单聊'); return; }
     if (LIVE && !p.configured && p.id.startsWith('group-')) {
-      if (!await window.AgentDeskProjects?.bindForDirect(p)) return;
+      // Bound to an orchestrator workspace: set up automatically (no folder to pick); otherwise choose a folder.
+      const ready = p.serverProject ? await window.AgentDeskProjects?.ensureRegistered?.(p) : await window.AgentDeskProjects?.bindForDirect(p);
+      if (!ready) return;
       p = proj(project);
     }
     if (LIVE && !p.live) { toast('这是示例项目，请在已连接的工作区开始单聊'); return; }

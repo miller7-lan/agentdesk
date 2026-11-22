@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { mkdtemp, mkdir, rm, writeFile, readFile, stat, symlink } = require('node:fs/promises');
 const path = require('node:path');
+const fs = require('node:fs');
 const os = require('node:os');
 const { AppConfig, validateGitRoot } = require('../app-config');
 const { Workspace } = require('../workspace');
@@ -199,4 +200,36 @@ test('updater checks only enabled packaged apps and never downloads or installs 
   assert.deepEqual(await first, { ok: true, status: 'available', version: '2.0.0' });
   assert.equal(calls, 1);
   assert.deepEqual(audit, [['update_check', { status: 'available' }]]);
+});
+
+// "主控创建能不能新建一个项目自动建好，否则不能上传附件": a group project created from the orchestrator is registered
+// straight away as a cloud project bound to the orchestrator workspace — no folder to pick, nothing existing touched —
+// which is what attachments and single chats need (they only accept registered projects).
+test('a group project created from the orchestrator is registered without a folder and keeps the other projects', async (t) => {
+  const folder = await sandbox(t);
+  const repo = path.join(folder, 'repo');
+  await mkdir(repo);
+  await git(repo, ['init'], new AbortController().signal);
+  const file = path.join(folder, 'config.json');
+  const config = new AppConfig(file);
+  await config.load();
+  const { activeProject: existing } = await config.saveProject(undefined, { name: 'Mine', kind: 'local' }, repo);
+  const id = 'group-' + require('node:crypto').randomUUID();
+  await config.saveProject(undefined, { name: '新项目', kind: 'remote', orchestratorWorkspace: 'mac' }, undefined, id);
+  const restored = new AppConfig(file);
+  await restored.load();
+  const record = restored.value.projects.find((project) => project.id === id);
+  assert.deepEqual({ ...record }, { id, name: '新项目', kind: 'remote', orchestratorWorkspace: 'mac' });
+  assert.ok(restored.value.projects.some((project) => project.id === existing && project.localRoot), 'the existing project is kept');
+  // Registering the same group project again is refused, so a second click cannot duplicate or replace it.
+  await assert.rejects(restored.saveProject(undefined, { name: '新项目', kind: 'remote', orchestratorWorkspace: 'mac' }, undefined, id));
+});
+
+test('group and single chats set up an orchestrator-bound project automatically instead of refusing attachments', () => {
+  const read = (file) => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8');
+  const projects = read('projects.js');
+  assert.match(projects, /api\.add\(\{ groupId: project\.id, name: project\.name, kind: 'remote', orchestratorWorkspace: project\.serverProject \}\)/);
+  assert.match(read('orchestrator.js'), /ensureRegistered\?\.\(project\)/, 'on creation');
+  assert.match(read('orchestrator.js'), /ensureRegistered\?\.\(entry\)/, 'before adding attachments in an older group project');
+  assert.match(read('app.js'), /p\.serverProject \? await window\.AgentDeskProjects\?\.ensureRegistered\?\.\(p\)/, 'before a single chat');
 });

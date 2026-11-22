@@ -188,7 +188,31 @@
     apply(result);
     return true;
   }
-  window.AgentDeskProjects = { select, bindForDirect, openSettings: () => $('#workspaceSettings').click() };
+  // A project created from the orchestrator (a group project bound to one of its workspaces) is registered as a
+  // project of this app at once — as a cloud project with that binding, no folder to pick — so attachments and
+  // single chats work in it from the start (they need a registered project). A local folder can still be chosen
+  // later in the workspace settings. Nothing existing is changed: an already registered project is left alone.
+  const registering = new Map();
+  async function ensureRegistered(project) {
+    if (!project || project.configured) return true;
+    if (!project.serverProject || !/^group-[0-9a-f-]+$/.test(project.id)) return false;
+    if (!registering.has(project.id)) {
+      registering.set(project.id, (async () => {
+        const result = await api.add({ groupId: project.id, name: project.name, kind: 'remote', orchestratorWorkspace: project.serverProject });
+        if (!result?.ok) {
+          // Registered meanwhile (another window, an earlier click): fine as long as it is there now.
+          const listed = await api.list().catch(() => null);
+          if (listed?.projects?.some((item) => item.id === project.id)) { apply(listed); return true; }
+          A.toast('项目没能自动建好：' + (result?.error || '未知错误') + '。可在「工作区」里手动添加。');
+          return false;
+        }
+        apply(result);
+        return true;
+      })().finally(() => registering.delete(project.id)));
+    }
+    return registering.get(project.id);
+  }
+  window.AgentDeskProjects = { select, bindForDirect, ensureRegistered, openSettings: () => $('#workspaceSettings').click() };
   api.list().then((result) => {
     if (!result.ok) return;
     apply(result);
