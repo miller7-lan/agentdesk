@@ -848,10 +848,11 @@ function providerArgs(turn, workspace) {
     allow: [
       `mcp(${turn.serverName}/*)`,
       ...turn.tools.map((tool) => `mcp(${turn.serverName}/${tool.name})`),
-      'read_url(*)', 'search_web(*)',
+      // Web reading like the other three members (ROLLOUT-2026-11-22 §5): execute_url is allowed too.
+      'read_url(*)', 'search_web(*)', 'execute_url(*)',
       ...(SANDBOX ? ['read_file(*)', 'command(*)', ...(turn.readOnly ? [] : ['write_file(*)'])] : []),
     ],
-    deny: ['execute_url(*)', ...(SANDBOX ? [] : ['read_file(*)', 'command(*)']),
+    deny: [...(SANDBOX ? [] : ['read_file(*)', 'command(*)']),
       ...(SANDBOX && !turn.readOnly ? [] : ['write_file(*)'])],
     ask: [],
   };

@@ -1122,7 +1122,7 @@ window.__groupReady = (async () => {
         const note = platform === 'win32'
           ? 'Windows：群聊在本机运行的命令没有强制保护凭据目录，本机副本也没有强制隔离（只做改动检测）；AgentDesk 自己的文件工具和挂载仍拒绝凭据目录、.git 内部和 AgentDesk 密钥目录。'
           : platform === 'darwin'
-            ? 'Mac：群聊在本机运行的命令在 sandbox 下运行，挡住凭据目录和 AgentDesk 密钥目录（.git 不挡）；写代码阶段在本机副本里运行时禁止写原项目。需要已更新的 AgentDesk 连接组件，旧版本会如实提示未生效。'
+            ? 'Mac：群聊在本机运行的命令在 sandbox 下运行，只挡 AgentDesk 自己的密钥目录（凭据目录、钥匙串和 .git 不挡，和单聊一样）；写代码阶段在本机副本里运行时禁止写原项目。需要已更新的 AgentDesk 连接组件，旧版本会如实提示未生效。'
             : '';
         if (note) deferred.push({ at: task.snapshotNotice.at, html: `<p class="group-system">${esc(note)}</p>` });
       }

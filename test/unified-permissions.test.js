@@ -10,7 +10,7 @@ const source = (name) => fs.readFileSync(path.join(__dirname, '..', 'orchestrato
 test('one permission statement per platform, the same for every model', () => {
   const mac = nativePermissionPrompt({ platform: 'darwin' });
   const win = nativePermissionPrompt({ platform: 'win32' });
-  assert.match(mac, /Claude、Codex、Grok 权限相同/);
+  assert.match(mac, /Claude、Codex、Grok、Antigravity 权限相同/);
   assert.match(mac, /zsh/);
   assert.match(mac, /钥匙串/);
   assert.match(win, /PowerShell/);
@@ -22,7 +22,7 @@ test('one permission statement per platform, the same for every model', () => {
     assert.doesNotMatch(text, /~\/\.ssh/);
   }
   assert.match(nativePermissionPrompt({ platform: 'darwin', writable: false }), /只读/);
-  assert.match(GROUP_PERMISSION_NOTE, /same for Claude, Codex and Grok/);
+  assert.match(GROUP_PERMISSION_NOTE, /same for Claude, Codex, Grok and Antigravity/);
 });
 
 test('chat server and seat use the shared statement and open shell and sub-agents', () => {

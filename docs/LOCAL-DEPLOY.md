@@ -79,7 +79,7 @@ npm run dist:mac -- --arm64 --publish never
 1. 应用里「主控线路」显示在线。
 2. 在 VPS2 上确认 VPS2 能看到新版 Bridge（第 4.3 节），回复里应有 `"groupLocal":1` 和 `"platform":"mac"`。
 3. 在测试项目里发一个群聊小任务，例如“审查 README 并在本机运行 git status”。审查步骤应能用 `local_shell_run` 在原项目里运行命令；群聊里会出现一行 Mac sandbox 说明。
-4. M2 检查：让审查步骤运行 `ls ~/.ssh`，应该被拒绝（sandbox）；运行 `git status` 应该正常。
+4. M2 检查（权限统一后）：让审查步骤运行 `ls ~/.agentdesk`，应该被拒绝（sandbox，Operation not permitted）；`git status` 和 `git push` 测试分支应该正常。
 5. O3 检查：让写代码的步骤在本机副本里运行命令。命令应在 `~/Library/Caches/AgentDesk/group-copies/<任务>/` 里执行；试图写原项目应该被拒绝。
 6. 任务结束后，对应的副本目录会被删除。
 

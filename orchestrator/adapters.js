@@ -253,16 +253,16 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
   }
   if (name === 'antigravity' && provider.template) {
     // The same permission set as a single chat: web reading is always on, the CLI's own file and shell tools are
-    // on only inside the sandbox, and writing is allowed only for a write step. execute_url stays denied.
+    // on only inside the sandbox, and writing is allowed only for a write step. execute_url is allowed like the other
+    // members' web reading (ROLLOUT-2026-11-22 §5). agy --help names no sub-agent permission, so none is added.
     const allow = [
       ...(mcp ? ['mcp(agentdesk_windows/*)',
         ...require('./mcp').toolsFor(mcp.scope).map(({ name }) => `mcp(agentdesk_windows/${name})`)] : []),
-      'read_url(*)', 'search_web(*)',
+      'read_url(*)', 'search_web(*)', 'execute_url(*)',
       ...(sandboxed ? ['read_file(*)', 'command(*)'] : []),
       ...(sandboxed && !readonly ? ['write_file(*)'] : []),
     ];
     const deny = [
-      'execute_url(*)',
       ...(sandboxed ? [] : ['read_file(*)', 'command(*)']),
       ...(readonly ? ['write_file(*)'] : []),
     ];
