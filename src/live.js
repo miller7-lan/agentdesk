@@ -378,6 +378,10 @@
     if (m.method === 'skills/changed') { loadSkills(); return; }
     // Direct chat v2 notices: MCP fallback (D14), waiting in line (D15/Q6) or behind a CLI upgrade (Q5), status pushes.
     if (m.method === 'agentdesk/fallback') {
+      if (m.agent === 'grok' && p.threadId) {
+        toast('Grok 使用单聊线路。本机文件通过已授权工具访问，交互终端暂不可用。');
+        return;
+      }
       toast(`本机原生会话不可用，已改用 MCP 工具（${p.reason || '原因未知'}）：模型自带的读写和 Bash 不能直接作用于本机项目，本机终端与 local_shell 仍可用。`);
       return;
     }
