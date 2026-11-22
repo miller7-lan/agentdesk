@@ -965,6 +965,7 @@ function startTurn(turn) {
     let event;
     try { event = JSON.parse(line); } catch { return; }
     if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+    if (['stream_event', 'assistant', 'result'].includes(event.type)) clearTimeout(turn.startupTimer);
     try { handleEvent(turn, event); }
     catch (error) { log('event_failed', turn.id, error.message); }
   };
@@ -1008,6 +1009,14 @@ function startTurn(turn) {
     killTurn(turn);
   }, TURN_TIMEOUT);
   turn.timer.unref?.();
+  if (PROVIDER === 'grok' && NATIVE_PROJECT) {
+    turn.startupTimer = setTimeout(() => {
+      if (turn.interrupted || turn.failure) return;
+      turn.failure = 'Grok 启动后 90 秒内没有返回模型事件，已停止本轮。可以在此会话重试。';
+      killTurn(turn);
+    }, 90_000);
+    turn.startupTimer.unref?.();
+  }
 
   if (turn.promptViaStdin) child.stdin.end(turnText(turn));
   else child.stdin.end();
@@ -1157,6 +1166,7 @@ function finishTurn(turn, code, startupError) {
   if (turn.done) return;
   turn.done = true;
   clearTimeout(turn.timer);
+  clearTimeout(turn.startupTimer);
   clearTimeout(turn.killTimer);
   if (startupError) turn.childError = startupError;
   activeTurns.delete(turn.threadId);
