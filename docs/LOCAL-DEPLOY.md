@@ -6,7 +6,7 @@
 
 | 端 | 状态 |
 |---|---|
-| VPS2 主控 | 已部署群聊 v7 的服务端代码（源提交 `80fbb2d`）。之后 `main` 上 `orchestrator/` 只改了 `terminal-sessions.js` 和 `windows-project-leases.js`，这两个文件只在电脑端的 Worker 里用，主控不加载，所以 VPS2 不需要为此重新部署。`groupFeatures` 中 14 个开关都已打开 |
+| VPS2 主控 | 2026-11-22 17:40 起运行 `main` 上 `531b33f` 的服务端代码（权限统一、Antigravity `execute_url`、群聊 v7），见 [DEPLOY-LOG.md](DEPLOY-LOG.md)。`groupFeatures` 中 14 个开关都已打开 |
 | Mac 应用和 Mac 后台 Bridge | **没有更新**，仍是用户原来安装的版本 |
 | Windows 应用（Bridge 在应用里） | **没有更新**，仍是用户原来安装的版本 |
 | 单聊 directChatV2 | 没有对任何设备打开（VPS2 上没有 `/etc/agentdesk-orchestrator/devices.json`） |
