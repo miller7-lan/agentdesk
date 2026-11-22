@@ -68,6 +68,13 @@
 
   const statusLabels = { idle: '空闲', running: '运行中', waiting: '待批准', done: '已完成' };
   const AGENT_NAMES = { codex: 'Codex', claude: 'Claude', grok: 'Grok', antigravity: 'Antigravity' };
+  const MODE_NAMES = { ask: '每步询问', edit: '自动编辑', plan: '只读规划', auto: '完全访问' };
+  const MODE_TITLES = {
+    ask: '每次修改本机文件和运行命令前都询问你',
+    edit: '本机文件修改直接生效，运行命令前仍询问你',
+    plan: '只读：AI 只读取和规划，不修改文件、不运行会改动的命令',
+    auto: '本机用户文件、外接卷与临时目录。AI 通过本机文件工具读写并即时生效，不再逐次批准。',
+  };
   const agentName = (agent) => AGENT_NAMES[agent] || AGENT_NAMES.codex;
   const sess = (id) => D.sessions.find((s) => s.id === id);
   // A project may have several group chats: the first has the project's own id, the others "<project>~<suffix>".
@@ -331,6 +338,16 @@
           <span class="tool-kind">${esc(it.kind)}</span><span class="tool-arg mono">${esc(it.arg)}</span><span class="tool-meta">${esc(it.meta || '')}</span></div>
         <div class="tool-body"><div class="io-label">输入</div><pre class="io">${esc(it.input)}</pre><div class="io-label">输出</div><pre class="io">${esc(it.output)}</pre>
         ${it.link ? `<a class="tool-link" data-goto="${it.link}">在 Diff 面板中查看 →</a>` : ''}</div></div>`;
+    if (it.t === 'question') return window.AgentDeskQuestions.render(it, idx);
+    if (it.t === 'handover') {
+      if (it.state === 'dismissed') return '';
+      const label = MODE_NAMES[it.target] || it.target;
+      if (it.state === 'executed') return `<div class="handover resolved"><span>已按方案开始执行（${esc(label)}）</span></div>`;
+      return `<div class="handover" data-idx="${idx}"><div class="handover-title">执行此方案？</div>
+        ${it.excerpt ? `<p class="handover-excerpt">${esc(it.excerpt)}</p>` : ''}
+        <div class="handover-actions"><button class="btn primary" data-handover="run">按此方案执行（${esc(label)}）</button>
+          <button class="btn" data-handover="stay">继续规划</button></div></div>`;
+    }
     if (it.t === 'approval') {
       const done = it.state !== 'pending';
       return `<div class="approval ${done ? 'resolved' : ''}" data-idx="${idx}">
@@ -398,6 +415,23 @@
     if (atBottom) tl.scrollTop = tl.scrollHeight;
   }
 
+  // Question cards: submit = answer every question; Enter in an own-answer field submits the whole card.
+  $('#timeline').addEventListener('submit', (e) => {
+    const form = e.target.closest('[data-question-card]');
+    if (!form) return;
+    e.preventDefault();
+    const s = sess(state.active);
+    const it = s?.items[+form.dataset.idx];
+    if (it?.t !== 'question') return;
+    L()?.answerQuestion(s, it, window.AgentDeskQuestions.picksFrom(form, it.questions), false);
+  });
+  $('#timeline').addEventListener('keydown', (e) => {
+    const form = e.target.closest?.('[data-question-card]');
+    if (!form || e.key !== 'Escape') return;
+    e.preventDefault();
+    form.querySelector('[data-question-act="skip"]')?.click();
+  });
+
   $('#timeline').addEventListener('click', (e) => {
     const s = sess(state.active);
     if (e.target.closest('[data-new-session]')) { newDirect(); return; }
@@ -421,6 +455,19 @@
     }
     const head = e.target.closest('.tool-head');
     if (head) { const card = head.parentElement; const it = s.items[+card.dataset.idx]; it.open = !it.open; card.classList.toggle('open', it.open); return; }
+    const qSkip = e.target.closest('[data-question-act="skip"]');
+    if (qSkip && s) {
+      const card = qSkip.closest('[data-question-card]');
+      const it = s.items[+card.dataset.idx];
+      if (it?.t === 'question') L()?.answerQuestion(s, it, null, true);
+      return;
+    }
+    const hand = e.target.closest('[data-handover]');
+    if (hand && s) {
+      const it = s.items[+hand.closest('.handover').dataset.idx];
+      if (it?.t === 'handover') L()?.runHandover(s, it, hand.dataset.handover === 'run');
+      return;
+    }
     const btn = e.target.closest('.approval [data-act]');
     if (btn && btn.tagName === 'BUTTON') {
       const card = btn.closest('.approval');
@@ -534,12 +581,43 @@
     send(e); // 与发送键相同：发送 / 插话 / 停止
   });
 
-  $('#modeSelect').addEventListener('change', (e) => {
+  // One mode per chat, two controls: the permission select and the composer's 「完全访问」 switch. Both go through
+  // setMode, which also records the choice (src/access-toggle.js). A change applies from the next turn.
+  const Access = window.AgentDeskAccess;
+  try { Access.migrate(store); } catch {}
+  function syncModeControls(s, mode) {
+    const sel = $('#modeSelect');
+    const native = !!s?.native;
+    const allowed = Access.allowed(native);
+    for (const option of sel.options) {
+      option.disabled = !allowed.includes(option.value);
+      option.title = option.disabled ? '原生单聊只支持完全访问或只读规划' : (MODE_TITLES[option.value] || '');
+    }
+    if (mode && sel.value !== mode) sel.value = mode;
+    $('#sbMode').textContent = sel.selectedOptions[0]?.text || '';
+    const toggle = $('#fullAccessToggle');
+    if (toggle) {
+      const on = sel.value === 'auto';
+      toggle.setAttribute('aria-checked', String(on));
+      toggle.classList.toggle('on', on);
+      toggle.disabled = native;
+      toggle.title = native ? '原生单聊请用权限下拉在完全访问与只读规划间切换'
+        : on ? '完全访问：AI 直接读写本机文件和运行命令，不再逐次批准。点击回到' + (MODE_NAMES[Access.lastSafe(store)] || '自动编辑')
+          : '打开完全访问：AI 直接读写本机文件和运行命令，不再逐次批准（下一轮生效）';
+    }
+  }
+  function setMode(s, mode, source) {
+    mode = Access.coerce(mode, !!s?.native);
+    if (s && s.live) s.mode = mode;
+    Access.record(store, mode);
+    syncModeControls(s, mode);
+    if (source !== 'handover') toast('权限模式：' + (MODE_NAMES[mode] || mode) + (s?.busy ? '（下一轮生效）' : ''));
+  }
+  $('#modeSelect').addEventListener('change', (e) => setMode(sess(state.active), e.target.value, 'select'));
+  $('#fullAccessToggle')?.addEventListener('click', () => {
     const s = sess(state.active);
-    if (s && s.live) s.mode = e.target.value;
-    try { store.set('lastPermissionMode', e.target.value); } catch { /* storage may be unavailable */ }
-    $('#sbMode').textContent = e.target.selectedOptions[0].text;
-    toast('权限模式：' + e.target.selectedOptions[0].text);
+    const next = Access.toggled($('#modeSelect').value !== 'auto', store, { native: !!s?.native });
+    if (next) setMode(s, next, 'toggle');
   });
   $('#modelSelect').addEventListener('change', (e) => {
     const live = e.target.dataset.live || sess(state.active)?.live;
@@ -748,7 +826,7 @@
     toast(unhandledText(event.error));
   });
   window.__desk = { D, state, LIVE, $, $$, esc, svg, store, sess, proj, toast, pet, setBusy, agentName, AGENT_NAMES, renderAll: () => renderAll(), renderPanel: () => renderPanel(),
-    renderTerm: () => renderTerm(), showPanel, openSession, openGroup, newDirect, renderSidebar, autosize, renderAttach, applyLayout: () => applyLayout() };
+    renderTerm: () => renderTerm(), setMode, syncModeControls, showPanel, openSession, openGroup, newDirect, renderSidebar, autosize, renderAttach, applyLayout: () => applyLayout() };
   const L = () => window.__live;
 
   /* ---------- 汇总渲染 ---------- */
