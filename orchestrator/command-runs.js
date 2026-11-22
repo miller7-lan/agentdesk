@@ -184,6 +184,12 @@ class CommandRuns {
     return [...this.runs.values()].filter((item) => item.scope === scope).map(({ snapshot }) => ({ ...snapshot }));
   }
 
+  // Every run in every scope (snapshots only), for status checks that must not miss older running commands.
+  listAllScopes() {
+    this.load();
+    return [...this.runs.values()].map(({ snapshot }) => ({ ...snapshot }));
+  }
+
   cancel(scope, id) {
     this.load();
     const item = this.runs.get(id);

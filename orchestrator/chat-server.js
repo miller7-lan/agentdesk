@@ -1235,6 +1235,27 @@ const statusHub = new StatusHub({ readers: {
 statusHub.on('updated', (items) => { if (statusSubscribed) notify('status/updated', { items }); });
 function pushStatus() { if (statusSubscribed) statusHub.refresh({ force: true }).catch(() => {}); }
 
+/* ---------- client updates: a hint only ---------- */
+// VPS2 tells a connected client that a newer client version exists (client-updates.js, latest.json written by the
+// intake). The client never acts on this hint itself: it asks client_update over the control channel. No file names,
+// sizes or device data are sent here.
+const CLIENT_UPDATES = process.env.AGENTDESK_CLIENT_UPDATES || path.join(STATE_DIR, 'client-updates');
+function newerClient(appVersion) {
+  try {
+    const { version } = JSON.parse(fs.readFileSync(path.join(CLIENT_UPDATES, 'latest.json'), 'utf8'));
+    const { compareVersions } = require('./update-manifest');
+    return typeof appVersion === 'string' && compareVersions(version, appVersion) === 1 ? version : null;
+  } catch { return null; }
+}
+let announcedClient = null;
+setInterval(() => {
+  const version = helloDevice && newerClient(helloDevice.appVersion);
+  if (version && version !== announcedClient) {
+    announcedClient = version;
+    notify('agentdesk/clientUpdate', { available: true });
+  }
+}, 5 * 60_000).unref();
+
 // Requests other than initialize are refused for keys whose device is not approved (or was revoked since).
 function checkDevice(method) {
   if (IDENTITY.legacy) return;
@@ -1383,6 +1404,7 @@ async function dispatch(method, params) {
         ...(!IDENTITY.legacy && { device: { deviceId: IDENTITY.deviceId, platform: IDENTITY.platform ?? null, state: IDENTITY.state,
           directChatV2: V2, ...(IDENTITY.error && { error: IDENTITY.error }) } }),
         features: { attachmentsV2: V2, status: true, sessionList: V2, seatLimits: Boolean(seatSlots), isolatedAntigravity: ISOLATED_ANTIGRAVITY },
+        ...((announcedClient = newerClient(helloDevice?.appVersion)) && { clientUpdate: { available: true } }),
       };
     }
 

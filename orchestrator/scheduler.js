@@ -3783,6 +3783,21 @@ event(task, state, detail) {
       return this.diagnosticStatus({ named, admin: route === 'admin' }).then(({ clis }) => clis);
     }
     if (body.operation === 'resource_status' && (route === 'admin' || named)) return hostResources();
+    // For a client's update gate: every task not finished that this device owns or that runs in its workspaces —
+    // all of them, not the latest 30 that project_tasks lists.
+    if (body.operation === 'open_tasks' && (route === 'admin' || named)) {
+      return [...this.tasks.values()]
+        .filter((candidate) => !terminal.has(candidate.state))
+        .filter((candidate) => !named || candidate.owner === named || this.config.workspaces[candidate.workspace]?.sshBridge === named)
+        .map((candidate) => ({ id: candidate.id, state: candidate.state, stage: candidate.stage }));
+    }
+    // Client updates (orchestrator/client-updates.js): which version this device is offered, and one range of a
+    // listed file. The device is the Bridge's own name, never a value from the request.
+    if (['client_update', 'client_update_read'].includes(body.operation) && (route === 'admin' || named)) {
+      const { ClientUpdates, clientUpdateControl } = require('./client-updates');
+      this.clientUpdateStore ||= new ClientUpdates({ root: this.config.clientUpdates?.root });
+      return clientUpdateControl(this.clientUpdateStore, body.operation, body.update, named || 'admin');
+    }
     // Direct chat v2 status (spec §9): every value with its source, measured time and freshness.
     if (body.operation === 'status_snapshot' && (route === 'admin' || named)) {
       if (named && !(Array.isArray(this.config.quotaBridges) && this.config.quotaBridges.includes(named))) throw new Error('quota_access_denied');

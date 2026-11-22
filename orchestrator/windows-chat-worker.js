@@ -107,8 +107,14 @@ function connectWorker(stateDir, secret, { onUpdate, onEvent } = {}) {
   });
 }
 
+// Version of the idle/shutdown operations below; an older Worker answers them with
+// invalid_windows_chat_worker_operation, which the app treats as "cannot confirm" (orchestrator/worker-idle.js).
+const WORKER_IDLE_PROTOCOL = 1;
+
 function serveWorker(stateDir, setup = {}) {
-  const { resolveSession, mount, ...shellOptions } = setup;
+  const { resolveSession, mount, onShutdown, ...shellOptions } = setup;
+  let closing = false;
+  let sftpSessions = 0;
   const secret = readSecret(stateDir);
   const leases = new WindowsProjectLeases(path.join(stateDir, 'leases.json'));
   const clients = new Set();
@@ -143,6 +149,22 @@ function serveWorker(stateDir, setup = {}) {
     const own = terminals.onEvent;
     terminals.onEvent = (value) => { try { own?.(value); } catch {} broadcast('terminal', value); };
   }
+  function idleStatus() {
+    const runs = shell.activity();
+    // A terminal registry this Worker cannot read counts as busy (-1), never as "no terminals".
+    const live = terminals.terminals instanceof Map ? [...terminals.terminals.values()].filter((item) => !item.exited).length : -1;
+    const leaseList = [...leases.leases.values()];
+    const status = {
+      protocol: WORKER_IDLE_PROTOCOL, version: (() => { try { return require('../package.json').version; } catch { return null; } })(),
+      runningCommands: runs.running, unknownCommands: runs.unknown, liveTerminals: live,
+      fileOperations: leaseList.filter((lease) => lease.fileOperation).length,
+      reconciling: leases.reconciling.size, fileLocks: leases.locks.locks?.size ?? 0,
+      pendingStreams: acceptedStreams.size, sftpSessions, leases: leaseList.length,
+    };
+    status.idle = !status.runningCommands && !status.unknownCommands && status.liveTerminals === 0 && !status.fileOperations &&
+      !status.reconciling && !status.fileLocks && !status.pendingStreams;
+    return status;
+  }
   const sweep = setInterval(() => terminals.sweep(), 10 * 60_000);
   sweep.unref();
   const { createCheckpoint, restoreCheckpoint, list: listCheckpoints } = require('./git-checkpoints');
@@ -164,7 +186,24 @@ function serveWorker(stateDir, setup = {}) {
       }
       const { id, operation, binding, args, requestId } = frame;
       Promise.resolve().then(() => {
+        if (closing) throw new Error('windows_chat_worker_shutting_down');
         switch (operation) {
+          // Read-only: what is still running or unsettled here. Nothing is stopped or changed.
+          case 'idleStatus': return idleStatus();
+          // Ends this Worker only when idleStatus is idle at this very moment (checked and acted on in one step,
+          // so no new command can slip in between). Otherwise nothing happens and the status is returned.
+          case 'shutdownIfIdle': {
+            const status = idleStatus();
+            if (!status.idle) return { ...status, shutdown: false };
+            closing = true;
+            setImmediate(() => {
+              terminals.closeAll?.();
+              server.close();
+              for (const client of clients) { try { client.output.destroy(); } catch {} }
+              try { onShutdown?.(); } catch {}
+            });
+            return { ...status, shutdown: true };
+          }
           case 'acquire': return leases.acquire(binding);
           case 'lookup': return leases.lookup(binding);
           case 'suspend': return leases.suspend(binding);
@@ -267,6 +306,8 @@ function serveWorker(stateDir, setup = {}) {
       socket.pause();
       if (header.length > end + 1) socket.unshift(header.subarray(end + 1));
       try {
+        sftpSessions++;
+        socket.once('close', () => { sftpSessions--; });
         leases.serveSftp(ticket.binding, socket, socket).done.catch(() => socket.destroy());
         socket.write(Buffer.from([1]));
       } catch { socket.destroy(); }
@@ -319,7 +360,7 @@ function createWorkerClient(stateDir, { onUpdate, onEvent, launch = spawn, execu
 
 if (require.main === module) {
   if (!['win32', 'darwin'].includes(process.platform) || !process.argv[2]) process.exit(2);
-  serveWorker(process.argv[2]).once('error', () => { process.exitCode = 1; });
+  serveWorker(process.argv[2], { onShutdown: () => setTimeout(() => process.exit(0), 200) }).once('error', () => { process.exitCode = 1; });
 }
 
-module.exports = { connectWorker, createSecret, createWorkerClient, serveWorker, endpoint };
+module.exports = { connectWorker, createSecret, createWorkerClient, serveWorker, endpoint, WORKER_IDLE_PROTOCOL };
