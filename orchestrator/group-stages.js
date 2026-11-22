@@ -22,6 +22,13 @@ const { git, patchFor } = require('./git');
 const { LEAD_CAPABILITIES } = require('./routing');
 const { clip } = require('./summary');
 
+// git with extra environment (a scratch index for dry runs).
+function gitEnv(cwd, args, env, signal) {
+  return new Promise((resolve, reject) => require('node:child_process').execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args],
+    { cwd, signal, timeout: 120000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env } },
+    (error, stdout) => error ? reject(error) : resolve(stdout)));
+}
+
 const READ_SLOTS = 6;
 const READ_SLOTS_PER_DEVICE = 4;
 const ENV_FIX_MAX = 1024 * 1024;
@@ -186,7 +193,8 @@ const stageMethods = {
     if (!diff?.changed) return { changed: false };
     const folder = this.stepFolder(task, step);
     // The working tree must still be what the copy started from; otherwise the copy's changes are not taken.
-    if (sha(Buffer.from((await patchFor(folder, task.base, scope.signal)).patch)) !== prepared.sent) return { changed: true, taken: false, reason: 'worktree_changed' };
+    const current = Buffer.from((await patchFor(folder, task.base, scope.signal)).patch);
+    if (sha(current) !== prepared.sent) return { changed: true, taken: false, reason: 'worktree_changed' };
     const bytes = diff.artifact ? await this.files.download(route, task.id, { operation: 'artifact', ...diff.artifact }, scope.signal) : Buffer.alloc(0);
     if (diff.artifact && sha(bytes) !== diff.artifact.sha256) throw new Error('local_copy_transfer_failed');
     const file = path.join(this.config.stateDir, 'worktrees', task.id, 'copy-' + randomUUID() + '.patch');
@@ -199,15 +207,38 @@ const stageMethods = {
       const content = await readFile(target).catch(() => null);
       if (content) kept.push([target, content]);
     }
-    try {
-      await git(folder, ['reset', '-q', '--hard', task.base], scope.signal);
-      await git(folder, ['clean', '-fdq'], scope.signal);
-      if (bytes.length) await git(folder, ['apply', '--binary', '--whitespace=nowarn', file], scope.signal);
+    const saved = file + '.current';
+    await writeFile(saved, current, { mode: 0o600 });
+    const restoreKept = async () => {
       for (const [target, content] of kept) {
         await mkdir(path.dirname(target), { recursive: true });
         await writeFile(target, content, { mode: 0o600 });
       }
-    } finally { await rm(file, { force: true }); }
+    };
+    try {
+      // A dry run first, in a scratch index: a patch that does not apply never touches the writer's tree.
+      if (bytes.length) {
+        const index = path.join(this.config.stateDir, 'worktrees', task.id, 'copy-index-' + randomUUID());
+        try {
+          await gitEnv(folder, ['read-tree', task.base], { GIT_INDEX_FILE: index }, scope.signal);
+          await gitEnv(folder, ['apply', '--cached', '--check', '--binary', '--whitespace=nowarn', file], { GIT_INDEX_FILE: index }, scope.signal);
+        } catch { return { changed: true, taken: false, reason: 'copy_patch_does_not_apply' }; }
+        finally { await rm(index, { force: true }); }
+      }
+      await git(folder, ['reset', '-q', '--hard', task.base], scope.signal);
+      await git(folder, ['clean', '-fdq'], scope.signal);
+      try {
+        if (bytes.length) await git(folder, ['apply', '--binary', '--whitespace=nowarn', file], scope.signal);
+      } catch (error) {
+        // Put the writer's own changes back exactly as they were.
+        await git(folder, ['reset', '-q', '--hard', task.base]).catch(() => {});
+        await git(folder, ['clean', '-fdq']).catch(() => {});
+        if (current.length) await git(folder, ['apply', '--binary', '--whitespace=nowarn', saved]);
+        await restoreKept();
+        return { changed: true, taken: false, reason: 'copy_patch_failed' };
+      }
+      await restoreKept();
+    } finally { await rm(file, { force: true }); await rm(saved, { force: true }); }
     return { changed: true, taken: true };
   },
 
@@ -221,6 +252,65 @@ const stageMethods = {
     if (!task.localCopies?.length) return;
     delete task.localCopies;
     this.files?.call?.(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'copy_remove', workspace: task.workspace }, 120000)?.catch?.(() => {});
+  },
+
+  // What the computer's Bridge can do for group chat v7 (asked once per 5 minutes per workspace). An older Bridge
+  // answers with an error it confirmed: then the new protections (backups, sandbox) are not there and the
+  // capabilities that need them are refused instead of running without them.
+  async bridgeCapabilities(taskId, workspace, signal) {
+    this.capabilityCache ||= new Map();
+    const route = this.bridgeRoute(workspace);
+    const key = JSON.stringify([route, workspace]);
+    const cached = this.capabilityCache.get(key);
+    if (cached && this.now() - cached.at < 300_000) return cached.value;
+    let value;
+    try {
+      const reply = await this.files.call(route, taskId, 'command.execute', { operation: 'group_capabilities', workspace }, 15000, signal);
+      value = { groupLocal: Number(reply?.groupLocal) >= 1, platform: reply?.platform, backups: reply?.backups === true };
+    } catch (error) {
+      if (!error.remoteConfirmed) throw error;   // offline: ask again next time
+      value = { groupLocal: false, backups: false };
+    }
+    this.capabilityCache.set(key, { at: this.now(), value });
+    (this.workspaceCapabilities ||= new Map()).set(workspace, value);
+    return value;
+  },
+
+  // O1/R2: acceptance and triage briefs no longer forbid local checks when the stages run in the person's project,
+  // and every environment fix made so far is listed for the verdict.
+  localizeBrief(brief, task) {
+    const f = this.features || {};
+    if (Array.isArray(brief.rules) && (f.localStages || f.envFix)) {
+      brief.rules = brief.rules.map((rule) => rule.startsWith('Do not run commands') ? 'Do not change the task\'s code. ' +
+        (f.localStages ? 'You may read the person\'s real project and run local checks with local_shell_run. ' : '') +
+        (f.envFix ? 'Fix only environment problems, with local_env_fix, and list each fix in your verdict. ' : '') +
+        'Return the JSON verdict requested in the prompt.' : rule);
+    }
+    if (task.envFixes?.length) {
+      brief.envFixes = task.envFixes.slice(-10).map((fix) => ({ stage: fix.stage, role: fix.role, reason: fix.reason, files: fix.files?.slice(0, 10),
+        platformSource: fix.platformSource, state: fix.reverted ? 'reverted' : fix.state, cloud: fix.cloud }));
+    }
+    return brief;
+  },
+
+  // Q2/R1 widened who may write outside the project on the promise of a backup first. A Bridge that cannot back
+  // up gets only what the step could write before (legacyWrite); the rest waits for the updated Bridge.
+  async checkOutsideWrite(scope) {
+    if (!scope.backupOutside || scope.legacyWrite) return;
+    if (!(await this.bridgeCapabilities(scope.taskId, scope.workspace, scope.signal)).backups) {
+      throw new Error('bridge_update_required: writing here without a backup needs the updated AgentDesk on this computer');
+    }
+  },
+
+  // R1 / Q2: the backups the Bridge kept before a step changed files outside the project, for the restore button.
+  noteOutsideBackups(scope, paths, backups) {
+    const task = this.tasks.get(scope.taskId);
+    if (!task || !Array.isArray(backups) || !backups.length) return;
+    const at = new Date(this.now()).toISOString();
+    task.outsideBackups = [...(task.outsideBackups || []), ...backups.filter((id) => typeof id === 'string').map((backupId, index) => ({
+      backupId, at, stepId: scope.stepId, path: typeof paths[index] === 'string' ? clip(paths[index], 300) : (typeof paths[0] === 'string' ? clip(paths[0], 300) : null),
+    }))].slice(-50);
+    this.save(task, task.state, task.detail, false);
   },
 
   // ---- the shell tool (service.js calls this) --------------------------------------------------------------
@@ -267,6 +357,15 @@ const stageMethods = {
     await this.waitWriters(task, step, scope.signal);
     const release = await this.writeToken(task.workspace, scope.signal, { taskId: task.id, role: step.role, holdsCli: true }, 20 * 60_000);
     const releaseApply = this.holdApply(task.workspace);
+    try {
+      return await this.envFixHeld(task, step, scope, bytes, names, reason, platformSource);
+    } finally {
+      releaseApply();
+      release();
+    }
+  },
+
+  async envFixHeld(task, step, scope, bytes, names, reason, platformSource) {
     const fix = { id: randomUUID(), at: new Date(this.now()).toISOString(), stepId: step.id, stage: step.envCheck ? 'test' : (step.capability || 'scout'),
       role: step.role, reason: clip(reason.trim(), 600), platformSource: platformSource === true, files: names.slice(0, 50),
       sha256: sha(bytes), state: 'applying', requestId: messageId(), cloud: task.applied ? 'not_needed' : 'pending', afterApply: Boolean(task.applied) };
@@ -292,9 +391,9 @@ const stageMethods = {
       }
       await this.afterEnvFix(task, fix, value, bytes);
       return { applied: true, fixId: fix.id, files: fix.files, cloud: fix.cloud, ...(fix.cloudError && { cloudError: fix.cloudError }) };
-    } finally {
-      releaseApply();
-      release();
+    } catch (error) {
+      if (fix.state === 'applying') { fix.state = 'unknown'; this.save(task, task.state, 'env_fix_unknown:' + fix.id); }
+      throw error;
     }
   },
 
@@ -326,7 +425,13 @@ const stageMethods = {
       const args = ['apply', '--binary', '--whitespace=nowarn', ...(reverse ? ['-R'] : [])];
       for (const folder of [snapshot, ...folders]) {
         try { await git(folder, [...args, '--check', file]); }
-        catch { Object.assign(fix, { cloud: 'conflict', cloudError: 'conflict in ' + path.basename(folder) }); this.save(task, task.state, 'env_fix_cloud_conflict:' + fix.id); return; }
+        catch {
+          Object.assign(fix, { cloud: 'conflict', cloudError: 'conflict in ' + path.basename(folder) });
+          // E9: a fix that clashes with the task's own changes goes to diagnosis (the lead) instead of being forced.
+          if (!reverse && !task.applied && !task.escalation?.active) task.pendingTriage ||= { reason: 'env_fix_cloud_conflict', applied: false };
+          this.save(task, task.state, 'env_fix_cloud_conflict:' + fix.id);
+          return;
+        }
       }
       await git(snapshot, [...args, '--index', file]);
       await git(snapshot, ['-c', 'user.name=AgentDesk', '-c', 'user.email=agentdesk@example.invalid', 'commit', '-q', '--no-verify', '--no-gpg-sign',
@@ -414,11 +519,15 @@ const stageMethods = {
   },
 
   // ---- requirement 4: advice written by the next member of the lead chain ----------------------------------
+  // One attempt per planning failure and at most two per task, never while the service drains (maintenance) or
+  // stops, bounded by a 4-minute timeout; it only reads, and save() never starts it again for the same failure.
   async adviseByLead(task, detail) {
-    if (!this.features?.leadAdvice || !task.directAdvice || task.directAdvice.source === 'lead') return;
+    if (!this.features?.leadAdvice || !task.directAdvice || task.directAdvice.source === 'lead' || this.maintenance || this.stopped) return;
+    if ((task.leadAdviceAttempts || 0) >= 2) return;
     this.advising ||= new Set();
     if (this.advising.has(task.id)) return;
     this.advising.add(task.id);
+    task.leadAdviceAttempts = (task.leadAdviceAttempts || 0) + 1;
     let directory;
     try {
       const failed = new Set((task.cliCalls || []).filter((call) => call.capability === 'plan' || /planner/.test(call.stepId || '')).map((call) => call.provider));

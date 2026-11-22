@@ -35,7 +35,12 @@ function wrap(argv, options) {
 
 async function copyProject(source, target) {
   // APFS clone: instant and copy-on-write; never hard or symbolic links back into the original.
-  await run('/bin/cp', ['-c', '-R', source, target], { timeout: 600000 });
+  // Another volume (no clone possible) falls back to a plain copy, still a real copy without links back.
+  try { await run('/bin/cp', ['-c', '-R', source, target], { timeout: 600000 }); }
+  catch {
+    await require('node:fs/promises').rm(target, { recursive: true, force: true });
+    await run('/bin/cp', ['-R', source, target], { timeout: 600000 });
+  }
 }
 
 const shell = (script, kind = 'zsh') => [kind === 'bash' ? '/bin/bash' : '/bin/zsh', '-l', '-c', script];

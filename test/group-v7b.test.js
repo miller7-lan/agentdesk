@@ -18,6 +18,9 @@ const win = require('../orchestrator/platform-win');
 
 const S = Scheduler.prototype;
 const sha = (data) => createHash('sha256').update(data).digest('hex');
+// Git on Windows runners checks files out with CRLF; compare text with LF.
+const readText = (file) => fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+const lf = (text) => String(text).replace(/\r\n/g, '\n');
 const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, encoding: 'utf8' });
 const NEW = ['stageGroups', 'localStages', 'writeAnywhere', 'localCopy', 'credentialSandbox', 'envFix', 'leadAdvice'];
 
@@ -142,17 +145,18 @@ function project(t) {
   fs.mkdirSync(stateDir);
   const store = new Store(':memory:');
   t.after(() => store.close());
-  const ops = new WindowsOperations({ config: { stateDir, readAnyFolder: true, writeAnyFolder: true, workspaces: { p: { root, write: true } } }, store });
+  const copies = path.join(base, 'copies');
+  const ops = new WindowsOperations({ config: { stateDir, groupCopies: copies, readAnyFolder: true, writeAnyFolder: true, workspaces: { p: { root, write: true } } }, store });
   let n = 0;
   const call = (kind, body) => ops.call({ task_id: 't1', message_id: 'm' + (n += 1), kind, body: { workspace: 'p', ...body } });
-  return { base, root: fs.realpathSync(root), stateDir, ops, call };
+  return { base, root: fs.realpathSync(root), stateDir, copies, ops, call };
 }
 
 test('Bridge: any command in the live project, the writer\'s local copy, its diff without secrets, Windows-style detection', async (t) => {
-  const { root, stateDir, ops, call } = project(t);
+  const { root, copies, ops, call } = project(t);
   const shell = await call('command.execute', { operation: 'group_shell', script: 'echo hi; cat a.txt', credentialSandbox: true });
   assert.equal(shell.code, 0);
-  assert.match(shell.stdout, /hi\none/);
+  assert.match(lf(shell.stdout), /hi\none/);
   assert.equal(shell.location, 'project');
   const { head, version } = await ops.projectSnapshot(root, new AbortController().signal);
   const change = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\n';
@@ -160,24 +164,30 @@ test('Bridge: any command in the live project, the writer\'s local copy, its dif
   await assert.rejects(call('command.execute', { operation: 'copy_sync', stepId: 'impl', base: head, snapshotVersion: 'other', stream_id }), /plan_workspace_changed/);
   const synced = await call('command.execute', { operation: 'copy_sync', stepId: 'impl', base: head, snapshotVersion: version, stream_id });
   assert.equal(synced.created, true);
-  const copy = path.join(stateDir, 'group-copies', 't1', 'impl');
-  assert.equal(fs.readFileSync(path.join(copy, 'a.txt'), 'utf8'), 'two\n');
+  const copy = path.join(copies, 't1', 'impl');
+  assert.equal(readText(path.join(copy, 'a.txt')), 'two\n');
   assert.ok(fs.existsSync(path.join(copy, '.env')) && fs.existsSync(path.join(copy, 'node_modules', 'dep', 'index.js')), 'ignored files come along (M3)');
-  assert.equal(fs.readFileSync(path.join(root, 'a.txt'), 'utf8'), 'one\n', 'the original is untouched');
+  assert.equal(readText(path.join(root, 'a.txt')), 'one\n', 'the original is untouched');
   const inCopy = await call('command.execute', { operation: 'group_shell', copy: true, stepId: 'impl', script: 'echo built > out.txt; echo K=1 > .env.local' });
   assert.equal(inCopy.location, 'copy');
   assert.equal(inCopy.originalChanged, undefined);
-  assert.ok(inCopy.enforcement.labels.length, 'Linux/Windows say nothing is enforced');
+  if (process.platform === 'darwin') assert.deepEqual(inCopy.enforcement.original, 'sandbox', 'Mac: O3 enforced by sandbox-exec');
+  else assert.ok(inCopy.enforcement.labels.length, 'Linux/Windows say nothing is enforced');
+  assert.equal(inCopy.code, 0, inCopy.stderr);
   const diff = await call('command.execute', { operation: 'copy_diff', stepId: 'impl' });
   assert.equal(diff.changed, true);
   assert.deepEqual(diff.kept, ['.env.local']);
-  const bytes = fs.readFileSync(ops.streamPath(diff.artifact.stream_id), 'utf8');
+  const bytes = lf(fs.readFileSync(ops.streamPath(diff.artifact.stream_id), 'utf8'));
   assert.match(bytes, /out\.txt/);
   assert.match(bytes, /\+two/);
   assert.doesNotMatch(bytes, /K=1/, 'secrets stay on the computer');
   // Windows: the original cannot be closed, but a change to it is reported.
   const touched = await call('command.execute', { operation: 'group_shell', copy: true, stepId: 'impl', script: `echo extra >> ${JSON.stringify(path.join(root, 'a.txt'))}` });
-  assert.equal(touched.originalChanged, true);
+  if (process.platform === 'darwin') {
+    // O3 on a real Mac: the sandbox refuses the write to the original project.
+    assert.notEqual(touched.code, 0);
+    assert.equal(readText(path.join(root, 'a.txt')), 'one\n');
+  } else assert.equal(touched.originalChanged, true);
   fs.writeFileSync(path.join(root, 'a.txt'), 'one\n');
   await call('command.execute', { operation: 'copy_remove' });
   assert.equal(fs.existsSync(copy), false);
@@ -195,11 +205,11 @@ test('Bridge: environment fix with its previous content kept, undo, N2 refusals,
   assert.deepEqual(applied.files.sort(), ['a.txt', 'tool.cfg']);
   assert.equal(applied.before, before);
   assert.notEqual(applied.after, before);
-  assert.equal(fs.readFileSync(path.join(root, 'tool.cfg'), 'utf8'), 'PATH_FIX=1\n');
+  assert.equal(readText(path.join(root, 'tool.cfg')), 'PATH_FIX=1\n');
   const undone = await call('command.execute', { operation: 'env_fix_revert', fixId: 'f1', snapshot: true });
   assert.equal(undone.version, before);
   assert.equal(fs.existsSync(path.join(root, 'tool.cfg')), false);
-  assert.equal(fs.readFileSync(path.join(root, 'a.txt'), 'utf8'), 'one\n');
+  assert.equal(readText(path.join(root, 'a.txt')), 'one\n');
   await assert.rejects(call('command.execute', { operation: 'env_fix_revert', fixId: 'f1' }), /already_reverted/);
   const credential = 'diff --git a/.npmrc b/.npmrc\nnew file mode 100644\n--- /dev/null\n+++ b/.npmrc\n@@ -0,0 +1 @@\n+x\n';
   await assert.rejects(call('command.execute', { operation: 'env_fix_apply', fixId: 'f2', stream_id: await stream(credential) }), /credential_path_denied/);
@@ -258,9 +268,9 @@ test('P1/E8: an environment fix reaches the person\'s project and the cloud; the
   assert.deepEqual([fix.state, fix.stage, fix.platformSource, fix.cloud], ['applied', 'review', true, 'synced']);
   assert.equal(task.snapshot.version, 'v2', 'apply() now expects the fixed project');
   assert.notEqual(task.base, task.snapshot.head, 'a new snapshot commit carries the fix');
-  assert.equal(fs.readFileSync(path.join(root, 'project-snapshot', 'a.txt'), 'utf8'), 'one-fixed\n');
-  assert.equal(fs.readFileSync(path.join(root, 'impl', 'a.txt'), 'utf8'), 'one-fixed\n');
-  const patch = fs.readFileSync(path.join(root, 'impl.patch'), 'utf8');
+  assert.equal(readText(path.join(root, 'project-snapshot', 'a.txt')), 'one-fixed\n');
+  assert.equal(readText(path.join(root, 'impl', 'a.txt')), 'one-fixed\n');
+  const patch = readText(path.join(root, 'impl.patch'));
   assert.match(patch, /b changed/);
   assert.doesNotMatch(patch, /one-fixed/);
   assert.ok(saved.some((detail) => /^env_fix_cloud_synced/.test(detail)));
@@ -269,8 +279,8 @@ test('P1/E8: an environment fix reaches the person\'s project and the cloud; the
   const undone = await self.revertEnvFix(task, fix.id);
   assert.equal(undone.reverted, true);
   assert.equal(task.snapshot.version, 'v1');
-  assert.equal(fs.readFileSync(path.join(root, 'impl', 'a.txt'), 'utf8'), 'one\n');
-  assert.doesNotMatch(fs.readFileSync(path.join(root, 'impl.patch'), 'utf8'), /one/);
+  assert.equal(readText(path.join(root, 'impl', 'a.txt')), 'one\n');
+  assert.doesNotMatch(readText(path.join(root, 'impl.patch')), /one/);
 });
 
 test('E10 and old Bridges: a lost reply is asked for again; an old Bridge says it needs an update', async (t) => {
@@ -338,7 +348,7 @@ test('requirement 4: the next lead-chain member writes the advice; the member wh
 });
 
 test('the new control operations are on all allow-lists', () => {
-  const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const read = (file) => readText(path.join(__dirname, '..', file));
   for (const file of ['orchestrator/service.js', 'main.js']) {
     assert.match(read(file), /'env_fix_revert'/);
     assert.match(read(file), /'outside_restore'/);
@@ -373,7 +383,7 @@ test('end to end with every switch on: the writer runs in its local copy, review
       // A local tool in the copy sees the writer's change, and what it writes comes back to the working tree.
       const run = (body) => scheduler.files.runCommand(() => 'r', scope.taskId, body, { signal: scope.signal });
       scopes.shell = await scheduler.groupShell(scope, { script: 'cp README.md seen.txt' }, run);
-      scopes.seen = fs.readFileSync(path.join(cwd, 'seen.txt'), 'utf8');
+      scopes.seen = readText(path.join(cwd, 'seen.txt'));
       return { output: 'done' };
     },
     async ({ mcp }) => {
@@ -396,7 +406,7 @@ test('end to end with every switch on: the writer runs in its local copy, review
   });
   t.after(() => scheduler.store.close());
   const bridge = new WindowsOperations({ store: scheduler.store,
-    config: { stateDir: path.join(dir, 'bridge'), readAnyFolder: true, writeAnyFolder: true, workspaces: { mac: { root: workspace, write: true } } } });
+    config: { stateDir: path.join(dir, 'bridge'), groupCopies: path.join(dir, 'copies'), readAnyFolder: true, writeAnyFolder: true, workspaces: { mac: { root: workspace, write: true } } } });
   scheduler.files = new RemoteFiles({ request: (_route, taskId, kind, body, _timeout, requestId) =>
     bridge.call({ task_id: taskId, kind, body, message_id: requestId }) });
   const task = scheduler.submit(require('node:crypto').randomUUID(), { workspace: 'mac', prompt: 'edit readme' }, true);
@@ -412,13 +422,157 @@ test('end to end with every switch on: the writer runs in its local copy, review
   assert.equal(scopes.seen, 'working\nagent\n');
   assert.deepEqual(scopes.review, { mcpScope: 'local', envFix: true, anyCommand: true, writeFiles: true });
   assert.equal(scopes.fix.cloud, 'synced');
-  assert.equal(fs.readFileSync(path.join(workspace, 'tool.cfg'), 'utf8'), 'LOCAL=1\n');
-  const patch = fs.readFileSync(path.join(dir, 'worktrees', task.id, 'edit.patch'), 'utf8');
+  assert.equal(readText(path.join(workspace, 'tool.cfg')), 'LOCAL=1\n');
+  const patch = readText(path.join(dir, 'worktrees', task.id, 'edit.patch'));
   assert.match(patch, /seen\.txt/);
   assert.doesNotMatch(patch, /tool\.cfg/, 'the environment fix is part of the new base, not of the writer\'s patch');
   await scheduler.apply(task);
   assert.equal(task.state, 'completed', task.detail);
-  assert.equal(fs.readFileSync(path.join(workspace, 'README.md'), 'utf8'), 'working\nagent\n');
-  assert.equal(fs.readFileSync(path.join(workspace, 'tool.cfg'), 'utf8'), 'LOCAL=1\n');
-  assert.equal(fs.existsSync(path.join(dir, 'bridge', 'group-copies', task.id)), false, 'the copy goes when the task ends');
+  assert.equal(readText(path.join(workspace, 'README.md')), 'working\nagent\n');
+  assert.equal(readText(path.join(workspace, 'tool.cfg')), 'LOCAL=1\n');
+  assert.equal(fs.existsSync(path.join(dir, 'copies', task.id)), false, 'the copy goes when the task ends');
+});
+
+// ---- consistency and stability audit (2026-11-22, second pass) ----
+
+test('audit: an old Bridge (no backups) cannot get the widened writes; what a step could write before still works', async () => {
+  let asked = 0;
+  const make = (reply) => {
+    const self = Object.create(S);
+    Object.assign(self, { now: () => 1000, bridgeRoute: () => 'ssh:mac', files: { call: async () => { asked += 1; return reply(); } } });
+    return self;
+  };
+  const old = make(() => { throw Object.assign(new Error('command_not_authorized'), { remoteConfirmed: true }); });
+  await assert.rejects(old.checkOutsideWrite({ taskId: 't', workspace: 'w', backupOutside: true }), /bridge_update_required/);
+  await old.checkOutsideWrite({ taskId: 't', workspace: 'w', backupOutside: true, legacyWrite: true });   // as before v7
+  await old.checkOutsideWrite({ taskId: 't', workspace: 'w' });
+  assert.equal(asked, 1, 'answer cached');
+  assert.equal(old.workspaceCapabilities.get('w').backups, false);
+  const fresh = make(() => ({ groupLocal: 1, platform: 'mac', backups: true }));
+  await fresh.checkOutsideWrite({ taskId: 't', workspace: 'w', backupOutside: true });
+  const offline = make(() => { throw new Error('relay_timeout'); });
+  await assert.rejects(offline.checkOutsideWrite({ taskId: 't', workspace: 'w', backupOutside: true }), /relay_timeout/);
+  assert.equal(offline.capabilityCache.size, 0, 'an offline computer is asked again next time');
+});
+
+test('audit: Q2 skips the plan confirmation only where the Bridge is known to back files up', () => {
+  const self = Object.create(S);
+  Object.assign(self, { features: { writeAnywhere: true } });
+  const task = { snapshot: {}, workspace: 'w', approval: 'small' };
+  const steps = [{ write: true, localTools: 'files' }];
+  assert.equal(self.autoApproves(task, steps), false, 'unknown Bridge: the confirmation stays');
+  self.workspaceCapabilities = new Map([['w', { backups: true }]]);
+  assert.equal(self.autoApproves(task, steps), true);
+  assert.equal(self.autoApproves(task, [{ write: true, localTools: 'commands' }]), false, 'commands still confirm');
+  self.features = {};
+  assert.equal(self.autoApproves(task, steps), false, 'switch off: as before');
+});
+
+test('audit: lead-written advice runs once per failure, never twice from repeated saves, never during maintenance', async (t) => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-v7b-audit-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  let calls = 0;
+  const self = Object.create(S);
+  Object.assign(self, {
+    features: { planFailureAdvice: true, leadAdvice: true }, config: { stateDir, adapters: { claude: {}, codex: {} } }, now: () => 0,
+    router: { routes: { plan: ['claude', 'codex'] }, roles: () => ['claude', 'codex'], available: () => true, configured: () => true, quotaAllows: () => true },
+    orderEntries: () => [], orderModels: () => [], defaultModelFor: () => null, acquireCli: async () => () => {},
+    adapter: async () => { calls += 1; return { output: 'no json' }; },
+    updateMetrics() {}, event: () => ({}), store: { saveTask() {}, put() {} },
+  });
+  const task = { id: 'T', prompt: 'x', steps: [], cliCalls: [{ capability: 'plan', provider: 'claude' }] };
+  for (let index = 0; index < 5; index += 1) S.save.call(self, task, 'awaiting_details', 'plan_failed');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls, 1, 'one CLI call however often the task is saved');
+  S.save.call(self, task, 'awaiting_details', 'plan_failed_repeatedly');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  S.save.call(self, task, 'failed', 'invalid_plan:x');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls, 2, 'at most two per task');
+  const drained = { id: 'U', prompt: 'x', steps: [] };
+  self.maintenance = { since: 'now' };
+  S.save.call(self, drained, 'failed', 'plan_failed');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(calls, 2, 'not while draining for maintenance');
+  assert.equal(drained.directAdvice.reason.length > 0, true, 'the rule-based advice is still there');
+});
+
+test('audit: a restart turns an in-flight environment fix into "unknown" for reconciliation, switch on or off', () => {
+  const store = new Store(':memory:');
+  const task = { id: 'T1', state: 'needs_review', detail: 'patches_ready', steps: [], envFixes: [{ id: 'f', state: 'applying', requestId: 'r' }] };
+  store.put('tasks', task.id, task);
+  const scheduler = new Scheduler({ config: { stateDir: os.tmpdir(), quota: false, adapters: {}, workspaces: {} }, store, files: {} });
+  assert.equal(scheduler.tasks.get('T1').envFixes[0].state, 'unknown');
+  store.close();
+});
+
+test('audit: undo and restore use the task\'s records even with the switches off; restore needs a recorded backup', async () => {
+  const restored = [];
+  const id = '33333333-3333-4333-8333-333333333333';
+  const task = { id, owner: undefined, workspace: 'w', state: 'completed', steps: [], outsideBackups: [{ backupId: '11111111-1111-1111-1111-111111111111', path: '/tmp/x' }] };
+  const self = Object.create(S);
+  Object.assign(self, { features: {}, now: () => 0, tasks: new Map([[id, task]]), config: { stateDir: os.tmpdir(), workspaces: { w: {} } },
+    isProjectMember: () => false, bridgeRoute: () => 'r', save() {}, files: { call: async (route, id, kind, body) => { restored.push(body); return { restored: true }; } } });
+  const call = (body) => S.control.call(self, { kind: 'task.status', task_id: id, body }, 'admin');
+  await assert.rejects(Promise.resolve().then(() => call({ operation: 'outside_restore', backupId: '22222222-2222-2222-2222-222222222222' })), /backup_not_found/);
+  await call({ operation: 'outside_restore', backupId: '11111111-1111-1111-1111-111111111111' });
+  assert.equal(restored[0].operation, 'outside_restore');
+  assert.ok(task.outsideBackups[0].restoredAt);
+  await assert.rejects(Promise.resolve().then(() => call({ operation: 'outside_restore', backupId: '11111111-1111-1111-1111-111111111111' })), /already_restored/);
+  await assert.rejects(Promise.resolve().then(() => call({ operation: 'env_fix_revert', fixId: 'nope' })), /env_fix_not_revertible/);
+});
+
+test('audit: O1/R2 briefs allow local checks only with the switches on, and list every environment fix', () => {
+  const rules = () => ({ rules: ['Judge.', 'Do not run commands or touch files. Return the JSON verdict requested in the prompt.'] });
+  const task = { envFixes: [{ stage: 'test', reason: 'r', files: ['a'], state: 'applied', cloud: 'synced', platformSource: true }] };
+  const off = S.localizeBrief.call({ features: {} }, rules(), {});
+  assert.match(off.rules[1], /^Do not run commands/);
+  const on = S.localizeBrief.call({ features: { localStages: true, envFix: true } }, rules(), task);
+  assert.match(on.rules[1], /local_shell_run/);
+  assert.match(on.rules[1], /local_env_fix/);
+  assert.deepEqual(on.envFixes[0].platformSource, true);
+});
+
+test('audit: changes from the local copy that do not apply never cost the writer its own changes', async (t) => {
+  const { self, task, root } = cloud(t);
+  const { patchFor } = require('../orchestrator/git');
+  const folder = path.join(root, 'impl');
+  const sent = sha(Buffer.from((await patchFor(folder, task.base)).patch));
+  const bad = Buffer.from('diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-not there\n+x\n');
+  self.files = {
+    call: async () => ({ changed: true, artifact: { stream_id: 's', sha256: sha(bad) } }),
+    download: async () => bad,
+  };
+  const outcome = await self.collectCopy({ taskId: 'T', stepId: 'impl' }, { copyId: 'impl', sent });
+  assert.deepEqual([outcome.taken, outcome.reason], [false, 'copy_patch_does_not_apply']);
+  assert.equal(readText(path.join(folder, 'b.txt')), 'b changed\n', 'the writer\'s change is still there');
+  const good = Buffer.from('diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+one built\n' +
+    'diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-b\n+b changed\n');
+  self.files = { call: async () => ({ changed: true, artifact: { stream_id: 's', sha256: sha(good) } }), download: async () => good };
+  const taken = await self.collectCopy({ taskId: 'T', stepId: 'impl' }, { copyId: 'impl', sent });
+  assert.equal(taken.taken, true);
+  assert.equal(readText(path.join(folder, 'a.txt')), 'one built\n');
+  assert.equal(readText(path.join(folder, 'b.txt')), 'b changed\n');
+});
+
+test('audit: an environment fix that clashes in the cloud goes to diagnosis', async (t) => {
+  const { self, task, root } = cloud(t);
+  fs.writeFileSync(path.join(root, 'impl', 'a.txt'), 'writer changed a\n');   // the writer also changed a.txt
+  self.files = { upload: async () => 's', call: async () => ({ applied: true, files: ['a.txt'], after: 'v2' }) };
+  const value = await self.envFix({ taskId: 'T', stepId: 'rev', workspace: 'w' }, { patch: ENV, reason: 'r' });
+  assert.equal(value.cloud, 'conflict');
+  assert.deepEqual(task.pendingTriage, { reason: 'env_fix_cloud_conflict', applied: false });
+  assert.equal(self.writeTokens.size, 0, 'the write token was released');
+});
+
+test('audit: on a Mac the copy lives where the sandbox lets its commands work (not in a closed folder)', () => {
+  const { copiesRootFor } = require('../orchestrator/group-local');
+  const home = '/Users/p';
+  const stateDir = '/Users/p/Library/Application Support/AgentDesk/bridge';
+  const root = copiesRootFor('mac', stateDir, home);
+  const profile = mac.groupProfile({ home, extra: [stateDir], credentials: true, denyWrite: ['/Users/p/proj'] });
+  const closed = [...profile.matchAll(/\(subpath "([^"]+)"\)/g)].map((match) => match[1]);
+  assert.ok(closed.includes(stateDir));
+  assert.ok(!closed.some((folder) => root === folder || root.startsWith(folder + '/')), root + ' must not be closed');
+  assert.equal(copiesRootFor('windows', 'C:\\state'), path.join('C:\\state', 'group-copies'));
 });

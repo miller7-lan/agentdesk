@@ -1115,6 +1115,17 @@ window.__groupReady = (async () => {
         const n = task.snapshotNotice;
         deferred.push({ at: n.at, html: messageRow('local', '项目已上传云端', `<p class="upload-ok">✓ 项目已上传到云端并校验通过：${n.changedFiles} 个文件含未提交改动${n.skipped ? `，跳过 ${n.skipped} 个敏感文件（如 .env、密钥）` : ''}。<span class="mono">sha256 ${esc(n.sha256)}</span></p>`) });
       }
+      // Group chat v7 (M2, O3, Q6): what this computer enforces for group commands, stated once per task.
+      const localRules = routeState.groupFeatures && (routeState.groupFeatures.localStages || routeState.groupFeatures.localCopy || routeState.groupFeatures.credentialSandbox);
+      if (!task.redacted && filter !== 'mine' && !filterSelect.value && localRules && task.snapshotNotice) {
+        const platform = window.desk?.platform;
+        const note = platform === 'win32'
+          ? 'Windows：群聊在本机运行的命令没有强制保护凭据目录，本机副本也没有强制隔离（只做改动检测）；AgentDesk 自己的文件工具和挂载仍拒绝凭据目录、.git 内部和 AgentDesk 密钥目录。'
+          : platform === 'darwin'
+            ? 'Mac：群聊在本机运行的命令在 sandbox 下运行，挡住凭据目录和 AgentDesk 密钥目录（.git 不挡）；写代码阶段在本机副本里运行时禁止写原项目。需要已更新的 AgentDesk 连接组件，旧版本会如实提示未生效。'
+            : '';
+        if (note) deferred.push({ at: task.snapshotNotice.at, html: `<p class="group-system">${esc(note)}</p>` });
+      }
       const downloaded = group.patchNotices?.[task.id];
       if (downloaded && filter !== 'mine' && !filterSelect.value) {
         deferred.push({ at: downloaded.at, html: messageRow('local', '补丁已下载', `<p class="upload-ok">✓ 补丁已下载到本机并校验通过：${downloaded.fileCount} 个文件，${downloaded.bytes} 字节。<span class="mono">sha256 ${esc(downloaded.sha256.slice(0, 12))}</span></p><p class="group-system">保存在 ${esc(downloaded.path)}。点「应用补丁」把它写入项目。</p>`) });
@@ -1130,13 +1141,22 @@ window.__groupReady = (async () => {
       }
       // Group chat v7 (envFix): every environment fix on this computer, why, which files, whether it reached the
       // cloud, and an undo button (P1, R1–R3, E8, E10).
-      if (!task.redacted && filter !== 'mine' && !filterSelect.value && Array.isArray(task.envFixes) && routeState.groupFeatures?.envFix) {
+      // Shown whenever the task has fixes, also after the switch was turned off: they stay in the project and can be undone.
+      if (!task.redacted && filter !== 'mine' && !filterSelect.value && Array.isArray(task.envFixes) && task.envFixes.length) {
         const stages = { test: '测试', triage: '诊断', review: '审查', accept: '验收', scout: '核验' };
         const cloud = { synced: '已回传云端', pending: '待回传云端（连上后自动回传）', conflict: '回传云端时有冲突，交给诊断', not_needed: '补丁已应用，无需回传' };
         for (const fix of task.envFixes) {
           const state = fix.reverted ? '已撤销' : fix.state === 'applied' ? '已写入本机项目' : fix.state === 'unknown' ? '结果未知，连上后核对' : fix.state === 'failed' ? '没有写入：' + esc(fix.error || '') : '写入中';
           const undo = fix.state === 'applied' && !fix.reverted ? `<div class="task-actions"><button type="button" class="btn" data-env-revert="${esc(task.id + ':' + fix.id)}">撤销这次修复</button></div>` : '';
           deferred.push({ at: fix.appliedAt || fix.at, html: messageRow('local', '环境修复（' + (stages[fix.stage] || fix.stage) + '阶段）', `<div class="step-summary"><p>${fix.state === 'applied' && !fix.reverted ? '<span class="upload-ok">✓</span> ' : ''}${state}${fix.state === 'applied' ? ' · ' + esc(cloud[fix.cloud] || fix.cloud || '') : ''}${fix.platformSource ? ' · 平台相关源码' : ''}</p><p>${esc(fix.reason || '')}</p><p class="group-system mono">${(fix.files || []).map(esc).join('，')}</p>${undo}</div>`) });
+        }
+      }
+      // Group chat v7 (Q2/R1): files outside the project that a step changed, with their backup and a restore button.
+      if (!task.redacted && filter !== 'mine' && !filterSelect.value && Array.isArray(task.outsideBackups) && task.outsideBackups.length) {
+        for (const item of task.outsideBackups) {
+          const restore = item.restoredAt ? '<p class="group-system">已还原</p>'
+            : `<div class="task-actions"><button type="button" class="btn" data-outside-restore="${esc(task.id + ':' + item.backupId)}">还原原内容</button></div>`;
+          deferred.push({ at: item.restoredAt || item.at, html: messageRow('local', '项目以外的文件已改动', `<p>改动前已备份：<span class="mono">${esc(item.path || '（批量写入）')}</span></p>${restore}`) });
         }
       }
       // Group chat v7 (localCopy): the writer's local copy, and what the platform does or does not enforce.
@@ -1866,6 +1886,8 @@ window.__groupReady = (async () => {
       unsupported_operation: '群聊规划需要更新主控和本机连接组件。',
       bridge_update_required: '这台电脑上的连接组件版本较旧，需要更新客户端后才能用这项功能。',
       env_fix_changed_since: '修复之后这些文件又改过，不能自动撤销。',
+      outside_changed_since: '这个文件之后又改过，不能自动还原。',
+      backup_already_restored: '这个文件已经还原过了。',
       invalid_plan_reply: '请输入 1 至 2000 字的回复。',
       plan_changed: '方案已更新，请按最新一轮的问题或方案操作。',
       invalid_plan: '组长未能生成可用的方案，请从任务详情重试。',
@@ -2583,6 +2605,17 @@ window.__groupReady = (async () => {
       if (task) selectTask(task.dataset.taskId, task.dataset.taskView);
       if (action) taskAction(action.dataset.taskOperation);
       // Group chat v7 (envFix): undo one environment fix (only while its files are as the fix left them).
+      const restoreButton = event.target.closest('[data-outside-restore]');
+      if (restoreButton) {
+        const [taskId, backupId] = restoreButton.dataset.outsideRestore.split(':');
+        const group = currentGroup();
+        run(async () => {
+          await control('outside_restore', { taskId, backupId });
+          A.toast('已还原原内容');
+          await syncTask(group, taskId);
+        }, group);
+        return;
+      }
       const revertButton = event.target.closest('[data-env-revert]');
       if (revertButton) {
         const [taskId, fixId] = revertButton.dataset.envRevert.split(':');

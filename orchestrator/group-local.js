@@ -26,6 +26,10 @@ const deniedName = (name) => { try { require('./group-stages').checkEnvNames([na
 const sha = (data) => createHash('sha256').update(data).digest('hex');
 const under = (value, root) => value === root || value.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 
+function copiesRootFor(platform, stateDir, home = require('node:os').homedir()) {
+  return platform === 'mac' ? path.join(home, 'Library', 'Caches', 'AgentDesk', 'group-copies') : path.join(stateDir, 'group-copies');
+}
+
 class GroupLocal {
   // helpers from windows.js: git(root,args,signal,env,limit), projectSnapshot(root,signal), allowedPath(abs) -> bool,
   // stream(taskId,id), streamPath(id), saveArtifact(taskId,bytes), commands (CommandRuns)
@@ -38,7 +42,12 @@ class GroupLocal {
     this.swept = false;
   }
 
-  copiesRoot() { return path.join(this.stateDir, 'group-copies'); }
+  // On a Mac the copy cannot live in the Bridge's state folder: the sandbox closes that folder to every command,
+  // the copy's own included. ~/Library/Caches is neither a credential folder nor AgentDesk's key folder.
+  copiesRoot() {
+    if (this.config.groupCopies) return this.config.groupCopies;
+    return copiesRootFor(this.platform.platform, this.stateDir);
+  }
   copyDir(taskId, stepId) {
     if (!SAFE.test(taskId) || !SAFE.test(stepId)) throw new Error('invalid_copy_id');
     return path.join(this.copiesRoot(), taskId, stepId);
@@ -46,6 +55,12 @@ class GroupLocal {
 
   async call(taskId, requestId, workspace, root, body) {
     const op = body.operation;
+    // What this Bridge can do for group chat v7; VPS2 asks before granting what needs it (writes with backups,
+    // the Mac sandbox). An older Bridge does not know this operation, so VPS2 falls back to the old behaviour.
+    if (op === 'group_capabilities') {
+      return { groupLocal: 1, platform: this.platform.platform, enforcement: this.platform.enforcement, backups: true,
+        shell: this.config.groupShell !== false && workspace.groupShell !== false };
+    }
     if (op === 'group_shell') return this.shell(taskId, requestId, workspace, root, body);
     if (op === 'copy_sync') return this.withCopy(taskId, body.stepId, () => this.copySync(taskId, root, body));
     if (op === 'copy_diff') return this.withCopy(taskId, body.stepId, () => this.copyDiff(taskId, body));
@@ -340,4 +355,4 @@ class GroupLocal {
   }
 }
 
-module.exports = { GroupLocal };
+module.exports = { GroupLocal, copiesRootFor };

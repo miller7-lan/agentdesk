@@ -12,7 +12,7 @@ const { searchFiles } = require('./file-search');
 const { installSnapshot, buildCopy, regularFile } = require('./test-snapshot');
 const { GroupLocal } = require('./group-local');
 
-const GROUP_OPERATIONS = new Set(['group_shell', 'copy_sync', 'copy_diff', 'copy_remove', 'env_fix_apply', 'env_fix_revert', 'outside_restore']);
+const GROUP_OPERATIONS = new Set(['group_capabilities', 'group_shell', 'copy_sync', 'copy_diff', 'copy_remove', 'env_fix_apply', 'env_fix_revert', 'outside_restore']);
 const GROUP_PROJECT_WRITES = new Set(['env_fix_apply', 'env_fix_revert']);
 const CHUNK = 64 * 1024;
 const MAX_FILE = 20 * 1024 * 1024;

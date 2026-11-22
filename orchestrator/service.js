@@ -363,6 +363,9 @@ function start(config) {
           // Any folder on the person's computer; the project itself only changes through reviewed patches.
           checkFileIntent(scope, frame, true);
           if (!scope.writeFiles) throw new Error('mcp_permission_denied: this step cannot change files on the person\'s computer');
+          // Q2/R1 (group chat v7) widened who may write outside the project on the promise of a backup first. A Bridge
+          // that cannot back up gets only what the step could write before; the rest waits for the updated Bridge.
+          await scheduler.checkOutsideWrite(scope);
           if (frame.root !== 'computer') throw new Error('mcp_permission_denied: write with root "computer" and an absolute path; project files are changed in the task workspace');
           if (scope.localDrives) {
             if (frame.operation === 'write_batch') validateFileBatch(frame.items, true);
@@ -406,6 +409,9 @@ function start(config) {
               result = status.outcome.value;
             }
             record('finished', result);
+            if (Array.isArray(result?.backups)) {
+              scheduler.noteOutsideBackups(scope, frame.operation === 'write_batch' ? (frame.items || []).map((item) => item?.path) : [frame.path], result.backups);
+            }
             return result;
           };
           const target = { stepId: scope.stepId, workspace: scope.workspace, root: 'computer', anyFolder: true, path: frame.path,
@@ -443,11 +449,12 @@ function start(config) {
           // Group chat v7 (localStages / localCopy): any command, in the live project or in the writer's local copy.
           if (!scope.anyCommand) throw new Error('mcp_permission_denied: this step cannot run commands on the person\'s computer');
           if (scope.currentPlan && !scope.currentPlan()) throw Error('plan_superseded');
-          await scheduler.waitForApply(scope.workspace, scope.signal);   // O2
+          const applyWait = await scheduler.waitForApply(scope.workspace, scope.signal);   // O2
           value = await scheduler.groupShell(scope, frame, (body) => files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, body,
             { signal: scope.signal, onStatus: commandProgress(config.stateDir, scope.taskId, scope.stepId) }));
           const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
-          value = { ...value, stdout: tail(value.stdout), stderr: tail(value.stderr) };
+          value = { ...value, stdout: tail(value.stdout), stderr: tail(value.stderr),
+            ...(applyWait.waited && { applyPause: applyWait.outcome === 'timeout' ? '补丁应用超时，命令已开始' : '补丁应用中，命令已等待' }) };
         } else if (frame.operation === 'env_fix') {
           // Group chat v7 (envFix): an environment fix in the live project (P1, R2, R3).
           if (!scope.envFix) throw new Error('mcp_permission_denied: this step cannot apply environment fixes');
@@ -458,13 +465,21 @@ function start(config) {
           // and only the commands that workspace lists in agentCommands.
           if (!scope.runCommands) throw new Error('mcp_permission_denied: this step cannot run local commands');
           // O2 (groupFeatures.applyPause): a new command waits while a patch is being applied to this project.
-          if (frame.operation === 'run') await scheduler.waitForApply(scope.workspace, scope.signal);
+          const applyWait = frame.operation === 'run' ? await scheduler.waitForApply(scope.workspace, scope.signal) : { waited: false };
           value = frame.operation === 'commands'
             ? await files.call(route, scope.taskId, 'command.execute', { operation: 'list_agent_commands', stepId: scope.stepId, workspace: scope.workspace })
             : await files.runCommand(() => scheduler.bridgeRoute(scope.workspace), scope.taskId, {
               operation: 'run', stepId: scope.stepId, workspace: scope.workspace, command: frame.command, permission: 'agent', timeout_ms: 300000,
               ...(scope.credentialSandbox && { credentialSandbox: true }),
             }, { signal: scope.signal, onStatus: commandProgress(config.stateDir, scope.taskId, scope.stepId) });
+          // O2: the command waited for a patch being applied; after 60 s it went ahead and says so.
+          if (applyWait.waited) value = { ...value, applyPause: applyWait.outcome === 'timeout' ? '补丁应用超时，命令已开始' : '补丁应用中，命令已等待' };
+          if (frame.operation === 'run' && scope.credentialSandbox) {
+            // M2 asked for, but an older Bridge runs the command as before: say so instead of implying protection.
+            const caps = await scheduler.bridgeCapabilities(scope.taskId, scope.workspace, scope.signal).catch(() => null);
+            if (!caps?.groupLocal) value = { ...value, credentialSandbox: 'not_applied_old_bridge' };
+            else if (caps.platform !== 'mac') value = { ...value, credentialSandbox: 'not_enforced_on_' + caps.platform };
+          }
           if (frame.operation === 'run') {
             const tail = (text) => typeof text === 'string' && text.length > 8000 ? '…' + text.slice(-8000) : text;
             value = { ...value, stdout: tail(value.stdout), stderr: tail(value.stderr) };

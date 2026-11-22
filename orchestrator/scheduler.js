@@ -300,6 +300,10 @@ class Scheduler {
         call.observedAt = new Date(this.now()).toISOString();
       }
       if (openCalls.length) this.store.put('tasks', task.id, task);
+      // An environment fix that was being written when the service stopped: its outcome is asked for again (E10).
+      const applyingFixes = (task.envFixes || []).filter((fix) => fix.state === 'applying');
+      for (const fix of applyingFixes) fix.state = 'unknown';
+      if (applyingFixes.length) this.store.put('tasks', task.id, task);
       if (task.state === 'applying' || task.state === 'testing') {
         this.save(task, 'needs_review', 'interrupted_windows_operation');
       } else if (['planning', 'running', 'awaiting_acceptance', 'triaging'].includes(task.state)) {
@@ -618,7 +622,7 @@ event(task, state, detail) {
     // Requirement 4 (groupFeatures.planFailureAdvice): when group planning fails, the task carries a short reason
     // and two or three single-chat attempts the person can open directly.
     if (this.features?.planFailureAdvice && ['failed', 'awaiting_details'].includes(state) && planningFailure(detail) &&
-        !(task.directAdvice?.source === 'lead' && task.directAdvice.detail === clip(String(detail || ''), 200))) {
+        task.directAdvice?.detail !== clip(String(detail || ''), 200)) {
       task.directAdvice = directAdvice(this, task, detail);
       // groupFeatures.leadAdvice: the next member of the lead chain rewrites it; the rule-based advice stays meanwhile.
       if (this.features?.leadAdvice) Promise.resolve().then(() => this.adviseByLead(task, detail)).catch(() => {});
@@ -1501,7 +1505,10 @@ event(task, state, detail) {
   tick() {
     const now = this.now();
     try { this.watchStalls(); } catch (error) { console.error('stall watch:', error.message); }
-    if (this.features?.envFix) this.reconcileEnvFixes().catch((error) => console.error('env fixes:', error.message));
+    // Fixes whose outcome is unknown or that have not reached the cloud are settled even if envFix was switched off.
+    if ([...this.tasks.values()].some((task) => task.envFixes?.some((fix) => fix.state === 'unknown' || (fix.state === 'applied' && fix.cloud === 'pending')))) {
+      this.reconcileEnvFixes().catch((error) => console.error('env fixes:', error.message));
+    }
     if (!this.lastCleanupAt || now - this.lastCleanupAt >= 3600_000) {
       this.lastCleanupAt = now;
       this.cleanupNow().catch((error) => console.error('cleanup:', error.message));
@@ -1980,12 +1987,16 @@ event(task, state, detail) {
       fileIntent: step.fileIntent, intentPath: step.intentPath, intentDestination: step.intentDestination,
       currentPlan: () => task.fileRevision === fileRevision && !stepSignal.aborted,
       desktopWrite: !readOnlyMode(task.mode) && (step.localTools === 'desktop' || granted.has('desktop')) && Boolean(step.write),
-      runCommands: (granted.has('commands') && !readOnlyMode(task.mode)) || (!task.snapshot || step.localTools === 'commands') &&
+      runCommands: Boolean(local.anyCommand) || (granted.has('commands') && !readOnlyMode(task.mode)) || (!task.snapshot || step.localTools === 'commands') &&
         step.id !== 'group-planner' && (step.role !== 'antigravity' || step.localTools === 'commands') && !readOnlyMode(task.mode) &&
         (step.write || step.capability === 'scout' || (step.localTools === 'commands' && mayCheckLocally(step))),
       // Every step may read the whole computer (on a bridge that opted in with readAnyFolder); steps that change
       // files may also write there (when the bridge also has writeAnyFolder). The project still changes by patch.
       readAnyFolder: true,
+      // legacyWrite: what this step could write before group chat v7. The rest (Q2, R1) needs a Bridge that backs
+      // files up first (service.js checks).
+      legacyWrite: granted.has('files_write') && !readOnlyMode(task.mode) || (!task.snapshot || step.localTools === 'files' || localTools === 'files') &&
+        step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write),
       writeFiles: Boolean(local.writeAnywhere) || granted.has('files_write') && !readOnlyMode(task.mode) || (!task.snapshot || localTools === 'files') &&
         step.id !== 'group-planner' && !readOnlyMode(task.mode) && Boolean(step.write) });
     try {
@@ -2315,6 +2326,10 @@ event(task, state, detail) {
     }
     task.snapshot = { head, version, base };
     task.groupPlan.base = base;
+    // Group chat v7: learn what this computer's Bridge can do before the plan is confirmed (Q2 relies on backups).
+    if (this.features?.writeAnywhere || this.features?.localCopy || this.features?.envFix) {
+      await this.bridgeCapabilities(task.id, task.workspace, signal).catch(() => null);
+    }
     // Requirement 7 (groupFeatures.snapshotNotice): the project reached the cloud and was checked (sha256).
     if (this.features?.snapshotNotice) {
       let changed = 0;
@@ -2489,7 +2504,11 @@ event(task, state, detail) {
   // default): a plan that changes no files, or has at most three steps, starts by itself. auto: every plan does.
   autoApproves(task, steps) {
     // Plans that use the person's computer wait for confirmation, unless the group runs every plan by itself.
-    if (task.snapshot && steps?.some((step) => step.localTools) && task.approval !== 'auto') return false;
+    // Q2 (groupFeatures.writeAnywhere): writing outside the project no longer asks for a confirmation.
+    // Only where this computer's Bridge is known to back files up first; otherwise the confirmation stays (safe default).
+    const backed = this.workspaceCapabilities?.get(task.workspace)?.backups === true;
+    const confirms = (step) => step.localTools && !(this.features?.writeAnywhere && backed && step.localTools === 'files' && step.write);
+    if (task.snapshot && steps?.some(confirms) && task.approval !== 'auto') return false;
     const mode = task.approval || 'always';
     if (mode === 'auto') return true;
     if (mode !== 'small' || !steps?.length) return false;
@@ -2659,7 +2678,16 @@ event(task, state, detail) {
 
   async ensureWorktree(repo, folder, task, step, signal) {
     if (await readFile(path.join(folder, '.git'), 'utf8').then(() => true, () => false)) return;
-    await worktree(repo, folder, 'agentdesk/' + task.id + '/' + step.id, task.base, signal);
+    // Steps of one wave start together; two `git worktree add` in one repository at once can fail
+    // ("failed to read worktrees/<name>/commondir", seen on macOS), so they are made one after the other.
+    this.worktreeQueues ||= new Map();
+    const previous = this.worktreeQueues.get(repo) || Promise.resolve();
+    const mine = previous.catch(() => {}).then(async () => {
+      if (await readFile(path.join(folder, '.git'), 'utf8').then(() => true, () => false)) return;
+      await worktree(repo, folder, 'agentdesk/' + task.id + '/' + step.id, task.base, signal);
+    });
+    this.worktreeQueues.set(repo, mine);
+    try { await mine; } finally { if (this.worktreeQueues.get(repo) === mine) this.worktreeQueues.delete(repo); }
   }
 
   // Records one conflict event per set of competing review verdicts. Two negative reviews are not a
@@ -2737,7 +2765,7 @@ event(task, state, detail) {
       try {
         let prompt = dependencies.length ? step.prompt + '\nUpstream results: ' + JSON.stringify(dependencies) : step.prompt;
         if (readonlyStep) {
-          prompt += '\nReview the uncommitted changes in this working tree. Do not change files.';
+          prompt += '\nReview the uncommitted changes in this working tree. Do not change files in this working tree.';
         } else if (sharedWriter) {
           prompt += `\nContinue in the existing working tree of ${sharedWriter.id}; your change builds on it.`;
         }
@@ -2749,6 +2777,9 @@ event(task, state, detail) {
               : buildLeadBrief(task, stage));
           const projectBrief = stage === 'triage' && this.projectBrief(task);
           if (projectBrief) brief.projectBrief = projectBrief;
+          // O1/R2 (localStages, envFix): acceptance and triage check in the person's project and may fix its
+          // environment; every fix made so far is listed separately for the verdict.
+          if (stage !== 'lead') this.localizeBrief(brief, task);
           task.briefs ||= {};
           task.briefs[stage] = brief;
           // No raw upstream transcripts, logs or patches are sent to the lead.
@@ -3829,15 +3860,19 @@ event(task, state, detail) {
     // offline, downloaded to the computer with its sha256 so the desktop can check it before saying it arrived.
     // G-P2d: undo an environment fix (envFix); R1: put back a file outside the project that a step changed.
     if (body.operation === 'env_fix_revert' || body.operation === 'outside_restore') {
-      if (!this.features?.envFix && !this.features?.writeAnywhere) throw new Error('unsupported_operation');
+      // Undo and restore work on the task's own records, also after the switch was turned off again.
       if (!task || !owner) throw new Error('task_access_denied');
       if (body.operation === 'env_fix_revert') {
         if (typeof body.fixId !== 'string') throw new Error('invalid_env_fix_id');
         return this.revertEnvFix(task, body.fixId);
       }
       if (typeof body.backupId !== 'string' || !/^[a-f0-9-]{36}$/.test(body.backupId)) throw new Error('invalid_backup_id');
+      const record = task.outsideBackups?.find((item) => item.backupId === body.backupId);
+      if (!record) throw new Error('backup_not_found');
+      if (record.restoredAt) throw new Error('backup_already_restored');
       return this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute', { operation: 'outside_restore', workspace: task.workspace, backupId: body.backupId }, 60000)
-        .catch((error) => { throw require('./group-stages').bridgeError(error); });
+        .then((value) => { record.restoredAt = new Date(this.now()).toISOString(); this.save(task, task.state, task.detail, false); return value; },
+          (error) => { throw require('./group-stages').bridgeError(error); });
     }
     if (body.operation === 'patch_download') {
       if (!this.features?.patchDownload) throw new Error('unsupported_operation');

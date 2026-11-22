@@ -15,7 +15,7 @@
 
 ## 写代码步骤的本机副本（`localCopy`，O3；M3 为推荐做法）
 
-- 副本放在 Bridge 状态目录下的 `group-copies/<任务>/<步骤>`，权限 0700：
+- 副本放在 `~/Library/Caches/AgentDesk/group-copies/<任务>/<步骤>`，权限 0700。不能放在 Bridge 状态目录下，因为 sandbox 对所有命令都关闭了那个目录，副本里的命令也会被拒绝：
   - 用 `cp -c -R`（APFS 写时复制）建立，不用硬链接或符号链接；
   - 包括 `.git`、`.env` 和 `node_modules` 等被忽略的目录；
   - 建好后核对快照版本，与规划时的项目一致才使用。
