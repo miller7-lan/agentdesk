@@ -6,6 +6,7 @@ const { NativeChannel, VERSION } = require('./native-channel');
 // The local_shell the model sees matches this computer: PowerShell/CMD on Windows, zsh/bash on a Mac.
 const localShellSpec = require('./windows-local-shell').shellSpecFor();
 const { terminalSpec, lockSpec } = require('./terminal-sessions');
+const { nativePermissionPrompt } = require('./permission-prompt');
 const NATIVE_TOOLS = new Set(['local_shell', 'terminal', 'file_lock_acquire']);
 
 const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive',
@@ -14,7 +15,8 @@ const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread
 
 function workspacePolicy(folder, mode) {
   return mode === 'read' ? { type: 'readOnly', networkAccess: false } :
-    { type: 'workspaceWrite', writableRoots: [folder], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true };
+    // Network on, as for the other CLIs' shells on VPS2 (package installs, fetching references).
+    { type: 'workspaceWrite', writableRoots: [folder], networkAccess: true, excludeTmpdirEnvVar: true, excludeSlashTmp: true };
 }
 
 async function openWindowsNativeSeat({
@@ -207,7 +209,11 @@ async function openWindowsNativeSeat({
         delete value.sandboxPolicy;
         value.sandbox = mode === 'write' ? 'workspace-write' : 'read-only';
         if (method === 'thread/start') value.ephemeral = false;
+        // The permission statement every model in a native chat gets (chat-server.js uses the same text).
+        value.developerInstructions = [nativePermissionPrompt({ platform: process.platform, writable: mode === 'write' }),
+          typeof params.developerInstructions === 'string' ? params.developerInstructions : ''].filter(Boolean).join('\n\n');
       }
+      if (method === 'thread/start' && provider !== 'codex') value.nativePlatform = process.platform;
       if (launch || (method === 'turn/start' && provider !== 'codex')) value.dynamicTools = toolSet;
       if (method === 'skills/list') value.cwds = [folder];
       if (isTurn) { startingTurn = true; turnWritable = activeMode === 'write'; }

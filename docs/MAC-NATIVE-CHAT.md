@@ -20,7 +20,7 @@ Mac 上的 Codex、Claude、Grok Build、Antigravity 单聊，在「完全访问
 
 - **命令能做你在终端里能做的一切**，包括推送代码、用云服务账号。模型在「完全访问」下不会逐条问你，请只在信任的项目里用。
 - **`sandbox-exec` 虽然被 Apple 标为不推荐使用，但 macOS 14、15 仍然自带。** 以后如果系统移除了它，命令会直接失败，而不是绕过沙盒运行。
-- **模型自己的 Bash 仍跑在 VPS2 上**（工作目录是挂载过来的项目），适合不需要 Mac 环境的检查；要用 Mac 上的工具链（Xcode、Homebrew 装的工具）或凭据（推送），用 `local_shell`。
+- **模型自己的 shell 跑在 VPS2 上**（工作目录是挂载过来的项目，可联网），Claude、Codex、Grok 都有，适合不需要 Mac 环境的检查；要用 Mac 上的工具链（Xcode、Homebrew 装的工具）或凭据（推送），用 `local_shell`。三家拿到同一段权限说明，见 [UPDATE-DIRECTION.md](UPDATE-DIRECTION.md) §2b。
 
 ## 部署
 

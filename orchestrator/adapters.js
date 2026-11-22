@@ -205,7 +205,21 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     const deny = args.findIndex((arg, index) => arg === 'Bash' && args[index - 1] === '--deny');
     if (deny > 0) args.splice(deny - 1, 2, '--allow', 'Bash');
   }
-  if (sandboxed && name === 'claude' && !provider.template && !readonly) addClaudeAllow(args, ['Bash']);
+  // Claude gets what Grok and Codex have: a shell and sub-agents in every step. In the sandbox a read-only
+  // step's folder is mounted read-only, so the shell cannot change it; plan mode would refuse the shell.
+  if (sandboxed && name === 'claude' && !provider.template) {
+    addClaudeAllow(args, ['Bash', 'BashOutput', 'KillShell', 'Task', 'Agent']);
+    if (readonly) {
+      const mode = args.indexOf('--permission-mode');
+      args[mode + 1] = 'dontAsk';
+      const deny = args.indexOf('--disallowedTools');
+      args[deny + 1] = 'Write,Edit,NotebookEdit';
+    }
+  }
+  // Codex's workspace-write sandbox has no network by default; the other CLIs' sandbox shares it.
+  if (name === 'codex' && !provider.template && !readonly) {
+    args.splice(codexSettingsIndex(args), 0, '-c', 'sandbox_workspace_write.network_access=true');
+  }
   // Folders the CLI reads besides its working folder (the person's home, mounted read-only): Claude Code reads
   // outside its working folder only where it is told to.
   if (name === 'claude' && !provider.template) for (const folder of readPaths) args.push('--add-dir', folder);

@@ -152,13 +152,18 @@ const HOME = {
 const CLAUDE_WEB = ['WebSearch', 'WebFetch'];
 const CLAUDE_SHELL_READ = ['Bash', 'BashOutput', 'KillShell', 'Read', 'Glob', 'Grep'];
 const CLAUDE_SHELL_WRITE = ['Edit', 'Write', 'NotebookEdit'];
-const CLAUDE_DISALLOWED = ['Task', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
+// Sub-agents (Task/Agent) are allowed for every provider; only the tools that need a person at the keyboard
+// (questions, plan-mode switches) stay off in a headless chat.
+const CLAUDE_AGENTS = ['Task', 'Agent'];
+const CLAUDE_DISALLOWED = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'];
 const GROK_WEB = ['web_search', 'web_fetch'];
 const GROK_SHELL_READ = ['run_terminal_command', 'get_command_or_subagent_output', 'kill_command_or_subagent', 'read_file', 'list_dir', 'grep'];
 const GROK_SHELL_WRITE = ['write', 'search_replace'];
+const GROK_AGENTS = ['spawn_subagent', 'workflow'];
+// Off: schedules and monitors that outlive the turn, tools that need a person at the keyboard, and paid media generation.
 const GROK_DISALLOWED = [
-  'spawn_subagent', 'scheduler_create', 'scheduler_delete', 'scheduler_list', 'monitor',
-  'workflow', 'enter_plan_mode', 'exit_plan_mode', 'ask_user_question', 'send_feedback',
+  'scheduler_create', 'scheduler_delete', 'scheduler_list', 'monitor',
+  'enter_plan_mode', 'exit_plan_mode', 'ask_user_question', 'send_feedback',
   'image_gen', 'image_edit', 'image_to_video', 'reference_to_video',
 ];
 
@@ -223,6 +228,7 @@ let antigravityTurn = null;          // Antigravity shares one user-level MCP co
 const ISOLATED_ANTIGRAVITY = V2 && PROVIDER === 'antigravity' && Boolean(process.env.AGENTDESK_CHAT_SANDBOX);
 // D15 / Q6: a v2 turn counts as a session with a CLI process; the limit applies while the CLI runs.
 const cliUpgrade = require('./cli-upgrade');
+const { nativePermissionPrompt } = require('./permission-prompt');
 const CLI_UPGRADE_SPOOL = process.env.AGENTDESK_CLI_UPGRADE_SPOOL || path.join(STATE_DIR, 'cli-upgrade');
 const UPGRADE_POLL_MS = Number(process.env.AGENTDESK_UPGRADE_POLL_MS || 2000);
 const seatSlots = V2 && process.env.AGENTDESK_SEAT_LIMITS !== 'off'
@@ -750,7 +756,8 @@ function cleanupConfigs(turn) {
 
 function instructions(turn) {
   if (NATIVE_PROJECT) {
-    return `[AgentDesk Windows 单聊]\n当前工作目录是已挂载的 Windows 项目。读取、检索、编辑和写入项目文件请使用原生文件工具。Windows 命令、依赖安装、编译和测试请调用 local_shell。连接恢复时使用原 runId 核对结果。` +
+    // The same statement Codex gets (windows-native-seat.js), so every model describes the same rights.
+    return nativePermissionPrompt({ platform: turn.thread.nativePlatform || 'win32', writable: !turn.readOnly }) +
       (turn.thread.systemPrompt ? '\n' + turn.thread.systemPrompt : '');
   }
   const root = turn.localRoot ?? turn.thread.localRoot ?? '';
@@ -794,7 +801,7 @@ function providerArgs(turn, workspace) {
   }
   const session = turn.thread.sessionId;
   if (PROVIDER === 'claude') {
-    const readTools = NATIVE_PROJECT ? ['Read', 'Glob', 'Grep', 'Skill', 'Agent'] : CLAUDE_SHELL_READ;
+    const readTools = [...CLAUDE_SHELL_READ, ...(NATIVE_PROJECT ? ['Skill'] : [])];
     const args = [
       '-p', '--verbose', '--output-format', 'stream-json', '--include-partial-messages',
       '--permission-mode', 'dontAsk', '--permission-prompts', 'none', ...(NATIVE_PROJECT ? [] : ['--disable-slash-commands']),
@@ -803,9 +810,9 @@ function providerArgs(turn, workspace) {
       // The bare server name and every tool name as well as the wildcard: the wildcard alone is ignored by some
       // Claude Code versions, which then deny every file tool and the chat cannot change the person's files.
       '--allowedTools', [`mcp__${turn.serverName}`, `mcp__${turn.serverName}__*`,
-        ...turn.tools.map((tool) => `mcp__${turn.serverName}__${tool.name}`), ...CLAUDE_WEB,
+        ...turn.tools.map((tool) => `mcp__${turn.serverName}__${tool.name}`), ...CLAUDE_WEB, ...CLAUDE_AGENTS,
         ...(SANDBOX ? [...readTools, ...(turn.readOnly ? [] : CLAUDE_SHELL_WRITE)] : [])].join(','),
-      '--disallowedTools', [...(NATIVE_PROJECT ? ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Bash', 'BashOutput', 'KillShell'] : CLAUDE_DISALLOWED),
+      '--disallowedTools', [...CLAUDE_DISALLOWED,
         ...(SANDBOX ? [] : CLAUDE_SHELL_READ),
         ...(SANDBOX && !turn.readOnly ? [] : CLAUDE_SHELL_WRITE)].join(','),
       '--append-system-prompt', instructions(turn),
@@ -821,8 +828,8 @@ function providerArgs(turn, workspace) {
     const args = [
       ...(NATIVE_PROJECT ? ['--leader-socket', path.join(turn.nativeGrokLeader, 'grok.sock')] : ['--trust']),
       '--no-auto-update', '--output-format', 'streaming-messages-json', '--include-partial-messages',
-      '--permission-mode', 'dontAsk', '--no-subagents',
-      '--tools', ['todo_write', ...GROK_WEB, ...(SANDBOX ? [...GROK_SHELL_READ, ...(turn.readOnly ? [] : GROK_SHELL_WRITE)] : [])].join(','),
+      '--permission-mode', 'dontAsk',
+      '--tools', ['todo_write', ...GROK_WEB, ...GROK_AGENTS, ...(SANDBOX ? [...GROK_SHELL_READ, ...(turn.readOnly ? [] : GROK_SHELL_WRITE)] : [])].join(','),
       '--allow', `MCPTool(${turn.serverName}__*)`, '--allow', 'WebSearch', '--allow', 'WebFetch', '--allow', 'Fetch',
       ...(SANDBOX ? ['--allow', 'Bash', '--allow', 'Read', '--allow', 'Grep', ...(turn.readOnly ? [] : ['--allow', 'Edit'])] : []),
       '--disallowed-tools', [...GROK_DISALLOWED, ...(SANDBOX ? [] : GROK_SHELL_READ),
@@ -1396,6 +1403,8 @@ async function dispatch(method, params) {
         approvalPolicy: normalizeApproval(params.approvalPolicy),
         sandboxPolicy: normalizeSandbox(params.sandboxPolicy),
         systemPrompt: typeof params.systemPrompt === 'string' ? params.systemPrompt.slice(0, 32_768) : '',
+        // The person's computer in a native chat (sent by the seat), for the permission statement.
+        ...(['darwin', 'win32'].includes(params.nativePlatform) && { nativePlatform: params.nativePlatform }),
         localRoot: typeof params.localRoot === 'string' ? params.localRoot.slice(0, 4096) : '',
         projectId: typeof params.projectId === 'string' ? params.projectId.slice(0, 256) : null,
         title: '',
