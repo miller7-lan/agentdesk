@@ -3,6 +3,7 @@ const { createInterface } = require('node:readline');
 const { connect } = require('node:net');
 const { Lines } = require('./transport');
 const { COMMAND_REPLY_TIMEOUT } = require('./command-runs');
+const { ASK_TOOL, QUESTION_TIMEOUT } = require('./ask-user');
 
 function request(socketPath, frame, timeout = 65000) {
   return new Promise((resolve, reject) => {
@@ -56,7 +57,8 @@ if (require.main === module) {
           operation: 'call',
           name: frame.params?.name,
           arguments: frame.params?.arguments || {},
-        }, frame.params?.name === 'agentdesk_command_run' ? COMMAND_REPLY_TIMEOUT + 75_000 : undefined);
+        }, frame.params?.name === 'agentdesk_command_run' ? COMMAND_REPLY_TIMEOUT + 75_000
+          : frame.params?.name === ASK_TOOL.name ? QUESTION_TIMEOUT + 75_000 : undefined);
         result = { content: value.content || [], ...(value.isError ? { isError: true } : {}) };
       } else {
         throw new Error('unsupported_mcp_method');

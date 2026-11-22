@@ -78,7 +78,7 @@ async function main() {
   const socketPath = definition.args[1];
   const capability = definition.args[2];
   const report = { provider, scenario, socket: socketPath, capabilityLength: capability.length, args,
-    claudeEffort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null };
+    claudeEffort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null, mcpToolTimeout: process.env.MCP_TOOL_TIMEOUT || null };
 
   if (scenario === 'HANG') {
     writeLine({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } } });
@@ -104,6 +104,19 @@ async function main() {
       errors: ['API error (status 402 Payment Required): Grok Build usage balance exhausted'] });
     process.exitCode = 1;
     return;
+  }
+
+  if (scenario === 'ASK_USER') {
+    const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
+    report.tools = (listed.value?.tools || []).map((tool) => tool.name);
+    report.mcpToolTimeout = process.env.MCP_TOOL_TIMEOUT || null;
+    report.call = await socketRequest(socketPath, {
+      capability, operation: 'call', name: 'agentdesk_ask_user',
+      arguments: { questions: [
+        { header: '颜色', question: '你喜欢哪个颜色？', options: [{ label: '红', description: '暖色' }, { label: '蓝' }, { label: '蓝' }] },
+        { question: '要哪些功能？', multiSelect: true, options: ['导出', '打印'] },
+      ] },
+    }, 120000);
   }
 
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {

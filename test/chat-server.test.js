@@ -604,3 +604,72 @@ test('the prompt cache stays valid: one tool server name per conversation, instr
   assert.doesNotMatch(prompts[1], /AgentDesk 单聊/);
   assert.match(prompts[1], /SCENARIO:TEXT/);
 });
+
+test('question cards: agentdesk_ask_user reaches the app as requestUserInput and the answer reaches the CLI', async (t) => {
+  for (const provider of ['claude', 'grok', 'antigravity']) {
+    const dir = temporary(t);
+    const client = await new ChatClient(t, provider, dir).start();
+    const info = await client.request('initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { questionCards: true } });
+    assert.equal(info.features.questionCards, true);
+    const asked = [];
+    client.serverHandler = (frame) => {
+      if (frame.method !== 'item/tool/requestUserInput') return { error: { code: -32601, message: 'unexpected' } };
+      asked.push(frame.params);
+      return { result: { answers: { q1: { answers: ['蓝'] }, q2: { answers: ['导出', '打印'] } } } };
+    };
+    const threadId = await thread(client, { approvalPolicy: 'on-request' });
+    const { id, completed } = await runTurn(client, threadId, 'ASK_USER', { sandboxPolicy: { type: 'readOnly' } });
+    assert.equal(completed.turn.status, 'completed', provider);
+    const report = reportOf(agentText(client, id));
+    assert.ok(report.tools.includes('agentdesk_ask_user'), provider + ' read-only turns still offer the question tool');
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].agent, provider);
+    assert.equal(asked[0].source, 'agentdesk_ask_user');
+    assert.deepEqual(asked[0].questions.map((q) => q.id), ['q1', 'q2']);
+    assert.deepEqual(asked[0].questions[0].options, [{ label: '红', description: '暖色' }, { label: '蓝' }]);
+    assert.equal(asked[0].questions[1].multiSelect, true);
+    assert.match(report.call.value.content[0].text, /你喜欢哪个颜色？\n   → 蓝/);
+    assert.match(report.call.value.content[0].text, /导出；打印/);
+    assert.equal(report.mcpToolTimeout, provider === 'antigravity' ? null : String(15 * 60_000 + 60_000));
+  }
+});
+
+test('question cards: a skipped question tells the CLI to carry on', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  await client.request('initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { questionCards: true } });
+  client.serverHandler = () => ({ result: { answers: {}, cancelled: true } });
+  const threadId = await thread(client);
+  const { id } = await runTurn(client, threadId, 'ASK_USER');
+  assert.match(reportOf(agentText(client, id)).call.value.content[0].text, /用户跳过了这些问题/);
+});
+
+test('question cards: a client without question cards never gets the question tool', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  await client.request('initialize', { clientInfo: { name: 'old', version: '0.2.0' } });
+  client.serverHandler = () => ({ error: { code: -32601, message: 'unexpected' } });
+  const threadId = await thread(client);
+  const { id } = await runTurn(client, threadId, 'ASK_USER');
+  const report = reportOf(agentText(client, id));
+  assert.equal(report.tools.includes('agentdesk_ask_user'), false);
+  assert.match(JSON.stringify(report.call), /tool_not_available/);
+  assert.equal(report.mcpToolTimeout, null);
+  assert.equal(client.serverRequests.length, 0);
+});
+
+test('自动编辑: file writes skip approval, commands still ask', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  const state = { approvals: [], calls: [] };
+  client.serverHandler = defaultHandler(state);
+  const threadId = await thread(client, { approvalPolicy: 'on-request' });
+  await runTurn(client, threadId, 'APPROVE_WRITE', { approvalPolicy: 'on-request', autoApprove: 'edits' });
+  assert.equal(state.approvals.length, 0);
+  assert.equal(state.calls.length, 1);
+  const commandThread = await thread(client, { approvalPolicy: 'on-request', dynamicTools: [{ name: 'agentdesk_command_run',
+    description: 'Run a local command', inputSchema: { type: 'object', properties: { name: { type: 'string' } } } }] });
+  await runTurn(client, commandThread, 'TOOL_COMMAND', { approvalPolicy: 'on-request', autoApprove: 'edits' });
+  assert.equal(state.approvals.length, 1);
+  assert.equal(state.approvals[0].tool, 'agentdesk_command_run');
+});

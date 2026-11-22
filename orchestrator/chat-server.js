@@ -13,6 +13,7 @@ const { captureClaudeRateLimitEvent } = require('./quotas');
 const { validAttachments, attachmentLimit, maxAttachments, idPattern, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
 const { pruneThreads } = require('./chat-retention');
+const { ASK_TOOL, QUESTION_TIMEOUT, normalizeQuestions, formatAnswer } = require('./ask-user');
 
 // Attachments are read through this tool, served here on the VPS, so every chat can read them whether or not
 // the CLI runs in the sandbox with its own file tools. Images come back as images the model can look at.
@@ -104,6 +105,9 @@ const LEGACY_STATE_FILE = V2 && IDENTITY.legacyTag
   ? path.join(STATE_DIR, IDENTITY.legacyTag === 'default' ? `chat-${PROVIDER}.json` : `chat-${PROVIDER}-${IDENTITY.legacyTag}.json`) : null;
 const ATTACHMENT_DAYS = 7;
 let helloDevice = null;               // the client's device hello, once it matched the key's identity
+// The connected client renders question cards (it said so in initialize). Only then do the CLIs get agentdesk_ask_user:
+// a question nobody can answer would hold the turn for 15 minutes.
+let questionCards = false;
 // Claude Code reports the account's rate limits on every headless turn. The direct chat writes them where
 // quota_status already reads them (adapters.claude.quotaFile), so the 5-hour and weekly windows stay current.
 const CLAUDE_QUOTA_FILE = process.env.AGENTDESK_CHAT_CLAUDE_QUOTA || path.join(STATE_DIR, 'claude-quotas.json');
@@ -528,7 +532,20 @@ async function invokeTool(turn, name, args) {
   let failed = false;
   let content;
   try {
-    if (name === ATTACHMENT_TOOL.name) {
+    if (name === ASK_TOOL.name) {
+      const questions = normalizeQuestions(args);
+      pauseTurnTimer(turn);
+      let answer;
+      try {
+        answer = await clientRequest(turn, 'item/tool/requestUserInput', {
+          threadId: turn.threadId, turnId: turn.id, itemId, agent: PROVIDER, source: ASK_TOOL.name, isBlocking: true, questions,
+        }, QUESTION_TIMEOUT);
+      } catch (error) {
+        throw new Error(error.message === 'client_request_timeout' ? '用户在 15 分钟内没有回答，问题已失效。按你的最佳判断继续，或在回复里说明需要用户补充什么。'
+          : '问题没有送到用户（' + (error.message || 'unknown') + '）。');
+      } finally { resumeTurnTimer(turn); }
+      output = formatAnswer(questions, answer);
+    } else if (name === ATTACHMENT_TOOL.name) {
       content = readAttachmentContent(turn, args);
       output = content.filter((item) => item.type === 'text').map((item) => item.text).join('\n').slice(0, 4000);
     } else {
@@ -536,7 +553,9 @@ async function invokeTool(turn, name, args) {
       throw new Error('local_shell requires a writable native Windows session');
     }
     if (turn.readOnly && isWriteTool(name)) throw new Error('只读模式下不能使用写工具');
-    if (isWriteTool(name) && turn.approvalPolicy !== 'never') {
+    // 自动编辑: the person's files are written without asking; commands and desktop actions still ask.
+    const autoEdit = turn.autoApprove === 'edits' && name.startsWith('agentdesk_file_');
+    if (isWriteTool(name) && turn.approvalPolicy !== 'never' && !autoEdit) {
       const decision = await clientRequest(turn, 'item/tool/requestApproval', {
         threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args, itemId,
       }, APPROVAL_TIMEOUT);
@@ -607,6 +626,7 @@ const mcpServer = net.createServer((socket) => {
         wire.send({ ok: true, value: { tools: turn.tools } });
       } else if (frame.operation === 'call') {
         if (frame.name === 'agentdesk_command_run') socket.setTimeout(COMMAND_REPLY_TIMEOUT + APPROVAL_TIMEOUT + 10_000);
+        if (frame.name === ASK_TOOL.name) socket.setTimeout(QUESTION_TIMEOUT + 10_000);
         const value = await invokeTool(turn, frame.name, frame.arguments || {});
         wire.send({ ok: true, value });
       } else {
@@ -754,11 +774,13 @@ function cleanupConfigs(turn) {
   }
 }
 
+const ASK_NOTE = '- 需要用户在几个方案里做选择、或确认关键细节时，调用 MCP 工具 agentdesk_ask_user（一次可以问多题，给出选项），不要在回复里列出选项然后停下等人回。';
+
 function instructions(turn) {
   if (NATIVE_PROJECT) {
     // The same statement Codex gets (windows-native-seat.js), so every model describes the same rights.
     return nativePermissionPrompt({ platform: turn.thread.nativePlatform || 'win32', writable: !turn.readOnly }) +
-      (turn.thread.systemPrompt ? '\n' + turn.thread.systemPrompt : '');
+      (turn.thread.systemPrompt ? '\n' + turn.thread.systemPrompt : '') + (questionCards ? '\n' + ASK_NOTE : '');
   }
   const root = turn.localRoot ?? turn.thread.localRoot ?? '';
   const shown = root || '(未提供)';
@@ -783,7 +805,7 @@ ${vps}
 - 写文件前先读目标；创建文件后把结果路径告诉用户。覆盖已有文件必须显式传 overwrite:true。
 - 系统目录、凭据目录（如 ~/.ssh、~/.agentdesk）和 .git 内部会被拒绝，不要尝试绕过。
 - 工具返回 JSON 文本；失败时如实告诉用户，不要假装成功。
-- 大文件分页读取（用返回的 nextOffset 继续），只读需要的部分，不要整份反复读。`;
+- 大文件分页读取（用返回的 nextOffset 继续），只读需要的部分，不要整份反复读。${questionCards ? '\n' + ASK_NOTE : ''}`;
 }
 
 // Everything that varies from turn to turn goes into the user message, not the system prompt or the tool
@@ -909,6 +931,23 @@ function syncGrokAuth() {
   }
 }
 
+// While the person answers a question the turn's own time limit stands still (a question may wait 15 minutes).
+function pauseTurnTimer(turn) {
+  turn.questionsOpen = (turn.questionsOpen || 0) + 1;
+  if (turn.questionsOpen > 1 || !turn.timer) return;
+  clearTimeout(turn.timer);
+  turn.pausedAt = Date.now();
+}
+
+function resumeTurnTimer(turn) {
+  turn.questionsOpen = Math.max(0, (turn.questionsOpen || 0) - 1);
+  if (turn.questionsOpen || !turn.pausedAt || turn.finished) return;
+  turn.deadline += Date.now() - turn.pausedAt;
+  turn.pausedAt = null;
+  turn.timer = setTimeout(() => { turn.timedOut = true; killTurn(turn); }, Math.max(0, turn.deadline - Date.now()));
+  turn.timer.unref?.();
+}
+
 function killTurn(turn) {
   if (!turn.child?.pid) return;
   try { process.kill(-turn.child.pid, 'SIGTERM'); } catch {}
@@ -944,7 +983,9 @@ function startTurn(turn) {
     }
     child = spawn(launch.command, launch.args, {
       cwd: workspace,
-      env: { ...childEnvironment(turn), ...(PROVIDER === 'claude' && turn.effort && { CLAUDE_CODE_EFFORT_LEVEL: turn.effort }) },
+      env: { ...childEnvironment(turn), ...(PROVIDER === 'claude' && turn.effort && { CLAUDE_CODE_EFFORT_LEVEL: turn.effort }),
+        // A question waits up to QUESTION_TIMEOUT; the CLI must not give up on the MCP call first.
+        ...(questionCards && PROVIDER !== 'antigravity' && { MCP_TOOL_TIMEOUT: String(QUESTION_TIMEOUT + 60_000) }) },
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -1004,6 +1045,7 @@ function startTurn(turn) {
     finishTurn(turn, code);
   });
 
+  turn.deadline = Date.now() + TURN_TIMEOUT;
   turn.timer = setTimeout(() => {
     turn.timedOut = true;
     killTurn(turn);
@@ -1408,6 +1450,7 @@ async function dispatch(method, params) {
   switch (method) {
     case 'initialize': {
       if (!IDENTITY.error) helloDevice = checkHello(params) || helloDevice;
+      questionCards = params?.capabilities?.questionCards === true;
       pruneExpiredThreads();
       if (V2) { sweepAttachmentsV2(); store.pruneAudit(); store.audit('hello', null, { appVersion: helloDevice?.appVersion }); }
       return {
@@ -1415,7 +1458,8 @@ async function dispatch(method, params) {
         protocolVersion: PROTOCOL_VERSION,
         ...(!IDENTITY.legacy && { device: { deviceId: IDENTITY.deviceId, platform: IDENTITY.platform ?? null, state: IDENTITY.state,
           directChatV2: V2, ...(IDENTITY.error && { error: IDENTITY.error }) } }),
-        features: { attachmentsV2: V2, status: true, sessionList: V2, seatLimits: Boolean(seatSlots), isolatedAntigravity: ISOLATED_ANTIGRAVITY },
+        features: { attachmentsV2: V2, status: true, sessionList: V2, seatLimits: Boolean(seatSlots), isolatedAntigravity: ISOLATED_ANTIGRAVITY,
+          questionCards: true, autoApproveEdits: true },
         ...((announcedClient = newerClient(helloDevice?.appVersion)) && { clientUpdate: { available: true } }),
       };
     }
@@ -1606,10 +1650,11 @@ async function dispatch(method, params) {
         thread,
         text,
         approvalPolicy,
+        autoApprove: params.autoApprove === 'edits' ? 'edits' : undefined,
         readOnly,
         // The attachment tool is always declared, with or without attachments, so the tool list stays the same.
         tools: [...(params.dynamicTools === undefined ? thread.dynamicTools : normalizeTools(params.dynamicTools))
-          .filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)), ATTACHMENT_TOOL],
+          .filter((tool) => !readOnly || READ_ONLY_TOOLS.has(tool.name)), ATTACHMENT_TOOL, ...(questionCards ? [ASK_TOOL] : [])],
         attachments,
         capability: randomBytes(24).toString('hex'),
         // One name per conversation: a new name every turn changed the tool names and the system prompt, so
