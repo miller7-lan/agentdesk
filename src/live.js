@@ -92,6 +92,11 @@
     }
     const current = await rm.status();
     if (ready && current.codex === 'ready') return true;
+    // Nothing connects before the server is confirmed (or before the sign-in): say what to do, not "cannot connect".
+    if (current.started === false) {
+      toast('还没有连接服务器：请先完成设置向导（工作区 → 运行设置向导）或登录。');
+      return false;
+    }
     if (current.codex !== 'ready') ready = false;
     toast('正在连接 VPS 上的 Codex…');
     const ok = await rm.wake();
