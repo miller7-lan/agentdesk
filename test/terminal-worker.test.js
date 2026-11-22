@@ -182,3 +182,24 @@ test('real bash: Ctrl+C stops the whole command line even when AgentDesk was sta
   const after = await until(() => { const r = read(mark); return r.data.includes('agentdesk-ok') && r; }, 40_000, 'bash after Ctrl+C');
   assert.equal(after.data.includes('after-sleep'), false, 'Ctrl+C did not stop the whole line: ' + JSON.stringify(read(0).data.slice(-500)));
 });
+
+// A reconnecting app looks its lease up by the folder as it knows it; acquire() stored the real path. A link (or,
+// on Windows, an 8.3 short name like C:\Users\RUNNER~1) must still find it — the Windows packaging check failed
+// here with native_chat_lease_denied after the reconnect.
+test('a lease is found again when the project folder is given through a link or another spelling', {
+  skip: WINDOWS,   // symlinks need privileges on Windows; the real Windows case (8.3 names) runs in the Worker test there
+}, async (t) => {
+  const { WindowsProjectLeases } = require('../orchestrator/windows-project-leases');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-lease-'));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const real = path.join(base, 'project');
+  fs.mkdirSync(real);
+  const link = path.join(base, 'link');
+  fs.symlinkSync(real, link);
+  const leases = new WindowsProjectLeases();
+  const identity = { device: 'd', provider: 'claude', threadId: 't', projectId: 'p', fullAccess: true };
+  const lease = await leases.acquire({ ...identity, root: link });
+  assert.equal(leases.lookup({ ...identity, root: link })?.id, lease.id);
+  assert.equal(leases.lookup({ ...identity, root: real })?.id, lease.id);
+  assert.equal(leases.lookup({ ...identity, root: real, threadId: 'other' }), null);
+});

@@ -77,10 +77,15 @@ class WindowsProjectLeases {
       state: this.reconciling.has(lease.id) ? 'reconciling' : lease.suspended ? 'suspended' : 'active' };
   }
 
+  // The root is compared the way acquire() stored it: as the real path (links resolved; on Windows 8.3 short
+  // names such as C:\Users\RUNNER~1 expanded), so a reconnecting app finds its lease however it spells the folder.
   lookup(identity) {
+    let root = identity.root;
+    try { if (typeof root === 'string') root = disk.realpathSync.native(root); } catch { /* compare as given */ }
+    const key = process.platform === 'linux' ? root : root?.toLowerCase();
     for (const lease of this.leases.values()) {
-      if (['device', 'provider', 'threadId', 'projectId'].every((key) => lease[key] === identity[key]) &&
-          lease.key === (process.platform === 'linux' ? identity.root : identity.root?.toLowerCase()) && lease.fullAccess === identity.fullAccess) return this.view(lease);
+      if (['device', 'provider', 'threadId', 'projectId'].every((name) => lease[name] === identity[name]) &&
+          lease.key === key && lease.fullAccess === identity.fullAccess) return this.view(lease);
     }
     return null;
   }
