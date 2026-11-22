@@ -398,7 +398,10 @@ window.__groupReady = (async () => {
     const added = files.slice(0, Math.max(0, MAX_ATTACH - group.attachments.length));
     group.attachments.push(...added);
     for (const extra of files.slice(added.length)) fileApi.forgetChat(extra.id);
-    if (errors.length || added.length < files.length) A.toast(errors.join('；') || `每个群聊任务最多附加 ${MAX_ATTACH} 个文件。`);
+    const problem = errors.length || added.length < files.length ? errors.join('；') || `每个群聊任务最多附加 ${MAX_ATTACH} 个文件。` : '';
+    // Success is announced too (it used to be silent): the files stay on this computer until the task is sent.
+    const text = [problem, added.length && window.AgentDeskAttachNotice ? window.AgentDeskAttachNotice.added(added, 'group') : ''].filter(Boolean).join('；');
+    if (text) A.toast(text);
     if (group === currentGroup()) renderGroupAttachments();
   }
   async function withGroupProject(work) {
@@ -2372,6 +2375,7 @@ window.__groupReady = (async () => {
       // Sent: the desktop has handed the files over and forgotten them.
       const sentIds = new Set(request.attachments.map((file) => file.id));
       group.attachments = (group.attachments || []).filter((file) => !sentIds.has(file.id));
+      if (window.AgentDeskAttachNotice) A.toast(window.AgentDeskAttachNotice.sent(sentIds.size, 'group'));
       if (group === currentGroup()) renderGroupAttachments();
     }
     if (group === currentGroup()) {

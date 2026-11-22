@@ -64,6 +64,10 @@ async function main() {
     });
     console.log(JSON.stringify({ step: 'panel', ...panel }));
     assert.ok(panel.button, 'terminal button missing');
+    // The attachment notices load in the real window (adding a file used to show nothing on success).
+    const attachNotice = await page.evaluate(() => window.AgentDeskAttachNotice?.added([{ name: 'a.txt' }], 'chat') || null);
+    console.log(JSON.stringify({ step: 'attach-notice', text: attachNotice }));
+    assert.equal(attachNotice, '已添加 1 个附件（先存在本机，发送消息时一起上传）');
     await page.screenshot({ path: path.resolve('terminal-ui-smoke.png') }).catch(() => {});
   } finally {
     await app?.close().catch(() => {});

@@ -642,6 +642,7 @@
     if (!fromQueue) {
       const key = chat ? 'chatAttachments' : 'codexAttachments';
       s[key] = (s[key] || []).filter(file => !attachments.includes(file));
+      if (chat && attachments.length && notice) toast(notice.sent(attachments.length));
       if (s.draft?.trim() === text) s.draft = '';
       if (state.active === s.id) {
         if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
@@ -1252,16 +1253,22 @@
   // Claude / Grok / Antigravity chats: any file type, up to MAX_ATTACH per message; a folder arrives as one .zip.
   const MAX_ATTACH = 10;
   // Direct chat v2 (D9): attachments go to the server as soon as they are chosen, when the conversation exists.
-  function uploadNow(s, files) {
-    if (!files.length || !s.threadId || !fileApi.uploadChat) return;
-    fileApi.uploadChat(agentOf(s), s.threadId, files.map((file) => file.id)).catch(() => {});
+  // Returns whether the server takes uploads now (direct chat v2, with receipts) or only with the message (v1).
+  async function uploadNow(s, files) {
+    if (!files.length || !s.threadId || !fileApi.uploadChat) return false;
+    const result = await fileApi.uploadChat(agentOf(s), s.threadId, files.map((file) => file.id)).catch(() => null);
+    return result?.ok === true && result.v2 === true;
   }
+  const notice = window.AgentDeskAttachNotice;
   window.desk?.chat?.onAttachment?.((event) => {
     for (const s of D.sessions || []) {
       const file = (s.chatAttachments || []).find((item) => item.id === event.id);
       if (!file) continue;
+      const before = file.upload?.state;
       file.upload = { state: event.state, progress: event.progress, receivedAt: event.receivedAt, error: event.error };
       if (state.active === s.id && !state.group) renderAtt();
+      // The success the server confirmed, once per file.
+      if (event.state === 'received' && before !== 'received' && notice) toast(notice.received(file.name));
     }
   });
   function addChatFiles(s, { files = [], errors = [] }) {
@@ -1270,10 +1277,12 @@
     s.chatAttachments = [...current, ...accepted];
     for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
     if (state.active === s.id && !state.group) renderAtt();
-    uploadNow(s, accepted);
-    const folders = accepted.filter((file) => file.folder);
-    if (errors.length || accepted.length < files.length) toast(errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
-    else if (folders.length) toast(folders.map((file) => `${file.name}：已打包 ${file.folder.files} 个文件${file.folder.skipped.length ? `（跳过 ${file.folder.skipped.slice(0, 3).join('、')}${file.folder.skipped.length > 3 ? ' 等' : ''}）` : ''}`).join('；'));
+    const problem = errors.length || accepted.length < files.length ? errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。` : '';
+    // Success is announced too (it used to be silent), saying where the files are now.
+    uploadNow(s, accepted).then((uploading) => {
+      const text = [problem, notice ? notice.added(accepted, uploading ? 'upload' : 'chat') : (accepted.length ? `已添加 ${accepted.length} 个附件` : '')].filter(Boolean).join('；');
+      if (text) toast(text);
+    });
   }
   const fileToBase64 = (f) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(f); });
   const pastedName = (f) => f.name && f.name !== 'image.png' ? f.name

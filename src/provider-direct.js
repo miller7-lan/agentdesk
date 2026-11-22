@@ -124,6 +124,7 @@
       if (scope) localProposals.set(item, scope.token);
       s.items.push({ t: 'user', text: text + (files.length ? '\n📎 ' + files.map(file => file.name).join('、') : '') }, item);
       attachments.delete(s);
+      if (files.length && window.AgentDeskAttachNotice) A.toast(window.AgentDeskAttachNotice.sent(files.length));
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
       if (s.draft?.trim() === draft) s.draft = '';
@@ -231,6 +232,8 @@
       sendErrors.set(s, errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
     } else if (added.length) sendErrors.delete(s);
     if (A.state.active === s.id && !A.state.group) render(s);
+    // Success is announced too (it used to be silent): the files stay on this computer until the message is sent.
+    if (added.length && window.AgentDeskAttachNotice) A.toast(window.AgentDeskAttachNotice.added(added, 'chat'));
   }
   const usable = (s) => !s.agentThread && !s.busy && window.desk.files?.pickChat;
   async function attach(s, folders = false) {
