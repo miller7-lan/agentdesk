@@ -78,7 +78,7 @@ test('terminal shells follow the platform, and the Mac shell runs inside the Age
   assert.equal(terminalLaunch('cmd', { platform: 'win32' }).args.length, 0);
   assert.deepEqual(terminalLaunch(undefined, { platform: 'darwin', profile: 'P' }), { file: '/usr/bin/sandbox-exec', args: ['-p', 'P', '/bin/zsh', '-l'] });
   assert.throws(() => terminalLaunch('fish', { platform: 'darwin' }), /invalid_terminal_shell/);
-  assert.deepEqual(terminalSpec('win32').parameters.properties.shell.enum, ['powershell', 'pwsh', 'cmd']);
+  assert.deepEqual(terminalSpec('win32').inputSchema.properties.shell.enum, ['powershell', 'pwsh', 'cmd']);
 });
 
 const gitAvailable = (() => { try { execFileSync('git', ['--version']); return true; } catch { return false; } })();

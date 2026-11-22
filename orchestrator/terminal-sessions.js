@@ -208,7 +208,7 @@ function terminalSpec(platform = process.platform) {
       '(REPLs, prompts, long-running programs). action=open starts one in the project folder; write sends keystrokes (use \\r for Enter); ' +
       'read returns output after a cursor plus the current screen; signal SIGINT sends Ctrl+C. Writes to files from here are not covered ' +
       'by AgentDesk file locks: call file_lock_acquire first for files another session may be editing.',
-    parameters: { type: 'object', additionalProperties: false, required: ['action'], properties: {
+    inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
       action: { type: 'string', enum: ['open', 'write', 'read', 'resize', 'signal', 'close', 'list'] },
       terminalId: { type: 'string' }, data: { type: 'string' }, cursor: { type: 'integer', minimum: 0 },
       shell: { type: 'string', enum: shells }, cols: { type: 'integer' }, rows: { type: 'integer' },
@@ -221,7 +221,7 @@ const lockSpec = {
   type: 'function', name: 'file_lock_acquire',
   description: 'Lock project files before changing them with local_shell or the terminal, whose writes AgentDesk cannot see. ' +
     'Waits up to 120 s if another session holds them; the lock ends 30 s after your last write or with this turn. Paths are relative to the project.',
-  parameters: { type: 'object', additionalProperties: false, required: ['paths'], properties: {
+  inputSchema: { type: 'object', additionalProperties: false, required: ['paths'], properties: {
     paths: { type: 'array', minItems: 1, maxItems: 64, items: { type: 'string' } },
   } },
 };
