@@ -6,7 +6,7 @@
 
 | 端 | 状态 |
 |---|---|
-| VPS2 主控 | 已部署群聊 v7 的服务端代码（源提交 `80fbb2d`，即合并进 `main` 的版本；文档提交不改代码）。`groupFeatures` 中 14 个开关都已打开 |
+| VPS2 主控 | 已部署群聊 v7 的服务端代码（源提交 `80fbb2d`）。之后 `main` 上 `orchestrator/` 只改了 `terminal-sessions.js` 和 `windows-project-leases.js`，这两个文件只在电脑端的 Worker 里用，主控不加载，所以 VPS2 不需要为此重新部署。`groupFeatures` 中 14 个开关都已打开 |
 | Mac 应用和 Mac 后台 Bridge | **没有更新**，仍是用户原来安装的版本 |
 | Windows 应用（Bridge 在应用里） | **没有更新**，仍是用户原来安装的版本 |
 | 单聊 directChatV2 | 没有对任何设备打开（VPS2 上没有 `/etc/agentdesk-orchestrator/devices.json`） |
@@ -135,9 +135,24 @@ npm run dist      # 产物在 dist\：便携版和 NSIS 安装版
 
 退出应用，用保留的旧安装包覆盖安装，恢复备份的 `remote.json` 和 Bridge 配置。也可以只在 VPS2 上关闭对应开关。
 
-### 已知问题
+### 单聊终端的现状
 
-单聊终端的打包检查在 Windows 上仍未通过：真实 node-pty 中，Ctrl+C 之后 shell 没有响应。群聊不依赖终端，但单聊终端在 Windows 上不能算可用。
+单聊的交互终端（node-pty + xterm.js）由 GitHub Actions 的 **Terminal packaging check** 在真实的 macOS arm64 和 Windows x64 运行器上检查：
+- 用真实 node-pty 跑测试；
+- 不签名打包；
+- 在打包后的应用里，通过 Worker 驱动真实的 zsh/bash 或 PowerShell/CMD，覆盖输出、AI 写入、接管、Ctrl+C、调整大小、应用重连后找回终端；
+- 在应用窗口里渲染 xterm。
+
+自提交 `12f7e16` 起，两个平台全部通过，例如 run [44993538368](https://github.com/miller7-lan/agentdesk/actions/runs/44993538368)。该次运行留下的未签名包（`agentdesk-terminal-mac`、`agentdesk-terminal-windows`）只用于检查，不要当作正式安装包。
+
+之前失败的原因和修复：
+- **macOS，打包后的检查**：检查脚本本身有语法错误，没测任何东西就退出了（`906431a` 修复）。
+- **macOS，bash 中 Ctrl+C 不能停下整行命令**：macOS 自带 bash 3.2，在继承了外层 `SHLVL` 时只停当前命令。现在终端像新开的终端窗口一样，不带 `SHLVL` 启动（`aa30c52`）。
+- **Windows，Ctrl+C 之后“没有响应”**：Ctrl+C 其实生效了，但控制台会丢掉 Ctrl+C 被处理之前已经输入的内容。人在新提示符出现后再输入就没有问题；检查也改为这样做（`aa30c52`）。
+- **Windows，应用重连后找不回终端**（`native_chat_lease_denied`）：租约按真实路径保存，查找时却按原样比较；遇到 8.3 短路径或链接就找不到。已修复（`e6a3f6b`），这是用户也会遇到的问题。
+- **Windows，窗口检查无法启动应用**：检查给应用指定的 `APPDATA` 目录不存在。现在会先创建（`12f7e16`）；如果仍然启动失败，会报告应用的退出情况。
+
+这些都是 **CI 运行器上的验证，不是用户真机验收**。在你的电脑上要等新客户端安装后，按第 2.4 / 3.4 节确认终端能打开、能输入、Ctrl+C 能停下长命令、关掉窗口再打开能找回终端。
 
 ## 4. 服务端（VPS2）
 
@@ -221,7 +236,7 @@ cd /tmp && sudo -u agentdesk env AGENTDESK_BRIDGE=mac /opt/agentdesk-orchestrato
 ## 5. 已知限制（部署前请知悉）
 
 - 群聊 v7 的 Bridge 端能力只在 Linux 本机和 GitHub CI 的 macOS/Windows 运行器上测试过，**没有在用户的 Mac/Windows 上验收过**。按第 2.4、3.4 节逐项确认后才算可用。
-- 群聊没有交互终端。补丁**应用前**的本机测试仍在本机临时拷贝里运行；补丁应用后的测试在原项目里运行。
+- 群聊没有交互终端（单聊终端的打包检查在 CI 上已通过，但还没有在真机上验收，见第 3 节“单聊终端的现状”）。补丁**应用前**的本机测试仍在本机临时拷贝里运行；补丁应用后的测试在原项目里运行。
 - 改了平台相关源码的环境修复只做标记，不会在云端重跑测试。
 - Windows 不做强制隔离或凭据保护，只做检测和标注（M1、M2、O3 的决定）。
 - 单聊 directChatV2 需要另外授权，本文不涉及；不要为此写设备密钥文件或 `devices.json`。

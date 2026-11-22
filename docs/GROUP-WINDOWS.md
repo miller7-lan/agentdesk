@@ -27,11 +27,11 @@
 
 ## 未在真机验证
 
-以上行为只在 Linux 上做了测试。Windows 上需要真机验收的项目：
+以上行为做过自动测试：一是 Linux 本机，二是 GitHub CI 的 Windows 运行器（PowerShell、CRLF、拷贝副本、改动检测）。这些是 CI 验证，**不是用户真机验收**。Windows 上需要真机验收的项目：
 
 - 拷贝副本；
 - PowerShell 和 cmd 下的命令；
 - 检测提示；
 - 补丁应用。
 
-单聊终端打包检查在 Windows 上仍未通过（Ctrl+C 后 shell 没有响应），群聊交互终端也没有做。客户端（含新版 Bridge）还没有在用户的 Windows 上安装或替换。
+单聊终端的打包检查（真实 node-pty、打包后的 Worker 终端、窗口里的 xterm）自 `12f7e16` 起在 GitHub CI 的 Windows 运行器上通过，详见 [LOCAL-DEPLOY.md](LOCAL-DEPLOY.md#单聊终端的现状)；这只是 CI 验证，还没有在用户的 Windows 上验收。群聊交互终端没有做。客户端（含新版 Bridge）还没有在用户的 Windows 上安装或替换。
