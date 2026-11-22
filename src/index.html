@@ -71,6 +71,7 @@
       <div class="side-footer">
         <button class="side-action" id="workspaceSettings" type="button" hidden>工作区</button>
         <button class="side-action" id="diagnosticsOpen" type="button" hidden>诊断</button>
+        <button class="side-action" id="updatesOpen" type="button" hidden>更新</button>
         <button class="side-action" id="sbOrchestrator" type="button" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="5" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M12 8v4m-5.5 4v-4h11v4"/></svg>
           <span>主控线路</span>
@@ -324,6 +325,29 @@
       <button type="button" class="btn" id="updatesCheck">检查更新</button>
     </div>
   </dialog>
+  <dialog id="updatesDialog" class="orchestrator-dialog" aria-labelledby="updatesTitle">
+    <form method="dialog" class="orchestrator-heading">
+      <h2 id="updatesTitle">更新</h2>
+      <button type="submit" class="orchestrator-close" aria-label="关闭">×</button>
+    </form>
+    <p id="updatesTitleStatus" role="status" aria-live="polite"></p>
+    <ul id="updatesLines" class="updates-lines"></ul>
+    <progress id="updatesProgress" class="updates-progress" max="100" value="0" hidden></progress>
+    <p id="updatesProgressText" class="updates-muted"></p>
+    <p id="updatesNotice"></p>
+    <ul id="updatesReasons" class="updates-reasons"></ul>
+    <p id="updatesError" class="updates-error" role="alert"></p>
+    <label class="updates-auto"><input type="checkbox" id="updatesAutoDownload" /> 自动下载更新（仅已签名版本）</label>
+    <div class="task-actions">
+      <button type="button" class="btn" id="updatesCheckNow">检查更新</button>
+      <button type="button" class="btn" id="updatesDownload">立即下载</button>
+      <button type="button" class="btn" id="updatesRetry">重试</button>
+      <button type="button" class="btn" id="updatesLater">稍后更新</button>
+      <button type="button" class="btn" id="updatesWatch" hidden>任务结束后提醒我</button>
+      <button type="button" class="btn" id="updatesReveal" hidden>打开下载位置</button>
+      <button type="button" class="btn primary" id="updatesInstall">重启并更新</button>
+    </div>
+  </dialog>
   <dialog id="onboardingDialog" class="orchestrator-dialog" aria-labelledby="onboardingTitle">
     <h2 id="onboardingTitle"></h2>
     <div id="onboardingContent" class="group-project-form"></div>
@@ -434,5 +458,6 @@
   <script src="projects.js"></script>
   <script src="wizard.js"></script>
   <script src="diagnostics-ui.js"></script>
+  <script src="updates-ui.js"></script>
 </body>
 </html>

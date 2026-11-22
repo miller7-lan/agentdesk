@@ -561,3 +561,15 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 
 /* 群聊 v7：上传云端与补丁下载成功提示 */
 .upload-ok { color: #2e7d4f; }
+
+/* Update dialog (updates-ui.js) */
+.updates-lines, .updates-reasons { margin: 6px 0; padding-left: 18px; }
+.updates-lines { list-style: none; padding-left: 0; color: var(--muted); }
+.updates-reasons li { color: var(--warn); }
+.updates-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.updates-muted { color: var(--muted); margin: 4px 0; }
+.updates-error { color: var(--danger); margin: 4px 0; }
+.updates-error:empty, .updates-muted:empty, #updatesNotice:empty { display: none; }
+.updates-auto { display: flex; gap: 8px; align-items: center; margin: 8px 0; color: var(--muted); }
+#updatesOpen.has-update::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px;
+  border-radius: 50%; background: var(--accent); vertical-align: middle; }

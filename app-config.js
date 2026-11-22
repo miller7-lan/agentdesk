@@ -148,7 +148,9 @@ async function migrate(legacyFiles, defaults) {
     projects: [{ id: 'live', name: defaults.name || '工作区', kind: localRoot ? 'local' : 'remote',
       localRoot, remoteCwd, ...(projectId.test(workspace || '') && { orchestratorWorkspace: workspace }) }],
     activeProject: 'live',
-    update: { enabled: false, feedUrl: '' },
+    // Optional: autoCheck / autoDownload (updates.js). Without them, signed builds check and download by themselves and
+    // unsigned builds only check when asked or told by VPS2. The old enabled / feedUrl keys are no longer read.
+    update: {},
   };
 }
 
