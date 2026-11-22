@@ -103,7 +103,16 @@ test('terminals through the Worker: window and AI share one terminal, takeover, 
   const long = WINDOWS ? 'Start-Sleep -Seconds 30; Write-Output after-sleep\r' : 'sleep 30; echo after-sleep\r';
   await first.request('terminalInput', { binding, terminalId: id, data: long });
   await new Promise((resolve) => setTimeout(resolve, 1500));
+  const signalMark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
   await first.request('terminalSignal', { binding, terminalId: id, signal: 'SIGINT' });
+  // Type the next command once the shell answered the Ctrl+C (its new prompt), as a person does: consoles discard
+  // input typed before they handled it (Windows flushes the console input buffer; a POSIX tty flushes on SIGINT).
+  for (let seen = -1, end = Date.now() + 10_000; Date.now() < end;) {
+    const { cursor } = await first.request('terminalRead', { binding, terminalId: id, cursor: 0 });
+    if (cursor > signalMark && cursor === seen) break;
+    seen = cursor;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
   const mark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
   await first.request('terminalInput', { binding, terminalId: id, data: marker });
   const explain = async () => {
@@ -133,4 +142,43 @@ test('terminals through the Worker: window and AI share one terminal, takeover, 
   assert.deepEqual((await second.request('terminalRead', { binding: otherBinding })).terminals, []);
   await assert.rejects(second.request('terminalInput', { binding: otherBinding, terminalId: id, data: 'x' }), /terminal_not_found/);
   assert.equal((await second.request('terminalClose', { binding: again, terminalId: id })).state, 'closed');
+});
+
+test('a terminal starts as a new top-level session: the shell level of whatever started AgentDesk is not passed on', () => {
+  let spawned;
+  const pty = { spawn(file, args, options) { spawned = options; return { onData() {}, onExit() {}, write() {}, resize() {}, kill() {} }; } };
+  const terminals = new TerminalSessions({ pty, env: () => ({ PATH: '/usr/bin', SHLVL: '3' }) });
+  terminals.open('scope', { cwd: os.tmpdir(), shell: WINDOWS ? 'powershell' : 'bash' });
+  assert.equal(spawned.env.SHLVL, undefined);
+  assert.equal(spawned.env.PATH, '/usr/bin');
+});
+
+// Real bash (macOS ships bash 3.2): with an inherited SHLVL, Ctrl+C used to kill only `sleep` and bash went on to
+// print "after-sleep". Started the way CI and a Terminal-launched AgentDesk start it (SHLVL set), Ctrl+C must stop
+// the whole command line.
+test('real bash: Ctrl+C stops the whole command line even when AgentDesk was started from a shell', {
+  skip: WINDOWS || !realPty || !fs.existsSync('/bin/bash'), timeout: 60_000,
+}, async (t) => {
+  const terminals = new TerminalSessions({ pty: realPty, env: () => ({ ...process.env, SHLVL: '3' }) });
+  t.after(() => terminals.closeAll());
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ad-terminal-bash-')));
+  t.after(() => fs.rmSync(project, { recursive: true, force: true }));
+  const { terminalId: id } = terminals.open('scope', { cwd: project, shell: 'bash' });
+  const read = (cursor) => terminals.read('scope', id, cursor);
+  terminals.write('scope', id, 'echo agent""desk-ok\r');
+  await until(() => read(0).data.includes('agentdesk-ok'), 20_000, 'bash prompt');
+  terminals.write('scope', id, 'sleep 30; echo after-sleep\r');
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const signalMark = read(0).cursor;
+  terminals.signal('scope', id, 'SIGINT');
+  for (let seen = -1, end = Date.now() + 10_000; Date.now() < end;) {
+    const { cursor } = read(0);
+    if (cursor > signalMark && cursor === seen) break;
+    seen = cursor;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  const mark = read(0).cursor;
+  terminals.write('scope', id, 'echo agent""desk-ok\r');
+  const after = await until(() => { const r = read(mark); return r.data.includes('agentdesk-ok') && r; }, 40_000, 'bash after Ctrl+C');
+  assert.equal(after.data.includes('after-sleep'), false, 'Ctrl+C did not stop the whole line: ' + JSON.stringify(read(0).data.slice(-500)));
 });

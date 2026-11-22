@@ -31,6 +31,19 @@ async function until(check, ms, what, explain) {
   }
 }
 
+// Wait (up to 10 s) for output after `mark` — the shell's answer to Ctrl+C — and for it to stop changing.
+async function settled(client, binding, id, mark) {
+  const end = Date.now() + 10_000;
+  let seen = -1;
+  while (Date.now() < end) {
+    const { cursor } = await client.request('terminalRead', { binding, terminalId: id, cursor: 0 });
+    if (cursor > mark && cursor === seen) return true;
+    seen = cursor;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return false;
+}
+
 async function main() {
   assert.ok(fs.existsSync(asar), 'app.asar missing at ' + asar);
   log('runtime', { electron: process.versions.electron, node: process.versions.node, modules: process.versions.modules, arch: process.arch, platform: process.platform });
@@ -87,15 +100,19 @@ async function main() {
     // Ctrl+C interrupts a long command; the shell answers afterwards.
     await first.request('terminalInput', { binding, terminalId: id, data: long[shell] });
     await new Promise((resolve) => setTimeout(resolve, 2000));
+    const signalMark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
     await first.request('terminalSignal', { binding, terminalId: id, signal: 'SIGINT' });
     if (shell === 'cmd') {
       // CMD asks "Terminate batch job (Y/N)?" only for batch files; for ping it just stops. Send Enter for a fresh prompt.
       await first.request('terminalInput', { binding, terminalId: id, data: '\r' });
     }
+    // Like a person: type the next command once the shell has answered the Ctrl+C (its new prompt). Consoles discard
+    // what was typed before they handled Ctrl+C (Windows flushes the console input; a POSIX tty flushes on SIGINT).
+    await settled(first, binding, id, signalMark);
     const afterMark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
     await first.request('terminalInput', { binding, terminalId: id, data: marker[shell] });
     const after = await until(async () => { const r = await first.request('terminalRead', { binding, terminalId: id, cursor: afterMark }); return r.data.includes('agentdesk-ok') && r; }, 30_000, shell + ' after Ctrl+C', explainer(id));
-    assert.equal(after.data.includes('after-sleep'), false, shell + ': Ctrl+C did not stop the command');
+    if (after.data.includes('after-sleep')) assert.fail(shell + ': Ctrl+C did not stop the command — ' + await explainer(id)());
     const resized = await first.request('terminalResize', { binding, terminalId: id, cols: 150, rows: 45 });
     assert.equal(resized.cols, 150);
     log('interactive', { shell, ai: true, takeover: true, ctrlC: true, resize: true });

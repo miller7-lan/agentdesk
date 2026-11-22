@@ -46,6 +46,16 @@ function terminalLaunch(shell, { platform = process.platform, profile } = {}) {
   return { file: binary, args: ['-l'] };
 }
 
+// A terminal is a new top-level session, like one opened in Terminal.app or Windows Terminal: the shell level of
+// whatever started AgentDesk is not passed on. macOS's bash 3.2 treats Ctrl+C differently below the top level —
+// it kills only the running command and goes on with the rest of the line (`sleep 30; echo done` still prints
+// "done") — so an inherited SHLVL made Ctrl+C look broken in bash (seen in the packaged-app check on macOS).
+function terminalEnv(env) {
+  const copy = { ...env };
+  for (const key of Object.keys(copy)) if (key.toUpperCase() === 'SHLVL') delete copy[key];
+  return copy;
+}
+
 class TerminalSessions {
   constructor({ pty = loadPty(), maxPerSession = MAX_PER_SESSION, bufferLimit = BUFFER_LIMIT, env = () => process.env,
     profile = () => undefined, onEvent = () => {}, now = Date.now } = {}) {
@@ -75,7 +85,7 @@ class TerminalSessions {
     const size = (value, low, high, fallback) => Number.isSafeInteger(value) && value >= low && value <= high ? value : fallback;
     const launch = terminalLaunch(shell, { profile: this.profile() });
     const child = this.pty.spawn(launch.file, launch.args, {
-      name: 'xterm-256color', cols: size(cols, 20, 400, 120), rows: size(rows, 5, 200, 32), cwd: cwd || os.homedir(), env: this.env(),
+      name: 'xterm-256color', cols: size(cols, 20, 400, 120), rows: size(rows, 5, 200, 32), cwd: cwd || os.homedir(), env: terminalEnv(this.env()),
       useConpty: true,
     });
     const terminal = { id: randomUUID(), scope, shell: shell || null, cols: size(cols, 20, 400, 120), rows: size(rows, 5, 200, 32), process: child,
@@ -216,4 +226,4 @@ const lockSpec = {
   } },
 };
 
-module.exports = { TerminalSessions, terminalSpec, terminalLaunch, lockSpec, loadPty, MAX_PER_SESSION };
+module.exports = { terminalEnv, TerminalSessions, terminalSpec, terminalLaunch, lockSpec, loadPty, MAX_PER_SESSION };
