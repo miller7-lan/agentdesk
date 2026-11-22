@@ -48,7 +48,7 @@ sudo -u agentdesk env HOME=/var/lib/agentdesk-orchestrator/homes/antigravity /us
 | `research` | 查资料（联网搜索） | antigravity → grok（→ gemini） |
 | `accept` | 按摘要验收 | claude |
 
-Claude 只做 `plan` / `triage` / `accept`，配置无法让它承担其他能力。括号里的 Gemini 只在配置了 Gemini CLI 时作为最后的后备：Google 已于 2026 年 6 月停用 Gemini CLI 并由 Antigravity CLI 取代，样例配置不再包含它。
+默认（`groupFeatures.anyLead: true`）任意成员都可以做 `plan` / `triage` / `accept`，Claude 也可以承担其他能力，候选顺序照上表和 `routing`。关掉 `anyLead` 时 Claude 只做 `plan` / `triage` / `accept`，配置无法让它承担其他能力。括号里的 Gemini 只在配置了 Gemini CLI 时作为最后的后备：Google 已于 2026 年 6 月停用 Gemini CLI 并由 Antigravity CLI 取代，样例配置不再包含它。
 
 在 `config.json` 的 `routing` 里改顺序即可调整，未配置的 CLI 会被跳过。Gemini 只能读，不能放进 `implement`。
 
