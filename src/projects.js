@@ -198,7 +198,8 @@
     if (!project.serverProject || !/^group-[0-9a-f-]+$/.test(project.id)) return false;
     if (!registering.has(project.id)) {
       registering.set(project.id, (async () => {
-        const result = await api.add({ groupId: project.id, name: project.name, kind: 'remote', orchestratorWorkspace: project.serverProject });
+        const result = await api.add({ groupId: project.id, name: project.name, kind: 'remote', orchestratorWorkspace: project.serverProject })
+          .catch((error) => ({ ok: false, error: error?.message || String(error) }));
         if (!result?.ok) {
           // Registered meanwhile (another window, an earlier click): fine as long as it is there now.
           const listed = await api.list().catch(() => null);

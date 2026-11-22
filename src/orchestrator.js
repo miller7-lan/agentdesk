@@ -1976,8 +1976,14 @@ window.__groupReady = (async () => {
     return checking;
   }
 
+  // A click while another group operation is still running used to do nothing at all.
+  function stillBusy() {
+    if (busy) A.toast('上一个操作还在进行，完成后再试');
+    return busy;
+  }
+
   async function run(action, group) {
-    if (busy) return false;
+    if (stillBusy()) return false;
     busy = true;
     if (!group || !isExample(group.id)) await checking;
     if (group) group.taskError = '';
@@ -2283,10 +2289,10 @@ window.__groupReady = (async () => {
     event.preventDefault();
     const group = currentGroup();
     const draft = input.value.trim();
-    if (!group || groupEnded(group) || !draft || busy) return;
+    if (!group || groupEnded(group) || !draft || stillBusy()) return;
     if (group.planReply) {
       const { id, revision } = group.planReply;
-      if (!isExample(group.id) && !connected) return;
+      if (!isExample(group.id) && !connected) { A.toast('主控线路还没连上，连上后再发送回复'); return; }
       if (await sendPlanAction(group, id, revision, 'plan_reply', draft)) {
         if (group === currentGroup()) cancelPlanReply(group);
         else {
@@ -2417,7 +2423,7 @@ window.__groupReady = (async () => {
   async function stopTask(id) {
     const group = currentGroup();
     const task = group?.records.get(id);
-    if (!task || busy) return;
+    if (!task || stillBusy()) return;
     if (!window.confirm(`停止任务「${String(task.prompt || '').slice(0, 40)}」？\n正在运行的成员会被停下；已经生成、还没应用的补丁不会应用。`)) return;
     group.selected = id;
     await taskAction('cancel');
@@ -2432,7 +2438,7 @@ window.__groupReady = (async () => {
   // Stop one running step: the lead reassigns it; the task carries on.
   timeline.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-stop-step]');
-    if (!button || busy) return;
+    if (!button || stillBusy()) return;
     if (!window.confirm('停止这一步？它会交给组长换成员或换模型重新安排，任务本身继续。')) return;
     try {
       const answer = await control('stop_step', { taskId: button.dataset.stopStep, stepId: button.dataset.step });
@@ -2444,7 +2450,7 @@ window.__groupReady = (async () => {
   timeline.addEventListener('click', async (event) => {
     const id = event.target.closest('[data-approve-addition]')?.dataset.approveAddition;
     const group = currentGroup();
-    if (!id || !group || busy) return;
+    if (!id || !group || stillBusy()) return;
     await run(async () => {
       const answer = await control('approve_addition', { taskId: id });
       updateTask(group, id, answer, true);
@@ -2455,7 +2461,7 @@ window.__groupReady = (async () => {
     const id = event.target.closest('[data-retry-task]')?.dataset.retryTask;
     const group = currentGroup();
     const task = id && group?.records.get(id);
-    if (!task || busy || groupEnded(group)) return;
+    if (!task || groupEnded(group) || stillBusy()) return;
     group.reference = task.id;
     input.value = `${task.prompt || ''}\n\n（上一次没完成：${failureReason(task)}。请组长换个办法重新安排。）`;
     form.requestSubmit();
@@ -2569,7 +2575,8 @@ window.__groupReady = (async () => {
         const group = currentGroup();
         const id = planButton.dataset.planTask;
         const round = group.records.get(id)?.plan?.rounds.at(-1);
-        if (!round || busy) return;
+        if (!round) { A.toast('方案已更新，请按最新一轮操作'); return; }
+        if (stillBusy()) return;
         if (planButton.dataset.planAction === 'approve') {
           sendPlanAction(group, id, round.revision, 'plan_approve');
         } else {
@@ -2681,7 +2688,14 @@ window.__groupReady = (async () => {
     const name = $('#groupProjectName').value.trim();
     if (!name) return;
     const binding = projectBinding.value;
-    if (binding && !routeState.projects?.includes(binding)) return;
+    if (binding && !routeState.projects?.includes(binding)) { A.toast('这个主控工作区现在不可用，请刷新线路后重新选择'); return; }
+    // The orchestrator's workspaces are still loading: creating now would make an unbound project in which
+    // attachments never work. Wait for the list instead of creating it silently unbound.
+    if (!binding && supported && !knownRoutes && !temporary) {
+      A.toast('正在读取主控的工作区，读到后再选择并创建');
+      Promise.resolve(refresh()).finally(syncProjectChoices);
+      return;
+    }
     const project = { id: 'group-' + crypto.randomUUID(), name, branch: 'main', live: Boolean(binding), serverProject: binding || undefined };
     A.D.projects.push(project);
     savedProjects.push(project);

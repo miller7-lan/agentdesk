@@ -85,6 +85,13 @@ async function main() {
     assert.equal(project.before, 0, 'an unregistered project must not take attachments');
     assert.ok(project.added && project.registered, 'the project is registered without a folder');
     assert.equal(project.after, 1, 'attachments work once the project is set up: ' + JSON.stringify(project.afterErrors));
+    // Every stage's last safety net: a failure nobody handled is shown, instead of a click doing nothing.
+    const safetyNet = await page.evaluate(() => new Promise((resolve) => {
+      Promise.reject(new Error('ci-unhandled-check'));
+      setTimeout(() => resolve(document.querySelector('#toast')?.textContent || ''), 300);
+    }));
+    console.log(JSON.stringify({ step: 'unhandled-failure-notice', text: safetyNet }));
+    assert.equal(safetyNet, '操作没有完成：ci-unhandled-check');
     await page.screenshot({ path: path.resolve('terminal-ui-smoke.png') }).catch(() => {});
   } finally {
     await app?.close().catch(() => {});
