@@ -876,9 +876,10 @@ class WindowsOperations {
         !Number.isSafeInteger(body.timeout_ms) || body.timeout_ms < 1 || body.timeout_ms > 900000) {
       throw new Error('command_not_authorized');
     }
-    // M2 (group chat v7, credentialSandbox): on a Mac the command runs with credential and AgentDesk folders closed.
+    // M2 (group chat v7, credentialSandbox): on a Mac the command runs with AgentDesk's own key folders closed;
+    // credential folders stay open, as in a native single chat (the user's choice: finish the work first).
     const argv = body.credentialSandbox === true && this.group.platform.platform === 'mac'
-      ? this.group.platform.wrap(spec, { credentials: true, extra: [this.config.stateDir].filter(Boolean) }) : spec;
+      ? this.group.platform.wrap(spec, { credentials: false, extra: [this.config.stateDir].filter(Boolean) }) : spec;
     const result = await this.commands.start({ scope: taskId, key: id, name: body.command, argv, cwd: root, timeout: body.timeout_ms });
     const { code, stdout, stderr, truncated } = result;
     if (code === null) throw new Error(result.error);

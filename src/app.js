@@ -239,13 +239,20 @@
     $('#sessionList').querySelector('.sess.active')?.focus();
   });
 
-  async function newDirect(project = (state.group && projectIdOf(state.group)) || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex', { worktree = false } = {}) {
+  async function newDirect(project = (state.group && projectIdOf(state.group)) || sess(state.active)?.project || (LIVE ? 'live' : 'p1'), agent = 'codex', options = {}) {
+    // Every outcome is visible: a failure on the way (setting up the project, the worktree) says why.
+    try { return await startDirect(project, agent, options); }
+    catch (error) { toast('没能新建单聊：' + (error?.message || String(error))); }
+  }
+  async function startDirect(project, agent, { worktree = false } = {}) {
     project = projectIdOf(project);
     let p = proj(project);
-    if (!p) return;
+    if (!p) { toast('找不到这个项目，请在左侧重新选择'); return; }
     if (!Object.hasOwn(AGENT_NAMES, agent)) { toast('该 AI 尚未启用原生单聊'); return; }
     if (LIVE && !p.configured && p.id.startsWith('group-')) {
-      if (!await window.AgentDeskProjects?.bindForDirect(p)) return;
+      // Bound to an orchestrator workspace: set up automatically (no folder to pick); otherwise choose a folder.
+      const ready = p.serverProject ? await window.AgentDeskProjects?.ensureRegistered?.(p) : await window.AgentDeskProjects?.bindForDirect(p);
+      if (!ready) return;
       p = proj(project);
     }
     if (LIVE && !p.live) { toast('这是示例项目，请在已连接的工作区开始单聊'); return; }
@@ -327,7 +334,7 @@
     if (it.t === 'approval') {
       const done = it.state !== 'pending';
       return `<div class="approval ${done ? 'resolved' : ''}" data-idx="${idx}">
-        <div class="approval-title">${svg('shield')}${esc(it.title)}${done ? `<span class="grow"></span><span class="verdict ${it.state === 'approved' ? 'ok' : 'no'}">${it.state === 'approved' ? '已批准' : '已拒绝'}</span>` : ''}</div>
+        <div class="approval-title">${svg('shield')}${esc(it.title)}${done ? `<span class="grow"></span><span class="verdict ${it.state === 'approved' ? 'ok' : 'no'}">${it.state === 'approved' ? '已批准' : it.state === 'expired' ? '已失效，未送达' : '已拒绝'}</span>` : ''}</div>
         <div class="approval-desc">${esc(it.desc)}</div><pre class="mono">${esc(it.cmd)}</pre>
         ${done ? '' : `<div class="approval-actions"><button class="btn primary" data-act="approve">批准</button><button class="btn danger" data-act="reject">拒绝</button>
           ${it.sessionable === false ? '' : '<label class="remember"><input type="checkbox" data-act="remember" /> 本会话内不再询问此类操作</label>'}</div>`}</div>`;
@@ -728,6 +735,19 @@
   });
 
   /* ---------- 对外接口（live.js 使用） ---------- */
+  // Last safety net for every stage (creating, attaching, sending, approving, retrying, reconnecting): a failure that
+  // nothing else handled is shown, instead of the click silently doing nothing.
+  const unhandledText = (reason) => '操作没有完成：' + String(reason?.message || reason || '未知错误').slice(0, 200);
+  window.addEventListener('unhandledrejection', (event) => {
+    if (event.reason?.name === 'AbortError') return;
+    console.error('[unhandled]', event.reason);
+    toast(unhandledText(event.reason));
+  });
+  window.addEventListener('error', (event) => {
+    if (!event.error) return;   // resource load errors carry no error object; those are not clicks
+    console.error('[error]', event.error);
+    toast(unhandledText(event.error));
+  });
   window.__desk = { D, state, LIVE, $, $$, esc, svg, store, sess, proj, toast, pet, setBusy, agentName, AGENT_NAMES, renderAll: () => renderAll(), renderPanel: () => renderPanel(),
     renderTerm: () => renderTerm(), showPanel, openSession, openGroup, newDirect, renderSidebar, autosize, renderAttach, applyLayout: () => applyLayout() };
   const L = () => window.__live;

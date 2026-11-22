@@ -109,7 +109,7 @@ class GroupLocal {
     const launch = Array.isArray(spec) ? { argv: spec } : spec;
     const top = inCopy ? await this.originalTop(root) : null;
     const argv = this.platform.platform === 'mac'
-      ? this.platform.wrap(launch.argv, { credentials: body.credentialSandbox === true, extra: [this.stateDir].filter(Boolean), denyWrite: top ? [top, root] : [] })
+      ? this.platform.wrap(launch.argv, { credentials: false, extra: [this.stateDir].filter(Boolean), denyWrite: top ? [top, root] : [] })
       : launch.argv;
     // Windows (and Linux tests): the original cannot be closed, so a change to it during the copy's command is reported.
     const watch = inCopy && this.platform.enforcement.original !== 'sandbox';

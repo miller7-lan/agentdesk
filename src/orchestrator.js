@@ -398,13 +398,21 @@ window.__groupReady = (async () => {
     const added = files.slice(0, Math.max(0, MAX_ATTACH - group.attachments.length));
     group.attachments.push(...added);
     for (const extra of files.slice(added.length)) fileApi.forgetChat(extra.id);
-    if (errors.length || added.length < files.length) A.toast(errors.join('；') || `每个群聊任务最多附加 ${MAX_ATTACH} 个文件。`);
+    const problem = errors.length || added.length < files.length ? errors.join('；') || `每个群聊任务最多附加 ${MAX_ATTACH} 个文件。` : '';
+    // Success is announced too (it used to be silent): the files stay on this computer until the task is sent.
+    const text = [problem, added.length && window.AgentDeskAttachNotice ? window.AgentDeskAttachNotice.added(added, 'group') : ''].filter(Boolean).join('；');
+    if (text) A.toast(text);
     if (group === currentGroup()) renderGroupAttachments();
   }
   async function withGroupProject(work) {
     const group = currentGroup();
     if (groupEnded(group)) return;
-    const project = appProjectOf(group);
+    let project = appProjectOf(group);
+    // A group project created from the orchestrator before projects were set up automatically: set it up now.
+    if (!project && group && !isExample(group.id)) {
+      const entry = A.proj(group.id);
+      if (entry?.serverProject && await window.AgentDeskProjects?.ensureRegistered?.(entry)) project = appProjectOf(group);
+    }
     if (!group || isExample(group.id) || !project || !fileApi?.pickChat) { A.toast('请先为这个项目连接主控，再添加附件。'); return; }
     try { addGroupFiles(group, await work(project)); } catch (error) { A.toast(error.message); }
   }
@@ -1122,7 +1130,7 @@ window.__groupReady = (async () => {
         const note = platform === 'win32'
           ? 'Windows：群聊在本机运行的命令没有强制保护凭据目录，本机副本也没有强制隔离（只做改动检测）；AgentDesk 自己的文件工具和挂载仍拒绝凭据目录、.git 内部和 AgentDesk 密钥目录。'
           : platform === 'darwin'
-            ? 'Mac：群聊在本机运行的命令在 sandbox 下运行，挡住凭据目录和 AgentDesk 密钥目录（.git 不挡）；写代码阶段在本机副本里运行时禁止写原项目。需要已更新的 AgentDesk 连接组件，旧版本会如实提示未生效。'
+            ? 'Mac：群聊在本机运行的命令在 sandbox 下运行，只挡 AgentDesk 自己的密钥目录（凭据目录、钥匙串和 .git 不挡，和单聊一样）；写代码阶段在本机副本里运行时禁止写原项目。需要已更新的 AgentDesk 连接组件，旧版本会如实提示未生效。'
             : '';
         if (note) deferred.push({ at: task.snapshotNotice.at, html: `<p class="group-system">${esc(note)}</p>` });
       }
@@ -1968,8 +1976,14 @@ window.__groupReady = (async () => {
     return checking;
   }
 
+  // A click while another group operation is still running used to do nothing at all.
+  function stillBusy() {
+    if (busy) A.toast('上一个操作还在进行，完成后再试');
+    return busy;
+  }
+
   async function run(action, group) {
-    if (busy) return false;
+    if (stillBusy()) return false;
     busy = true;
     if (!group || !isExample(group.id)) await checking;
     if (group) group.taskError = '';
@@ -2275,10 +2289,10 @@ window.__groupReady = (async () => {
     event.preventDefault();
     const group = currentGroup();
     const draft = input.value.trim();
-    if (!group || groupEnded(group) || !draft || busy) return;
+    if (!group || groupEnded(group) || !draft || stillBusy()) return;
     if (group.planReply) {
       const { id, revision } = group.planReply;
-      if (!isExample(group.id) && !connected) return;
+      if (!isExample(group.id) && !connected) { A.toast('主控线路还没连上，连上后再发送回复'); return; }
       if (await sendPlanAction(group, id, revision, 'plan_reply', draft)) {
         if (group === currentGroup()) cancelPlanReply(group);
         else {
@@ -2372,6 +2386,7 @@ window.__groupReady = (async () => {
       // Sent: the desktop has handed the files over and forgotten them.
       const sentIds = new Set(request.attachments.map((file) => file.id));
       group.attachments = (group.attachments || []).filter((file) => !sentIds.has(file.id));
+      if (window.AgentDeskAttachNotice) A.toast(window.AgentDeskAttachNotice.sent(sentIds.size, 'group'));
       if (group === currentGroup()) renderGroupAttachments();
     }
     if (group === currentGroup()) {
@@ -2408,7 +2423,7 @@ window.__groupReady = (async () => {
   async function stopTask(id) {
     const group = currentGroup();
     const task = group?.records.get(id);
-    if (!task || busy) return;
+    if (!task || stillBusy()) return;
     if (!window.confirm(`停止任务「${String(task.prompt || '').slice(0, 40)}」？\n正在运行的成员会被停下；已经生成、还没应用的补丁不会应用。`)) return;
     group.selected = id;
     await taskAction('cancel');
@@ -2423,7 +2438,7 @@ window.__groupReady = (async () => {
   // Stop one running step: the lead reassigns it; the task carries on.
   timeline.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-stop-step]');
-    if (!button || busy) return;
+    if (!button || stillBusy()) return;
     if (!window.confirm('停止这一步？它会交给组长换成员或换模型重新安排，任务本身继续。')) return;
     try {
       const answer = await control('stop_step', { taskId: button.dataset.stopStep, stepId: button.dataset.step });
@@ -2435,7 +2450,7 @@ window.__groupReady = (async () => {
   timeline.addEventListener('click', async (event) => {
     const id = event.target.closest('[data-approve-addition]')?.dataset.approveAddition;
     const group = currentGroup();
-    if (!id || !group || busy) return;
+    if (!id || !group || stillBusy()) return;
     await run(async () => {
       const answer = await control('approve_addition', { taskId: id });
       updateTask(group, id, answer, true);
@@ -2446,7 +2461,7 @@ window.__groupReady = (async () => {
     const id = event.target.closest('[data-retry-task]')?.dataset.retryTask;
     const group = currentGroup();
     const task = id && group?.records.get(id);
-    if (!task || busy || groupEnded(group)) return;
+    if (!task || groupEnded(group) || stillBusy()) return;
     group.reference = task.id;
     input.value = `${task.prompt || ''}\n\n（上一次没完成：${failureReason(task)}。请组长换个办法重新安排。）`;
     form.requestSubmit();
@@ -2560,7 +2575,8 @@ window.__groupReady = (async () => {
         const group = currentGroup();
         const id = planButton.dataset.planTask;
         const round = group.records.get(id)?.plan?.rounds.at(-1);
-        if (!round || busy) return;
+        if (!round) { A.toast('方案已更新，请按最新一轮操作'); return; }
+        if (stillBusy()) return;
         if (planButton.dataset.planAction === 'approve') {
           sendPlanAction(group, id, round.revision, 'plan_approve');
         } else {
@@ -2672,7 +2688,14 @@ window.__groupReady = (async () => {
     const name = $('#groupProjectName').value.trim();
     if (!name) return;
     const binding = projectBinding.value;
-    if (binding && !routeState.projects?.includes(binding)) return;
+    if (binding && !routeState.projects?.includes(binding)) { A.toast('这个主控工作区现在不可用，请刷新线路后重新选择'); return; }
+    // The orchestrator's workspaces are still loading: creating now would make an unbound project in which
+    // attachments never work. Wait for the list instead of creating it silently unbound.
+    if (!binding && supported && !knownRoutes && !temporary) {
+      A.toast('正在读取主控的工作区，读到后再选择并创建');
+      Promise.resolve(refresh()).finally(syncProjectChoices);
+      return;
+    }
     const project = { id: 'group-' + crypto.randomUUID(), name, branch: 'main', live: Boolean(binding), serverProject: binding || undefined };
     A.D.projects.push(project);
     savedProjects.push(project);
@@ -2681,6 +2704,12 @@ window.__groupReady = (async () => {
     event.target.reset();
     projectDialog.close();
     A.openGroup(project.id);
+    // Created from the orchestrator: the project is set up straight away, so attachments and single chats work.
+    if (binding && !temporary) {
+      Promise.resolve(window.AgentDeskProjects?.ensureRegistered?.(project)).then((ok) => {
+        if (ok) A.toast(`项目「${name}」已建好，可以直接添加附件、开始单聊`);
+      }).catch((error) => A.toast(error.message));
+    }
   });
 
   function openRoutes() {

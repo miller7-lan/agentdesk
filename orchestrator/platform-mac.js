@@ -1,7 +1,7 @@
 // Group chat on a Mac (v7, Q6: one module per platform in the same repository).
-// - M2: group commands run under sandbox-exec with the credential folders (the read-only mount's HIDDEN list) and
-//   AgentDesk's own key folders closed. `.git` is not closed. The keychain service itself stays reachable, so
-//   HTTPS git pushes through the osxkeychain helper keep working; SSH-key pushes do not (~/.ssh is closed).
+// - M2: group commands run under sandbox-exec with AgentDesk's own key folders closed. Credential folders stay
+//   open (callers pass credentials: false), as in a native single chat, so SSH and keychain pushes work;
+//   credentials: true still closes the read-only mount's HIDDEN list as well.
 // - O3: commands of a code-changing step run in a local copy, with the original project (its Git top level, so
 //   its .git too) closed for writing. The copy, temporary folders and places outside the project stay writable.
 // - M3 (Claude's recommendation, not a decision of the owner): the copy is an APFS clone (cp -c, copy-on-write).

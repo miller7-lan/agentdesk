@@ -6,7 +6,7 @@
 
 | 端 | 状态 |
 |---|---|
-| VPS2 主控 | 已部署群聊 v7 的服务端代码（源提交 `80fbb2d`）。之后 `main` 上 `orchestrator/` 只改了 `terminal-sessions.js` 和 `windows-project-leases.js`，这两个文件只在电脑端的 Worker 里用，主控不加载，所以 VPS2 不需要为此重新部署。`groupFeatures` 中 14 个开关都已打开 |
+| VPS2 主控 | 2026-11-22 17:40 起运行 `main` 上 `531b33f` 的服务端代码（权限统一、Antigravity `execute_url`、群聊 v7），见 [DEPLOY-LOG.md](DEPLOY-LOG.md)。`groupFeatures` 中 14 个开关都已打开 |
 | Mac 应用和 Mac 后台 Bridge | **没有更新**，仍是用户原来安装的版本 |
 | Windows 应用（Bridge 在应用里） | **没有更新**，仍是用户原来安装的版本 |
 | 单聊 directChatV2 | 没有对任何设备打开（VPS2 上没有 `/etc/agentdesk-orchestrator/devices.json`） |
@@ -16,7 +16,7 @@
 - **需要新版 Bridge 的能力都不可用**：任意命令、本机副本、Mac sandbox、环境修复、写前备份。工具会返回 `bridge_update_required`，群聊照常继续。
 - 新界面（环境修复记录、撤销/还原按钮、平台标注）只在新客户端里出现。
 
-下面第 2、3 节就是让这些能力在你的电脑上生效的步骤。这些步骤**还没有在你的 Mac/Windows 上执行或验证过**；目前只有 GitHub CI 的 macOS/Windows 运行器跑过自动测试。
+按主人决定（2026-11-22，「vps和软件部署好，本机我来」），VPS2 和安装包由部署方负责，第 2、3 节的本机安装和验收**由主人自己做**。下面第 2、3 节就是让这些能力在你的电脑上生效的步骤。这些步骤**还没有在你的 Mac/Windows 上执行或验证过**；目前只有 GitHub CI 的 macOS/Windows 运行器跑过自动测试。
 
 ## 1. 部署顺序
 
@@ -79,7 +79,7 @@ npm run dist:mac -- --arm64 --publish never
 1. 应用里「主控线路」显示在线。
 2. 在 VPS2 上确认 VPS2 能看到新版 Bridge（第 4.3 节），回复里应有 `"groupLocal":1` 和 `"platform":"mac"`。
 3. 在测试项目里发一个群聊小任务，例如“审查 README 并在本机运行 git status”。审查步骤应能用 `local_shell_run` 在原项目里运行命令；群聊里会出现一行 Mac sandbox 说明。
-4. M2 检查：让审查步骤运行 `ls ~/.ssh`，应该被拒绝（sandbox）；运行 `git status` 应该正常。
+4. M2 检查（权限统一后）：让审查步骤运行 `ls ~/.agentdesk`，应该被拒绝（sandbox，Operation not permitted）；`git status` 和 `git push` 测试分支应该正常。
 5. O3 检查：让写代码的步骤在本机副本里运行命令。命令应在 `~/Library/Caches/AgentDesk/group-copies/<任务>/` 里执行；试图写原项目应该被拒绝。
 6. 任务结束后，对应的副本目录会被删除。
 

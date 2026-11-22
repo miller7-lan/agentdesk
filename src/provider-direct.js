@@ -25,8 +25,11 @@
   if (Array.isArray(saved)) for (const s of saved.slice(0, 40)) {
     if (!s || !names[s.provider] || s.provider === 'codex' || s.agentThread || typeof s.id !== 'string' ||
         typeof s.project !== 'string' || !Array.isArray(s.items)) continue;
-    D.sessions.push({ ...s, live: true, diffs: [], term: [],
-      items: s.items.filter(it => it && ['user', 'provider-task'].includes(it.t)) });
+    const items = s.items.filter(it => it && ['user', 'provider-task'].includes(it.t));
+    // Saved as running but with no task left to follow (the app closed while sending): it is not running.
+    const following = s.busy && s.taskId && items.some(it => it.t === 'provider-task' && it.task?.id === s.taskId);
+    D.sessions.push({ ...s, live: true, diffs: [], term: [], items,
+      ...(s.busy && !following && { busy: false, status: 'idle' }) });
   }
   function persist() {
     store.set('providerDirectSessions', D.sessions.filter(s => s.provider && s.provider !== 'codex' && !s.agentThread).slice(0, 40)
@@ -46,17 +49,25 @@
     if (s.agentThread) window.__agentThreads?.persist(); else persist();
     if (A.state.active === s.id) A.renderAll(); else A.renderSidebar();
   }
+  function settle(s, note) {
+    s.busy = false; s.status = 'idle';
+    if (note) sendErrors.set(s, note);
+    if (s.agentThread) window.__agentThreads?.persist(); else persist();
+    if (A.state.active === s.id && !A.state.group) A.renderAll(); else A.renderSidebar();
+  }
   const polling = new Set();
   async function poll(s) {
     if (!s.taskId || polling.has(s.id)) return;
     polling.add(s.id);
     try {
       const item = s.items.findLast(it => it.t === 'provider-task' && it.task?.id === s.taskId);
-      if (item) {
-        update(s, item, await control(s, 'status', { taskId: s.taskId }));
-        await loadActivity(s, [item]);
-      }
+      if (!item) { settle(s, null); return; }
+      update(s, item, await control(s, 'status', { taskId: s.taskId }));
+      await loadActivity(s, [item]);
     } catch (error) {
+      // The orchestrator no longer has this task: stop following it instead of staying "running" (and repeating
+      // the same error every 2.5 s).
+      if (/^(unknown_task|task_access_denied|invalid_task_id)$/.test(error.message)) { settle(s, '主控上已经没有这项任务，已停止跟踪'); return; }
       if (A.state.active === s.id) A.toast(errors[error.message] || error.message);
     } finally { polling.delete(s.id); }
   }
@@ -124,6 +135,7 @@
       if (scope) localProposals.set(item, scope.token);
       s.items.push({ t: 'user', text: text + (files.length ? '\n📎 ' + files.map(file => file.name).join('、') : '') }, item);
       attachments.delete(s);
+      if (files.length && window.AgentDeskAttachNotice) A.toast(window.AgentDeskAttachNotice.sent(files.length));
       s.taskId = taskId;
       if (s.title === '新会话') s.title = text.slice(0, 24);
       if (s.draft?.trim() === draft) s.draft = '';
@@ -231,6 +243,8 @@
       sendErrors.set(s, errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
     } else if (added.length) sendErrors.delete(s);
     if (A.state.active === s.id && !A.state.group) render(s);
+    // Success is announced too (it used to be silent): the files stay on this computer until the message is sent.
+    if (added.length && window.AgentDeskAttachNotice) A.toast(window.AgentDeskAttachNotice.added(added, 'chat'));
   }
   const usable = (s) => !s.agentThread && !s.busy && window.desk.files?.pickChat;
   async function attach(s, folders = false) {

@@ -4,6 +4,7 @@ const path = require('node:path');
 const { randomBytes, randomUUID, createHash } = require('node:crypto');
 const { messageId } = require('./transport');
 const { runAdapter, addUsage, EFFORTS, effortsFor } = require('./adapters');
+const { GROUP_PERMISSION_NOTE } = require('./permission-prompt');
 const { Router, CAPABILITIES, ROLES, LEAD_ROLE, LEAD_CAPABILITIES, usedPercent } = require('./routing');
 const { git, worktree, patchFor, sandboxGit } = require('./git');
 const { modelId, plannerProfiles, newestFirst, preferredModel } = require('./model-profiles');
@@ -1924,6 +1925,8 @@ event(task, state, detail) {
     if (step.fileIntent?.action === 'read') prompt += '\nRead the specified local source via the Bridge, root computer: ' + JSON.stringify(step.intentPath);
     if (step.deliveryTarget) prompt += '\nDeliver with the provided Bridge file tool. Avoid shell payloads or temporary scripts for this delivery. Use windows_write_file with root computer and this exact path: ' +
       JSON.stringify(step.deliveryTarget) + '. A successful write receipt is required for delivery.';
+    // The same rights for every member (permission-prompt.js); the planner's prompt ends with its JSON context.
+    if (step.id !== 'group-planner') prompt += GROUP_PERMISSION_NOTE;
     let attachmentDirectory;
     if (task.attachments?.length) {
       const directory = path.join(this.config.stateDir, 'worktrees', task.id, 'chat-input');

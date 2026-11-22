@@ -251,6 +251,7 @@
     "caFile": "/etc/agentdesk-orchestrator/relay-ca.pem"
   },
   "homeMounts": true,
+  "groupFeatures": { "anyLead": true },
   "sshBridges": [
     "mac"
   ],

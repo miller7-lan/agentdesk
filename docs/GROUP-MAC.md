@@ -6,11 +6,10 @@
 
 - 读取、审查、诊断、验收步骤用 `local_shell_run` 在**原项目**里运行任意命令，用登录 shell（默认 zsh，也可以选 bash）。
 - 打开 `credentialSandbox` 后，命令在 `sandbox-exec` 下运行（M2）：
-  - 拒绝读写凭据目录（与只读挂载相同的 `HIDDEN` 清单，包括 `.ssh`、`.gnupg`、`.aws`、`.npmrc`、各 CLI 的登录目录、`~/Library/Keychains`、浏览器配置等）；
-  - 拒绝读写 AgentDesk 自己的目录（`~/.agentdesk`、`~/Library/Application Support/AgentDesk`、Bridge 的状态目录）；
-  - `.git` 内部**不挡**；
-  - 钥匙串服务（securityd）**不挡**，所以走 osxkeychain 的 HTTPS `git push` 可用；
-  - 走 SSH 密钥的 `git push` 会失败，依赖 `~/.npmrc`、`~/.aws` 的命令也会失败。这是 M2 方案本身的结果，没有另外放宽。
+  - **只**拒绝读写 AgentDesk 自己的目录（`~/.agentdesk`、`~/Library/Application Support/AgentDesk`、Bridge 的状态目录）；
+  - 凭据目录（`.ssh`、钥匙串、`.npmrc`、`.aws` 等）和 `.git` 内部**都不挡**，和原生单聊一样：SSH 和 HTTPS 的 `git push`、包管理器、云服务 CLI 都能用。
+
+  这是 2026-11-22 权限统一（提交 `f6d3e96`，见 [ROLLOUT-2026-11-22.md](ROLLOUT-2026-11-22.md)）之后的行为。之前 M2 的做法是“挡凭据目录和 AgentDesk 密钥目录”，已被这次统一取代。代码里 `credentials: true` 的选项仍然保留，但群聊不再使用。
 - 已有的白名单命令（`windows_run_command`）在开关打开时也套同样的 sandbox。
 
 ## 写代码步骤的本机副本（`localCopy`，O3；M3 为推荐做法）
@@ -39,7 +38,7 @@
 
 以上行为做过自动测试：一是 Linux 本机，二是 GitHub CI 的 macOS 运行器。后者真实运行了 sandbox-exec：副本里的命令写原项目被拒绝，副本放在 Caches 下可以正常运行。这些是 CI 验证，**不是用户真机验收**。Mac 上需要真机验收的项目：
 
-- 读取 `~/.ssh` 被拒绝；
+- 读取 `~/.agentdesk` 被拒绝（Operation not permitted）；`git push` 测试分支成功；
 - `git status` 可用；
 - HTTPS 推送可用；
 - 副本里的命令写原项目被拒绝，写副本和项目以外的位置成功。

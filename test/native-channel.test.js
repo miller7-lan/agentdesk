@@ -24,9 +24,9 @@ test('native channel maintains byte order without interpreting SFTP as RPC', () 
   assert.deepEqual(collected.map(({ lane }) => lane), ['s', 's', 's', 'p', 'c']);
 });
 
-test('native Codex policy keeps project writes scoped and does not enable network access', () => {
+test('native Codex policy keeps project writes scoped; network is on for writing turns only', () => {
   assert.deepEqual(workspacePolicy('/fixture/project', 'write'), {
-    type: 'workspaceWrite', writableRoots: ['/fixture/project'], networkAccess: false,
+    type: 'workspaceWrite', writableRoots: ['/fixture/project'], networkAccess: true,
     excludeTmpdirEnvVar: true, excludeSlashTmp: true,
   });
   assert.deepEqual(workspacePolicy('/fixture/project', 'read'), { type: 'readOnly', networkAccess: false });

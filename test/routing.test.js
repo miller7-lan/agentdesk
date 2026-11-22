@@ -160,8 +160,10 @@ test('a CLI described by template runs with its flags, and an exhausted quota is
   assert.ok(match, result.output);
   const permissions = JSON.parse(match[1]).permissions;
   assert.ok(permissions.allow.includes('read_url(*)') && permissions.allow.includes('search_web(*)'));
+  // Web reading like the other members: execute_url is allowed (ROLLOUT-2026-11-22 §5).
+  assert.ok(permissions.allow.includes('execute_url(*)'));
   // Without a sandbox the CLI's own file and shell tools stay denied, and a read-only step cannot write.
-  assert.deepEqual(permissions.deny, ['execute_url(*)', 'read_file(*)', 'command(*)', 'write_file(*)']);
+  assert.deepEqual(permissions.deny, ['read_file(*)', 'command(*)', 'write_file(*)']);
   assert.deepEqual(result.usage, { input: 9, output: 4 });
   assert.equal(session, 's-1');
   await assert.rejects(runAdapter({ ...base, prompt: 'quota-test', onSession() {} }), /cli_quota_exhausted/);

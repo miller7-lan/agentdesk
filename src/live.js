@@ -515,10 +515,20 @@
       }
       default: error = { code: -32601, message: 'unsupported request' };
     }
-    apiFor(agentOf(s)).respond(it.reqId, result, error);
     it.state = ok ? 'approved' : 'rejected';
     s.status = 'running'; thinking(s, ok ? '执行中' : '继续中');
     A.renderAll(); pet(s, 'working', 'PostToolUse');
+    // The answer may no longer reach anyone (the request timed out or the connection dropped): then the chat must
+    // not keep showing "执行中" for a turn that is already over.
+    Promise.resolve(apiFor(agentOf(s)).respond(it.reqId, result, error)).catch(() => false).then((delivered) => {
+      if (delivered !== false) return;
+      it.state = 'expired';
+      dropThinking(s);
+      sysNote(s, '这个请求已经失效（超时或连接已断开），你的选择没有送达。需要的话请重新发送消息。', true);
+      if (!s.turnId) { s.busy = false; s.status = 'idle'; } else s.status = 'running';
+      A.renderAll();
+      toast('审批没有送达：请求已经失效');
+    });
   }
 
   /* ---------- 发送 / 插话 / 停止 ---------- */
@@ -561,6 +571,14 @@
     if (startingTurns.has(s)) return false;
     startingTurns.add(s);
     try { return await sendTurn(s, fromButton, options); }
+    catch (error) {
+      // Any failure while starting the turn (connecting, uploading, the request itself) ends the "thinking" state
+      // and says why, instead of leaving the chat stuck or doing nothing.
+      const message = '发送失败：' + (error?.message || String(error));
+      if (s.busy && s.items.some((item) => item.t === 'thinking')) return fail(s, message);
+      toast(message);
+      return false;
+    }
     finally { startingTurns.delete(s); }
   }
 
@@ -642,6 +660,7 @@
     if (!fromQueue) {
       const key = chat ? 'chatAttachments' : 'codexAttachments';
       s[key] = (s[key] || []).filter(file => !attachments.includes(file));
+      if (chat && attachments.length && notice) toast(notice.sent(attachments.length));
       if (s.draft?.trim() === text) s.draft = '';
       if (state.active === s.id) {
         if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
@@ -712,10 +731,22 @@
       A.renderAll();
     });
   }
+  // Stop always answers: a chat shown as running without a turn to stop (its end was missed) becomes usable again.
   async function interrupt(s) {
-    if (!s.threadId || !s.turnId) return;
-    const r = await apiFor(agentOf(s)).request('turn/interrupt', { threadId: s.threadId, turnId: s.turnId });
-    if (!r.ok) toast('停止失败：' + r.error);
+    if (!s.threadId || !s.turnId) {
+      if (startingTurns.has(s)) { toast('这一轮正在开始，稍后再停止'); return; }
+      if (s.busy) fail(s, '已停止：没有找到正在运行的这一轮，已恢复为可输入');
+      return;
+    }
+    const r = await apiFor(agentOf(s)).request('turn/interrupt', { threadId: s.threadId, turnId: s.turnId })
+      .catch((error) => ({ ok: false, error: error?.message || String(error) }));
+    if (r.ok) return;
+    toast('停止失败：' + r.error);
+    // The server no longer knows this turn: nothing is running, so the chat must not stay "running".
+    if (s.busy && /not[_ ]?found|unknown[_ ]?turn|no[_ ]active[_ ]turn|turn[_ ]?(?:not|already)/i.test(String(r.error))) {
+      s.turnId = null;
+      fail(s, '已停止：服务端已没有这一轮，已恢复为可输入');
+    }
   }
   function fail(s, msg) {
     dropThinking(s); sysNote(s, msg, true);
@@ -1252,16 +1283,22 @@
   // Claude / Grok / Antigravity chats: any file type, up to MAX_ATTACH per message; a folder arrives as one .zip.
   const MAX_ATTACH = 10;
   // Direct chat v2 (D9): attachments go to the server as soon as they are chosen, when the conversation exists.
-  function uploadNow(s, files) {
-    if (!files.length || !s.threadId || !fileApi.uploadChat) return;
-    fileApi.uploadChat(agentOf(s), s.threadId, files.map((file) => file.id)).catch(() => {});
+  // Returns whether the server takes uploads now (direct chat v2, with receipts) or only with the message (v1).
+  async function uploadNow(s, files) {
+    if (!files.length || !s.threadId || !fileApi.uploadChat) return false;
+    const result = await fileApi.uploadChat(agentOf(s), s.threadId, files.map((file) => file.id)).catch(() => null);
+    return result?.ok === true && result.v2 === true;
   }
+  const notice = window.AgentDeskAttachNotice;
   window.desk?.chat?.onAttachment?.((event) => {
     for (const s of D.sessions || []) {
       const file = (s.chatAttachments || []).find((item) => item.id === event.id);
       if (!file) continue;
+      const before = file.upload?.state;
       file.upload = { state: event.state, progress: event.progress, receivedAt: event.receivedAt, error: event.error };
       if (state.active === s.id && !state.group) renderAtt();
+      // The success the server confirmed, once per file.
+      if (event.state === 'received' && before !== 'received' && notice) toast(notice.received(file.name));
     }
   });
   function addChatFiles(s, { files = [], errors = [] }) {
@@ -1270,10 +1307,12 @@
     s.chatAttachments = [...current, ...accepted];
     for (const file of files.slice(accepted.length)) fileApi.forgetChat(file.id);
     if (state.active === s.id && !state.group) renderAtt();
-    uploadNow(s, accepted);
-    const folders = accepted.filter((file) => file.folder);
-    if (errors.length || accepted.length < files.length) toast(errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。`);
-    else if (folders.length) toast(folders.map((file) => `${file.name}：已打包 ${file.folder.files} 个文件${file.folder.skipped.length ? `（跳过 ${file.folder.skipped.slice(0, 3).join('、')}${file.folder.skipped.length > 3 ? ' 等' : ''}）` : ''}`).join('；'));
+    const problem = errors.length || accepted.length < files.length ? errors.join('；') || `每条消息最多附加 ${MAX_ATTACH} 个文件。` : '';
+    // Success is announced too (it used to be silent), saying where the files are now.
+    uploadNow(s, accepted).then((uploading) => {
+      const text = [problem, notice ? notice.added(accepted, uploading ? 'upload' : 'chat') : (accepted.length ? `已添加 ${accepted.length} 个附件` : '')].filter(Boolean).join('；');
+      if (text) toast(text);
+    });
   }
   const fileToBase64 = (f) => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(fr.error); fr.readAsDataURL(f); });
   const pastedName = (f) => f.name && f.name !== 'image.png' ? f.name
@@ -1288,7 +1327,8 @@
     if (!(await ensureReady(s))) return;
     const r = await fileApi.pick(folders, s.project);
     (s.codexAttachments ||= []).push(...(r.files || [])); renderAtt();
-    if (!r.ok) toast('上传失败：' + r.error); else if (r.files.length) toast(`已上传 ${r.files.length} 个文件到 VPS`);
+    if (!r.ok) toast('上传失败：' + (r.error === 'project_not_found' ? '这个项目还没在「工作区」里建好，请先添加或选择工作区' : r.error));
+    else if (r.files.length) toast(`已上传 ${r.files.length} 个文件到 VPS`);
   }
   ta.addEventListener('paste', async (e) => {
     const session = sess(state.active);
