@@ -1173,7 +1173,11 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     if (typeof method !== 'string') throw new Error('invalid_method');
     if (method.startsWith('attachment/')) throw new Error('invalid_method');
     if (updateLocked() && method === 'turn/start') throw new Error(UPDATE_LOCKED);
-    const native = await nativeDesktop()?.select(agent, method, params);
+    // Grok can hang during native session initialization on macOS. Start new chats
+    // on the existing direct channel, without replaying or moving any existing native chat.
+    const useGrokDirect = mac && agent === 'grok';
+    const native = useGrokDirect && method === 'thread/start'
+      ? null : await nativeDesktop()?.select(agent, method, params);
     const link = native || chatLink(agent);
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
@@ -1205,6 +1209,8 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
         approvalPolicy: request.approvalPolicy,
         sandboxPolicy: request.sandboxPolicy,
       });
+      if (useGrokDirect) toUi('chat:event', { agent, method: 'agentdesk/fallback',
+        params: { threadId, reason: 'Grok Mac 原生会话初始化暂不可用' } });
       logger?.audit('chat_thread', { status: 'started', projectId: request.projectId, agent });
       return { ok: true, result };
     }
@@ -1229,7 +1235,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       const mapping = chatThreads.get(request.threadId);
       if (!mapping || mapping.agent !== agent) throw Error('请重新打开单聊后再发送。');
       const policy = request.sandboxPolicy || mapping.sandboxPolicy;
-      if (!native && nativeDesktop() && mapping.commandRoot && policy?.type === 'dangerFullAccess' &&
+      if (!native && !useGrokDirect && nativeDesktop() && mapping.commandRoot && policy?.type === 'dangerFullAccess' &&
           (request.approvalPolicy ?? mapping.approvalPolicy) === 'never') {
         throw new Error('此会话使用旧线路。要启用 Windows 本机终端，请在该项目新建完全访问单聊。原对话保留。');
       }
