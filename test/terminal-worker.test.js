@@ -41,12 +41,13 @@ function fakePty() {
 
 const marker = WINDOWS ? 'Write-Output ("agent"+"desk-ok")\r' : 'echo agent""desk-ok\r';
 
-async function until(check, ms = 15_000, what = 'condition') {
+async function until(check, ms = 15_000, what = 'condition', explain) {
   const end = Date.now() + ms;
   for (;;) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > end) throw new Error('timeout waiting for ' + what);
+    // The failure carries the terminal's state and its last output (readable in CI annotations).
+    if (Date.now() > end) throw new Error('timeout waiting for ' + what + (explain ? ' — ' + await explain().catch((error) => 'explain failed: ' + error.message) : ''));
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
@@ -105,7 +106,12 @@ test('terminals through the Worker: window and AI share one terminal, takeover, 
   await first.request('terminalSignal', { binding, terminalId: id, signal: 'SIGINT' });
   const mark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
   await first.request('terminalInput', { binding, terminalId: id, data: marker });
-  const after = await until(async () => { const r = await first.request('terminalRead', { binding, terminalId: id, cursor: mark }); return r.data.includes('agentdesk-ok') && r; }, 20_000, 'shell after Ctrl+C');
+  const explain = async () => {
+    const view = (await first.request('terminalRead', { binding })).terminals.find((item) => item.terminalId === id) || {};
+    const tail = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g, '').slice(-700);
+    return JSON.stringify({ state: view.state, exitCode: view.exitCode, tail });
+  };
+  const after = await until(async () => { const r = await first.request('terminalRead', { binding, terminalId: id, cursor: mark }); return r.data.includes('agentdesk-ok') && r; }, 20_000, 'shell after Ctrl+C', explain);
   assert.equal(after.data.includes('after-sleep'), false);
   assert.equal((await first.request('terminalResize', { binding, terminalId: id, cols: 140, rows: 40 })).cols, 140);
 

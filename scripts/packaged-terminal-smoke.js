@@ -19,12 +19,14 @@ const marker = { powershell: 'Write-Output ("agent"+"desk-ok")\r', cmd: 'echo ag
 const long = { powershell: 'Start-Sleep -Seconds 30; Write-Output after-sleep\r', cmd: 'ping -n 30 127.0.0.1 > nul & echo after-sleep\r',
   zsh: 'sleep 30; echo after-sleep\r', bash: 'sleep 30; echo after-sleep\r' };
 
-async function until(check, ms, what) {
+// On a timeout the error carries what the terminal showed and whether its shell is still running, so a CI failure
+// explains itself (the annotations are the only part of a run readable without signing in).
+async function until(check, ms, what, explain) {
   const end = Date.now() + ms;
   for (;;) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > end) throw new Error('timeout: ' + what);
+    if (Date.now() > end) throw new Error('timeout: ' + what + (explain ? ' — ' + await explain().catch((error) => 'explain failed: ' + error.message) : ''));
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
 }
@@ -59,6 +61,12 @@ async function main() {
   assert.equal(caps.pty, true, 'Worker reports no pty');
   log('worker', { capabilities: caps });
 
+  const explainer = (id) => async () => {
+    const all = await first.request('terminalRead', { binding });
+    const view = all.terminals.find((item) => item.terminalId === id) || {};
+    const tail = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g, '').slice(-700);
+    return JSON.stringify({ state: view.state, exitCode: view.exitCode, tail });
+  };
   const shells = WINDOWS ? ['powershell', 'cmd'] : ['zsh', 'bash'];
   const ids = {};
   for (const shell of shells) {
@@ -66,12 +74,12 @@ async function main() {
     const opened = await first.request('terminalOpen', { binding, shell, cols: 100, rows: 30 });
     const id = ids[shell] = opened.terminalId;
     await first.request('terminalInput', { binding, terminalId: id, data: marker[shell] });
-    await until(async () => (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).data.includes('agentdesk-ok'), 30_000, shell + ' output');
+    await until(async () => (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).data.includes('agentdesk-ok'), 30_000, shell + ' output', explainer(id));
     log('shell', { shell, ok: true, ms: Date.now() - started });
     // The AI's tool writes into the same terminal.
     const mark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
     await first.request('terminal', { binding, args: { action: 'write', terminalId: id, data: marker[shell] } });
-    await until(async () => (await first.request('terminalRead', { binding, terminalId: id, cursor: mark })).data.includes('agentdesk-ok'), 30_000, shell + ' AI write');
+    await until(async () => (await first.request('terminalRead', { binding, terminalId: id, cursor: mark })).data.includes('agentdesk-ok'), 30_000, shell + ' AI write', explainer(id));
     // Takeover refuses the AI and lets the person type; hand back.
     await first.request('terminalTakeover', { binding, terminalId: id, on: true });
     await assert.rejects(first.request('terminal', { binding, args: { action: 'write', terminalId: id, data: 'x' } }), /terminal_taken_over/);
@@ -86,7 +94,7 @@ async function main() {
     }
     const afterMark = (await first.request('terminalRead', { binding, terminalId: id, cursor: 0 })).cursor;
     await first.request('terminalInput', { binding, terminalId: id, data: marker[shell] });
-    const after = await until(async () => { const r = await first.request('terminalRead', { binding, terminalId: id, cursor: afterMark }); return r.data.includes('agentdesk-ok') && r; }, 30_000, shell + ' after Ctrl+C');
+    const after = await until(async () => { const r = await first.request('terminalRead', { binding, terminalId: id, cursor: afterMark }); return r.data.includes('agentdesk-ok') && r; }, 30_000, shell + ' after Ctrl+C', explainer(id));
     assert.equal(after.data.includes('after-sleep'), false, shell + ': Ctrl+C did not stop the command');
     const resized = await first.request('terminalResize', { binding, terminalId: id, cols: 150, rows: 45 });
     assert.equal(resized.cols, 150);
@@ -112,4 +120,8 @@ async function main() {
 }
 
 main().then(() => process.exit(0), (error) => {
-  // process.exit ends the shells too; nothing is left running on the runner. log('failed', { error: error.stack || error.message }); console.log('::error::' + String(error.stack || error.message).replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, '%0A').slice(0, 1500)); process.exit(1); });
+  // process.exit ends the shells too; nothing is left running on the runner.
+  log('failed', { error: error.stack || error.message });
+  console.log('::error::' + String(error.stack || error.message).replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, '%0A').slice(0, 3000));
+  process.exit(1);
+});
