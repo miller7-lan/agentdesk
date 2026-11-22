@@ -53,6 +53,19 @@ const platformName = detectOs({ platform: process.platform });
 const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
 const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
 let windowsNative;
+const nativeQuestions = new Map();
+let nativeQuestionSeq = 0;
+function answerNativeQuestion(id, result, error) {
+  const entry = typeof id === 'string' && nativeQuestions.get(id);
+  if (!entry) return false;
+  nativeQuestions.delete(id);
+  entry.resolve(error ? { answers: {}, cancelled: true } : result || { answers: {} });
+  return true;
+}
+function questionSummary(message) {
+  const list = Array.isArray(message?.params?.questions) ? message.params.questions : [];
+  return list.map((question) => String(question?.question || question?.header || '')).filter(Boolean).join(' / ').slice(0, 160);
+}
 // Native single chats: on Windows and on a Mac the official CLIs on VPS2 work directly in the local project
 // (mounted over SFTP) and run commands here with local_shell.
 function macBridgeSettings() {
@@ -73,6 +86,16 @@ function nativeDesktop() {
         if (agent === 'codex') toUi('codex:event', frame);
         else toUi('chat:event', { ...frame, agent });
       },
+      // A question from a native seat's running turn: shown like any other question card, answered through
+      // codex:respond / chat:respond with its own id (never a remote request id).
+      onRequest: (agent, frame) => new Promise((resolve, reject) => {
+        const id = 'native-question-' + (++nativeQuestionSeq);
+        const timer = setTimeout(() => { nativeQuestions.delete(id); reject(new Error('question_timeout')); }, 16 * 60_000);
+        nativeQuestions.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); } });
+        const message = { ...frame, id, ...(agent !== 'codex' && { agent }) };
+        toUi(agent === 'codex' ? 'codex:server-request' : 'chat:server-request', message);
+        notifyIfAway(`${agent === 'codex' ? 'Codex' : CHAT_LABEL[agent] || agent} 有问题要问你`, questionSummary(frame));
+      }),
       onCommand: (agent, threadId, run) => toUi('local-command:update', { agent, threadId, run }),
       onTerminal: (event) => toUi('terminal:event', event),
       reviewUnknown: async () => {
@@ -880,6 +903,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
 });
 ipcMain.handle('codex:respond', (event, id, result, error) => {
   if (!fromMainWindow(event)) return false;
+  if (answerNativeQuestion(id, result, error)) return true;
   try {
     if (!remote.respond(id, result, error)) return false;
     const outcome = ['accept', 'acceptForSession', 'approve', 'approved', 'approved_for_session'].includes(result?.decision) || result?.action === 'accept'
@@ -1084,6 +1108,7 @@ for (const [agent, link] of chatLinks) {
       message = { ...message, params: { ...params, localCommand: preview } };
     }
     toUi('chat:server-request', message);
+    if (message.method === 'item/tool/requestUserInput') notifyIfAway(`${CHAT_LABEL[agent]} 有问题要问你`, questionSummary(message));
     if (message.method === 'item/tool/requestApproval') {
       const tool = message.params?.tool || '文件修改';
       notifyIfAway(`${CHAT_LABEL[agent]} 等待你的审批`, tool + ' · ' + String(message.params?.arguments?.path || '').slice(0, 120));
@@ -1325,6 +1350,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
 
 ipcMain.handle('chat:respond', (event, agent, id, result, error) => {
   if (!fromMainWindow(event)) return false;
+  if (answerNativeQuestion(id, result, error)) return true;
   try {
     const link = chatLink(agent);
     if (!link.respond(id, result, error)) return false;
