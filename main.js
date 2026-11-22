@@ -529,6 +529,9 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
 });
 
 // 远程 Codex：状态、事件、审批请求转发给界面
+// started: whether this client has begun connecting at all. Before the server is confirmed in onboarding (or before
+// the enrollment login) nothing connects, so the boot screen must not wait for a connection that will not come.
+const remoteStatus = (state) => ({ ...state, started: connectivityStarted || Boolean(enrolledSession) });
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
 let lastRemoteState;
 let lastRemoteRoute;
@@ -542,7 +545,7 @@ remote.on('status', (s) => {
     lastRemoteState = s.codex;
     logger?.log('remote_connection', { status: s.codex, route });
   }
-  toUi('remote:status', s);
+  toUi('remote:status', remoteStatus(s));
 });
 remote.on('notification', (m) => toUi('codex:event', m));
 remote.on('server-request', (m) => {
@@ -643,7 +646,7 @@ ipcMain.handle('desktop:toggle', (event) => {
   if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return desktop.enabled;
   return toggleDesktop(!desktop.enabled);
 });
-ipcMain.handle('remote:status', () => ({ ...remote.state }));
+ipcMain.handle('remote:status', () => remoteStatus(remote.state));
 ipcMain.handle('remote:reconnect', () => { if (!hostConfirmed() || enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
 ipcMain.handle('remote:wake', () => !hostConfirmed() || enrollment && !enrolledSession ? false : remote.wake());
 ipcMain.handle('remote:touch', () => { remote.touch(); return true; });

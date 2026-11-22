@@ -114,3 +114,18 @@ test('keeps checking the Relay route after the initial offline response', async 
   assert.equal(data.offline, false);
   assert.equal(calls, 2);
 });
+
+test('a client that has not begun connecting is not shown as "connecting" until the timeout', () => {
+  // First run / onboarding not finished: main.js reports started: false and nothing will ever connect.
+  const notSetUp = buildBootData({ remote: { at: 0.1, value: { codex: 'idle', started: false } } });
+  assert.equal(notSetUp.unconfigured, true);
+  assert.equal(notSetUp.pending, false);
+  assert.equal(notSetUp.online, false);
+  // Once connecting has begun, idle still means "on its way".
+  const starting = buildBootData({ remote: { at: 0.1, value: { codex: 'idle', started: true } } });
+  assert.equal(starting.unconfigured, false);
+  assert.equal(starting.pending, true);
+  // Older main processes send no started flag: behaviour is unchanged.
+  assert.equal(buildBootData({ remote: { at: 0.1, value: { codex: 'idle' } } }).pending, true);
+  assert.equal(buildBootData({ remote: { at: 0.1, value: { codex: 'ready', started: true } } }).online, true);
+});

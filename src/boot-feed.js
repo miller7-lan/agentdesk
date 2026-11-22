@@ -19,7 +19,10 @@
     const quotas = Array.isArray(checks.quota?.value) ? checks.quota.value : [];
     const docker = checks.resources?.value?.docker;
     const online = remote?.codex === 'ready' || Boolean(routes?.ssh || routes?.relay);
-    const pending = !online && !checks.expired &&
+    // The client has not begun connecting (server not yet confirmed in onboarding, or no enrollment login yet):
+    // nothing is on its way, so do not keep the user on a "connecting" screen until the timeout.
+    const unconfigured = !online && remote?.started === false;
+    const pending = !online && !unconfigured && !checks.expired &&
       (!checks.remote || !checks.routes || ['idle', 'connecting'].includes(remote?.codex));
     const offline = !online && !pending;
     const nodes = members.map(([id, name, role, provider], order) => {
@@ -50,7 +53,7 @@
     if (docker?.ok && Number.isSafeInteger(docker.count)) logs.push({ name: 'docker · containers', status: String(docker.count), at: checks.resources.at });
     for (const node of nodes) if (Number.isFinite(node.at)) logs.push(node);
     logs.sort((a, b) => a.at - b.at);
-    return { nodes, logs, online, offline, pending };
+    return { nodes, logs, online, offline, pending, unconfigured };
   }
 
   function collect(desk, publish, { timeout = 30000, pollMs = 1000, now = () => performance.now() } = {}) {
