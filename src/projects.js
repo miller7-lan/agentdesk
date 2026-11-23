@@ -143,7 +143,23 @@
     }
     A.toast(text);
   }
+  // A project made in the group chat: no local folder and not in the app's project list.
+  function groupOnly(id) {
+    const project = typeof id === 'string' && D.projects.find(item => item.id === id);
+    return Boolean(project && !project.configured && !project.example && id.startsWith('group-') && window.__group?.groupsOf?.(id)?.length);
+  }
+  async function removeGroupProject(id) {
+    const project = D.projects.find(item => item.id === id);
+    if (!project || !window.desk.groupProjects) return;
+    A.toast('正在核对 VPS 上的群聊任务…');
+    const result = await window.desk.groupProjects.remove({ id, name: project.name, ...(project.serverProject && { workspace: project.serverProject }) });
+    if (!result.ok) { if (!result.cancelled) window.alert('删除项目没有完成：' + result.error); return; }
+    window.__group?.removeProject?.(id);
+    A.renderAll();
+    A.toast(`已删除「${project.name}」，VPS 上清理了 ${result.tasks} 个群聊任务。`);
+  }
   async function removeProject(id) {
+    if (groupOnly(id) && !snapshot?.projects.some(item => item.id === id)) return removeGroupProject(id);
     const project = snapshot?.projects.find(item => item.id === id);
     if (!project) return;
     status.textContent = '正在核对删除范围，确认后清理本机与 VPS 数据…';
@@ -171,7 +187,7 @@
   $('#sessionList').addEventListener('contextmenu', (event) => {
     menu.hidden = true;
     const id = event.target.closest('.group-head')?.closest('[data-proj]')?.dataset.proj;
-    if (!snapshot?.projects.some(project => project.id === id)) return;
+    if (!snapshot?.projects.some(project => project.id === id) && !groupOnly(id)) return;
     event.preventDefault();
     menu.dataset.project = id;
     menu.hidden = false;
@@ -182,7 +198,7 @@
   // The ··· button on a project row opens the same menu, so deleting a project does not depend on a right click.
   $('#sessionList').addEventListener('click', (event) => {
     const button = event.target.closest('[data-project-menu]');
-    if (!button || !snapshot?.projects.some(project => project.id === button.dataset.projectMenu)) return;
+    if (!button || !(snapshot?.projects.some(project => project.id === button.dataset.projectMenu) || groupOnly(button.dataset.projectMenu))) return;
     event.stopPropagation();
     menu.dataset.project = button.dataset.projectMenu;
     menu.hidden = false;

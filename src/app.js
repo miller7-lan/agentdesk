@@ -203,7 +203,7 @@
           <span class="project-quick" role="group" aria-label="${esc(p.name)}：新建">
             <button type="button" data-new-direct="${esc(p.id)}" title="新建单聊" aria-label="${esc(p.name)}：新建单聊"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H9l-4 4z"/><path d="M12 8v4M10 10h4"/></svg></button>
             ${G() ? `<button type="button" data-new-group="${esc(p.id)}" title="新建群聊" aria-label="${esc(p.name)}：新建群聊"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16"/></svg></button>` : ''}
-            ${p.configured ? `<button type="button" data-project-menu="${esc(p.id)}" title="更多操作" aria-label="${esc(p.name)}：更多操作" aria-haspopup="menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg></button>` : ''}
+            ${p.configured || (LIVE && !p.example && hasGroup && p.id.startsWith('group-')) ? `<button type="button" data-project-menu="${esc(p.id)}" title="更多操作" aria-label="${esc(p.name)}：更多操作" aria-haspopup="menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg></button>` : ''}
           </span>
         </div>
         <div class="group-items">

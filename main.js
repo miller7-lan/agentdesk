@@ -533,6 +533,55 @@ async function removeProjectData(id) {
   } finally { deletingProjects.delete(id); }
 }
 
+// A project made in the group chat (群聊项目: no local folder, not in the app's project list): after a warning, its
+// group tasks go on VPS2 (task records, logs, worktrees, CLI sessions, Git branches) and here (downloaded patches).
+// The window then drops the project, its group chats and dispatched records.
+ipcMain.handle('groupProjects:remove', async (event, request = {}) => {
+  if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+  const { id, name, workspace } = request;
+  try {
+    if (typeof id !== 'string' || !/^group-[a-f0-9-]{1,64}$/.test(id)) throw new Error('项目编号无效。');
+    if (workspace !== undefined && (typeof workspace !== 'string' || !/^[A-Za-z0-9._-]{1,96}$/.test(workspace))) throw new Error('工作区名称无效。');
+    if (appConfig?.value.projects.some(project => project.id === id)) throw new Error('这个项目绑定了本机目录，请用「删除项目…」。');
+    if (deletingProjects.has(id)) throw new Error('项目正在删除。');
+    deletingProjects.add(id);
+    try {
+      const call = async (frame) => {
+        const result = await orchestratorControl({ ...frame, group: id, ...(workspace && { workspace }), operation: 'project_delete' });
+        if (!result.ok) throw new Error('VPS 上的群聊任务没能清理：' + result.error);
+        return result.value;
+      };
+      const tasks = await call({ action: 'preview' });
+      let nextOffset = tasks.nextOffset;
+      while (nextOffset !== null && nextOffset !== undefined) {
+        const page = await call({ action: 'preview', after: nextOffset });
+        if (page.revision !== tasks.revision) throw new Error('群聊任务已变化，请重新删除。');
+        tasks.taskIds.push(...page.taskIds);
+        nextOffset = page.nextOffset;
+      }
+      const detail = [`VPS：群聊任务 ${tasks.tasks} 个，连同它们的日志、工作树、CLI 会话和项目 Git 分支`,
+        tasks.repository && 'VPS Git 副本\n' + tasks.repository,
+        tasks.sharedRepository && '共用 Git 缓存里只清除本项目的分支，其他项目不受影响。',
+        '本机：这个项目的群聊、消息、派遣记录、单聊会话和下载的补丁',
+        '本机文件不受影响（这个项目没有绑定本机目录）。此操作不能撤销。'].filter(Boolean).join('\n\n');
+      const answer = await dialog.showMessageBox(win, { type: 'warning', title: '删除群聊项目',
+        message: `彻底删除「${String(name || '群聊项目').slice(0, 80)}」？`, detail,
+        buttons: ['取消', '删除全部数据'], defaultId: 0, cancelId: 0, noLink: true });
+      if (answer.response !== 1) return { ok: false, cancelled: true };
+      await call({ action: 'delete', revision: tasks.revision });
+      for (let offset = 0; offset < tasks.taskIds.length; offset += 1000) {
+        await orchestratorControl({ operation: 'project_delete', action: 'local', taskIds: tasks.taskIds.slice(offset, offset + 1000) });
+      }
+      for (const taskId of tasks.taskIds) await fs.promises.rm(path.join(os.homedir(), '.agentdesk', 'patches', taskId + '.patch'), { force: true });
+      logger?.audit('project_change', { operation: 'remove_group', status: 'ok' });
+      return { ok: true, tasks: tasks.tasks };
+    } finally { deletingProjects.delete(id); }
+  } catch (error) {
+    logger?.audit('project_change', { operation: 'remove_group', status: 'failed', error: String(error.message).slice(0, 300) });
+    return { ok: false, error: error.message };
+  }
+});
+
 // Deleting one conversation (右键 → 删除…): after a native warning, its history goes on VPS2 (the CLI session and
 // the thread record) and then here (undo checkpoints, command runs, attachments, its worktree). The project stays.
 ipcMain.handle('sessions:remove', async (event, request = {}) => {
@@ -1716,7 +1765,9 @@ async function orchestratorControl(frame) {
       for (const item of attachments) await fs.promises.writeFile(path.join(folder, item.id), chatAttachments.get(item.id).bytes,
         { flag: 'wx', mode: 0o600 });
     }
-    const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : frame.operation === 'project_delete' ? 120000 : 16000);
+    // project_delete only ever comes from the main process (the IPC refuses it); a group project names its own workspace.
+    const target = frame.operation === 'project_delete' && typeof operation.workspace === 'string' ? operation.workspace : workspace;
+    const value = await request(socket, { ...operation, workspace: target }, frame.operation === 'apply' ? 310000 : frame.operation === 'project_delete' ? 120000 : 16000);
     for (const item of attachments || []) chatAttachments.delete(item.id);
     audit('ok', value);
     return { ok: true, value };
