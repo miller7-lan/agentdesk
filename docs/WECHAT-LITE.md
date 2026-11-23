@@ -39,7 +39,7 @@
 
 ```
 个人微信「企业微信」入口（微信插件） ⇄ 企业微信服务器
-  ├─ 回调 https://autumnmoon.top:8443/wecom/callback ── Caddy ──▶ 127.0.0.1:9460
+  ├─ 回调 https://<你的域名>:8443/wecom/callback ── Caddy ──▶ 127.0.0.1:9460
   └─ 主动 API qyapi.weixin.qq.com（出口 IP 在「企业可信 IP」）
 agentdesk-wechat.service（User=agentdesk）
   wecom.js   回调验签/AES 解密、access_token、发文字/文件/图片、素材上传下载
@@ -77,7 +77,7 @@ install -m 644 orchestrator/agentdesk-wechat.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now agentdesk-wechat
 ```
 
-Caddy（`/etc/caddy/Caddyfile`，`autumnmoon.top:8443` 站点里）：
+Caddy（`/etc/caddy/Caddyfile`，`<你的域名>:8443` 站点里）：
 
 ```
 handle /wecom/* {
@@ -95,8 +95,8 @@ Caddy 配置了 `admin off`，`systemctl reload caddy` 会失败，改配置后�
 ### 企业微信后台
 
 1. 应用管理 → 自建 → 创建应用，可见范围只选自己；记下 CorpID（我的企业页底部）、AgentId、Secret。
-2. 应用详情 → 企业可信 IP：`192.238.238.236`。
-3. 应用详情 → 接收消息 → 设置 API 接收：URL `https://autumnmoon.top:8443/wecom/callback`，Token、EncodingAESKey 随机获取；**服务先启动，再点保存**（保存时企业微信发 GET 校验）。
+2. 应用详情 → 企业可信 IP：`<VPS2 公网 IP>`。
+3. 应用详情 → 接收消息 → 设置 API 接收：URL `https://<你的域名>:8443/wecom/callback`，Token、EncodingAESKey 随机获取；**服务先启动，再点保存**（保存时企业微信发 GET 校验）。
 4. 我的企业 → 微信插件：个人微信扫码关注。
 
 第一次部署可以先跑探路服务 `sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/probe.js`：不调用 AI，验证收发文字/文件和 `/push 秒数` 主动推送；allowUsers 为空时日志会打印你的 userid。
@@ -109,7 +109,7 @@ Caddy 配置了 `admin off`，`systemctl reload caddy` 会失败，改配置后�
 
 | 现象 | 查 |
 |---|---|
-| 后台保存 URL 失败 | `journalctl -u agentdesk-wechat` 有无 `url verified`；`curl -I https://autumnmoon.top:8443/wecom/callback` 应为 400（缺签名）而不是 502 |
+| 后台保存 URL 失败 | `journalctl -u agentdesk-wechat` 有无 `url verified`；`curl -I https://<你的域名>:8443/wecom/callback` 应为 400（缺签名）而不是 502 |
 | 发消息没反应 | 日志里 `callback rejected`（Token/AESKey 不一致）；`send failed ... 60020`（可信 IP 没配） |
 | 🔑 需要重新登录 | 对应 CLI 在 `homes/<cli>` 的登录过期，和主控同一份，按主控文档重新登录 |
 | 任务细节 | `/var/lib/agentdesk-orchestrator/wechat/tasks/<id>/.logs/` |
