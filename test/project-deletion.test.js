@@ -16,6 +16,15 @@ async function fixture(t) {
   return root;
 }
 
+// A state folder with an open store. The store is closed before the folder is removed: after-hooks run in the order
+// they are registered, and Windows cannot delete an SQLite file that is still open.
+async function stateFixture(t) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ad-delete-')));
+  const store = new Store(path.join(root, 'state.sqlite'));
+  t.after(async () => { store.close(); await fs.rm(root, { recursive: true, force: true }); });
+  return { stateDir: root, store };
+}
+
 const exists = target => fs.stat(target).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
 const git = (root, ...args) => execFileSync('git', ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { encoding: 'utf8' });
 
@@ -72,8 +81,7 @@ test('checkpoint cleanup removes only the project threads', async t => {
 });
 
 test('VPS project purge is scoped to the authenticated owner/group and removes task worktrees, branches, logs, attachments and receipts', async t => {
-  const stateDir = await fixture(t), repository = path.join(stateDir, 'repos', 'project.git');await repo(repository);
-  const store = new Store(path.join(stateDir, 'state.sqlite'));t.after(() => store.close());
+  const { stateDir, store } = await stateFixture(t), repository = path.join(stateDir, 'repos', 'project.git');await repo(repository);
   const own = { id: randomUUID(), owner: 'mac', workspace: 'mac', group: 'project~one', state: 'completed', steps: [{ id: 'edit' }] };
   const other = { id: randomUUID(), owner: 'mac', workspace: 'mac', group: 'another', state: 'completed', steps: [] };
   const foreign = { id: randomUUID(), owner: 'windows', workspace: 'mac', group: 'project', state: 'completed', steps: [] };
@@ -97,8 +105,7 @@ test('VPS project purge is scoped to the authenticated owner/group and removes t
 });
 
 test('VPS purge deletes an exclusive managed Git cache and refuses unsettled local writes', async t => {
-  const stateDir = await fixture(t), repository = path.join(stateDir, 'repos', 'project.git');await repo(repository);
-  const store = new Store(path.join(stateDir, 'state.sqlite'));t.after(() => store.close());
+  const { stateDir, store } = await stateFixture(t), repository = path.join(stateDir, 'repos', 'project.git');await repo(repository);
   const task = { id: randomUUID(), owner: 'mac', workspace: 'mac', group: 'project', state: 'applying', pendingRequest: 'write' };
   const scheduler = { config: { stateDir, workspaces: { mac: { repository, sshBridge: 'mac' } } }, tasks: new Map([[task.id, task]]), store, running: new Map(), cancel() {} };
   const plan = await projectDelete(scheduler, { group: 'project', workspace: 'mac', action: 'preview' }, 'mac');

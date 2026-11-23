@@ -1923,9 +1923,12 @@ function startUpdates() {
         return { url, headers, stats: feed.stats, close: () => feed.close() };
       },
     },
-    createUpdater: (options) => {
+    createUpdater: (options, { manualInstall = false } = {}) => {
       const { NsisUpdater, MacUpdater } = require('electron-updater');
-      return new (process.platform === 'darwin' ? MacUpdater : NsisUpdater)(options);
+      if (process.platform !== 'darwin') return new NsisUpdater(options);
+      // An update the user installs by hand never goes to Squirrel.Mac (mac-manual-updater.js).
+      if (manualInstall) return new (require('./mac-manual-updater').manualMacUpdater(MacUpdater))(options);
+      return new MacUpdater(options);
     },
     newCancellationToken: () => new (require('electron-updater').CancellationToken)(),
     gate: updateGate, prepareForQuit: prepareForUpdateQuit,

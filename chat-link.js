@@ -229,8 +229,12 @@ class ChatLink extends EventEmitter {
       this.pending.delete(id);
       request.reject(new Error(reason));
     }
-    for (const resolve of [...this.readyWaiters]) resolve(false);
-    this.readyWaiters.clear();
+    // A wake() waiting for the link keeps waiting through an automatic retry (for example the switch from the direct
+    // route to the jump host), up to its own timeout; it only gives up now when no retry follows.
+    if (sleeping || !retry || !this.auto || this.stopping) {
+      for (const resolve of [...this.readyWaiters]) resolve(false);
+      this.readyWaiters.clear();
+    }
     if (current) {
       const pendingExit = new Promise((resolve) => {
         let done = false;

@@ -106,3 +106,24 @@ test('connection settings: copied once to this computer, local copy wins, never 
   assert.equal('c' in snap, false);
   assert.throws(() => connection.resolve('id_ed25519', dirs), /unknown_connection_file/);
 });
+
+test('every local module the packaged main-process files require is packaged too', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..');
+  const { files } = require('../package.json').build;
+  const packed = (file) => files.includes(file) ||
+    (file.startsWith('orchestrator/') && !file.slice(13).includes('/') && files.includes('orchestrator/*.js')) ||
+    (file.startsWith('src/') && files.includes('src/**/*'));
+  const missing = [];
+  for (const file of files.filter((name) => name.endsWith('.js') && !name.includes('*'))) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    for (const [, request] of source.matchAll(/require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g)) {
+      let target = path.posix.normalize(path.posix.join(path.posix.dirname(file), request));
+      if (!target.endsWith('.js') && !target.endsWith('.json')) target += '.js';
+      if (target === 'package.json' || !fs.existsSync(path.join(root, target))) continue;
+      if (!packed(target)) missing.push(`${file} -> ${target}`);
+    }
+  }
+  assert.deepEqual(missing, []);
+});

@@ -55,6 +55,7 @@
       "local-change.js",
       "orchestrator/*.js",
       "updates.js",
+      "mac-manual-updater.js",
       "device-identity.js",
       "update-transport.js",
       "update-gate.js",

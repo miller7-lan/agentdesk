@@ -150,7 +150,8 @@ function createUpdateManager({
         feed = await transport.openFeed(target);
         const url = loopbackFeedUrl(feed.url);
         if (!url) throw new Error('feed_mismatch');
-        updater = createUpdater({ provider: 'generic', url, useMultipleRangeRequest: false, channel: 'latest' });
+        const manualInstall = platform === 'darwin' && !(signedBuild && target.signed);
+        updater = createUpdater({ provider: 'generic', url, useMultipleRangeRequest: false, channel: 'latest' }, { manualInstall });
         updater.autoDownload = false;
         updater.autoInstallOnAppQuit = false;
         updater.allowDowngrade = false;
@@ -158,6 +159,9 @@ function createUpdateManager({
         updater.requestHeaders = { ...(feed.headers || {}) };
         updater.logger = updaterLog(report);
         updater.on('error', () => {});
+        // The downloaded file's path also comes with this event; MacUpdater resolves downloadUpdate() without it.
+        let eventFile;
+        updater.on('update-downloaded', (info) => { if (typeof info?.downloadedFile === 'string') eventFile = info.downloadedFile; });
         updater.on('download-progress', (progress) => {
           samples.push(progress.bytesPerSecond);
           const total = Number(progress.total) || 0;
@@ -174,8 +178,9 @@ function createUpdateManager({
         }
         cancelToken = newCancellationToken?.();
         const files = await updater.downloadUpdate(cancelToken);
-        const file = Array.isArray(files) ? files[0] : undefined;
-        downloadedFile = typeof file === 'string' ? file : undefined;
+        const listed = Array.isArray(files) && typeof files[0] === 'string' ? files[0] : undefined;
+        const file = listed || eventFile;
+        downloadedFile = file;
         const fromServer = feed.stats?.perFile?.[target.installer.name] ?? null;
         const ranged = (feed.stats?.rangeRequests || 0) > 0;
         // Measured on this side of the feed: what actually came from VPS2 for the installer. Differential is reported

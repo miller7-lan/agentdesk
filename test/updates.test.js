@@ -196,9 +196,10 @@ test('client_update_read chunks fit the control channel frame, and a file well o
 // ---- the update state machine with a fake electron-updater ----
 
 class FakeUpdater extends EventEmitter {
-  constructor(options, script) {
+  constructor(options, script, extra) {
     super();
     this.options = options;
+    this.extra = extra;
     this.script = script;
     script.created.push(this);
   }
@@ -216,6 +217,11 @@ class FakeUpdater extends EventEmitter {
     for (const percent of [10, 50, 100]) this.emit('download-progress', { percent, transferred: percent, total: 100, bytesPerSecond: 1000 });
     this.logger?.info('Full: 1,000.00 KB, To download: 120.50 KB (12%)');
     if (this.script.serveDuringDownload) await this.script.serveDuringDownload();
+    // Like electron-updater's MacUpdater with autoInstallOnAppQuit=false: the path only comes with the event.
+    if (this.script.likeMacUpdater) {
+      this.emit('update-downloaded', { version: this.script.feedVersion, downloadedFile: '/cache/pending/AgentDesk-mac.zip' });
+      return [];
+    }
     return ['/cache/pending/AgentDesk-setup.exe'];
   }
   quitAndInstall(silent, forceRun) {
@@ -258,7 +264,7 @@ function harness({ version = '0.2.9', signed = false, platform = 'win32', server
   const manager = createUpdateManager({
     app: { isPackaged: true, getVersion: () => version }, platform, arch: 'x64', buildInfo: { signed },
     settings: {}, logger: { audit: (...args) => audits.push(args) }, transport,
-    createUpdater: (options) => new FakeUpdater(options, script), gate,
+    createUpdater: (options, extra) => new FakeUpdater(options, script, extra), gate,
     prepareForQuit: async () => prepared.push('prepare'), abortPrepare: async () => prepared.push('abort'),
     stateStore: store, snapshotData: async () => ({ 'config.json': 'h1' }), reveal: (file) => prepared.push(['reveal', file]),
     newCancellationToken: () => ({ cancelled: false, cancel() { this.cancelled = true; } }),
@@ -441,6 +447,33 @@ test('unsigned macOS: download allowed, installation is manual (Squirrel.Mac nee
   assert.deepEqual(await h.manager.install(), { ok: false, error: 'manual_install_required' });
   assert.deepEqual(h.manager.revealDownload(), { ok: true });
   assert.deepEqual(h.prepared, [['reveal', '/cache/pending/AgentDesk-setup.exe']]);
+});
+
+test('unsigned macOS: the updater is told the install is manual, and the zip is found when downloadUpdate returns []', async () => {
+  const h = harness({ platform: 'darwin' });
+  h.script.likeMacUpdater = true;
+  await h.manager.check();
+  assert.deepEqual(await h.manager.download(), { ok: true });
+  assert.deepEqual(h.script.created[0].extra, { manualInstall: true });
+  assert.deepEqual(h.manager.revealDownload(), { ok: true });
+  assert.deepEqual(h.prepared, [['reveal', '/cache/pending/AgentDesk-mac.zip']]);
+  const windows = harness();
+  await windows.manager.check();
+  await windows.manager.download();
+  assert.deepEqual(windows.script.created[0].extra, { manualInstall: false });
+});
+
+test('manual macOS updater: keeps the verified zip and never hands it to Squirrel.Mac', async () => {
+  const { manualMacUpdater } = require('../mac-manual-updater');
+  const calls = [];
+  class FakeMacUpdater {
+    dispatchUpdateDownloaded(event) { calls.push(['dispatched', event.downloadedFile]); }
+    async updateDownloaded() { calls.push('squirrel'); return []; }
+  }
+  const updater = new (manualMacUpdater(FakeMacUpdater))();
+  assert.deepEqual(await updater.updateDownloaded({}, { downloadedFile: '/cache/pending/update.zip' }), ['/cache/pending/update.zip']);
+  assert.deepEqual(calls, [['dispatched', '/cache/pending/update.zip']]);
+  assert.throws(() => updater.quitAndInstall(), /manual_install_required/);
 });
 
 test('later: defers without installing; during a download it cancels the download', async () => {

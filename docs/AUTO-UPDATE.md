@@ -66,6 +66,7 @@
   - 未签名构建：不会自己定时检查，也不会自动下载。收到服务器通知或手动检查后只显示「发现新版本」，由用户点「立即下载」。
   - Windows 未签名包：下载完成、门禁通过后，由用户点击「重启并更新」运行安装包。
   - macOS 未签名包：Squirrel.Mac 要求签名，无法由更新器安装，只能打开下载位置手动替换。
+    下载照常校验（sha512、大小），但不交给 Squirrel.Mac：`mac-manual-updater.js` 直接返回下载好的 zip 路径。原版 MacUpdater 会先调用 `autoUpdater.setFeedURL`（签名不被认可时在回调里抛错，下载一直停在「正在下载」），并且返回空列表，导致「打开下载位置」找不到文件。0.2.9 及更早的构建还没有这个修复：在这些版本上下载完成后若打不开下载位置，zip 在 `~/Library/Caches/agentdesk-ui-updater/pending/`。
 
 ## 3. 安全重启门禁（`update-gate.js`）
 

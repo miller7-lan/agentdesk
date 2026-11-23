@@ -237,3 +237,25 @@ test('forcing the jump leaves the chat command as the last argument', async (t) 
   const payload = JSON.parse(Buffer.from(spawned[0].spawnOptions.env.AGENTDESK_SSH_JUMP, 'base64url').toString('utf8'));
   assert.deepEqual(payload.target, { host: 'vps.example.invalid', port: 22 });
 });
+
+test('a wake waits through an automatic retry instead of failing on the first dropped attempt', async (t) => {
+  const { link, spawned } = setup(t);
+  const woke = link.wake(2000);
+  await until(() => spawned.length === 1, 'first attempt');
+  spawned[0].stderr.write('Connection closed by remote host\n');
+  spawned[0].emit('exit', 255);
+  spawned[0].emit('close', 255);
+  await until(() => spawned.length === 2, 'automatic retry');
+  const init = spawned[1].sent.find((request) => request.method === 'initialize');
+  spawned[1].respond(init.id, { serverInfo: { name: 'chat' } });
+  assert.equal(await woke, true);
+  assert.equal(link.state, 'ready');
+});
+
+test('a wake still gives up at once when the link is stopped', async (t) => {
+  const { link, spawned } = setup(t);
+  const woke = link.wake(2000);
+  await until(() => spawned.length === 1, 'first attempt');
+  link.stop();
+  assert.equal(await woke, false);
+});
