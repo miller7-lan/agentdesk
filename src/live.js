@@ -750,7 +750,9 @@
         ? { projectId, approvalPolicy, sandboxPolicy, model, ...(s.worktree && { worktreeSession: s.worktree.key || s.id }) }
         : { projectId, approvalPolicy, sandbox, approvalsReviewer: 'user', model, ...(s.worktree && { worktreeSession: s.worktree.key || s.id }) };
       const r = await api.request('thread/start', params);
-      if (!r.ok) return fail(s, '新建会话失败：' + r.error);
+      if (!r.ok) return fail(s, missingFolder(r.error)
+        ? `新建会话失败：本机文件夹不存在（${s.localRoot || '项目文件夹'}），可能被移动、改名或删除了。请把它恢复，或在右侧「改动」里点「重新选择文件夹」。`
+        : '新建会话失败：' + r.error);
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s); noteThread(s, r.result);
       if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
@@ -1690,11 +1692,24 @@
     return rows.length ? `<table>${rows.join('')}</table>` : '<div class="empty-note">（没有可显示的文本差异）</div>';
   }
   const STATUS = (f) => f.untracked ? ['U', '新文件'] : (f.index === 'D' || f.work === 'D') ? ['D', '已删除'] : (f.index === 'A') ? ['A', '新增'] : (f.index === 'R') ? ['R', '重命名'] : ['M', '已修改'];
+  // The folder itself is missing, which is not a permission problem: offer to pick another one instead of icacls.
+  function missingFolder(error) { return /ENOENT|no such file or directory|找不到|不存在/i.test(String(error || '')); }
   function noAccessHtml() {
+    const project = A.proj(sess(state.active)?.project);
+    if (localRoot && missingFolder(W.access?.error)) {
+      return `<div class="empty-note">本机文件夹不存在：<code>${esc(localRoot)}</code><br>可能被移动、改名或删除了。把它恢复后会自动读取，或者给这个项目换一个文件夹。<br>
+        ${project?.id && window.AgentDeskProjects?.relink ? `<button type="button" class="btn" data-relink-project="${esc(project.id)}">重新选择文件夹</button>` : ''}</div>`;
+    }
     if (!localRoot || isMac) return `<div class="empty-note">${esc(W.access?.error || '没有可用的本机工作区。')}</div>`;
     return `<div class="empty-note">AgentDesk 还不能读取 <code>${esc(localRoot)}</code>（${esc(W.access?.error || '')}）。<br>
       需要给当前账户加只读权限：在管理员 PowerShell 运行<br><code>icacls ${esc(localRoot)} /grant "${esc('%USERNAME%')}:(OI)(CI)RX"</code></div>`;
   }
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-relink-project]');
+    if (!button) return;
+    button.disabled = true;
+    window.AgentDeskProjects.relink(button.dataset.relinkProject).finally(() => { button.disabled = false; });
+  });
   function renderChanges(body) {
     const s = sess(state.active);
     if (!W.access) { body.innerHTML = '<div class="empty-note">正在读取工作区…</div>'; return; }

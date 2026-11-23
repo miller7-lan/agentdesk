@@ -183,3 +183,21 @@ test('a personal folder the app may not read is unbound without touching it', { 
   assert.ok(result.deleted);assert.ok(removed);assert.ok(await exists(path.join(desktop, '.git')));
   assert.equal(await fs.readFile(path.join(desktop, 'notes.txt'), 'utf8'), 'keep me');
 });
+
+test('a project on a folder directly under the drive root is unbound and the folder kept, even with another project inside', async () => {
+  const { deleteProject, topLevel } = require('../project-deletion');
+  const pathModule = require('node:path');
+  const root = pathModule.parse(process.cwd()).root;
+  const top = pathModule.join(root, 'agentdesk-toplevel-' + process.pid);
+  assert.equal(topLevel(top), true);
+  assert.equal(topLevel(pathModule.join(top, 'inner')), false);
+  assert.equal(topLevel(root), false);
+  const project = { id: 'p1', localRoot: top };
+  const inner = { id: 'p2', localRoot: pathModule.join(top, '群聊Projects') };
+  let shown;
+  const result = await deleteProject({ project, projects: [project, inner], protectedPaths: [],
+    preview: async () => ({ threadIds: [] }), confirm: async plan => { shown = plan; return true; },
+    remote: async () => {}, local: async () => {}, unregister: async () => {} });
+  assert.ok(result.deleted);
+  assert.equal(shown.keepFolder, true);   // never removed: it may hold other projects and the person's files
+});

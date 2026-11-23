@@ -250,7 +250,20 @@
     return registering.get(project.id);
   }
   const pickFolder = () => api.pickFolder ? api.pickFolder() : Promise.resolve({ ok: false });
-  window.AgentDeskProjects = { select, bindForDirect, pickFolder, ensureRegistered, openSettings: () => $('#workspaceSettings').click() };
+  // The project's local folder is gone (moved, renamed or deleted): pick another one for the same project. Its name,
+  // VPS folder and orchestrator binding stay; the new folder gets the usual Git setup.
+  async function relink(id) {
+    const project = snapshot?.projects.find((item) => item.id === id);
+    if (!project) { A.toast('找不到该项目。'); return false; }
+    const result = await api.update({ id, name: project.name, kind: 'local', remoteCwd: project.remoteCwd || '',
+      orchestratorWorkspace: project.orchestratorWorkspace || '', pickLocal: true });
+    if (!result.ok) { if (!result.cancelled) A.toast('重新选择文件夹没有完成：' + result.error); return false; }
+    apply(result);
+    reportInit(result.init, id);
+    A.toast('已改用新的本机文件夹。');
+    return true;
+  }
+  window.AgentDeskProjects = { select, bindForDirect, pickFolder, ensureRegistered, relink, openSettings: () => $('#workspaceSettings').click() };
   api.list().then((result) => {
     if (!result.ok) return;
     apply(result);

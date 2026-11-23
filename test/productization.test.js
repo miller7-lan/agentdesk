@@ -296,3 +296,18 @@ test('quota: offline shows 离线, never example numbers or an old snapshot', ()
   assert.match(live, /if \(!sleep\) \{ usageOffline = true; renderUsage\(\); \}/);
   assert.match(live, /usage: \(\) => usageOffline \? null : usage/);
 });
+
+test('a missing project folder is reported as missing, with a 重新选择文件夹 action, and failed deletions log a reason', () => {
+  const live = fs.readFileSync(path.join(__dirname, '..', 'src', 'live.js'), 'utf8');
+  const projects = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(live, /本机文件夹不存在/);
+  assert.match(live, /data-relink-project/);
+  assert.match(projects, /async function relink\(id\)[\s\S]*pickLocal: true/);
+  assert.match(main, /error: removeFailure\(error\.message\)/);
+  const removeFailure = new Function(main.match(/function removeFailure\(message\) \{[\s\S]*?\n\}/)[0] + '; return removeFailure;')();
+  assert.equal(removeFailure('该目录与另一个项目重叠，请先为两个项目分别绑定独立文件夹。'), 'overlaps_other_project');
+  assert.equal(removeFailure('项目目录覆盖了用户目录或系统目录，请先把项目绑定到独立文件夹。'), 'system_or_home_folder');
+  assert.equal(removeFailure('EBUSY: resource busy'), 'folder_in_use_or_denied');
+  assert.equal(removeFailure('奇怪的错误'), 'other');
+});

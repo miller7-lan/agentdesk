@@ -402,10 +402,23 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       const init = (operation === 'add' || operation === 'update') ? appConfig.lastInit : undefined;
       return { ok: true, ...appConfig.list(), ...(init && { init }) };
     } catch (error) {
-      if (operation === 'remove') logger?.audit('project_change', { operation, projectId: request.id, status: 'failed', error: String(error.message).slice(0, 300) });
+      if (operation === 'remove') logger?.audit('project_change', { operation, projectId: request.id, status: 'failed', error: removeFailure(error.message) });
       return { ok: false, error: error.message };
     }
   });
+}
+
+// The audit log keeps only plain identifiers, so a failed deletion is recorded as a category, not its Chinese message.
+function removeFailure(message) {
+  const text = String(message || '');
+  const rules = [
+    [/重叠/, 'overlaps_other_project'], [/用户目录或系统目录/, 'system_or_home_folder'], [/AgentDesk 程序或配置/, 'app_folder'],
+    [/外部 Git 目录/, 'external_git_dir'], [/仍在执行/, 'chat_running'], [/VPS 未连接|单聊服务未连接/, 'vps_offline'],
+    [/远程项目清理未完成/, 'remote_cleanup_failed'], [/远程目录覆盖/, 'remote_folder_shared'], [/项目目录已变化/, 'folder_changed'],
+    [/项目正在删除/, 'already_deleting'], [/找不到该项目/, 'project_not_found'], [/任务已变化/, 'tasks_changed'],
+    [/EBUSY|EPERM|EACCES/, 'folder_in_use_or_denied'], [/ENOENT/, 'not_found'],
+  ];
+  return rules.find(([pattern]) => pattern.test(text))?.[1] || 'other';
 }
 
 async function removeProjectData(id) {
@@ -514,7 +527,7 @@ async function removeProjectData(id) {
       confirm: async plan => {
         const lines = [plan.worktrees?.length && '本机关联工作树\n' + plan.worktrees.join('\n'),
           plan.root && !plan.keepFolder && '本机目录（包括 .git）\n' + plan.root,
-          plan.root && plan.keepFolder && '本机目录是个人文件夹，文件全部保留，只解除绑定\n' + plan.root +
+          plan.root && plan.keepFolder && '本机目录保留（个人文件夹或磁盘根下的文件夹），文件全部不动，只解除绑定\n' + plan.root +
             (plan.removeGit ? '\n（AgentDesk 建的空 .git 会删除，里面没有任何提交）' : ''),
           plan.remoteDirectory ? 'VPS 项目目录（包括 .git）\n' + plan.remoteDirectory
             : plan.remoteClear ? 'VPS 工作区内容全部清空（目录本身保留）\n' + plan.remoteClear

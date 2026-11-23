@@ -40,19 +40,24 @@ async function emptyRepository(root) {
   }
 }
 
+// A folder directly under a drive or the file-system root (D:\agentdesk, /work): it often holds other projects and
+// the person's own files, so deleting its project only unbinds it and the folder is kept, as for personal folders.
+const topLevel = (root) => Boolean(root) && root !== path.parse(root).root && path.dirname(root) === path.parse(root).root;
+
 // Every target comes from the main process's saved project, never from a renderer-supplied path.
-async function projectDirectory(project, projects, protectedPaths = [], linked = false) {
+// keep: the folder will not be deleted, so folders of other projects inside or around it are no reason to refuse.
+async function projectDirectory(project, projects, protectedPaths = [], linked = false, { keep = false } = {}) {
   if (!project.localRoot) return null;
   const root = await canonical(project.localRoot);
   const home = await canonical(os.homedir());
-  if (root === path.parse(root).root || inside(root, home) || path.dirname(root) === path.parse(root).root) {
+  if (root === path.parse(root).root || inside(root, home) || (!keep && topLevel(root))) {
     throw new Error('项目目录覆盖了用户目录或系统目录，请先把项目绑定到独立文件夹。');
   }
   for (const target of protectedPaths) {
     const resolved = await canonical(target);
     if (inside(root, resolved) || inside(resolved, root)) throw new Error('该目录包含 AgentDesk 程序或配置，无法作为项目删除。');
   }
-  for (const other of projects) {
+  for (const other of keep ? [] : projects) {
     if (other.id === project.id || !other.localRoot) continue;
     const resolved = await canonical(other.localRoot);
     if (inside(root, resolved) || inside(resolved, root)) throw new Error('该目录与另一个项目重叠，请先为两个项目分别绑定独立文件夹。');
@@ -103,14 +108,15 @@ async function purgeCheckpoints(directory, threadIds) {
 
 // Keep the registration until all requested cleanup succeeds. A retry can finish a partially deleted project.
 async function deleteProject({ project, projects, protectedPaths, preview, confirm, remote, local, unregister, savePlan = async () => {}, home }) {
-  const root = await projectDirectory(project, projects, protectedPaths);
-  const keepFolder = await personalFolder(root, home);
+  const top = topLevel(project.localRoot && await canonical(project.localRoot));
+  const root = await projectDirectory(project, projects, protectedPaths, false, { keep: top });
+  const keepFolder = top || await personalFolder(root, home);
   const removeGit = keepFolder && await emptyRepository(root);
   const worktrees = keepFolder ? [] : await linkedWorktrees({ ...project, localRoot: root }, projects, protectedPaths);
   const plan = { ...await preview({ ...project, localRoot: root }), worktrees };
   if (!await confirm({ ...plan, root, keepFolder, removeGit })) return { cancelled: true };
   // Recheck registered paths after the confirmation, before the first irreversible step.
-  if (root !== await projectDirectory(project, projects, protectedPaths)) throw new Error('项目目录已变化，请重新删除。');
+  if (root !== await projectDirectory(project, projects, protectedPaths, false, { keep: top })) throw new Error('项目目录已变化，请重新删除。');
   await savePlan(plan);
   await remote(plan);
   await local(plan);
@@ -121,4 +127,4 @@ async function deleteProject({ project, projects, protectedPaths, preview, confi
   return { deleted: true, threadIds: plan.threadIds || [] };
 }
 
-module.exports = { inside, canonical, personalFolder, emptyRepository, projectDirectory, purgeCheckpoints, linkedWorktrees, deleteProject };
+module.exports = { inside, canonical, topLevel, personalFolder, emptyRepository, projectDirectory, purgeCheckpoints, linkedWorktrees, deleteProject };
