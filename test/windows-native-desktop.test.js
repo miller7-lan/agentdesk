@@ -30,3 +30,21 @@ test('D14: without the native host a new full-access chat falls back to the MCP 
   project.orchestratorWorkspace = 'named';
   await assert.rejects(desktop.select('claude', 'thread/start', params), /Bridge 写入授权/);
 });
+
+test('records left over from a deleted project are found and removed without attaching to a missing folder', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-orphan-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const live = { projectId: 'live', provider: 'codex', root: directory, threadId: 'keep', sessionKey: 'a' };
+  const gone = [1, 2].map((n) => ({ projectId: 'gone', provider: n === 1 ? 'codex' : 'claude', root: '/missing', threadId: 'old-' + n, sessionKey: 'b' + n }));
+  fs.writeFileSync(path.join(directory, 'threads.json'), JSON.stringify([live, ...gone]));
+  const remote = { cfg: {}, wake: async () => true, request: async () => ({ exitCode: 1 }) };
+  const desktop = createWindowsNativeDesktop({ stateDir: directory, remote,
+    findProject: (id) => id === 'live' ? { id: 'live', kind: 'local', localRoot: directory } : undefined,
+    findWorktree: () => null, bridgeSettings: () => null, onEvent: () => {} });
+  assert.deepEqual(desktop.orphanProjects(new Set(['live'])), ['gone']);
+  // One conversation of the missing project can be deleted on its own (it used to fail with 找不到本机项目目录).
+  assert.equal(await desktop.deleteThread('old-1'), true);
+  assert.deepEqual(await desktop.deleteProject('gone'), ['old-2']);
+  assert.deepEqual(desktop.orphanProjects(new Set(['live'])), []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, 'threads.json'), 'utf8')).map((r) => r.threadId), ['keep']);
+});

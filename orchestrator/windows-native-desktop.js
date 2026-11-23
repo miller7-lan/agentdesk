@@ -196,6 +196,10 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       }
       return false;
     },
+    // Projects that have records here but no longer exist in the app (deleted while these were left behind).
+    orphanProjects(known) {
+      return [...new Set([...records.values()].map(record => record.projectId))].filter(id => !known.has(id));
+    },
     projectRecords(projectId) {
       return [...records.values()].filter(record => record.projectId === projectId);
     },
@@ -208,9 +212,11 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       let seat;
       try {
         const project = resolveProject(record.projectId, record.worktreeSession);
-        if (!project) throw new Error('找不到本机项目目录。');
-        seat = await attached(record, project);
-        await seat.request('thread/delete', { threadId });
+        // Left over from a project that no longer exists: nothing local to attach to, so only the record goes.
+        if (project) {
+          seat = await attached(record, project);
+          await seat.request('thread/delete', { threadId });
+        }
       } catch (error) { if (!/thread_not_found|thread not (found|loaded)|no rollout found|尚无可恢复的历史记录/.test(error.message)) throw error; }
       await seat?.close?.({ confirmedIdle: true });
       fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -226,9 +232,10 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
         let seat;
         try {
           const project = resolveProject(projectId, record.worktreeSession);
-          if (!project) throw new Error('找不到本机项目目录。');
-          seat = await attached(record, project);
-          await seat.request('thread/delete', { threadId: record.threadId });
+          if (project) {
+            seat = await attached(record, project);
+            await seat.request('thread/delete', { threadId: record.threadId });
+          }
         } catch (error) { if (!/thread_not_found|thread not (found|loaded)|no rollout found|尚无可恢复的历史记录/.test(error.message)) throw error; }
         await seat?.close?.({ confirmedIdle: true });
       }

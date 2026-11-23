@@ -234,7 +234,7 @@ test('a new project picks its local folder and becomes a Git repository before i
   await config.saveProject(undefined, { name: '新项目', kind: 'local', orchestratorWorkspace: 'mac' }, folder, id);
   const record = config.value.projects.find((project) => project.id === id);
   assert.equal(record.orchestratorWorkspace, 'mac');
-  assert.equal(fs.realpathSync(record.localRoot), fs.realpathSync(folder));
+  assert.equal(fs.realpathSync.native(record.localRoot), fs.realpathSync.native(folder));
   assert.ok(fs.existsSync(path.join(folder, '.git')), 'git init ran');
 });
 
@@ -260,4 +260,10 @@ test('attachments show a progress bar while they upload', () => {
   const main = read('main.js');
   assert.match(main, /toUi\('files:uploadProgress'/);
   assert.equal((main.match(/finally \{ progress\(\); \}/g) || []).length, 3, 'every Codex upload path ends its batch');
+});
+
+test('native chats of a project that no longer exists are pruned after a clean configuration load', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(main, /activateProject\(\);\n  pruneOrphanNativeChats\(\);/);
+  assert.match(main, /if \(!native\?\.orphanProjects \|\| configError \|\| !appConfig\?\.value\.projects\.length\) return;/, 'never on a broken or empty configuration');
 });

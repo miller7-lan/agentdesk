@@ -235,6 +235,26 @@ async function loadAppConfig() {
   }
   if (!process.env.AGENTDESK_APPEARANCE && appConfig.value.appearance?.boot === 'off') bootMode = 'off';
   activateProject();
+  pruneOrphanNativeChats();
+}
+
+// Native single chats whose project is gone (deleted before 0.3.8 cleaned them up, or by hand) are listed under any
+// project that shares the cloud folder and fail there with 「属于另一个已授权的本机项目」/「找不到本机项目目录」.
+// Their local records and leases are dropped once the configuration has loaded cleanly; nothing else is touched.
+function pruneOrphanNativeChats() {
+  const native = nativeDesktop();
+  if (!native?.orphanProjects || configError || !appConfig?.value.projects.length) return;
+  const orphans = native.orphanProjects(new Set(appConfig.value.projects.map(({ id }) => id)));
+  (async () => {
+    for (const id of orphans) {
+      try {
+        const removed = await native.deleteProject(id);
+        logger?.audit('native_orphan_prune', { projectId: id, threads: removed.length, status: 'ok' });
+      } catch (error) {
+        logger?.audit('native_orphan_prune', { projectId: id, status: 'failed', error: String(error.message).slice(0, 300) });
+      }
+    }
+  })();
 }
 
 function fromMainWindow(event) {
