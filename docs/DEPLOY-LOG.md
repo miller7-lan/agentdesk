@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-23 21:10（北京时间）· VPS1 / VPS2 · 第二台 Windows（Lenovo）接入群聊主控
+
+- **背景**：有两台 Windows。原来那台（工作区 `windows`）今天没连 VPS2；Lenovo（`lenovo_actjm6t3`）只登记了单聊钥匙，没有 Bridge，也就没有群聊主控。
+- **VPS2**：新建空仓库 `repos/lenovo.git`；`config.json` 的 `sshBridges`、`quotaBridges` 加 `lenovo`，`workspaces` 加 `lenovo`，`relayBridges` 加 `lenovo`；新增 `relay-lenovo.token`；重启主控和 `agentdesk-home-mount`，`bridge-lenovo.sock`、`bridge-lenovo-mount.sock` 已建立。改前备份 `config.json.bak-20261123-lenovo`。
+- **VPS1**：Relay 注册表新增 `lenovo-bridge` ↔ `vps2-orchestrator-lenovo`，主控一端已上线。
+- **待办**：Lenovo 运行配置脚本生成 Bridge 钥匙，把公钥发回后，在 `/etc/ssh/agentdesk-authorized-keys` 加一行（限定 `ssh-gateway.js bridge-lenovo.sock bridge-lenovo-mount.sock`）。
+- **回滚**：恢复 `config.json.bak-20261123-lenovo` 并重启两个服务；VPS1 删掉这两条配对。
+
 ## 2026-11-23 21:01（北京时间）· VPS1 / VPS2 · Windows 接入备用线路（Relay）主控
 
 - **问题**：Windows 只有 SSH 主线路，Relay 上没有它的配对，VPS2 的 `relayBridges` 里也只有 mac，所以 Windows 没有备用线路的主控。另外发现 Mac Bridge 的 `relay.host` 还是 VPS1 的旧 IP，Mac 一端从未连上 Relay（要在 Mac 上改，见对话记录）。
