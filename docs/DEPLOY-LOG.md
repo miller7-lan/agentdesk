@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-23 21:01（北京时间）· VPS1 / VPS2 · Windows 接入备用线路（Relay）主控
+
+- **问题**：Windows 只有 SSH 主线路，Relay 上没有它的配对，VPS2 的 `relayBridges` 里也只有 mac，所以 Windows 没有备用线路的主控。另外发现 Mac Bridge 的 `relay.host` 还是 VPS1 的旧 IP，Mac 一端从未连上 Relay（要在 Mac 上改，见对话记录）。
+- **VPS1**：Relay 注册表新增永久配对 `windows-bridge` ↔ `vps2-orchestrator-windows`（只写令牌摘要）。改前备份在 VPS1 `/root/relay-devices.json.bak-20261123-*`。
+- **VPS2**：新增 `/etc/agentdesk-orchestrator/relay-windows.token`（root:agentdesk 0640），`config.json` 的 `relayBridges` 加 `windows`，重启主控。改前备份 `config.json.bak-20261123-win-relay`。Relay 日志确认 `vps2-orchestrator-windows` 已上线。
+- **Windows**：待在本机运行配置脚本（写 Bridge 令牌、CA，并在 Bridge 配置加 `relay`），重启应用后 Relay 日志应出现 `connected device=windows-bridge`。
+- **回滚**：VPS2 恢复 `config.json.bak-20261123-win-relay` 并重启主控；VPS1 从注册表删掉这两条（或恢复备份），服务 2 秒内自动生效。
+
 ## 2026-11-23 21:10（北京时间）· 客户端 0.3.10 · 0.3.9 重发、清理残留的原生单聊记录
 
 - **0.3.9 未发出**：Windows 打包前的测试失败。新加的测试比较临时目录路径时没有统一 Windows 的 8.3 短路径（`RUNNER~1`）；功能代码无问题。测试改用 `realpathSync.native` 后以 0.3.10 重发，内容包含 0.3.9 的全部改动（见下条）。标签 v0.3.9 保留。
