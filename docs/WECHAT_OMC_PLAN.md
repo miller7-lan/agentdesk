@@ -1,3 +1,5 @@
+> **2026-11-23：已被 [WECHAT-LITE.md](WECHAT-LITE.md)（轻便版办公助手）取代。** 本文保留作历史参考。
+
 # 方案 v2：微信一对一 → OpenClaw → 容器化云任务（多 CLI 协作）
 
 > **2026-11-17 补充**：VPS 有两台，现阶段只开发 **VPS2（4 GB + 2 GB swap）**，主控、四个 CLI、任务容器和微信网关都放在这台；隔离方式确定用 **Docker**。最新待办见 [TASKS.md](TASKS.md)。
