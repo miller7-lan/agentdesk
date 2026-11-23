@@ -10,7 +10,8 @@ const path = require('node:path');
 function directStart(exe, env) {
   return new Promise((resolve) => {
     const { spawn } = require('node:child_process');
-    const child = spawn(exe, ['--enable-logging=stderr'], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(exe, ['--enable-logging=stderr', '--user-data-dir=' + path.join(env.HOME, 'AgentDesk')],
+      { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
     const keep = (chunk) => { out = (out + chunk).slice(-1500); };
     child.stdout.on('data', keep);
@@ -24,6 +25,7 @@ function directStart(exe, env) {
 async function main() {
   const { _electron: electron } = require('playwright-core');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-ui-home-'));
+  // Pass user-data-dir explicitly: macOS resolves its Application Support directory independently of HOME.
   // A fresh profile for the app. Every folder the environment names must exist: on Windows Electron and Chromium
   // take the user-data and cache locations from these variables at start-up.
   const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'),
@@ -31,7 +33,8 @@ async function main() {
   for (const folder of [env.APPDATA, env.LOCALAPPDATA]) fs.mkdirSync(folder, { recursive: true });
   let app;
   try {
-    app = await electron.launch({ executablePath: path.resolve(process.argv[2]), args: [], env, timeout: 60_000 });
+    app = await electron.launch({ executablePath: path.resolve(process.argv[2]),
+      args: ['--user-data-dir=' + path.join(home, 'AgentDesk')], env, timeout: 60_000 });
   } catch (error) {
     // The launch error alone ("Process failed to launch!") says nothing: start the app directly with the same
     // environment and report how it ended and what it printed (readable in the CI annotations).
