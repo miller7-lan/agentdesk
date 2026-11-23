@@ -317,3 +317,9 @@ test('service: 你好 gets a reply, /问 answers with a cheap model without crea
   assert.equal(client.sent.at(-1)[2], '今天是周一');
   assert.equal(service.store.data.tasks.length, 0);
 });
+
+test('plainSummary drops Antigravity progress lines', () => {
+  const { plainSummary } = require('../orchestrator/wechat/service');
+  assert.equal(plainSummary('正在生成并检查 PPT 渲染预览图，请稍候。\n正在重新渲染，请稍候。\n已完成 5 页 PPT。'), '已完成 5 页 PPT。');
+  assert.equal(plainSummary('正在推进的项目有 3 个。'), '正在推进的项目有 3 个。');
+});

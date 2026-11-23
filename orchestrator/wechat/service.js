@@ -39,6 +39,8 @@ function short(text, size = 18) {
 // 微信里不渲染 Markdown：链接只留文字，绝对路径只留文件名，去掉加粗和行内代码记号。
 function plainSummary(text) {
   return String(text || '')
+    // Antigravity 会把过程中的“正在……请稍候”也拼进最终输出，去掉这些行。
+    .split('\n').filter((line) => !/^\s*正在.{0,60}(请稍候|稍等|请等待)[。.…！!]*\s*$/.test(line)).join('\n')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/(?:file:\/\/)?\/(?:[^\s/「」（）()]+\/)+([^\s/「」（）()]+)/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
