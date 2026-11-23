@@ -105,6 +105,9 @@ jobs:
         if: matrix.platform == 'mac'
         shell: bash
         run: |
+          # An unset secret arrives as an empty string; electron-builder reads an empty CSC_LINK as a path
+          # (the working directory) and fails with "not a file". Unsigned builds must not see these at all.
+          [ -z "$CSC_LINK" ] && unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
           npm run predist:mac:release
           config=()
           [ "${{ inputs.bundle_connection }}" = true ] && config=(--config build/bundle-connection.config.js)
@@ -120,6 +123,7 @@ jobs:
         if: matrix.platform == 'windows'
         shell: bash
         run: |
+          [ -z "$CSC_LINK" ] && unset CSC_LINK CSC_KEY_PASSWORD
           npm run predist
           config=()
           [ "${{ inputs.bundle_connection }}" = true ] && config=(--config build/bundle-connection.config.js)
