@@ -2,7 +2,7 @@
 
 适用版本：0.3.0 起（分支 `feat/safe-differential-updates-20261122`）。本文说明设计、使用、部署前置条件和已知限制。
 
-> **当前状态（2026-11-23）**：代码和自动化测试已在功能分支完成，**尚未**部署 VPS2，**尚未**配置 GitHub Environment 或 secret，**尚未**在任何真实电脑上安装或升级，差分下载效果**尚未在真实设备上实测**。下文的 VPS2 部署步骤需要主人另行批准后才执行。
+> **当前状态（2026-11-23 09:20 CST 起）**：VPS2 服务端已按 main `837e328` 部署上线，存储、专用上传账户和强制命令已建好，已用隔离测试数据完成验收（见 [DEPLOY-LOG.md](DEPLOY-LOG.md)）。**还差主人的三步**：① 在 VPS2 上 `sshd -t && systemctl reload ssh`，让上传账户生效（本次会话的权限设置不允许执行这一步）；② 在 GitHub 建 `vps2-intake` Environment 并填 secret（§6.4）；③ 推送第一个正式 `vX.Y.Z` 标签。在此之前生产存储里没有任何版本，所有设备都得到「没有新版本」。**尚未**在任何真实电脑上安装或升级，差分下载效果**尚未在真实设备上实测**。
 
 ## 1. 架构
 
@@ -125,15 +125,36 @@
 
   设备名是 Bridge 名（例如 `mac`、`windows`，或登记设备 ID）。
 
-## 6. VPS2 部署（需主人另行批准；未执行）
+## 6. VPS2 部署（2026-11-23 已执行，实际布局如下）
 
-1. 按 `docs/DEPLOY.md` 把 `orchestrator/` 下的新文件和改动文件部署到 `/opt/agentdesk-orchestrator/`，改动前先在 `/root/backups/` 备份。涉及的文件：`client-updates.js`、`client-update-intake.js`、`update-manifest.js`、`scheduler.js`、`service.js`、`chat-server.js`。
-2. 创建目录 `/var/lib/agentdesk-orchestrator/client-updates`，属主为 intake 用户，`agentdesk` 用户和单聊用户要有读权限。
-3. 新建专用 Unix 用户，例如 `agentdesk-update`，authorized_keys 只放 CI 公钥一行：
-   `restrict,command="/opt/agentdesk-node24/bin/node /opt/agentdesk-orchestrator/client-update-intake.js" ssh-ed25519 AAAA… agentdesk-ci-upload`
-   先用 `sshd -t` 检查配置，并保留现有的登录方式。
-4. 在 GitHub 上建 Environment `vps2-intake`，把部署分支和标签规则限制为 `v*.*.*`，不设审批人。在其中配置 secret：`VPS2_UPDATE_SSH_KEY`、`VPS2_UPDATE_KNOWN_HOSTS`、`VPS2_UPDATE_TARGET`（`agentdesk-update@<host>`），可选 `VPS2_UPDATE_PORT`。这一步由主人本人操作。
-5. Mac：独立运行的 Mac Bridge 需要升级到包含 `client_update`、`client_update_read`、`open_tasks` 白名单的版本，否则客户端会提示「服务器或 Mac Bridge 版本过旧」。程序不会自动升级 Bridge。
+1. **代码**：`orchestrator/` 中主控用到的文件与 main 一致（`client-updates.js`、`client-update-intake.js`、`update-manifest.js`、`scheduler.js`、`service.js`、`chat-server.js` 等）。按 `docs/DEPLOY.md` 只替换有变化的文件，不运行 `install-ubuntu.sh`（它会改写 systemd 单元和 drop-in）。
+2. **存储**：真实目录是 `/var/lib/agentdesk-client-updates`，`/var/lib/agentdesk-orchestrator/client-updates` 是指向它的符号链接，所以主控（`scheduler.js` 默认根目录）和单聊（`chat-server.js` 默认 `STATE_DIR/client-updates`）都不需要改配置。不放在状态目录里面，是因为单元的 `StateDirectoryMode=0700` 每次启动都会把 `/var/lib/agentdesk-orchestrator` 改回 0700，上传账户进不去。权限：
+
+   | 路径 | 属主 | 模式 | 说明 |
+   |---|---|---|---|
+   | `/var/lib/agentdesk-client-updates/` | `root:agentdesk-update` | `1775` | 粘滞位：上传账户能新建 `latest.json`、`intake.lock`，但删不掉、改不了 root 的文件 |
+   | `versions/` | `agentdesk-update` | `0755` | 每个版本一个目录，文件 0644 |
+   | `incoming/` | `agentdesk-update` | `0700` | 接收中的临时目录 |
+   | `withdrawn.json`、`policy.json` | `root` | `0644` | 只有 root 能改（撤回、灰度），上传账户改不了 |
+
+3. **上传账户**：系统用户 `agentdesk-update`（密码锁定，shell `/bin/sh` 只为执行强制命令）。
+   - sshd：`/etc/ssh/sshd_config.d/56-agentdesk-update.conf` 只追加 `AllowUsers agentdesk-update`（AllowUsers 是累加的，root、agentdesk 的设置不变，已用 `sshd -T -C` 核对），并对这个用户设置：只允许公钥、`DisableForwarding`、`PermitTTY no`、`PermitUserRC no`、`ForceCommand`。
+   - 钥匙文件：`/etc/ssh/agentdesk-update-authorized-keys`（root 0644，不在用户家目录，用户改不了），一行：
+     `restrict,command="/usr/bin/env AGENTDESK_CLIENT_UPDATES=/var/lib/agentdesk-client-updates /opt/agentdesk-node24/bin/node /opt/agentdesk-orchestrator/client-update-intake.js" ssh-ed25519 … agentdesk-ci-upload`
+   - 改完 drop-in 要 `sshd -t && systemctl reload ssh` 才生效。
+   - CI 用的私钥、`known_hosts`、目标和端口在 VPS2 的 `/root/agentdesk-ci-upload/`（root 0700）。主人填进 GitHub 后可以把私钥 `shred -u` 掉。
+4. **GitHub**（主人本人操作）：建 Environment `vps2-intake`。Deployment branches and tags 选 Selected，只加标签规则 `v*.*.*`，不设审批人。在其中配置 secret：
+
+   | secret | 取值（都在 VPS2 `/root/agentdesk-ci-upload/`） |
+   |---|---|
+   | `VPS2_UPDATE_SSH_KEY` | `vps2_update_ed25519` 的全部内容（私钥） |
+   | `VPS2_UPDATE_KNOWN_HOSTS` | `known_hosts` 的全部内容（VPS2 的主机公钥） |
+   | `VPS2_UPDATE_TARGET` | `target` 的内容（`agentdesk-update@<VPS2 地址>`） |
+   | `VPS2_UPDATE_PORT` | 可选；`port`，现为 22 |
+
+   没配好时，`upload-vps2` 只打 notice 并跳过，产物仍留在 workflow artifacts。
+5. **撤回与灰度**：以 root 编辑 `withdrawn.json`（例如 `["0.3.1"]`）或 `policy.json`（格式见 §5）。不需要重启，下一次请求就生效。
+6. Mac：独立运行的 Mac Bridge 需要升级到包含 `client_update`、`client_update_read`、`open_tasks` 白名单的版本，否则客户端会提示「服务器或 Mac Bridge 版本过旧」。程序不会自动升级 Bridge。
 
 ## 7. 用户步骤
 
