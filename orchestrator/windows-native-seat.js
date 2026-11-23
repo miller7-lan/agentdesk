@@ -189,7 +189,9 @@ async function openWindowsNativeSeat({
   try {
     await ready;
     clearTimeout(timeout);
-    await call('initialize', { clientInfo: { name: 'agentdesk-native', version: '1.0.0' }, capabilities: { experimentalApi: true } });
+    // A chat CLI (not Codex) may offer agentdesk_ask_user only when its questions reach the app (onServerRequest).
+    await call('initialize', { clientInfo: { name: 'agentdesk-native', version: '1.0.0' },
+      capabilities: { experimentalApi: true, ...(identity.provider !== 'codex' && onServerRequest && { questionCards: true }) } });
     wire.send({ method: 'initialized', params: {} });
   } catch (error) {
     clearTimeout(timeout);

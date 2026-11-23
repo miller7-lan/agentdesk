@@ -11,6 +11,7 @@ const { openWindowsNativeSeat } = require('../orchestrator/windows-native-seat')
 
 function harness() {
   const remote = new EventEmitter();
+  const inits = [];
   const hostIn = new PassThrough();   // bytes the seat writes (command/exec/write)
   const hostOut = new PassThrough();  // bytes the host prints (outputDelta)
   const host = new NativeChannel(hostIn, hostOut);
@@ -32,17 +33,17 @@ function harness() {
     openSftp: async () => { const s = new PassThrough(); s.destroy = () => {}; return s; } };
   // The provider side answers initialize / thread/resume / turn/start like the host would.
   provider.on('frame', (frame) => {
-    if (frame.method === 'initialize') provider.send({ id: frame.id, result: {} });
+    if (frame.method === 'initialize') { inits.push(frame.params); provider.send({ id: frame.id, result: {} }); }
     if (frame.method === 'turn/start') {
       provider.send({ id: frame.id, result: { turn: { id: 'turn-1' } } });
       provider.send({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } });
     }
   });
-  return { remote, worker, provider };
+  return { remote, worker, provider, inits };
 }
 
 test('a native seat forwards its running turn\'s question to the app and returns the answer', async () => {
-  const { remote, worker, provider } = harness();
+  const { remote, worker, provider, inits } = harness();
   const asked = [];
   const seat = await openWindowsNativeSeat({ remote, worker, identity: { threadId: 'thread-1', provider: 'codex', fullAccess: true },
     binding: {}, checkpoints: false,
@@ -62,6 +63,18 @@ test('a native seat forwards its running turn\'s question to the app and returns
   provider.send({ id: 93, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-1' } });
   assert.equal((await approval).result.success, false, 'other server requests stay refused');
   assert.equal(asked.length, 1);
+  assert.equal(inits[0].capabilities.questionCards, undefined, 'Codex is not sent a capability it does not know');
   remote.emit('codex-down');   // tear down the way a dropped connection does
   assert.equal(seat.closed, true);
+});
+
+test('a native chat CLI seat declares question cards only when questions can reach the app', async () => {
+  for (const [onServerRequest, expected] of [[async () => ({ answers: {} }), true], [null, undefined]]) {
+    const { remote, worker, inits } = harness();
+    const seat = await openWindowsNativeSeat({ remote, worker, identity: { threadId: 'thread-1', provider: 'claude', fullAccess: true },
+      binding: {}, checkpoints: false, onServerRequest });
+    assert.equal(inits[0].capabilities.questionCards, expected);
+    remote.emit('codex-down');
+    assert.equal(seat.closed, true);
+  }
 });
