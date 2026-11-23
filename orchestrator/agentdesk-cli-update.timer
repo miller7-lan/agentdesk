@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily AgentDesk model CLI update
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 America/New_York
+AccuracySec=1min
+Persistent=true
+Unit=agentdesk-cli-update.service
+
+[Install]
+WantedBy=timers.target
