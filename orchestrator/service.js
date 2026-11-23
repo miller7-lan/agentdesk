@@ -529,6 +529,15 @@ function start(config) {
   return { scheduler, endpoint, close };
 }
 
+// Only these fields of a client-update request travel to VPS2.
+function clientUpdateFields(update) {
+  if (!update || typeof update !== 'object' || Array.isArray(update)) return {};
+  const pick = {};
+  for (const name of ['platform', 'arch', 'appVersion', 'version', 'file']) if (typeof update[name] === 'string') pick[name] = update[name].slice(0, 120);
+  for (const name of ['offset', 'length']) if (Number.isSafeInteger(update[name])) pick[name] = update[name];
+  return pick;
+}
+
 function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }) {
   fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const store = new Store(path.join(config.stateDir, 'bridge.sqlite'));
@@ -585,7 +594,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, fixId, backupId, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, fixId, backupId, update, workspace: requestedWorkspace }) => {
       try {
         if (operation === 'attachment_state') {
           wire.send({ ok: true, value: config.stateDir });
@@ -605,7 +614,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore', 'client_update', 'client_update_read', 'open_tasks'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -619,7 +628,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           ...(operation === 'handover_choose' && { stop, role, model, effort }),
           ...(operation === 'set_step_models' && { models }),
           ...(operation === 'cli_upgrade' && { provider, target: 'latest' }),
-          ...(operation === 'env_fix_revert' && { fixId }), ...(operation === 'outside_restore' && { backupId }) };
+          ...(operation === 'env_fix_revert' && { fixId }), ...(operation === 'outside_restore' && { backupId }),
+          ...(['client_update', 'client_update_read'].includes(operation) && { update: clientUpdateFields(update) }) };
         // The person allowed access beyond this computer's configuration: it is recorded here, on their computer,
         // before VPS2 hears of it — VPS2 cannot create such a grant by itself.
         if (operation === 'permission_answer' && ['step', 'task'].includes(reply) && grant && typeof grant === 'object') {
@@ -655,7 +665,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
     operations.sweepStreams().catch((error) => log('stream cleanup:', error.message));
     sweepAttachments(config.stateDir).catch((error) => log('attachment cleanup:', error.code || error.message));
   }, 60000).unref();
-  return () => {
+  const stop = () => {
     clearInterval(maintenance);
     stopped = true;
     clearTimeout(restart);
@@ -668,6 +678,12 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
     relay?.stop();
     operations.commands.close();
   };
+  // For the update gate: Bridge commands still running in this process (they would end with it).
+  stop.activity = () => {
+    const runs = operations.commands.listAllScopes();
+    return { runningCommands: runs.filter((run) => !run.finishedAt).length };
+  };
+  return stop;
 }
 
 if (require.main === module) {

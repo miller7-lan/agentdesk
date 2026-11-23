@@ -155,6 +155,17 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000, sta
           .then(() => result(runs.byKey(lease.scope, key)))]);
       } finally { timer.abort(); }
     },
+    // For the update gate (idleStatus): commands still running anywhere in this Worker, and finished ones whose
+    // outcome is unknown and not yet acknowledged.
+    activity() {
+      let running = 0;
+      let unknown = 0;
+      for (const run of runs.listAllScopes()) {
+        if (!run.finishedAt) running++;
+        else if (run.state === 'unknown') unknown++;
+      }
+      return { running, unknown };
+    },
     canResume(lease, { acknowledgeUnknown = false } = {}) {
       return runs.listAll(lease.scope).every((run) => run.finishedAt && (acknowledgeUnknown || run.state !== 'unknown'));
     },

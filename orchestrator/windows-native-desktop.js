@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
-const { createWorkerClient, createSecret } = require('./windows-chat-worker');
+const { createWorkerClient, createSecret, connectWorker } = require('./windows-chat-worker');
 const { openWindowsNativeSeat } = require('./windows-native-seat');
 const { NATIVE_PROVIDERS } = require('./native-channel');
 
@@ -15,7 +15,7 @@ function sameRoot(left, right) {
 
 // Windows and macOS: the official CLI on VPS2 works directly in this computer's project (mounted over SFTP),
 // and its local_shell runs here.
-function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onCommand, reviewUnknown,
+function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onRequest, onCommand, reviewUnknown,
   onTerminal = () => {} }) {
   const worker = createWorkerClient(stateDir, {
     onUpdate: (scope, run) => {
@@ -107,7 +107,8 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       let seat;
       try {
         seat = await openWindowsNativeSeat({ remote, worker: connection, identity, binding, sessionKey: record.sessionKey,
-          onNotification: (event) => onEvent(record.provider, event) });
+          onNotification: (event) => onEvent(record.provider, event),
+          onServerRequest: onRequest ? (frame) => onRequest(record.provider, frame) : null });
       } catch (error) {
         await connection.request('release', { binding }).catch(() => {});
         throw error;
@@ -218,6 +219,37 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       }
     },
     disconnect: () => worker.disconnect(),
+    // Update gate (orchestrator/worker-idle.js): asks the Worker over a separate connection — never launches it,
+    // never stops anything in it.
+    idleProbe({ listProcesses } = {}) {
+      const { probeWorker, legacyWorkerEvidence, listProcessCommandLines } = require('./worker-idle');
+      return probeWorker({
+        stateDir, platform: process.platform,
+        connect: () => connectWorker(stateDir, createSecret(stateDir)),
+        listProcesses: listProcesses || (() => listProcessCommandLines(process.platform)),
+        legacyEvidence: async (connection) => {
+          const identities = [];
+          const reasons = [];
+          for (const record of records.values()) {
+            const project = resolveProject(record.projectId, record.worktreeSession);
+            if (!project) { reasons.push('有单聊会话的本机项目无法核对'); continue; }
+            identities.push({ device: deviceId(), provider: record.provider, threadId: record.threadId, projectId: project.id,
+              root: project.root, fullAccess: true });
+          }
+          return [...reasons, ...await legacyWorkerEvidence(connection, identities)];
+        },
+      });
+    },
+    // Last step before installing an update: the Worker ends itself only if it is idle at that moment.
+    async shutdownIfIdle() {
+      let connection;
+      try { connection = await connectWorker(stateDir, createSecret(stateDir)); } catch (error) {
+        return ['ENOENT', 'ECONNREFUSED'].includes(error?.code) ? { shutdown: false, absent: true } : { shutdown: false, error: 'connect_failed' };
+      }
+      try { return await connection.request('shutdownIfIdle', {}); } catch (error) {
+        return { shutdown: false, error: error.message === 'invalid_windows_chat_worker_operation' ? 'legacy_worker' : 'request_failed' };
+      } finally { try { connection.close(); } catch {} }
+    },
   };
 }
 

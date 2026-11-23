@@ -169,37 +169,17 @@ test('logs rotate, audit logs are private, and diagnostics exclude credentials a
   assert.doesNotMatch(tar, /not-for-log|token-secret|private raw output|private key|private\/workspace|must-not-appear|internal host|relay\.example|jump-private-key/);
 });
 
-test('updater checks only enabled packaged apps and never downloads or installs automatically', async () => {
-  const { createUpdateChecks } = require('../updates');
-  const settings = { enabled: true, feedUrl: 'https://updates.example.com/agentdesk/' };
-  const audit = [];
-  let calls = 0;
-  let allowResult;
-  const updater = {
-    on() {},
-    checkForUpdates() {
-      calls++;
-      return new Promise((resolve) => { allowResult = resolve; });
-    },
-  };
-  const create = (args) => {
-    assert.deepEqual(args, { provider: 'generic', url: settings.feedUrl });
-    return updater;
-  };
-  const options = { logger: { audit: (...args) => audit.push(args) }, settings, platform: 'darwin', createUpdater: create };
-  assert.equal(createUpdateChecks({ ...options, app: { isPackaged: false } }), null);
-  assert.equal(createUpdateChecks({ ...options, app: { isPackaged: true }, settings: { ...settings, enabled: false } }), null);
-  assert.equal(createUpdateChecks({ ...options, app: { isPackaged: true }, settings: { ...settings, feedUrl: 'http://unsafe.example' } }), null);
-  const checks = createUpdateChecks({ ...options, app: { isPackaged: true } });
-  assert.equal(updater.autoDownload, false);
-  assert.equal(updater.autoInstallOnAppQuit, false);
-  assert.equal(updater.allowDowngrade, false);
-  const first = checks.check();
-  assert.equal(checks.check(), first);
-  allowResult({ isUpdateAvailable: true, updateInfo: { version: '2.0.0' } });
-  assert.deepEqual(await first, { ok: true, status: 'available', version: '2.0.0' });
-  assert.equal(calls, 1);
-  assert.deepEqual(audit, [['update_check', { status: 'available' }]]);
+test('updater: disabled outside packaged apps; quitting never installs and nothing installs without the gate', async () => {
+  // The full behaviour is in test/updates.test.js; this keeps the old guarantees visible next to the other product checks.
+  const { createUpdateManager } = require('../updates');
+  const off = createUpdateManager({ app: { isPackaged: false, getVersion: () => '0.3.0' }, platform: 'win32', transport: {} });
+  assert.equal(off.state.status, 'disabled');
+  const linux = createUpdateManager({ app: { isPackaged: true, getVersion: () => '0.3.0' }, platform: 'linux', transport: {} });
+  assert.equal(linux.state.status, 'disabled');
+  const source = require('node:fs').readFileSync(require.resolve('../updates'), 'utf8');
+  assert.match(source, /updater\.autoInstallOnAppQuit = false;/);
+  assert.match(source, /updater\.autoDownload = false;/);
+  assert.match(source, /updater\.allowDowngrade = false;/);
 });
 
 // "主控创建能不能新建一个项目自动建好，否则不能上传附件": a group project created from the orchestrator is registered

@@ -78,7 +78,7 @@ async function main() {
   const socketPath = definition.args[1];
   const capability = definition.args[2];
   const report = { provider, scenario, socket: socketPath, capabilityLength: capability.length, args,
-    claudeEffort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null };
+    claudeEffort: process.env.CLAUDE_CODE_EFFORT_LEVEL || null, mcpToolTimeout: process.env.MCP_TOOL_TIMEOUT || null };
 
   if (scenario === 'HANG') {
     writeLine({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } } });
@@ -106,10 +106,33 @@ async function main() {
     return;
   }
 
+  if (scenario === 'ASK_ABANDON') {
+    // The CLI stops waiting after 300 ms (its own MCP timeout), then finishes the turn.
+    report.call = await socketRequest(socketPath, { capability, operation: 'call', name: 'agentdesk_ask_user',
+      arguments: { questions: [{ question: '要等吗？', options: ['等'] }] } }, 300).catch((error) => ({ error: error.message }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  if (scenario === 'ASK_USER') {
+    const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
+    report.tools = (listed.value?.tools || []).map((tool) => tool.name);
+    report.mcpToolTimeout = process.env.MCP_TOOL_TIMEOUT || null;
+    report.call = await socketRequest(socketPath, {
+      capability, operation: 'call', name: 'agentdesk_ask_user',
+      arguments: { questions: [
+        { header: '颜色', question: '你喜欢哪个颜色？', options: [{ label: '红', description: '暖色' }, { label: '蓝' }, { label: '蓝' }] },
+        { question: '要哪些功能？', multiSelect: true, options: ['导出', '打印'] },
+      ] },
+    }, 120000);
+  }
+
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {
     const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
     report.tools = (listed.value?.tools || []).map((tool) => tool.name);
-    if (scenario === 'TOOL_COMMAND') {
+    if (scenario === 'TOOL_TRASH') {
+      report.call = await socketRequest(socketPath, { capability, operation: 'call', name: 'agentdesk_file_trash',
+        arguments: { path: '/Users/example/old.txt' } });
+    } else if (scenario === 'TOOL_COMMAND') {
       report.call = await socketRequest(socketPath, {
         capability, operation: 'call', name: 'agentdesk_command_run',
         arguments: { name: 'build' },

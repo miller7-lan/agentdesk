@@ -187,3 +187,15 @@ test('admin "ad device" help is printed for an unknown action without touching a
   assert.match(result.stderr.toString(), /device list \| approve/);
   void spawn;
 });
+
+// chat-server.js cleanTool() keeps a dynamic tool only when it carries an inputSchema object; a spec written with
+// another key (for example `parameters`) is dropped silently and the model never sees the terminal or file locks.
+test('native-chat tool specs all carry an inputSchema, so chat-server does not drop them', () => {
+  const { lockSpec } = require('../orchestrator/terminal-sessions');
+  const { localShellSpec, macLocalShellSpec } = require('../orchestrator/windows-local-shell');
+  for (const spec of [lockSpec, localShellSpec, macLocalShellSpec, terminalSpec('win32'), terminalSpec('darwin')]) {
+    assert.equal(typeof spec.name, 'string');
+    assert.equal(spec.inputSchema?.type, 'object', `${spec.name} has no inputSchema`);
+    assert.equal(spec.parameters, undefined, `${spec.name} still uses parameters`);
+  }
+});

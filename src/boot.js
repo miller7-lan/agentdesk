@@ -239,7 +239,8 @@
     const checked = agents.every((node) => Number.isFinite(node.at));
     let text;
     let warn = false;
-    if (data.offline) { text = greeting() + '，云端暂未连接'; warn = true; }
+    if (data.unconfigured) { text = greeting() + '，请先完成连接设置'; warn = true; }
+    else if (data.offline) { text = greeting() + '，云端暂未连接'; warn = true; }
     else if (data.pending) text = greeting() + '，正在连接云端…';
     else if (!checked) text = greeting() + '，正在召集团队…';
     else {
@@ -307,7 +308,7 @@
       status(data);
       if (active.moody) moods(data, quick);
       if (active.ended && !data.pending) {
-        if (data.online) finish(true);
+        if (data.online || data.unconfigured) finish(true);
         else actions.hidden = false;
       }
     });
@@ -315,7 +316,9 @@
       active.ended = true;
       cancelAnimationFrame(active.frame);
       if (active.data.pending) return;
-      if (active.data.offline) {
+      // Not set up yet: leave the boot screen so onboarding (or the sign-in) is reachable at once.
+      if (active.data.unconfigured) finish(true);
+      else if (active.data.offline) {
         actions.hidden = false;
         $('bootRetry').focus({ preventScroll: true });
       } else finish(true);

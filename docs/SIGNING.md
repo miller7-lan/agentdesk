@@ -1,6 +1,6 @@
 # 签名与发布
 
-从 GitHub Actions 手动运行 **Build release artifacts**。工作流构建 Windows x64 的 NSIS 和便携版，以及 macOS 的 DMG 和 ZIP，上传 CI 产物供后续发布。
+从 GitHub Actions 手动运行 **Build release artifacts**，或推送纯 `vX.Y.Z` 标签。工作流构建 Windows x64 的 NSIS 和便携版，以及 macOS 的 DMG 和 ZIP，上传 CI 产物；只有标签构建会交给 VPS2 作为客户端更新（见下文「发布」）。普通 main 提交不再构建安装包。
 
 Windows 使用 `WIN_CSC_LINK` 和 `WIN_CSC_KEY_PASSWORD` 保存签名材料。工作流把它们传给 electron-builder 的 `CSC_LINK` 和 `CSC_KEY_PASSWORD`，使用 SHA-256。macOS 对应 `MAC_CSC_LINK` 和 `MAC_CSC_KEY_PASSWORD`，使用 Developer ID Application 证书和 hardened runtime。公证钩子读取 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`，本机也可用 `APPLE_KEYCHAIN_PROFILE`。缺少签名凭据时可生成未签名构建。 [electron-builder 签名文档](https://www.electron.build/docs/troubleshooting/) · [Electron 公证文档](https://github.com/electron/notarize)
 
@@ -16,8 +16,11 @@ Windows 使用 `WIN_CSC_LINK` 和 `WIN_CSC_KEY_PASSWORD` 保存签名材料。�
 
 另有可选的 `AGENTDESK_ENROLLMENT_JSON`，内容即 `agentdesk-enrollment.json`。有了它，构建会改用密码登录（见 [登记说明](../orchestrator/ENROLLMENT.md)），需要 VPS2 上已部署登记服务。
 
-注意：本仓库是公开的，任何登录 GitHub 的人都能下载 Actions 构建产物，也就能从安装包里读到服务器地址。连接仍然要求本机私钥或登记密码，地址本身不足以登录；但如果不想公开 IP，把仓库设为私有，或者改在本机构建（把 `agentdesk-server.json` 放在仓库根目录后执行 `npm run dist`）。
+注意：本仓库是公开的，任何登录 GitHub 的人都能下载 Actions 构建产物，也就能从安装包里读到服务器地址。连接仍然要求本机私钥或登记密码，地址本身不足以登录；但如果不想公开 IP，把仓库设为私有，或者改在本机构建（把 `agentdesk-server.json` 放在仓库根目录后执行 `npm run dist:bundle`；0.3.0 起默认的 `npm run dist` 不再打包连接配置）。
 
 ## 发布
 
-发布时核验签名和公证票据，随后把同一次构建的安装包与更新清单发布到管理员托管的 HTTPS 更新目录。macOS 更新需要 ZIP。可在应用用户数据目录的 `config.json` 中填写 `update.enabled` 和 `update.feedUrl`，重启后从「诊断」检查更新。默认关闭。当前更新器只检查版本，下载与安装由发布流程和用户控制。 [electron-builder 更新文档](https://www.electron.build/docs/features/auto-update/)
+客户端更新（0.3.0 起）见 [AUTO-UPDATE.md](AUTO-UPDATE.md)：只有推送纯 `vX.Y.Z` 标签（与 `package.json` 版本一致）才构建可推送的包，经专用受限 SSH 账户交给 VPS2，VPS2 再经现有控制通道提供给各客户端。更新包一律不含连接配置；内置连接配置的构建（`bundle_connection` 或 `npm run dist:bundle`）只用于手动分发，不会成为更新包。旧的 `update.enabled`、`update.feedUrl` 设置已不再读取。
+
+- 有签名材料时：工作流把它传给 electron-builder，打包后校验签名（Windows `Get-AuthenticodeSignature`，macOS `codesign` 和 `spctl`）；安装包内的 `build-info.json` 记为已签名，客户端才会默认自动检查和下载。
+- 没有签名材料时：产出未签名包，客户端只提示「发现新版本」，由用户手动下载；Windows 由用户点击「重启并更新」安装；macOS 未签名包无法由更新器安装，只能手动替换。 [electron-builder 更新文档](https://www.electron.build/docs/features/auto-update/)

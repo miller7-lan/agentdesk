@@ -3,13 +3,24 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID, createHash } = require('crypto');
 const os = require('node:os');
-const { createUpdateChecks } = require('./updates');
+const { createUpdateManager } = require('./updates');
+const { createUpdateGate, countProbe, groupTasksProbe, idle: gateIdle, busy: gateBusy, unknown: gateUnknown } = require('./update-gate');
+const connectionConfig = require('./connection-config');
 const { createLogger } = require('./logger');
 const { collectDiagnostics, exportDiagnostics } = require('./diagnostics');
 const { AppConfig, migrate } = require('./app-config');
 const { normalizeSettings } = require('./src/appearance');
 const { steps: onboardingSteps, configuredHost, verified } = require('./onboarding');
-const bootstrapPath = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'agentdesk-enrollment.json');
+// Connection settings from the installer are kept in this computer's user-data folder and read from there first, so an
+// update (which never carries them) cannot lose them (connection-config.js). Runs before remote.js reads them.
+let connectionMigration = { migrated: [], conflicts: [] };
+if (app.isPackaged) {
+  try { connectionMigration = connectionConfig.migrate(connectionConfig.electronDirs()); } catch (error) {
+    console.error('AgentDesk: connection settings could not be copied:', error.code || 'failed');
+  }
+}
+const bootstrapPath = app.isPackaged ? connectionConfig.resolve('agentdesk-enrollment.json', connectionConfig.electronDirs())
+  : path.join(__dirname, 'agentdesk-enrollment.json');
 const enrollment = fs.existsSync(bootstrapPath) && JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
 if (enrollment) process.env.AGENTDESK_ENROLLED = '1';
 const clawd = require('./clawd');
@@ -42,6 +53,29 @@ const platformName = detectOs({ platform: process.platform });
 const systemVersion = typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '';
 const windowsBuild = platformName === 'win' ? parseBuild(systemVersion) : 0;
 let windowsNative;
+const nativeQuestions = new Map();
+let nativeQuestionSeq = 0;
+function answerNativeQuestion(id, result, error) {
+  const entry = typeof id === 'string' && nativeQuestions.get(id);
+  if (!entry) return false;
+  nativeQuestions.delete(id);
+  entry.resolve(error ? { answers: {}, cancelled: true } : result || { answers: {} });
+  return true;
+}
+function expireNativeQuestion(agent, frame) {
+  for (const [id, entry] of nativeQuestions) {
+    if (entry.agent === agent && entry.threadId === frame.params?.threadId && entry.frameId === frame.params?.requestId) {
+      nativeQuestions.delete(id);
+      entry.resolve({ answers: {}, cancelled: true });
+      return { ...frame, params: { ...frame.params, requestId: id } };
+    }
+  }
+  return frame;
+}
+function questionSummary(message) {
+  const list = Array.isArray(message?.params?.questions) ? message.params.questions : [];
+  return list.map((question) => String(question?.question || question?.header || '')).filter(Boolean).join(' / ').slice(0, 160);
+}
 // Native single chats: on Windows and on a Mac the official CLIs on VPS2 work directly in the local project
 // (mounted over SFTP) and run commands here with local_shell.
 function macBridgeSettings() {
@@ -58,9 +92,29 @@ function nativeDesktop() {
       findWorktree: (key) => worktrees().get(key),
       bridgeSettings: () => localBridgeSettings || (mac ? macBridgeSettings() : null),
       onEvent: (agent, frame) => {
+        // The seat's own id for a withdrawn question → the id the app's card knows.
+        if (frame?.method === 'agentdesk/requestExpired') frame = expireNativeQuestion(agent, frame);
+        trackNativeTurn(agent, frame);
         if (agent === 'codex') toUi('codex:event', frame);
         else toUi('chat:event', { ...frame, agent });
       },
+      // A question from a native seat's running turn: shown like any other question card, answered through
+      // codex:respond / chat:respond with its own id (never a remote request id).
+      onRequest: (agent, frame) => new Promise((resolve, reject) => {
+        const id = 'native-question-' + (++nativeQuestionSeq);
+        const threadId = frame.params?.threadId;
+        // The same 15 minutes as the chat server; then the card is told the question is gone.
+        const timer = setTimeout(() => {
+          nativeQuestions.delete(id);
+          toUi(agent === 'codex' ? 'codex:event' : 'chat:event', { method: 'agentdesk/requestExpired',
+            params: { threadId, requestId: id }, ...(agent !== 'codex' && { agent }) });
+          reject(new Error('question_timeout'));
+        }, 15 * 60_000);
+        nativeQuestions.set(id, { agent, threadId, frameId: frame.id, resolve: (value) => { clearTimeout(timer); resolve(value); } });
+        const message = { ...frame, id, ...(agent !== 'codex' && { agent }) };
+        toUi(agent === 'codex' ? 'codex:server-request' : 'chat:server-request', message);
+        notifyIfAway(`${agent === 'codex' ? 'Codex' : CHAT_LABEL[agent] || agent} 有问题要问你`, questionSummary(frame));
+      }),
       onCommand: (agent, threadId, run) => toUi('local-command:update', { agent, threadId, run }),
       onTerminal: (event) => toUi('terminal:event', event),
       reviewUnknown: async () => {
@@ -124,8 +178,21 @@ const OVERLAY = {
 let win;
 let appConfig;
 let logger;
-let updateChecks;
-let updateTimer;
+let updates;
+// Turns in progress, as seen by this process (update gate): Codex over remote.js, and the native single chats.
+const codexTurns = new Set();
+const nativeTurns = new Set();
+function trackNativeTurn(agent, frame) {
+  const id = frame?.params?.turn?.id;
+  if (typeof id !== 'string') return;
+  if (frame.method === 'turn/started') nativeTurns.add(agent + ':' + id);
+  if (frame.method === 'turn/completed') nativeTurns.delete(agent + ':' + id);
+}
+const updateGate = createUpdateGate();
+// While the gate is closed for an installation, nothing new starts (the second check must stay true until quitting).
+const updateLocked = () => updateGate.locked;
+const UPDATE_LOCKED = '正在安装更新，暂不能开始新的任务。';
+let updateQuit = false;
 let configError;
 let trustedHost = { host: '', fingerprints: [] };
 let connectivityStarted = false;
@@ -504,6 +571,9 @@ ipcMain.handle('appearance:set', (_e, settings = {}) => {
 });
 
 // 远程 Codex：状态、事件、审批请求转发给界面
+// started: whether this client has begun connecting at all. Before the server is confirmed in onboarding (or before
+// the enrollment login) nothing connects, so the boot screen must not wait for a connection that will not come.
+const remoteStatus = (state) => ({ ...state, started: connectivityStarted || Boolean(enrolledSession) });
 const toUi = (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); };
 let lastRemoteState;
 let lastRemoteRoute;
@@ -517,7 +587,7 @@ remote.on('status', (s) => {
     lastRemoteState = s.codex;
     logger?.log('remote_connection', { status: s.codex, route });
   }
-  toUi('remote:status', s);
+  toUi('remote:status', remoteStatus(s));
 });
 remote.on('notification', (m) => toUi('codex:event', m));
 remote.on('server-request', (m) => {
@@ -575,6 +645,8 @@ remote.on('server-request', (m) => {
   notifyIfAway('Codex 等待你的审批', approvalSummary(m));
 });
 remote.on('notification', ({ method, params }) => {
+  if (method === 'turn/started' && params?.turn?.id) codexTurns.add(params.turn.id);
+  if (method === 'turn/completed' && params?.turn?.id) codexTurns.delete(params.turn.id);
   if (method === 'turn/started' && desktopThreads.has(params.threadId)) {
     desktop.active.set(params.turn.id, params.threadId);
   }
@@ -608,13 +680,15 @@ function clearLocalTools() {
   desktop.stop();
 }
 remote.on('codex-down', clearLocalTools);
+// The Codex connection is gone: its turns no longer run anything on this computer.
+remote.on('codex-down', () => codexTurns.clear());
 remote.on('codex-sleep', clearLocalTools);
 ipcMain.handle('desktop:enabled', () => desktop.enabled);
 ipcMain.handle('desktop:toggle', (event) => {
   if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return desktop.enabled;
   return toggleDesktop(!desktop.enabled);
 });
-ipcMain.handle('remote:status', () => ({ ...remote.state }));
+ipcMain.handle('remote:status', () => remoteStatus(remote.state));
 ipcMain.handle('remote:reconnect', () => { if (!hostConfirmed() || enrollment && !enrolledSession) return false; remote.reconnect(); return true; });
 ipcMain.handle('remote:wake', () => !hostConfirmed() || enrollment && !enrolledSession ? false : remote.wake());
 ipcMain.handle('remote:touch', () => { remote.touch(); return true; });
@@ -795,6 +869,7 @@ ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), ho
 ipcMain.handle('codex:request', async (event, method, params) => {
   try {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
+    if (updateLocked() && method === 'turn/start') throw new Error(UPDATE_LOCKED);
     const { projectId, worktreeSession, ...request } = params || {};
     const native = await nativeDesktop()?.select('codex', method, params);
     if (native) return { ok: true, result: await native.request(method, request) };
@@ -836,6 +911,10 @@ ipcMain.handle('codex:request', async (event, method, params) => {
       if (!codexCommandRoots.has(threadId)) codexCommandRoots.set(threadId, { projectId: project, root: localRootFor(project) });
     }
     if (method === 'thread/archive') codexCommandRoots.delete(params.threadId);
+    // This thread is on the MCP route although native chats exist here: 完全访问 would be refused on it (turn/start
+    // above), so the app offers that mode only in a new chat.
+    if ((method === 'thread/start' || method === 'thread/resume') && result?.thread?.id && nativeDesktop() &&
+        codexCommandRoots.get(result.thread.id)?.root) return { ok: true, result: { ...result, fullAccessNeedsNewChat: true } };
     return { ok: true, result };
   } catch (e) {
     if (method === 'turn/start') {
@@ -847,6 +926,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
 });
 ipcMain.handle('codex:respond', (event, id, result, error) => {
   if (!fromMainWindow(event)) return false;
+  if (answerNativeQuestion(id, result, error)) return true;
   try {
     if (!remote.respond(id, result, error)) return false;
     const outcome = ['accept', 'acceptForSession', 'approve', 'approved', 'approved_for_session'].includes(result?.decision) || result?.action === 'accept'
@@ -960,6 +1040,7 @@ const TERMINAL_OPS = new Set(['capabilities', 'list', 'read', 'open', 'input', '
 ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) => {
   if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string' || !TERMINAL_OPS.has(op) ||
       !fields || typeof fields !== 'object' || Array.isArray(fields)) return { ok: false, error: 'invalid_request' };
+  if (updateLocked() && ['open', 'input'].includes(op)) return { ok: false, error: UPDATE_LOCKED };
   try {
     const native = nativeDesktop();
     if (!native) return { ok: false, error: 'terminal_unavailable' };
@@ -1002,6 +1083,8 @@ async function chatToolTask(agent, params, requestId) {
 
 for (const [agent, link] of chatLinks) {
   link.on('status', (status) => toUi('chat:status-event', status));
+  // VPS2 says a client version is available (Q3): the main process looks it up itself; the notice proves nothing.
+  link.on('ready', (info) => { if (info?.clientUpdate?.available === true) updates?.serverNotice(); });
   link.on('ready', () => logger?.log('chat_connection', {
     status: 'ready', projectId: appConfig?.active?.id, agent, route: link.status().route?.route,
   }));
@@ -1012,6 +1095,7 @@ for (const [agent, link] of chatLinks) {
   });
   link.on('sleep', () => toUi('chat:sleep', { agent }));
   link.on('event', (message) => {
+    if (message.method === 'agentdesk/clientUpdate') { updates?.serverNotice(); return; }
     if (message.method === 'turn/completed') {
       finishChatTurn(message.params?.turn?.id);
       commandRuns.cancelTurn(commandScope(agent, message.params?.threadId), message.params?.turn?.id);
@@ -1047,6 +1131,7 @@ for (const [agent, link] of chatLinks) {
       message = { ...message, params: { ...params, localCommand: preview } };
     }
     toUi('chat:server-request', message);
+    if (message.method === 'item/tool/requestUserInput') notifyIfAway(`${CHAT_LABEL[agent]} 有问题要问你`, questionSummary(message));
     if (message.method === 'item/tool/requestApproval') {
       const tool = message.params?.tool || '文件修改';
       notifyIfAway(`${CHAT_LABEL[agent]} 等待你的审批`, tool + ' · ' + String(message.params?.arguments?.path || '').slice(0, 120));
@@ -1138,6 +1223,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     if (typeof method !== 'string') throw new Error('invalid_method');
     if (method.startsWith('attachment/')) throw new Error('invalid_method');
+    if (updateLocked() && method === 'turn/start') throw new Error(UPDATE_LOCKED);
     // Grok can hang during native session initialization on macOS. Start new chats
     // on the existing direct channel, without replaying or moving any existing native chat.
     const useGrokDirect = mac && agent === 'grok';
@@ -1146,6 +1232,9 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     const link = native || chatLink(agent);
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
+    // See the turn/start check below: on the MCP route, with native chats available, 完全访问 needs a new chat.
+    const legacyRoute = (result) => (!native && !useGrokDirect && nativeDesktop() && result && typeof result === 'object'
+      ? { ...result, fullAccessNeedsNewChat: true } : result);
 
     if (method === 'thread/start') {
       const { projectId, worktreeSession, ...rest } = request;
@@ -1177,7 +1266,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       if (useGrokDirect) toUi('chat:event', { agent, method: 'agentdesk/fallback',
         params: { threadId, reason: 'Grok Mac 原生会话初始化暂不可用' } });
       logger?.audit('chat_thread', { status: 'started', projectId: request.projectId, agent });
-      return { ok: true, result };
+      return { ok: true, result: legacyRoute(result) };
     }
 
     if (method === 'thread/resume') {
@@ -1193,7 +1282,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
           sandboxPolicy: result?.sandboxPolicy ?? previous?.sandboxPolicy,
         });
       }
-      return { ok: true, result };
+      return { ok: true, result: legacyRoute(result) };
     }
 
     if (method === 'turn/start') {
@@ -1287,6 +1376,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
 
 ipcMain.handle('chat:respond', (event, agent, id, result, error) => {
   if (!fromMainWindow(event)) return false;
+  if (answerNativeQuestion(id, result, error)) return true;
   try {
     const link = chatLink(agent);
     if (!link.respond(id, result, error)) return false;
@@ -1344,6 +1434,7 @@ const orchestrationOperations = new Set([
   'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
   'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance',
   'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore',
+  'client_update', 'client_update_read', 'open_tasks',
 ]);
 const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
 
@@ -1398,7 +1489,13 @@ async function orchestratorControl(frame) {
   }
 }
 
-ipcMain.handle('orchestrator:control', (event, frame) => fromMainWindow(event) ? orchestratorControl(frame) : { ok: false });
+ipcMain.handle('orchestrator:control', (event, frame) => {
+  if (!fromMainWindow(event)) return { ok: false };
+  if (updateLocked() && ['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'approve_addition'].includes(frame?.operation)) {
+    return { ok: false, error: UPDATE_LOCKED };
+  }
+  return orchestratorControl(frame);
+});
 ipcMain.handle('orchestrator:save-build', async (event, frame) => {
   if (!fromMainWindow(event) || !/^build:[0-9a-f-]{36}$/.test(frame?.artifact || '')) return { ok: false };
   const request = { taskId: frame.taskId, projectId: frame.projectId, operation: 'task_artifacts', artifact: frame.artifact };
@@ -1449,6 +1546,7 @@ ipcMain.handle('localChange:pick', async (event, kind) => {
 });
 ipcMain.handle('localChange:apply', async (event, { token, proposal } = {}) => {
   if (!fromMainWindow(event) || process.platform !== 'win32') return { error: '本机文件操作不可用。' };
+  if (updateLocked()) return { error: UPDATE_LOCKED };
   const scope = localChanges.get(token);
   if (!scope || scope.pending) return { error: '请选择本机文件或目录，再生成变更。' };
   scope.pending = true;
@@ -1476,8 +1574,25 @@ function diagnosticSnapshot() {
   });
 }
 
-ipcMain.handle('updates:check', (event) => fromMainWindow(event) && updateChecks
-  ? updateChecks.check() : { ok: true, status: 'disabled' });
+// Updates (updates.js). Every action is decided in this process from its own state; the window only asks.
+const updatesDisabled = () => ({ status: 'disabled' });
+ipcMain.handle('updates:state', (event) => fromMainWindow(event) ? (updates?.state || updatesDisabled()) : null);
+ipcMain.handle('updates:check', async (event) => fromMainWindow(event) ? (updates ? updates.check({ reason: 'manual' }) : updatesDisabled()) : null);
+ipcMain.handle('updates:download', async (event) => fromMainWindow(event) && updates ? updates.download() : { ok: false });
+ipcMain.handle('updates:retry', async (event) => fromMainWindow(event) && updates ? updates.retry() : { ok: false });
+ipcMain.handle('updates:later', (event) => fromMainWindow(event) && updates ? updates.later() : { ok: false });
+ipcMain.handle('updates:install', async (event) => fromMainWindow(event) && updates ? updates.install() : { ok: false });
+ipcMain.handle('updates:watch', (event) => fromMainWindow(event) && updates ? updates.watchUntilIdle() : { ok: false });
+ipcMain.handle('updates:reveal', (event) => fromMainWindow(event) && updates ? updates.revealDownload() : { ok: false });
+ipcMain.handle('updates:autoDownload', async (event, value) => {
+  if (!fromMainWindow(event) || !updates) return { ok: false };
+  const result = updates.setAutoDownload(value === true);
+  if (result.ok) {
+    await appConfig.mutate((draft) => { draft.update = { ...(draft.update || {}), autoDownload: result.autoDownload }; }).catch(() => {});
+  }
+  return result;
+});
+ipcMain.handle('updates:online', (event) => { if (fromMainWindow(event)) updates?.networkRestored(); return true; });
 
 ipcMain.handle('diagnostics:preview', async (event) => {
   if (!fromMainWindow(event)) return { ok: false };
@@ -1574,19 +1689,142 @@ function startOrchestratorBridge() {
   }
 }
 
+// ---- Updates: probes of the safe-restart gate (update-gate.js), the channel to VPS2, and the quit for installing ----
+const hasControlChannel = () => Boolean(mac || enrollment || bridgeControlSocket);
+function registerUpdateProbes() {
+  updateGate.register('Codex 单聊', countProbe(() => codexTurns.size + remote.pendingReqs.size, 'Codex 单聊正在执行或等待审批'));
+  updateGate.register('单聊', () => {
+    let count = chatTurns.size;
+    for (const link of chatLinks.values()) count += link.activeTurns.size + link.serverIds.size + link.pending.size;
+    return count ? gateBusy('Claude / Grok / Antigravity 单聊正在执行、等待审批或等待回复') : gateIdle();
+  });
+  updateGate.register('原生单聊', countProbe(() => nativeTurns.size, '本机原生单聊正在执行'));
+  updateGate.register('本机后台进程', async () => {
+    const native = nativeDesktop();
+    return native ? native.idleProbe() : gateIdle();
+  });
+  updateGate.register('本机命令', countProbe(() => commandRuns.listAllScopes().filter((run) => !run.finishedAt).length, '本机命令仍在运行'));
+  updateGate.register('Bridge', () => {
+    if (!stopBridge) return gateIdle();
+    if (typeof stopBridge.activity !== 'function') return gateUnknown('无法确认 Bridge 状态');
+    const { runningCommands } = stopBridge.activity();
+    return runningCommands ? gateBusy(`Bridge 仍有 ${runningCommands} 个命令在运行`) : gateIdle();
+  });
+  updateGate.register('群聊', groupTasksProbe(async () => hasControlChannel() ? orchestratorControl({ operation: 'open_tasks' }) : null));
+  updateGate.register('审批与文件', countProbe(() => fileTurns.size + desktop.active.size +
+    [...localChanges.values()].filter((scope) => scope.pending).length, '有待审批的操作、桌面操作或尚未完成的文件写入'));
+}
+
+function readJsonQuiet(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
+const updateStateFile = () => path.join(app.getPath('userData'), 'update-state.json');
+const updateStateStore = {
+  async read() { return readJsonQuiet(updateStateFile()) || {}; },
+  async write(value) {
+    const file = updateStateFile();
+    const temporary = file + '.' + randomUUID();
+    try {
+      await fs.promises.writeFile(temporary, JSON.stringify(value) + '\n', { mode: 0o600, flag: 'wx' });
+      await fs.promises.rename(temporary, file);
+    } finally { await fs.promises.rm(temporary, { force: true }); }
+  },
+};
+// Files an update must leave unchanged; only their hashes are kept (connection-config.js#snapshot).
+function updateDataSnapshot() {
+  const userData = app.getPath('userData');
+  const local = path.join(userData, connectionConfig.FOLDER);
+  return connectionConfig.snapshot({
+    'config.json': path.join(userData, 'config.json'),
+    'bundled-connection/agentdesk-server.json': path.join(local, 'agentdesk-server.json'),
+    'bundled-connection/agentdesk-enrollment.json': path.join(local, 'agentdesk-enrollment.json'),
+    'remote.json': path.join(os.homedir(), '.agentdesk', mac ? 'mac-remote.json' : 'remote.json'),
+    'bridge-config': typeof remote.cfg.orchestratorBridge === 'string' ? remote.cfg.orchestratorBridge : null,
+  });
+}
+
+// The last step before quitting into the installer: the native-chat Worker ends itself only if idle at that moment;
+// nothing else is stopped here (before-quit does the usual shutdown, with nothing left to cancel).
+async function prepareForUpdateQuit() {
+  const native = nativeDesktop();
+  if (native) {
+    const result = await native.shutdownIfIdle();
+    if (!(result.shutdown === true || result.absent === true)) throw new Error('worker_not_idle');
+  }
+  updateQuit = true;
+}
+
+function startUpdates() {
+  const { createLoopbackFeed, controlChannelReader } = require('./update-transport');
+  registerUpdateProbes();
+  const buildInfo = readJsonQuiet(path.join(__dirname, 'build-info.json')) || {};
+  updates = createUpdateManager({
+    app, buildInfo: { signed: buildInfo.signed === true }, settings: appConfig.value.update || {}, logger,
+    transport: {
+      manifest: (request) => orchestratorControl({ operation: 'client_update', update: request }),
+      async openFeed(manifest) {
+        const read = controlChannelReader(orchestratorControl, { version: manifest.version, platform: manifest.platform, arch: process.arch });
+        const feed = createLoopbackFeed({ manifest, read });
+        const { url, headers } = await feed.listen();
+        return { url, headers, stats: feed.stats, close: () => feed.close() };
+      },
+    },
+    createUpdater: (options) => {
+      const { NsisUpdater, MacUpdater } = require('electron-updater');
+      return new (process.platform === 'darwin' ? MacUpdater : NsisUpdater)(options);
+    },
+    newCancellationToken: () => new (require('electron-updater').CancellationToken)(),
+    gate: updateGate, prepareForQuit: prepareForUpdateQuit,
+    abortPrepare: async () => {
+      updateQuit = false;
+      // macOS: electron-updater waits for Squirrel's "update-downloaded" to quit and install. After a failed or
+      // timed-out installation that must not happen later on its own, with the gate open again.
+      if (process.platform === 'darwin') require('electron').autoUpdater.removeAllListeners('update-downloaded');
+    },
+    stateStore: updateStateStore, snapshotData: async () => updateDataSnapshot(),
+    reveal: (file) => shell.showItemInFolder(file),
+    onState: (state) => toUi('updates:state', state),
+  });
+  updates.verifyPreviousInstall().catch(() => {});
+  updates.start();
+}
+
+// An installer carrying connection settings that differ from the ones kept on this computer: ask, keep by default.
+async function askConnectionConflict(names) {
+  try {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question', title: '连接配置',
+      message: '安装包内的连接配置与本机保存的不同，是否改用安装包内的配置？',
+      detail: '默认保留本机配置。改用前会先备份本机配置，重新启动 AgentDesk 后生效。',
+      buttons: ['保留本机配置', '改用安装包内的配置'], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    if (response !== 1) { logger?.audit('connection_settings', { status: 'kept' }); return; }
+    for (const name of names) connectionConfig.adopt(name, connectionConfig.electronDirs());
+    logger?.audit('connection_settings', { status: 'adopted', count: names.length });
+  } catch {
+    logger?.audit('connection_settings', { status: 'failed' });
+  }
+}
+
 let ending = false;
-app.on('before-quit', (e) => {
-  if (ending) return;
-  ending = true; e.preventDefault();
+function stopServices() {
   clearTimeout(enrollmentExpiry);
-  clearTimeout(updateTimer);
+  updates?.stop();
   stopBridge?.();
   windowsNative?.disconnect();
   stopMacDesktop?.();
   commandRuns.close();
   clearLocalTools();
   for (const link of chatLinks.values()) link.stop();
-  Promise.race([Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close(), logger?.log('application_stop')]), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
+  return Promise.all([clawd.endAll(), remote.stop(), enrolledSession?.close(), logger?.log('application_stop')]);
+}
+app.on('before-quit', (e) => {
+  if (ending) return;
+  ending = true;
+  // Quitting to install an update: the gate has confirmed twice that nothing runs, so the same shutdown has nothing
+  // to cancel. The quit is not held back (the installer waits for this process to end); the shutdown is started, not
+  // awaited.
+  if (updateQuit) { stopServices().catch(() => {}); return; }
+  e.preventDefault();
+  Promise.race([stopServices(), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
 });
 
 app.whenReady().then(async () => {
@@ -1600,22 +1838,12 @@ app.whenReady().then(async () => {
   logger.log('application_start', { status: configError ? 'config_error' : 'ok' });
   trustedHost = await configuredHost(enrollment, remote.cfg);
   createWindow();
-  if (!process.env.AGENTDESK_OFFLINE && !process.env.AGENTDESK_SHOT) {
-    updateChecks = createUpdateChecks({ app, settings: appConfig.value.update, logger });
-    if (updateChecks) {
-      const schedule = (delay) => {
-        updateTimer = setTimeout(async () => {
-          await updateChecks.check();
-          if (!ending) schedule(24 * 60 * 60_000);
-        }, delay);
-        updateTimer.unref();
-      };
-      schedule(30_000);
-    }
-  }
+  if (!process.env.AGENTDESK_OFFLINE && !process.env.AGENTDESK_SHOT) startUpdates();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
     startConnectivity();
     powerMonitor.on('resume', () => { if (!ending && hostConfirmed() && (!enrollment || enrolledSession)) remote.reconnect(); });
+    powerMonitor.on('resume', () => { if (!ending) updates?.networkRestored(); });
   }
+  if (connectionMigration.conflicts.length) askConnectionConflict(connectionMigration.conflicts);
 });
 app.on('window-all-closed', () => app.quit());

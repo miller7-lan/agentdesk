@@ -2,6 +2,43 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-23 09:20（北京时间）· VPS2 · 客户端更新服务上线（main `837e328`）
+
+- **源码**：`main` 上的 `837e328`（单聊问答卡合并，包含 `feat/safe-differential-updates-20261122` 的客户端更新服务端）。部署前的运行树是 06:22 那次部署的结果：`a4f24cc` 的服务端文件，已经有 `client-updates.js`、`client-update-intake.js`、`update-manifest.js`、`worker-idle.js` 以及 `client_update`、`client_update_read`、`open_tasks`，但没有存储、上传账户和强制命令。那次部署没有写进本日志；部署前核对过，运行树与它的 `runtime-after.sha256` 完全一致。
+- **代码**：
+  - 进维护模式，确认 `running=[]`、`queued=0`、`ready=true`，并且没有 CLI 子进程；
+  - 用 `install -m 0644` 替换 5 个文件：`ask-user.js`（新增）、`chat-mcp.js`、`chat-server.js`、`windows-native-desktop.js`、`windows-native-seat.js`；逐个 `node --check`，装完 `cmp` 一致，以 agentdesk 用户试加载；
+  - 09:21:04 重启 `agentdesk-orchestrator`，09:21:21 退出维护。
+
+  现在主控用到的全部文件与 `837e328` 的 `orchestrator/` 一致。**没有运行 `install-ubuntu.sh`**，也没有改 systemd 单元、drop-in、`config.json`、nginx 或防火墙。
+- **发布通道**（布局见 [AUTO-UPDATE.md](AUTO-UPDATE.md) §6）：
+  - 存储 `/var/lib/agentdesk-client-updates`，加上状态目录里的符号链接 `client-updates`；
+  - 系统用户 `agentdesk-update`；
+  - `sshd_config.d/56-agentdesk-update.conf`（只追加 AllowUsers 和这个用户的限制）；
+  - `/etc/ssh/agentdesk-update-authorized-keys`（`restrict` + 强制命令）；
+  - CI 钥匙放在 root 专用目录。
+
+  `sshd -t` 通过；`sshd -T` 显示除 AllowUsers 多了一项外，全局设置与部署前逐项一致。**sshd 还没有 reload**（本次会话的权限设置不允许执行），所以上传账户还没生效，需要主人执行 `systemctl reload ssh`。
+- **验证**：
+  - `npm test`（`node --test`）：505 项，499 通过，0 失败，6 跳过；
+  - 部署后服务 active，NRestarts=0，没有 warning 及以上的日志，监听端口与部署前一致；
+  - `doctor`：codex、claude、grok、antigravity 均 ok，`anyLead=true`，`blocked={}`；
+  - 任务状态计数与部署前一致。
+- **验收**（隔离目录 `/var/tmp/adcu-accept-20261123`，测试版本 0.9.x，生产存储里没有任何版本）：
+  - 接收：真实强制命令程序以 `agentdesk-update` 运行，拒绝 14 种非法上传，不留残留；`receive()`（GitHub 复核用替身）通过 14 项，包括版本只增不改、并发锁，以及上传账户改不了撤回和灰度文件；真实 GitHub API 复核拒绝了「标签与提交不符」「run 不是这个标签触发的」「标签不存在」三种情况；
+  - 分发：以 agentdesk 运行，配合客户端真实的回环适配器，25 项全部通过，包括 25 MB 安装包按 128 KiB 分块下载且 sha512 一致、Range 差分拼装、撤回、按设备灰度和暂停、文件被改动后拒绝提供；
+  - 现网：经运行中主控的 admin socket，9 项全部通过；
+  - 旧客户端兼容：claude、grok、antigravity 三家单聊服务，12 项全部通过。
+- **顺带修复**（客户端，下个正式版本生效）：`update-transport.js` 在下载时每次等待背压都会加一个 `close` 监听且不移除，大文件会触发 `MaxListenersExceededWarning`。已修复并加回归测试。
+- **没有验证**：
+  - 经真实 SSH 的上传（要等 reload）；
+  - GitHub Actions 到 VPS2 的实际上传（要等 secret 和第一个正式标签）；
+  - GitHub runner 能否连到 VPS2 的 22 端口（本次会话无权读取防火墙规则）；
+  - 真实 electron-updater 的 blockmap 差分；
+  - 真实电脑上的下载和安装；
+  - Mac Bridge 白名单。
+- **回滚**：VPS2 上 `/root/backups/agentdesk-clientupdate-deploy-20261123-092044CST/rollback.sh code|channel|all`。`code` 恢复 5 个文件并重启，`channel` 拆除上传通道。
+
 ## 2026-11-22 · Mac 本机 · 合并新版并部署验收
 
 - **源码**：主线 `bd24c0e` 合入 `codex/terminal-workspace-panel`，运行代码提交 `5daced7`；保留右侧“检查工作区 → 终端”及跟随主题的浅色配色。

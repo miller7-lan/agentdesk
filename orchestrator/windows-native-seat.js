@@ -21,7 +21,7 @@ function workspacePolicy(folder, mode) {
 
 async function openWindowsNativeSeat({
   remote, worker, identity, binding, hostPath = '/opt/agentdesk-orchestrator/native-project-session-host.js',
-  sessionKey, historyRoot, onNotification = () => {}, checkpoints = true,
+  sessionKey, historyRoot, onNotification = () => {}, onServerRequest = null, checkpoints = true,
 }) {
   // What this computer's Worker offers: an interactive terminal only where node-pty is installed (gate G2).
   const optional = (operation, fields) => Promise.resolve().then(() => worker.request(operation, fields)).catch(() => null);
@@ -138,6 +138,17 @@ async function openWindowsNativeSeat({
     });
   };
   wire.on('frame', (frame) => {
+    // A question for the person (Codex request_user_input, or agentdesk_ask_user from a chat CLI) of this seat's
+    // running turn goes to the app; nothing else but the native tools below is let through.
+    if (frame.method === 'item/tool/requestUserInput' && frame.id !== undefined) {
+      const p = frame.params || {};
+      Promise.resolve().then(() => {
+        if (!onServerRequest || !threadId || p.threadId !== threadId || !turnId || p.turnId !== turnId) throw new Error('native_question_not_authorized');
+        return onServerRequest(frame);
+      }).then((result) => { if (!closed) wire.send({ id: frame.id, result }); },
+        (error) => { if (!closed) wire.send({ id: frame.id, error: { code: -32603, message: error?.message || 'native_question_failed' } }); });
+      return;
+    }
     if (frame.method && frame.id !== undefined) {
       const p = frame.params || {};
       Promise.resolve().then(async () => {
@@ -178,7 +189,9 @@ async function openWindowsNativeSeat({
   try {
     await ready;
     clearTimeout(timeout);
-    await call('initialize', { clientInfo: { name: 'agentdesk-native', version: '1.0.0' }, capabilities: { experimentalApi: true } });
+    // A chat CLI (not Codex) may offer agentdesk_ask_user only when its questions reach the app (onServerRequest).
+    await call('initialize', { clientInfo: { name: 'agentdesk-native', version: '1.0.0' },
+      capabilities: { experimentalApi: true, ...(identity.provider !== 'codex' && onServerRequest && { questionCards: true }) } });
     wire.send({ method: 'initialized', params: {} });
   } catch (error) {
     clearTimeout(timeout);
