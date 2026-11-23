@@ -290,13 +290,15 @@ function notify(method, params) {
   return send({ jsonrpc: '2.0', method, params });
 }
 
-function clientRequest(turn, method, params, timeout) {
+function clientRequest(turn, method, params, timeout, onId) {
   if (turn.finished) return Promise.reject(new Error('turn_finished'));
   const id = nextClientId++;
+  onId?.(id);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingClient.delete(id);
       turn.pending.delete(id);
+      expireQuestion(turn, method, id);
       reject(new Error('client_request_timeout'));
     }, timeout);
     timer.unref?.();
@@ -309,6 +311,22 @@ function clientRequest(turn, method, params, timeout) {
       reject(new Error('transport_closed'));
     }
   });
+}
+
+// A question that will not be read any more (it timed out, or the CLI stopped waiting): the app marks its card
+// expired instead of letting the person answer into nothing.
+function expireQuestion(turn, method, id) {
+  if (method === 'item/tool/requestUserInput') notify('agentdesk/requestExpired', { threadId: turn.threadId, turnId: turn.id, requestId: id });
+}
+
+function cancelClientRequest(id, error) {
+  const entry = pendingClient.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  pendingClient.delete(id);
+  entry.turn.pending.delete(id);
+  expireQuestion(entry.turn, 'item/tool/requestUserInput', id);
+  entry.reject(error);
 }
 
 function rejectPending(turn, error) {
@@ -513,7 +531,7 @@ function resultText(result) {
   try { return JSON.stringify(result ?? {}); } catch { return String(result ?? ''); }
 }
 
-async function invokeTool(turn, name, args) {
+async function invokeTool(turn, name, args, caller = null) {
   if (turn.finished) throw new Error('turn_finished');
   if (typeof name !== 'string') throw new Error('invalid_tool');
   const tool = turn.tools.find((entry) => entry.name === name);
@@ -536,14 +554,19 @@ async function invokeTool(turn, name, args) {
       const questions = normalizeQuestions(args);
       pauseTurnTimer(turn);
       let answer;
+      let requestId;
+      // The CLI may stop waiting before the person answers (its own MCP timeout): then the question is withdrawn,
+      // and the turn's time limit runs again at once.
+      const abandoned = () => cancelClientRequest(requestId, new Error('question_abandoned'));
+      caller?.once?.('close', abandoned);
       try {
         answer = await clientRequest(turn, 'item/tool/requestUserInput', {
           threadId: turn.threadId, turnId: turn.id, itemId, agent: PROVIDER, source: ASK_TOOL.name, isBlocking: true, questions,
-        }, QUESTION_TIMEOUT);
+        }, QUESTION_TIMEOUT, (id) => { requestId = id; });
       } catch (error) {
         throw new Error(error.message === 'client_request_timeout' ? '用户在 15 分钟内没有回答，问题已失效。按你的最佳判断继续，或在回复里说明需要用户补充什么。'
           : '问题没有送到用户（' + (error.message || 'unknown') + '）。');
-      } finally { resumeTurnTimer(turn); }
+      } finally { caller?.off?.('close', abandoned); resumeTurnTimer(turn); }
       output = formatAnswer(questions, answer);
     } else if (name === ATTACHMENT_TOOL.name) {
       content = readAttachmentContent(turn, args);
@@ -554,7 +577,9 @@ async function invokeTool(turn, name, args) {
     }
     if (turn.readOnly && isWriteTool(name)) throw new Error('只读模式下不能使用写工具');
     // 自动编辑: the person's files are written without asking; commands and desktop actions still ask.
-    const autoEdit = turn.autoApprove === 'edits' && name.startsWith('agentdesk_file_');
+    // Deleting and moving still ask; only with on-request (每步询问 sends no autoApprove, and untrusted never skips).
+    const autoEdit = turn.autoApprove === 'edits' && turn.approvalPolicy === 'on-request' && name.startsWith('agentdesk_file_') &&
+      !['agentdesk_file_trash', 'agentdesk_file_move'].includes(name);
     if (isWriteTool(name) && turn.approvalPolicy !== 'never' && !autoEdit) {
       const decision = await clientRequest(turn, 'item/tool/requestApproval', {
         threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args, itemId,
@@ -627,7 +652,7 @@ const mcpServer = net.createServer((socket) => {
       } else if (frame.operation === 'call') {
         if (frame.name === 'agentdesk_command_run') socket.setTimeout(COMMAND_REPLY_TIMEOUT + APPROVAL_TIMEOUT + 10_000);
         if (frame.name === ASK_TOOL.name) socket.setTimeout(QUESTION_TIMEOUT + 10_000);
-        const value = await invokeTool(turn, frame.name, frame.arguments || {});
+        const value = await invokeTool(turn, frame.name, frame.arguments || {}, socket);
         wire.send({ ok: true, value });
       } else {
         throw new Error('unsupported_operation');

@@ -673,3 +673,51 @@ test('自动编辑: file writes skip approval, commands still ask', async (t) =>
   assert.equal(state.approvals.length, 1);
   assert.equal(state.approvals[0].tool, 'agentdesk_command_run');
 });
+
+test('question cards: a question nobody answers in time is withdrawn and the card told so', async (t) => {
+  const previous = process.env.AGENTDESK_CHAT_QUESTION_TIMEOUT;
+  process.env.AGENTDESK_CHAT_QUESTION_TIMEOUT = '300';
+  t.after(() => { if (previous === undefined) delete process.env.AGENTDESK_CHAT_QUESTION_TIMEOUT; else process.env.AGENTDESK_CHAT_QUESTION_TIMEOUT = previous; });
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  await client.request('initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { questionCards: true } });
+  const asked = [];
+  client.serverHandler = (frame) => { asked.push(frame); return null; };   // never answers
+  const threadId = await thread(client);
+  const { id } = await runTurn(client, threadId, 'ASK_USER');
+  assert.equal(asked.length, 1);
+  const expired = client.notifications('agentdesk/requestExpired');
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].requestId, asked[0].id);
+  assert.equal(expired[0].threadId, threadId);
+  assert.match(reportOf(agentText(client, id)).call.value.content[0].text, /15 分钟内没有回答/);
+});
+
+test('question cards: when the CLI stops waiting the question is withdrawn at once', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  await client.request('initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { questionCards: true } });
+  const asked = [];
+  client.serverHandler = (frame) => { asked.push(frame); return null; };
+  const threadId = await thread(client);
+  const started = Date.now();
+  const { completed } = await runTurn(client, threadId, 'ASK_ABANDON');
+  assert.equal(completed.turn.status, 'completed');
+  assert.ok(Date.now() - started < 8000);
+  await client.waitFor('agentdesk/requestExpired', (params) => params.requestId === asked[0].id, 3000);
+});
+
+test('自动编辑 never skips approval for deleting or moving, nor without on-request', async (t) => {
+  const dir = temporary(t);
+  const client = await new ChatClient(t, 'claude', dir).start();
+  const state = { approvals: [], calls: [] };
+  client.serverHandler = defaultHandler(state);
+  const threadId = await thread(client, { approvalPolicy: 'untrusted' });
+  await runTurn(client, threadId, 'APPROVE_WRITE', { approvalPolicy: 'untrusted', autoApprove: 'edits' });
+  assert.equal(state.approvals.length, 1, 'untrusted + autoApprove still asks');
+  const trashThread = await thread(client, { approvalPolicy: 'on-request', dynamicTools: [{ name: 'agentdesk_file_trash',
+    description: 'Trash', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }] });
+  await runTurn(client, trashThread, 'TOOL_TRASH', { approvalPolicy: 'on-request', autoApprove: 'edits' });
+  assert.equal(state.approvals.length, 2);
+  assert.equal(state.approvals[1].tool, 'agentdesk_file_trash');
+});

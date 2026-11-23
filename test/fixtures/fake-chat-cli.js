@@ -106,6 +106,13 @@ async function main() {
     return;
   }
 
+  if (scenario === 'ASK_ABANDON') {
+    // The CLI stops waiting after 300 ms (its own MCP timeout), then finishes the turn.
+    report.call = await socketRequest(socketPath, { capability, operation: 'call', name: 'agentdesk_ask_user',
+      arguments: { questions: [{ question: '要等吗？', options: ['等'] }] } }, 300).catch((error) => ({ error: error.message }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
   if (scenario === 'ASK_USER') {
     const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
     report.tools = (listed.value?.tools || []).map((tool) => tool.name);
@@ -122,7 +129,10 @@ async function main() {
   if (scenario.startsWith('TOOL_') || scenario === 'PLAN_READ' || scenario === 'APPROVE_WRITE' || scenario === 'PLAN_WRITE') {
     const listed = await socketRequest(socketPath, { capability, operation: 'tools' });
     report.tools = (listed.value?.tools || []).map((tool) => tool.name);
-    if (scenario === 'TOOL_COMMAND') {
+    if (scenario === 'TOOL_TRASH') {
+      report.call = await socketRequest(socketPath, { capability, operation: 'call', name: 'agentdesk_file_trash',
+        arguments: { path: '/Users/example/old.txt' } });
+    } else if (scenario === 'TOOL_COMMAND') {
       report.call = await socketRequest(socketPath, {
         capability, operation: 'call', name: 'agentdesk_command_run',
         arguments: { name: 'build' },
