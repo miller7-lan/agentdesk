@@ -150,7 +150,7 @@
     const result = await api.remove(id);
     if (!result.ok) {
       status.textContent = result.cancelled ? '' : result.error;
-      if (!result.cancelled) A.toast(result.error);
+      if (!result.cancelled) window.alert('删除项目没有完成：' + result.error + '\n\n已清理的部分不会恢复，处理后可再次删除继续。');
       return;
     }
     window.__group?.removeProject?.(id);
@@ -181,7 +181,7 @@
   });
   remove.addEventListener('click', () => {
     menu.hidden = true;
-    removeProject(menu.dataset.project).catch(error => A.toast(error.message));
+    removeProject(menu.dataset.project).catch(error => window.alert('删除项目没有完成：' + error.message));
   });
   window.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) menu.hidden = true; });
   window.addEventListener('keydown', event => { if (event.key === 'Escape') menu.hidden = true; });

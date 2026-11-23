@@ -199,6 +199,27 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
     projectRecords(projectId) {
       return [...records.values()].filter(record => record.projectId === projectId);
     },
+    record(threadId) { return records.get(threadId); },
+    // One conversation: its CLI history on VPS2 goes first, then the local record. Nothing else of the project changes.
+    async deleteThread(threadId) {
+      const record = records.get(threadId);
+      if (!record) return false;
+      if (seats.has(threadId) && (await seats.get(threadId).catch(() => null))?.busy) throw new Error('这个单聊仍在执行，请先停止后再删除。');
+      let seat;
+      try {
+        const project = resolveProject(record.projectId, record.worktreeSession);
+        if (!project) throw new Error('找不到本机项目目录。');
+        seat = await attached(record, project);
+        await seat.request('thread/delete', { threadId });
+      } catch (error) { if (!/thread_not_found|no rollout found/.test(error.message)) throw error; }
+      await seat?.close?.({ confirmedIdle: true });
+      fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      const temp = file + '.' + randomUUID();
+      fs.writeFileSync(temp, JSON.stringify([...records.values()].filter(item => item.threadId !== threadId)), { mode: 0o600 });
+      fs.renameSync(temp, file);
+      records.delete(threadId); seats.delete(threadId);
+      return true;
+    },
     async deleteProject(projectId) {
       const selected = [...records.values()].filter(record => record.projectId === projectId);
       for (const record of selected) {

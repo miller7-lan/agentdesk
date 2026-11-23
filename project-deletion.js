@@ -12,6 +12,27 @@ async function canonical(target) {
   catch (error) { if (error.code === 'ENOENT') return path.resolve(target); throw error; }
 }
 
+// Folders the system or the person owns (桌面、文稿、下载 and anything directly in the home folder). A project bound to
+// one of them is unbound and its AgentDesk data removed, but the folder and its files are never deleted.
+const PERSONAL = new Set(['desktop', 'documents', 'downloads', 'pictures', 'movies', 'music', 'videos', 'public',
+  'library', 'applications', 'onedrive', 'icloud drive', '桌面', '文稿', '文档', '下载', '图片', '影片', '音乐']);
+async function personalFolder(root, home = os.homedir()) {
+  if (!root) return false;
+  const own = await canonical(home);
+  return path.dirname(root) === own || (inside(own, root) && PERSONAL.has(path.basename(root).toLowerCase()));
+}
+
+// A Git repository with no commit (what AgentDesk's git init leaves in a folder that was not a repository) holds no
+// history, so it can go with the project. Any repository with commits stays.
+async function emptyRepository(root) {
+  const git = await fs.lstat(path.join(root, '.git')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  if (!git?.isDirectory()) return false;
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (/^GIT_/.test(key)) delete env[key];
+  try { await exec('git', ['-C', root, 'rev-parse', '--verify', '--quiet', 'HEAD'], { env, timeout: 15000 }); return false; }
+  catch (error) { if (error.code === 1) return true; throw error; }
+}
+
 // Every target comes from the main process's saved project, never from a renderer-supplied path.
 async function projectDirectory(project, projects, protectedPaths = [], linked = false) {
   if (!project.localRoot) return null;
@@ -72,20 +93,23 @@ async function purgeCheckpoints(directory, threadIds) {
 }
 
 // Keep the registration until all requested cleanup succeeds. A retry can finish a partially deleted project.
-async function deleteProject({ project, projects, protectedPaths, preview, confirm, remote, local, unregister, savePlan = async () => {} }) {
+async function deleteProject({ project, projects, protectedPaths, preview, confirm, remote, local, unregister, savePlan = async () => {}, home }) {
   const root = await projectDirectory(project, projects, protectedPaths);
-  const worktrees = await linkedWorktrees({ ...project, localRoot: root }, projects, protectedPaths);
+  const keepFolder = await personalFolder(root, home);
+  const removeGit = keepFolder && await emptyRepository(root);
+  const worktrees = keepFolder ? [] : await linkedWorktrees({ ...project, localRoot: root }, projects, protectedPaths);
   const plan = { ...await preview({ ...project, localRoot: root }), worktrees };
-  if (!await confirm({ ...plan, root })) return { cancelled: true };
+  if (!await confirm({ ...plan, root, keepFolder, removeGit })) return { cancelled: true };
   // Recheck registered paths after the confirmation, before the first irreversible step.
   if (root !== await projectDirectory(project, projects, protectedPaths)) throw new Error('项目目录已变化，请重新删除。');
   await savePlan(plan);
   await remote(plan);
   await local(plan);
   for (const target of worktrees) await fs.rm(target, { recursive: true, force: true });
-  if (root) await fs.rm(root, { recursive: true, force: true });
+  if (root && !keepFolder) await fs.rm(root, { recursive: true, force: true });
+  else if (removeGit && await emptyRepository(root)) await fs.rm(path.join(root, '.git'), { recursive: true, force: true });
   await unregister(project.id);
   return { deleted: true, threadIds: plan.threadIds || [] };
 }
 
-module.exports = { inside, canonical, projectDirectory, purgeCheckpoints, linkedWorktrees, deleteProject };
+module.exports = { inside, canonical, personalFolder, emptyRepository, projectDirectory, purgeCheckpoints, linkedWorktrees, deleteProject };

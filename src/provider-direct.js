@@ -361,7 +361,7 @@
         : `与 ${names[s.provider]} 单聊，可查看已授权的本机目录；修改文件请切换任务类型…`;
     } else if (!s?.agent) $('#input').placeholder = '向 Codex 描述任务…';
   }
-  window.__providerDirect = { names, choose, create, send, render, attach, dropFiles, pasteFiles, handles, ownsTask, errors, onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
+  window.__providerDirect = { names, choose, create, send, render, attach, dropFiles, pasteFiles, handles, ownsTask, errors, forget: () => persist(), onOpen: (s) => { poll(s); window.__agentThreads?.onOpen(s);
       if (!s.agentThread) control(s, 'routes').then(routes => {
         catalogs.set(s.project, routes.modelProfiles || {});
         if (A.state.active === s.id && !A.state.group) renderModels(s);

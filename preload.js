@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('desk', {
     reset: () => ipcRenderer.invoke('onboarding:reset'),
   },
   device: { info: () => ipcRenderer.invoke('device:info') },
+  sessions: { remove: (request) => ipcRenderer.invoke('sessions:remove', request) },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     add: (project) => ipcRenderer.invoke('projects:add', project),

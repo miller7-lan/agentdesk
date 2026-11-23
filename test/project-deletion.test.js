@@ -152,3 +152,21 @@ test('large project previews page task IDs within the Bridge frame limit with on
   assert.equal(first.taskIds.length, 1000);assert.equal(second.taskIds.length, 1);assert.equal(second.nextOffset, null);
   assert.equal(first.revision, second.revision);assert.equal(new Set([...first.taskIds, ...second.taskIds]).size, 1001);
 });
+
+test('a project bound to a personal folder keeps every file; only an empty AgentDesk .git is removed', async t => {
+  const home = await fixture(t), desktop = path.join(home, 'Desktop');
+  await fs.mkdir(desktop);await fs.writeFile(path.join(desktop, 'notes.txt'), 'keep me');git(desktop, 'init', '-q');
+  const project = { id: 'p', localRoot: desktop };let shown, removed = false;
+  const result = await deleteProject({ project, projects: [project], home, preview: async () => ({ threadIds: [] }),
+    confirm: async plan => { shown = plan; return true; }, remote: async () => {}, local: async () => {}, unregister: async () => { removed = true; } });
+  assert.ok(result.deleted);assert.ok(removed);assert.equal(shown.keepFolder, true);assert.equal(shown.removeGit, true);
+  assert.equal(await fs.readFile(path.join(desktop, 'notes.txt'), 'utf8'), 'keep me');assert.ok(!await exists(path.join(desktop, '.git')));
+});
+
+test('a personal folder with real Git history keeps its .git too', async t => {
+  const home = await fixture(t), documents = path.join(home, 'Documents');await repo(documents);
+  const project = { id: 'p', localRoot: documents };
+  await deleteProject({ project, projects: [project], home, preview: async () => ({ threadIds: [] }),
+    confirm: async plan => { assert.equal(plan.removeGit, false); return true; }, remote: async () => {}, local: async () => {}, unregister: async () => {} });
+  assert.ok(await exists(path.join(documents, '.git')));assert.ok(await exists(path.join(documents, 'file.txt')));
+});

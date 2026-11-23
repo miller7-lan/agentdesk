@@ -34,6 +34,8 @@ const localFiles = require('./local-files');
 const localCommands = require('./local-commands');
 const { CommandRuns } = require('./orchestrator/command-runs');
 const commandScope = (agent, threadId) => JSON.stringify([agent, threadId]);
+// The Codex app-server's working folder on VPS2 (orchestrator/codex-desktop.sh). Shared by all projects; never deleted.
+const SHARED_REMOTE_WORKSPACE = '/var/lib/agentdesk-orchestrator/desktop-workspace';
 const commandRuns = new CommandRuns((scope, run) => {
   const [agent, threadId] = JSON.parse(scope);
   toUi('local-command:update', { agent, threadId, run });
@@ -362,6 +364,7 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       const init = (operation === 'add' || operation === 'update') ? appConfig.lastInit : undefined;
       return { ok: true, ...appConfig.list(), ...(init && { init }) };
     } catch (error) {
+      if (operation === 'remove') logger?.audit('project_change', { operation, projectId: request.id, status: 'failed', error: String(error.message).slice(0, 300) });
       return { ok: false, error: error.message };
     }
   });
@@ -431,7 +434,18 @@ async function removeProjectData(id) {
           nextOffset = page.nextOffset;
         }
         const threadIds = [...new Set([...nativeIds, ...codexIds, ...chatPlans.flatMap(plan => plan.threadIds)])];
-        const remoteDirectory = project.remoteCwd || remote.cfg.workspace || null;
+        // Only a folder bound to this project alone is removed on the VPS. The shared default workspace (the Codex
+        // app-server's own folder, used by every project without remoteCwd) is never deleted; this project's
+        // conversations there are deleted one by one above.
+        const shared = new Set([remote.cfg.workspace, enrolledSession?.remote?.workspace, SHARED_REMOTE_WORKSPACE].filter(Boolean));
+        const remoteDirectory = project.remoteCwd && !shared.has(project.remoteCwd) ? project.remoteCwd : null;
+        // The shared workspace is emptied (the folder itself stays, codex-desktop.sh starts in it) when no other
+        // project uses it; otherwise it is left as it is.
+        const sharedDirectory = remoteDirectory ? null : (project.remoteCwd || remote.cfg.workspace || enrolledSession?.remote?.workspace || null);
+        const remoteClear = sharedDirectory && !projects.some(other => other.id !== id &&
+          (other.remoteCwd || remote.cfg.workspace || enrolledSession?.remote?.workspace) === sharedDirectory) &&
+          path.posix.resolve(sharedDirectory) === sharedDirectory && sharedDirectory.startsWith('/var/lib/agentdesk-orchestrator/') &&
+          sharedDirectory.split('/').length >= 5 ? sharedDirectory : null;
         if (remoteDirectory) {
           const protectedDirectories = ['/root', '/home', '/etc', '/usr', '/var', '/opt',
             '/var/lib/agentdesk-orchestrator', '/opt/agentdesk-orchestrator'];
@@ -449,16 +463,22 @@ async function removeProjectData(id) {
             cwd: '/var/tmp', timeoutMs: 5000, sandboxPolicy: { type: 'dangerFullAccess' } });
           if (resolved.exitCode !== 0 || resolved.stdout.trim() !== remoteDirectory) throw new Error('远程目录包含路径链接，请先绑定到实际目录后再删除。');
         }
-        const previous = project.deletionPlan;
+        const previous = project.deletionPlan && shared.has(project.deletionPlan.remoteDirectory)
+          ? { ...project.deletionPlan, remoteDirectory: null } : project.deletionPlan;
         const combine = (left, right) => [...new Set([...(left || []), ...right])];
         if (previous && previous.remoteDirectory !== remoteDirectory) throw new Error('远程目录已变化，请先恢复原目录完成清理。');
         return { tasks: { ...tasks, taskIds: combine(previous?.tasks?.taskIds, tasks.taskIds) }, chatPlans,
           codexIds: combine(previous?.codexIds, [...codexIds].filter(threadId => !nativeIds.has(threadId))),
-          threadIds: combine(previous?.threadIds, threadIds), remoteDirectory };
+          threadIds: combine(previous?.threadIds, threadIds), remoteDirectory, remoteClear };
       },
       confirm: async plan => {
-        const lines = [plan.worktrees?.length && '本机关联工作树\n' + plan.worktrees.join('\n'), plan.root && '本机目录（包括 .git）\n' + plan.root,
-          plan.remoteDirectory && 'VPS 项目目录（包括 .git）\n' + plan.remoteDirectory,
+        const lines = [plan.worktrees?.length && '本机关联工作树\n' + plan.worktrees.join('\n'),
+          plan.root && !plan.keepFolder && '本机目录（包括 .git）\n' + plan.root,
+          plan.root && plan.keepFolder && '本机目录是个人文件夹，文件全部保留，只解除绑定\n' + plan.root +
+            (plan.removeGit ? '\n（AgentDesk 建的空 .git 会删除，里面没有任何提交）' : ''),
+          plan.remoteDirectory ? 'VPS 项目目录（包括 .git）\n' + plan.remoteDirectory
+            : plan.remoteClear ? 'VPS 工作区内容全部清空（目录本身保留）\n' + plan.remoteClear
+              : 'VPS 工作区还有其他项目在用，保留，只删除本项目的会话',
           plan.tasks.repository && 'VPS Git 副本\n' + plan.tasks.repository,
           `关联单聊 ${plan.threadIds.length} 个，群聊任务 ${plan.tasks.tasks} 个`,
           '会话、附件、工作树、项目 Git 分支和撤销存档将一并删除。',
@@ -480,6 +500,14 @@ async function removeProjectData(id) {
           catch (error) { if (!/thread.*not found|no rollout found|does not exist/i.test(error.message)) throw error; }
         }
         if (plan.remoteDirectory) await remote.request('fs/remove', { path: plan.remoteDirectory, recursive: true, force: true });
+        if (plan.remoteClear) {
+          const target = plan.remoteClear;
+          if (path.posix.resolve(target) !== target || !target.startsWith('/var/lib/agentdesk-orchestrator/') ||
+              target.split('/').length < 5) throw new Error('VPS 工作区路径异常，已停止清理：' + target);
+          const cleared = await remote.request('command/exec', { command: ['/usr/bin/find', target, '-xdev', '-mindepth', '1', '-delete'],
+            cwd: '/var/tmp', timeoutMs: 60000, sandboxPolicy: { type: 'dangerFullAccess' } });
+          if (cleared.exitCode !== 0) throw new Error('VPS 工作区清空失败：' + String(cleared.stderr || '').slice(0, 200));
+        }
       },
       local: async plan => {
         for (let offset = 0; offset < plan.tasks.taskIds.length; offset += 1000) {
@@ -504,6 +532,60 @@ async function removeProjectData(id) {
     });
   } finally { deletingProjects.delete(id); }
 }
+
+// Deleting one conversation (右键 → 删除…): after a native warning, its history goes on VPS2 (the CLI session and
+// the thread record) and then here (undo checkpoints, command runs, attachments, its worktree). The project stays.
+ipcMain.handle('sessions:remove', async (event, request = {}) => {
+  if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+  const { agent, threadId, sessionId, title } = request;
+  try {
+    if (!['codex', ...CHAT_AGENTS].includes(agent)) throw new Error('未知的单聊类型。');
+    if (threadId !== undefined && (typeof threadId !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(threadId))) throw new Error('会话编号无效。');
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(sessionId)) throw new Error('会话编号无效。');
+    const native = nativeDesktop();
+    const record = threadId && native?.record?.(threadId);
+    const projectId = record?.projectId || chatThreads.get(threadId)?.projectId || codexCommandRoots.get(threadId)?.projectId;
+    if (projectId && deletingProjects.has(projectId)) throw new Error('项目正在删除。');
+    if (threadId && ([...nativeTurns.values()].includes(threadId) ||
+      [...fileTurns.values(), ...chatTurns.values()].some(turn => turn.threadId === threadId))) {
+      throw new Error('这个单聊仍在执行，请先停止后再删除。');
+    }
+    const worktree = worktrees().get(sessionId);
+    const detail = [threadId ? 'VPS：这个会话的对话记录和 CLI 会话文件' : 'VPS：没有这个会话的记录',
+      '本机：会话列表记录、撤销存档、命令记录和附件' + (worktree ? '\n本机：这个会话的独立工作树和分支\n' + worktree.path : ''),
+      '项目文件和其他会话不受影响。此操作不能撤销。'].join('\n\n');
+    const answer = await dialog.showMessageBox(win, { type: 'warning', title: '删除单聊',
+      message: `删除「${String(title || '新会话').slice(0, 80)}」？`, detail,
+      buttons: ['取消', '删除'], defaultId: 0, cancelId: 0, noLink: true });
+    if (answer.response !== 1) return { ok: false, cancelled: true };
+    if (threadId) {
+      const missing = (error) => /thread.*not.?found|no rollout found|does not exist/i.test(error.message);
+      if (record) await native.deleteThread(threadId);
+      else if (agent === 'codex') {
+        if (!await remote.wake()) throw new Error('VPS 未连接，暂时无法删除会话。');
+        try { await remote.request('thread/delete', { threadId }); } catch (error) { if (!missing(error)) throw error; }
+      } else {
+        const link = chatLink(agent);
+        if (!await link.wake()) throw new Error(agent + ' 单聊服务未连接，暂时无法删除会话。');
+        try { await link.request('thread/delete', { threadId }); } catch (error) { if (!missing(error)) throw error; }
+      }
+      await Promise.all([...checkpointCompletions.values()].filter(entry => entry.threadId === threadId).map(entry => entry.done));
+      await require('./project-deletion').purgeCheckpoints(path.join(app.getPath('userData'), 'checkpoints'), [threadId]);
+      forgetChatThread(threadId);
+      codexCommandRoots.delete(threadId);
+      commandRuns.forgetScopes(scope => { try { return JSON.parse(scope)[1] === threadId; } catch { return false; } });
+    }
+    if (worktree) {
+      await worktrees().discard(sessionId);
+      await fs.promises.rm(worktree.path, { recursive: true, force: true });
+    }
+    logger?.audit('chat_thread', { status: 'deleted', agent });
+    return { ok: true };
+  } catch (error) {
+    logger?.audit('chat_thread', { status: 'delete_failed', agent, error: String(error.message).slice(0, 300) });
+    return { ok: false, error: error.message };
+  }
+});
 
 // "已设置，补做首个提交": commits .gitignore in a repository AgentDesk initialized empty, once the person's own
 // Git identity exists (Q4). It never writes any gitconfig.

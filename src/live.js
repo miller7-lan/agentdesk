@@ -1034,18 +1034,39 @@
     } else A.renderAll();
     toast('已归档');
   }
+  // 删除单聊：主进程先弹出确认，再删除 VPS 上的会话记录和本机的存档、命令、工作树。
+  async function deleteSession(s) {
+    if (!s || !s.live || s.agentThread) return;
+    if (s.busy) { toast('会话还在运行，先停止再删除'); return; }
+    const provider = window.__providerDirect?.handles(s);
+    const r = await window.desk.sessions.remove({ agent: provider ? 'codex' : agentOf(s), sessionId: s.id, title: s.title,
+      ...(!provider && s.threadId && { threadId: s.threadId }) });
+    if (!r.ok) { if (!r.cancelled) window.alert('删除失败：' + r.error); return; }
+    if (s.threadId) byThread.delete(s.threadId);
+    D.sessions.splice(D.sessions.indexOf(s), 1);
+    if (provider) window.__providerDirect.forget?.(s);
+    if (state.active === s.id) {
+      const next = D.sessions.find((x) => x.live && x.project === s.project && !x.agentThread) || D.sessions.find((x) => x.live && !x.agentThread)
+        || (D.sessions.unshift(newSession({ project: s.project, agent: agentOf(s) })), D.sessions[0]);
+      A.openSession(next.id);
+    } else A.renderAll();
+    toast('已删除会话');
+  }
   // 侧栏右键菜单
   const ctx = document.createElement('div'); ctx.className = 'ctx-menu'; ctx.hidden = true; document.body.appendChild(ctx);
   $('#sessionList').addEventListener('contextmenu', (e) => {
     const row = e.target.closest('.sess'); const s = row && sess(row.dataset.id);
-    if (!s || !s.live) return;
+    if (!s || !s.live || s.agentThread) return;
     e.preventDefault();
-    ctx.innerHTML = '<button data-c="rename">重命名</button><button data-c="archive">归档</button>' + (s.threadId ? '<button data-c="copy">复制会话 ID</button>' : '');
+    const provider = window.__providerDirect?.handles(s);
+    ctx.innerHTML = (provider ? '' : '<button data-c="rename">重命名</button><button data-c="archive">归档</button>') +
+      (s.threadId ? '<button data-c="copy">复制会话 ID</button>' : '') + '<button data-c="delete" class="danger">删除…</button>';
     ctx.style.left = e.clientX + 'px'; ctx.style.top = e.clientY + 'px'; ctx.hidden = false; ctx.dataset.id = s.id;
   });
   ctx.addEventListener('click', (e) => {
     const c = e.target.dataset.c; const s = sess(ctx.dataset.id); ctx.hidden = true; if (!s) return;
     if (c === 'rename') startRename(s); else if (c === 'archive') archiveSession(s);
+    else if (c === 'delete') deleteSession(s).catch((error) => window.alert('删除失败：' + error.message));
     else if (c === 'copy') { navigator.clipboard.writeText(s.threadId); toast('已复制'); }
   });
   window.addEventListener('click', () => { ctx.hidden = true; });

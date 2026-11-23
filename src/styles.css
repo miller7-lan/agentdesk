@@ -215,6 +215,7 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.danger { color: var(--danger); }
 .btn.danger:hover { background: var(--danger-soft); }
+.ctx-menu button.danger { color: var(--danger); }
 .approval .remember { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
 .approval.resolved { border-color: var(--border); background: var(--panel); }
 .approval.resolved .approval-title { color: var(--muted); }
