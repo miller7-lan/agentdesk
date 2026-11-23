@@ -712,6 +712,19 @@ function createWindow() {
     },
   });
   win.setMenuBarVisibility(false);
+  // Zoom keys handled here, the same on every keyboard: the default menu's zoom-in is Ctrl+Plus, which on Windows needs
+  // Shift, so Ctrl+= did nothing. Ctrl/⌘ with = or + zooms in, - zooms out, 0 resets (main keys and the number pad).
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt || !(process.platform === 'darwin' ? input.meta : input.control)) return;
+    const contents = win.webContents;
+    const level = contents.getZoomLevel();
+    const zoomIn = ['=', '+'].includes(input.key) || ['Equal', 'NumpadAdd'].includes(input.code);
+    const zoomOut = ['-', '_'].includes(input.key) || ['Minus', 'NumpadSubtract'].includes(input.code);
+    const reset = (input.key === '0' && !input.shift) || input.code === 'Numpad0';
+    if (!zoomIn && !zoomOut && !reset) return;
+    event.preventDefault();
+    contents.setZoomLevel(reset ? 0 : Math.max(-3, Math.min(4, level + (zoomIn ? 0.5 : -0.5))));
+  });
   // 拖进来的文件由页面处理；万一漏到窗口上也不要跳转去打开它
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   // Links in model output never open a new Electron window; http(s) goes to the system browser.
