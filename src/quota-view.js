@@ -82,38 +82,9 @@
   }
   const levels = {
     ok: ['正常', 'ok'], reserved: ['只接主业', 'reserved'], stopped: ['已停', 'stopped'],
-    auth: ['需登录', 'auth'], cooling: ['冷却中', 'stopped'], absent: ['未配置', 'auth'], unknown: ['未读到', 'auth'],
+    auth: ['需登录', 'auth'], offline: ['离线', 'auth'], cooling: ['冷却中', 'stopped'], absent: ['未配置', 'auth'], unknown: ['未读到', 'auth'],
   };
 
-  // Shown when no orchestrator answers, so the layout can be checked offline (example projects, screenshots).
-  const sample = {
-    quotas: [
-      { provider: 'claude', used: 64, level: 'reserved', policy: { soft: 60, hard: 95, keepFor: ['plan', 'triage', 'accept'] },
-        buckets: [{ fiveHour: { usedPercent: 38, resetsAt: now(1.7) }, weekly: { usedPercent: 64, resetsAt: now(70) } }] },
-      { provider: 'codex', used: 41, level: 'ok', policy: { soft: 70, hard: 95, keepFor: ['implement'] },
-        buckets: [{ fiveHour: { usedPercent: 41, resetsAt: now(2.2) }, weekly: { usedPercent: 22, resetsAt: now(110) } }] },
-      { provider: 'grok', used: 97, level: 'stopped', policy: { soft: 95, hard: 95, keepFor: [] },
-        buckets: [{ fiveHour: { usedPercent: 97, resetsAt: now(0.6) }, weekly: { usedPercent: 51, resetsAt: now(80) } }] },
-      { provider: 'antigravity', used: 12, level: 'ok', policy: { soft: 95, hard: 95, keepFor: [] },
-        buckets: [{ fiveHour: { usedPercent: 12, resetsAt: now(4) }, weekly: { usedPercent: 9, resetsAt: now(130) } }] },
-    ],
-    team: {
-      routes: { plan: ['claude', 'codex'], triage: ['claude'], scout: ['antigravity', 'grok'], implement: ['codex', 'antigravity', 'grok'],
-        review: ['antigravity', 'grok'], research: ['antigravity', 'grok'], accept: ['claude'] },
-      configured: ['claude', 'codex', 'grok', 'antigravity'], authRequired: [], blocked: {},
-      quotaPolicy: { claude: { soft: 60, hard: 95, keepFor: ['plan', 'triage', 'accept'] }, codex: { soft: 70, hard: 95, keepFor: ['implement'] },
-        grok: { soft: 95, hard: 95, keepFor: [] }, antigravity: { soft: 95, hard: 95, keepFor: [] } },
-    },
-    resources: { memory: { used: 2.9 * 1024 ** 3, total: 4 * 1024 ** 3 }, swap: { used: 0.3 * 1024 ** 3, total: 2 * 1024 ** 3 } },
-    models: {
-      claude: { models: { 'claude-opus-5-5': { label: 'Opus 5.5' }, 'claude-sonnet-5-5': { label: 'Sonnet 5.5' }, 'claude-haiku-5-5': { label: 'Haiku 5.5' } } },
-      codex: { models: { 'gpt-5.5': { label: 'GPT-5.5' }, 'gpt-5.4': { label: 'GPT-5.4' }, 'gpt-5.5-mini': { label: 'GPT-5.5 mini' } } },
-      grok: { models: { 'grok-4.7': {}, 'grok-4.7-build-fast': {} } },
-      antigravity: { models: { 'gemini-4-hydrogen': {}, 'gemini-3-pro': {} } },
-    },
-    writeProviders: ['codex', 'claude', 'grok', 'antigravity'],
-  };
-  function now(hours) { return Math.round(Date.now() / 1000 + hours * 3600); }
 
   let data = null;
   let error = '';
@@ -143,9 +114,9 @@
         models: routes.modelProfiles || {}, writeProviders: routes.writeProviders || [] };
       error = '';
     } catch (e) {
-      data = { ...sample, live: false };
-      error = e.message === 'old_orchestrator' ? '主控版本较旧，请更新 VPS2 后查看实时数据。下面是示例。'
-        : '主控未连接，下面是示例数据。';
+      // Offline: say so, with no example or old numbers that could be mistaken for live ones.
+      data = { offline: true };
+      error = e.message === 'old_orchestrator' ? '主控版本较旧，请更新 VPS2 后查看实时数据。' : '';
     } finally {
       loading = false;
       loadedAt = Date.now();
@@ -202,12 +173,15 @@
 
   function card(role) {
     const team = data.team;
-    const entry = data.quotas.find((item) => item.provider === role) || (role === 'codex' ? codexFromLive() : null);
+    const found = data.quotas.find((item) => item.provider === role) || (role === 'codex' ? codexFromLive() : null);
+    // A snapshot (the last turn's report) is not live: show 离线 rather than its old numbers.
+    const stale = found?.source === 'snapshot' || found?.usedSource === 'snapshot';
+    const entry = stale ? null : found;
     const five = windowOf(entry, 'fiveHour');
     const week = windowOf(entry, 'weekly');
     const policy = team.quotaPolicy?.[role] || entry?.policy;
     const used = entry?.used ?? Math.max(five?.usedPercent ?? -1, week?.usedPercent ?? -1);
-    const state = !team.configured.includes(role) ? 'absent' : team.authRequired?.includes(role) || team.blocked?.[role]?.reason === 'auth' ? 'auth'
+    const state = stale ? 'offline' : !team.configured.includes(role) ? 'absent' : team.authRequired?.includes(role) || team.blocked?.[role]?.reason === 'auth' ? 'auth'
       : team.blocked?.[role] ? 'cooling' : entry?.level && entry.level !== 'unknown' ? entry.level : used >= 0 ? 'ok' : 'unknown';
     const [label, tone] = levels[state];
     const color = `var(--qv-${tone})`;
@@ -219,7 +193,7 @@
     const block = team.blocked?.[role];
     const note = block ? (block.reason === 'auth' ? '登录失效，' : '额度报尽，') + new Date(block.until).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + ' 后再试'
       : team.authRequired?.includes(role) ? '在 VPS2 完成登录后才会派活' : entry?.source === 'direct' ? '来自 Codex 直连账户'
-      : entry?.source === 'snapshot' && role === 'claude' ? '实时用量没读到（VPS2 上 Claude 没有用账号登录，或接口变了），这是最近一轮对话报告的用量'
+      : stale ? '实时额度读不到，显示离线（不再用最近一轮对话报告的旧用量）'
       : entry?.source === 'estimate' ? '估算：按主控调用次数，' + [five && `5 小时 ${five.calls}/${five.limit} 次`, week && `每周 ${week.calls}/${week.limit} 次`].filter(Boolean).join('，')
       : entry?.reason === 'no_quota_source' ? '这个 CLI 不报告额度；在配置里填 callLimits 即可按调用次数估算' : '';
     return `<article class="qv-card ${focus === role ? 'focused' : ''}" data-tone="${tone}">
@@ -299,6 +273,11 @@
     if (!dialog?.open) return;
     const body = dialog.querySelector('.qv-content');
     if (!data) { body.innerHTML = '<p class="qv-empty">正在读取…</p>'; return; }
+    if (data.offline) {
+      body.innerHTML = `<p class="qv-empty qv-offline"><b>离线</b><br>${esc(error || '主控未连接，读不到额度和分工。连上后点刷新或重新打开这里。')}</p>`;
+      updateTime();
+      return;
+    }
     const roles = ROLES.filter((role) => data.team.configured.includes(role) || data.quotas.some((q) => q.provider === role) || (role === 'codex' && codexFromLive()));
     body.innerHTML = `${error ? `<p class="qv-banner">${esc(error)}</p>` : ''}
       ${data.quotaError ? '<p class="qv-banner">主控没有开放额度读取（quotaBridges），只能显示分工规则。</p>' : ''}

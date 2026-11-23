@@ -152,6 +152,7 @@
                 <option>Lumen-Swift</option>
                 <option>Lumen-Mini</option>
               </select>
+              <button type="button" class="chip model-refresh" id="modelRefresh" title="刷新模型列表" aria-label="刷新模型列表"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg></button>
             </div>
             <div class="select-wrap" id="effortWrap" hidden>
               <select id="effortSelect" title="推理强度"></select>
@@ -333,12 +334,16 @@
     </form>
     <p id="updatesTitleStatus" role="status" aria-live="polite"></p>
     <ul id="updatesLines" class="updates-lines"></ul>
+    <section id="updatesNotesBox" class="updates-notes-box" hidden>
+      <h3 id="updatesNotesTitle"></h3>
+      <ul id="updatesNotes" class="updates-notes"></ul>
+    </section>
     <progress id="updatesProgress" class="updates-progress" max="100" value="0" hidden></progress>
     <p id="updatesProgressText" class="updates-muted"></p>
     <p id="updatesNotice"></p>
     <ul id="updatesReasons" class="updates-reasons"></ul>
     <p id="updatesError" class="updates-error" role="alert"></p>
-    <label class="updates-auto"><input type="checkbox" id="updatesAutoDownload" /> 自动下载更新（仅已签名版本）</label>
+    <label class="updates-auto"><input type="checkbox" id="updatesAutoDownload" /> 自动下载更新（下载后仍需你确认才安装）</label>
     <div class="task-actions">
       <button type="button" class="btn" id="updatesCheckNow">检查更新</button>
       <button type="button" class="btn" id="updatesDownload">立即下载</button>

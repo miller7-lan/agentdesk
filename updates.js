@@ -1,7 +1,8 @@
 'use strict';
 // Client updates: VPS2 announces a version (client_update over the existing SSH control channel), electron-updater
 // downloads it through the loopback feed (update-transport.js) — differentially when its block maps allow, otherwise
-// in full — and checks it (sha512; Authenticode when the app has a publisherName). Nothing here installs on its own:
+// in full — and checks it (sha512; Authenticode when the app has a publisherName). Downloads start by themselves
+// unless switched off, but nothing here installs on its own:
 // a finished download only becomes "ready", and installing needs the person's click plus the main-process safety gate
 // (update-gate.js) twice, after which the app quits through electron-updater's installer. Exiting the app normally
 // never installs (autoInstallOnAppQuit stays false), and a server cannot make a client restart.
@@ -59,10 +60,11 @@ function createUpdateManager({
   const os = platform === 'darwin' ? 'mac' : platform === 'win32' ? 'win' : null;
   const supported = Boolean(app.isPackaged && os && transport);
   const signedBuild = buildInfo.signed === true;
-  // D2: only signed builds check on their own and download by themselves; unsigned builds check when asked or when
-  // VPS2 announces a version (Q3), and download only on the person's click.
-  const automaticChecks = signedBuild && settings.autoCheck !== false;
-  let autoDownload = signedBuild && settings.autoDownload !== false;
+  // 0.4.0 (owner's decision, replacing D2): every build checks on its own and downloads in the background unless
+  // switched off. Downloading never installs: Windows still needs the click on "重启并更新" plus the gate, and an
+  // unsigned Mac build is still replaced by hand.
+  const automaticChecks = settings.autoCheck !== false;
+  let autoDownload = settings.autoDownload !== false;
   let state = { status: supported ? 'idle' : 'disabled', currentVersion: app.getVersion(), signedBuild, autoDownload };
   let manifest;
   let updater;
@@ -122,7 +124,7 @@ function createUpdateManager({
         updater = undefined;
         logger?.audit('update_check', { status: 'available', reason, version: found.version, signed: found.signed });
         const result = set('available');
-        if (autoDownload && found.signed) queueMicrotask(() => download({ automatic: true }).catch(() => {}));
+        if (autoDownload) queueMicrotask(() => download({ automatic: true }).catch(() => {}));
         return result;
       } catch (error) {
         logger?.audit('update_check', { status: 'failed', reason, error: errorCategory(error) });
@@ -137,7 +139,7 @@ function createUpdateManager({
     if (!supported) return Promise.resolve({ ok: false, error: 'disabled' });
     if (downloading) return downloading;
     if (!manifest || !['available', 'download_failed'].includes(state.status)) return Promise.resolve({ ok: false, error: 'nothing_to_download' });
-    if (automatic && !(autoDownload && manifest.signed)) return Promise.resolve({ ok: false, error: 'manual_download_required' });
+    if (automatic && !autoDownload) return Promise.resolve({ ok: false, error: 'manual_download_required' });
     const target = manifest;
     downloading = (async () => {
       const report = {};
@@ -365,13 +367,11 @@ function createUpdateManager({
     revealDownload,
     verifyPreviousInstall,
     setAutoDownload(value) {
-      // An unsigned build cannot switch automatic download on (D2, Q3).
-      if (value === true && !signedBuild) return { ok: false, error: 'unsigned_build' };
       autoDownload = value === true;
       set(state.status, { ...pick(state) });
       return { ok: true, autoDownload };
     },
-    // Network back: signed builds look again (at most every 10 minutes).
+    // Network back: look again (at most every 10 minutes).
     networkRestored() {
       if (!automaticChecks || now() - lastCheckAt < NETWORK_RECHECK_GAP) return null;
       return check({ reason: 'network' });

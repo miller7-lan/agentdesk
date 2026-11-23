@@ -1,7 +1,7 @@
 {
   "name": "agentdesk-ui",
   "productName": "AgentDesk",
-  "version": "0.3.10",
+  "version": "0.4.0",
   "description": "AI 编程助手桌面端：连接 VPS 上的 Codex 操作 Windows 开发机",
   "main": "main.js",
   "scripts": {
@@ -60,7 +60,9 @@
       "update-transport.js",
       "update-gate.js",
       "connection-config.js",
-      "build-info.json"
+      "build-info.json",
+      "CHANGELOG.md",
+      "scripts/changelog-notes.js"
     ],
     "win": {
       "target": [

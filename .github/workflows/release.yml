@@ -43,6 +43,8 @@ jobs:
           if [ "$EVENT" = push ] && [[ "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             if [ "${REF#refs/tags/}" = "v$version" ]; then pushable=true
             else echo "::error::tag ${REF#refs/tags/} does not match package.json version $version"; exit 1; fi
+            # The notes shown in the clients' update dialog come from CHANGELOG.md; no section, no release.
+            node scripts/changelog-notes.js "$version" > /dev/null || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
           fi
           echo "pushable=$pushable" >> "$GITHUB_OUTPUT"
           echo "pushable=$pushable version=$version"
@@ -265,8 +267,9 @@ jobs:
           umask 077
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          NOTES=$(node scripts/changelog-notes.js "$VERSION")
           node scripts/client-update-upload.js --version "$VERSION" --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
-            --signed "$SIGNED" --artifact win:x64:dist-win --artifact mac:arm64:dist-mac \
+            --signed "$SIGNED" --notes "$NOTES" --artifact win:x64:dist-win --artifact mac:arm64:dist-mac \
             | ssh -i "$RUNNER_TEMP/key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
                 -o StrictHostKeyChecking=yes -o BatchMode=yes -p "${PORT:-22}" "$TARGET" > "$RUNNER_TEMP/result.json"
           node -e "const r=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(JSON.stringify(r));process.exit(r.ok?0:1)" "$RUNNER_TEMP/result.json"

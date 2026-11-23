@@ -1379,7 +1379,7 @@ window.__groupReady = (async () => {
   /* ---------- Quota (subscriptions: what runs out is quota, not tokens) ---------- */
   // Example projects show sample numbers so the layout can be checked without a server.
   const exampleQuotas = [
-    { provider: 'claude', used: 64, level: 'reserved', policy: { soft: 60, hard: 95, keepFor: ['plan', 'accept'] }, usedSource: 'snapshot',
+    { provider: 'claude', used: 64, level: 'reserved', policy: { soft: 60, hard: 95, keepFor: ['plan', 'accept'] },
       buckets: [{ id: 'claude', fiveHour: { usedPercent: 38 }, weekly: { usedPercent: 64 } }] },
     { provider: 'codex', used: 41, level: 'ok', policy: { soft: 70, hard: 95, keepFor: ['implement'] },
       buckets: [{ id: 'codex', fiveHour: { usedPercent: 41 }, weekly: { usedPercent: 22 } }] },
@@ -1389,6 +1389,8 @@ window.__groupReady = (async () => {
       buckets: [{ id: 'gemini', fiveHour: { usedPercent: 18 }, weekly: { usedPercent: 9 } }] },
   ];
   const capabilityNames = { plan: '规划', triage: '诊断', scout: '侦察', implement: '改代码', review: '审查', research: '查资料', accept: '验收' };
+  // Snapshot numbers (the last turn's report, not a live reading) are shown as 离线, never as current quota.
+  const staleQuota = (quota) => quota?.source === 'snapshot' || quota?.usedSource === 'snapshot';
   const quotaList = () => isExample(state.group) ? exampleQuotas : connected ? quotas : [];
   const quotaOf = (id) => quotaList().find((quota) => quota.provider === id);
   // When the fullest window that is holding this member back comes back, for the waiting message.
@@ -1414,7 +1416,7 @@ window.__groupReady = (async () => {
 
   // Status bar: Claude and Codex always (they are the scarce ones); others only when they are stepping back.
   function quotaStatusBar() {
-    const shown = quotaList().filter((quota) => Number.isFinite(quota.used) &&
+    const shown = quotaList().filter((quota) => !staleQuota(quota) && Number.isFinite(quota.used) &&
       (['claude', 'codex'].includes(quota.provider) || quota.level === 'reserved' || quota.level === 'stopped'));
     return shown.map((quota) => {
       const left = Math.max(0, 100 - quota.used);
@@ -1428,6 +1430,7 @@ window.__groupReady = (async () => {
   // Member panel: one meter per window, remaining quota, and what routing is doing with this member.
   function quotaMarkup(provider) {
     const quota = quotaOf(provider);
+    if (staleQuota(quota)) return '<div class="quota-meters"><span class="quota-label">额度</span><span class="quota-value">离线</span></div>';
     const bucket = quota?.buckets?.[0];
     if (!quota || (!bucket && !Number.isFinite(quota.used))) return '';
     const meter = (label, window) => {
@@ -1436,7 +1439,7 @@ window.__groupReady = (async () => {
         <span class="quota-value">${left === null ? '—' : '剩 ' + pct(left)}</span>`;
     };
     const rows = bucket ? meter('5 小时', bucket.fiveHour) + meter('每周', bucket.weekly)
-      : meter(quota.usedSource === 'snapshot' ? '快照' : '较紧窗口', { usedPercent: quota.used });
+      : meter('较紧窗口', { usedPercent: quota.used });
     const note = levelText(quota);
     return `<div class="quota-meters" data-level="${quota.level}">${rows}</div>${note ? `<small class="quota-note" data-level="${quota.level}">${note}</small>` : ''}`;
   }

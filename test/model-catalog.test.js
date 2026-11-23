@@ -146,3 +146,9 @@ test('an empty catalog is not treated as "no models available"', () => {
   assert.throws(() => mergeModels({ models: { 'gpt-6.2-sol': { strengths: 'x', billing: 'unknown' } } }, 'codex',
     { models: [] }), /model_catalog:codex:empty/);
 });
+test('the single-chat menu gets every model agy offers; the planner catalog stays Gemini-only', () => {
+  const text = ['gemini-4-neon-high\tGemini 4 Neon (High)', 'claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)', 'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)'].join('\n');
+  assert.deepEqual(parseAntigravity(text).models.map((model) => model.id), ['gemini-4-neon-high']);
+  assert.deepEqual(parseAntigravity(text, { allModels: true }).models.map((model) => model.id),
+    ['gemini-4-neon-high', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium']);
+});

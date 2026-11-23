@@ -26,16 +26,17 @@ function run(file, args, env, exec = execFile) {
 const rows = (text) => String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
 // `agy models` prints one `id<TAB>display name` per line after a progress line. Only Gemini models are
-// adopted automatically: the team routes this CLI by its Gemini quota group, so offering its Claude/GPT
-// models to the planner would make quota decisions use the wrong bucket. They can still be added by hand.
-function parseAntigravity(text) {
+// adopted automatically for the planner: the team routes this CLI by its Gemini quota group, so offering its
+// Claude/GPT models there would make quota decisions use the wrong bucket. They can still be added by hand.
+// The single-chat menu (chat-server.js model/list) asks with { allModels: true } and offers everything agy offers.
+function parseAntigravity(text, { allModels = false } = {}) {
   const models = [];
   for (const line of rows(text)) {
     const tab = line.indexOf('\t');
     if (tab < 0) continue;
     const id = line.slice(0, tab).trim();
     const label = line.slice(tab + 1).trim();
-    if (!modelId.test(id) || !/^gemini-/i.test(id) || models.some((model) => model.id === id)) continue;
+    if (!modelId.test(id) || (!allModels && !/^gemini-/i.test(id)) || models.some((model) => model.id === id)) continue;
     models.push({ id, ...(label && label !== id && { label }) });
   }
   return { models, ...(models.find((model) => /flash-medium$/.test(model.id))?.id
@@ -104,12 +105,12 @@ async function discoverClaude(adapter, request = globalThis.fetch) {
   return parseClaude(await response.json());
 }
 
-function discoverModels(role, adapter, exec) {
+function discoverModels(role, adapter, exec, options = {}) {
   if (role === 'claude') return discoverClaude(adapter);
   const parser = parsers[role];
   if (!parser) return Promise.reject(new Error('model_catalog:' + role + ':unsupported'));
   const args = { codex: ['debug', 'models'], grok: ['models'], antigravity: ['models'] }[role];
-  return run(adapter.bin, args, adapter.env, exec).then(parser, (error) => {
+  return run(adapter.bin, args, adapter.env, exec).then((text) => parser(text, options), (error) => {
     throw catalogError(role, error);
   });
 }

@@ -240,7 +240,9 @@ class FakeUpdater extends EventEmitter {
   }
 }
 
-function harness({ version = '0.2.9', signed = false, platform = 'win32', serverVersion = '0.3.0', gateStates = [], manifestFail } = {}) {
+// Most tests drive downloads by hand, so automatic download is off unless a test passes its own settings.
+function harness({ version = '0.2.9', signed = false, platform = 'win32', serverVersion = '0.3.0', gateStates = [], manifestFail,
+  settings = { autoDownload: false } } = {}) {
   const bytes = Buffer.from('installer-bytes');
   const script = { created: [], downloads: 0, installs: [], feedVersion: serverVersion };
   const states = [];
@@ -273,7 +275,7 @@ function harness({ version = '0.2.9', signed = false, platform = 'win32', server
   const prepared = [];
   const manager = createUpdateManager({
     app: { isPackaged: true, getVersion: () => version }, platform, arch: 'x64', buildInfo: { signed },
-    settings: {}, logger: { audit: (...args) => audits.push(args) }, transport,
+    settings, logger: { audit: (...args) => audits.push(args) }, transport,
     createUpdater: (options, extra) => new FakeUpdater(options, script, extra), gate,
     prepareForQuit: async () => prepared.push('prepare'), abortPrepare: async () => prepared.push('abort'),
     stateStore: store, snapshotData: async () => ({ 'config.json': 'h1' }), reveal: (file) => prepared.push(['reveal', file]),
@@ -283,7 +285,7 @@ function harness({ version = '0.2.9', signed = false, platform = 'win32', server
   return { manager, script, states, audits, gate, prepared, store, setServer: (value) => { server = value; }, manifestCalls: () => manifestCalls, bytes };
 }
 
-test('no update / new version: unsigned builds only show it, and never download by themselves', async () => {
+test('no update / new version: with automatic download switched off, a new version is only shown', async () => {
   const none = harness({ serverVersion: null });
   assert.equal((await none.manager.check()).status, 'current');
   const same = harness({ version: '0.3.0' });
@@ -294,14 +296,35 @@ test('no update / new version: unsigned builds only show it, and never download 
   assert.equal(found.targetVersion, '0.3.0');
   assert.equal(found.targetSigned, false);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(unsigned.script.downloads, 0);              // Q3: waits for the click
-  assert.equal(unsigned.manager.setAutoDownload(true).error, 'unsigned_build');
-  unsigned.manager.start();
-  assert.equal(unsigned.manager.automaticChecks, false);   // D2: unsigned builds have no timer
+  assert.equal(unsigned.script.downloads, 0);              // switched off: waits for the click
+});
+
+test('0.4.0: unsigned Windows builds check on their own and download in the background, but never install', async () => {
+  const h = harness({ settings: {} });
+  assert.equal(h.manager.automaticChecks, true);
+  assert.equal(h.manager.state.autoDownload, true);
+  await h.manager.check({ reason: 'server' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.script.downloads, 1);
+  assert.equal(h.manager.state.status, 'ready');           // waits for "重启并更新"
+  assert.equal(h.script.created[0].autoInstallOnAppQuit, false);
+  assert.ok(h.audits.some(([event, fields]) => event === 'update_download' && fields.automatic === true && fields.status === 'started'));
+  const off = harness({ settings: { autoCheck: false, autoDownload: false } });
+  assert.equal(off.manager.automaticChecks, false);
+  assert.deepEqual(off.manager.setAutoDownload(true), { ok: true, autoDownload: true });   // unsigned may switch it on
+});
+
+test('0.4.0: unsigned Mac builds download by themselves and still leave installing to the person', async () => {
+  const h = harness({ settings: {}, platform: 'darwin' });
+  await h.manager.check({ reason: 'scheduled' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.manager.state.status, 'ready');
+  assert.equal(h.manager.state.manualInstall, true);
+  assert.equal((await h.manager.install()).error, 'manual_install_required');
 });
 
 test('signed build with a signed update downloads in the background on its own', async () => {
-  const h = harness({ signed: true });
+  const h = harness({ signed: true, settings: {} });
   h.setServer({ ...manifestFor('0.3.0', h.bytes, { signed: true }) });
   assert.equal(h.manager.automaticChecks, true);
   await h.manager.check({ reason: 'scheduled' });
@@ -693,5 +716,32 @@ test('update dialog: no update → install not clickable; ready and idle → cli
     downloaded: { differential: 'unknown', installerBytesFromServer: null, fullSize: 1048576 } });
   assert.ok(ready.lines.includes('下载方式未知：经主控线路传输 未知，完整包 1.0 MB'));
   assert.match(ready.notice, /未签名/);
-  assert.equal(describe({ status: 'ready', autoDownload: false, signedBuild: false }).autoDownloadAvailable, false);
+  assert.equal(describe({ status: 'ready', autoDownload: false, signedBuild: false }).autoDownloadAvailable, true);
+  assert.equal(describe({ status: 'disabled' }).autoDownloadAvailable, false);
+});
+
+test('changelog: each version section becomes the update notes, and the dialog lists them', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { changelogNotes } = require('../scripts/changelog-notes');
+  const text = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
+  const version = require('../package.json').version;
+  const notes = changelogNotes(text, version);
+  assert.ok(notes, 'CHANGELOG.md needs a section for ' + version);
+  assert.ok(notes.length <= 2000);
+  assert.doesNotMatch(notes, /^##/m);
+  assert.equal(changelogNotes('## 1.0.0（x）\n- a\n## 0.9.0\n- b', '0.9.0'), '- b');
+  assert.equal(changelogNotes('## 1.0.0\n- a', '1.0.1'), null);
+  assert.equal(changelogNotes('## 1.0.10\n- a', '1.0.1'), null);
+  const { describe } = require('../src/updates-ui');
+  const offered = describe({ status: 'available', targetVersion: '0.5.0', notes: '- 新功能\n- 修复' }, { version: '0.4.0', notes: '- 旧' });
+  assert.equal(offered.notesTitle, '0.5.0 更新内容');
+  assert.deepEqual(offered.notes, ['新功能', '修复']);
+  const own = describe({ status: 'updated' }, { version: '0.4.0', notes: '- 旧' });
+  assert.equal(own.notesTitle, '本版（0.4.0）更新内容');
+  assert.deepEqual(describe({ status: 'current' }).notes, []);
+  const pkg = require('../package.json');
+  assert.ok(pkg.build.files.includes('CHANGELOG.md') && pkg.build.files.includes('scripts/changelog-notes.js'));
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'release.yml'), 'utf8');
+  assert.match(workflow, /--notes "\$NOTES"/);
 });

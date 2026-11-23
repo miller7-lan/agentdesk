@@ -1801,8 +1801,9 @@ effort,
     case 'model/list': {
       if (PROVIDER !== 'antigravity') return { data: [] };
       const { discoverModels } = require('./model-catalog');
-      const catalog = await discoverModels(PROVIDER, { bin: BIN, env: childEnvironment({}) });
-      if (!catalog.models.length) throw fail('Antigravity 没有返回可用的 Gemini 模型');
+      // The chat menu lists every model agy offers (Gemini, Claude, GPT-OSS); the planner's catalog stays Gemini-only.
+      const catalog = await discoverModels(PROVIDER, { bin: BIN, env: childEnvironment({}) }, undefined, { allModels: true });
+      if (!catalog.models.length) throw fail('Antigravity 没有返回可用的模型');
       return { data: catalog.models, defaultModel: catalog.defaultModel };
     }
     case 'skills/list':

@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('desk', {
     reveal: () => ipcRenderer.invoke('updates:reveal'),
     setAutoDownload: (value) => ipcRenderer.invoke('updates:autoDownload', value === true),
     online: () => ipcRenderer.invoke('updates:online'),
+    changelog: () => ipcRenderer.invoke('updates:changelog'),
     onState: on('updates:state'),
   },
   diagnostics: {

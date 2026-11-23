@@ -236,6 +236,13 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .composer-bar .send { flex: none; }
 .chip { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border-radius: 6px; color: var(--muted); font-size: 12px; }
 .chip:hover { background: var(--hover); color: var(--text); }
+.select-wrap:has(#modelRefresh) { display: flex; align-items: center; gap: 2px; }
+.model-refresh { padding: 0 6px; }
+.model-refresh svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.model-refresh.busy svg { animation: model-refresh-spin .8s linear infinite; }
+.model-refresh[hidden] { display: none; }
+@keyframes model-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .model-refresh.busy svg { animation: none; opacity: .5; } }
 .select-wrap { min-width: 0; max-width: 100%; }
 .select-wrap select { max-width: 100%; height: 28px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font: inherit; font-size: 11.5px; padding: 0 6px; cursor: pointer; }
 .select-wrap select:focus { border-color: var(--accent); }
@@ -598,6 +605,10 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .updates-muted { color: var(--muted); margin: 4px 0; }
 .updates-error { color: var(--danger); margin: 4px 0; }
 .updates-error:empty, .updates-muted:empty, #updatesNotice:empty { display: none; }
+.updates-notes-box { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px;
+  max-height: 220px; overflow: auto; }
+.updates-notes-box h3 { margin: 0 0 4px; font-size: 13px; }
+.updates-notes { margin: 0; padding-left: 18px; line-height: 1.5; }
 .updates-auto { display: flex; gap: 8px; align-items: center; margin: 8px 0; color: var(--muted); }
 #updatesOpen.has-update::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px;
   border-radius: 50%; background: var(--accent); vertical-align: middle; }

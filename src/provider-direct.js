@@ -341,7 +341,7 @@
     $('#directTaskMode').value = local ? 'local' : s?.taskMode === 'edit' ? 'edit' : 'chat';
     $('#pickLocalDirectory').hidden = $('#pickLocalFile').hidden = !local;
     $('#pickLocalDirectory').title = $('#pickLocalFile').title = localScopes.get(s?.id)?.path || '';
-    for (const id of ['modelSelect', 'effortWrap', 'tierSelect']) {
+    for (const id of ['modelSelect', 'modelRefresh', 'effortWrap', 'tierSelect']) {
       const element = $('#' + id); if (!element) continue;
       if (other && !controls.has(id)) controls.set(id, element.hidden);
       if (other) element.hidden = true;

@@ -71,7 +71,7 @@
     return b;
   }
 
-  function describe(state) {
+  function describe(state, current) {
     const status = state?.status || 'disabled';
     const lines = [];
     if (state?.currentVersion) lines.push('当前版本 ' + state.currentVersion);
@@ -108,8 +108,20 @@
       status, title: STATUS_TEXT[status] || STATUS_TEXT.disabled, lines, progressText,
       percent: status === 'downloading' && progress ? Math.max(0, Math.min(100, progress.percent)) : null,
       reasons, notice, error: error ? (ERROR_TEXT[error] || ERROR_TEXT.failed) : '',
-      autoDownload: state?.autoDownload === true, autoDownloadAvailable: state?.signedBuild === true,
+      autoDownload: state?.autoDownload === true, autoDownloadAvailable: status !== 'disabled',
+      ...changes(state, current),
     };
+  }
+
+  // Changelog lines ("- …" in CHANGELOG.md) as list items: the new version's notes from the server while one is on
+  // offer, otherwise this version's own section bundled with the app.
+  function noteLines(text) {
+    return String(text || '').split(/\r?\n/).map((line) => line.replace(/^\s*[-*]\s+/, '').trim()).filter(Boolean).slice(0, 40);
+  }
+  function changes(state, current) {
+    if (state?.targetVersion && state.notes) return { notesTitle: state.targetVersion + ' 更新内容', notes: noteLines(state.notes) };
+    if (current?.notes && current.version) return { notesTitle: '本版（' + current.version + '）更新内容', notes: noteLines(current.notes) };
+    return { notesTitle: '', notes: [] };
   }
 
   function mount(document, api) {
@@ -119,6 +131,7 @@
     if (!open || !dialog || !api) return null;
     const els = {
       title: $('updatesTitleStatus'), lines: $('updatesLines'), bar: $('updatesProgress'), progress: $('updatesProgressText'),
+      notesBox: $('updatesNotesBox'), notesTitle: $('updatesNotesTitle'), notes: $('updatesNotes'),
       notice: $('updatesNotice'), reasons: $('updatesReasons'), error: $('updatesError'), auto: $('updatesAutoDownload'),
       buttons: {
         check: $('updatesCheckNow'), download: $('updatesDownload'), retry: $('updatesRetry'), later: $('updatesLater'),
@@ -126,11 +139,17 @@
       },
     };
     let state = { status: 'disabled' };
+    let current = null;
     let busy = false;
     function render(next) {
       state = next || state;
-      const view = describe(state);
+      const view = describe(state, current);
       els.title.textContent = view.title;
+      if (els.notesBox) {
+        els.notesBox.hidden = view.notes.length === 0;
+        els.notesTitle.textContent = view.notesTitle;
+        els.notes.replaceChildren(...view.notes.map((text) => Object.assign(document.createElement('li'), { textContent: text })));
+      }
       els.lines.replaceChildren(...view.lines.map((text) => Object.assign(document.createElement('li'), { textContent: text })));
       els.bar.hidden = view.percent === null;
       if (view.percent !== null) els.bar.value = view.percent;
@@ -140,7 +159,7 @@
       els.error.textContent = view.error;
       els.auto.checked = view.autoDownload;
       els.auto.disabled = !view.autoDownloadAvailable;
-      els.auto.title = view.autoDownloadAvailable ? '' : '未签名的版本不会自动下载更新';
+      els.auto.title = view.autoDownloadAvailable ? '发现新版本时在后台下载，安装仍要你确认' : '';
       const allowed = buttonsFor(state);
       for (const [name, button] of Object.entries(els.buttons)) {
         button.disabled = busy || !allowed[name];
@@ -176,6 +195,7 @@
     });
     if (typeof window !== 'undefined') window.addEventListener('online', () => api.online());
     api.state().then(render, () => render());
+    if (api.changelog) api.changelog().then((value) => { current = value; render(); }, () => {});
     return { render };
   }
 

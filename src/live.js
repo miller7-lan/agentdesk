@@ -32,6 +32,7 @@
   let skills = { cloud: [], local: [] };
   const startingTurns = new WeakSet();
   let usage = null;
+  let usageOffline = false;   // Codex 连接断开：额度直接显示离线，不再显示断开前的旧数
 
   /* ---------- 工具函数 ---------- */
   function md(text) {
@@ -379,7 +380,7 @@
   /* ---------- 事件 ---------- */
   function onEvent(m) {
     const p = m.params || {};
-    if (m.method === 'account/rateLimits/updated') { usage = p.rateLimits || p; renderUsage(); A.renderSidebar(); return; }
+    if (m.method === 'account/rateLimits/updated') { usage = p.rateLimits || p; usageOffline = false; renderUsage(); A.renderSidebar(); return; }
     if (m.method === 'skills/changed') { loadSkills(); return; }
     // Direct chat v2 notices: MCP fallback (D14), waiting in line (D15/Q6) or behind a CLI upgrade (Q5), status pushes.
     if (m.method === 'agentdesk/fallback') {
@@ -1142,6 +1143,47 @@
     agyReads.set(s, request);
     return request;
   }
+  // 输入框里的「刷新模型」：丢掉本机缓存，重新向 VPS 读取当前会话的模型列表（Codex / Claude / Grok / Antigravity）。
+  let refreshingModels = false;
+  async function refreshModels() {
+    const button = $('#modelRefresh');
+    const s = sess(state.active);
+    if (refreshingModels || !s || window.__providerDirect?.handles(s)) return;
+    refreshingModels = true;
+    button?.classList.add('busy');
+    if (button) button.disabled = true;
+    try {
+      const agent = agentOf(s);
+      let count = 0;
+      if (!isChat(s)) {
+        if (!(await ensureReady(s))) throw Error('Codex 未连接');
+        delete $('#modelSelect').dataset.live;
+        if (!(await loadModels())) throw Error('Codex 没有返回模型');
+        count = models.length;
+      } else if (agent === 'antigravity') {
+        if (!(await ensureReady(s))) throw Error('Antigravity 单聊未连接');
+        agyProfiles.delete(s);
+        const profile = await readAntigravityModels(s);
+        count = Object.keys(profile.models || {}).length;
+      } else {
+        chatProfiles.delete(s.project);
+        loadChatProfiles(s);
+        await chatProfileLoads.get(s.project);
+        if (!chatProfiles.has(s.project)) throw Error('读取模型失败，请检查主控线路');
+        count = Object.keys(chatProfiles.get(s.project)?.[agent]?.models || {}).length;
+      }
+      if (state.active === s.id) syncSession(s);
+      toast(`已刷新：${agentName(agent)} 可用 ${count} 个模型`);
+    } catch (error) {
+      toast('刷新模型失败：' + (error?.message || error));
+    } finally {
+      refreshingModels = false;
+      button?.classList.remove('busy');
+      if (button) button.disabled = false;
+    }
+  }
+  $('#modelRefresh')?.addEventListener('click', refreshModels);
+
   function chatProfileModel(s) {
     const profile = profileFor(s);
     return profile?.models?.[s?.model] || {};
@@ -1269,6 +1311,11 @@
   function renderUsage() {
     let el = $('#sbUsage');
     if (!el) { el = document.createElement('button'); el.type = 'button'; el.className = 'sb-item clickable'; el.id = 'sbUsage'; $('#sbTokens').before(el); }
+    if (usageOffline) {
+      el.textContent = '用量 离线';
+      el.title = '与 VPS 上的 Codex 的连接已断开，读不到实时额度；重新连接后自动更新\n点击查看所有成员的额度与分工';
+      return;
+    }
     if (!usage) { el.textContent = ''; return; }
     const snap = usage.rateLimits || usage;
     el.textContent = '用量 ' + usageText(usage);
@@ -1826,7 +1873,7 @@
     refreshChanges();
   });
 
-  window.__live = { md, send, resolve, answerQuestion, runHandover, modeToPolicy, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
+  window.__live = { md, send, resolve, answerQuestion, runHandover, modeToPolicy, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usageOffline ? null : usage, syncSession };
   async function workspaceChanged() {
     const revision = ++workspaceRevision;
     const [config, access] = await Promise.all([rm.config(), wsApi.access()]);
@@ -1911,6 +1958,7 @@
   // 每次连上都补齐还没拿到的数据（首次连接可能因网络抖动失败，之后的重连要能补上）
   async function onReady() {
     ready = true;
+    if (usageOffline) { usageOffline = false; usage = null; renderUsage(); }
     if (!cfg.projectId) await workspaceChanged();
     const jobs = [loadSkills()];
     if (!models.length) jobs.push(loadModels().catch(() => false));
@@ -1929,8 +1977,10 @@
   }
   cx.onReady(onReady);
   const lost = (agent, why, { sleep = false } = {}) => {
-    if (agent === 'codex') ready = false;
-    else if (!sleep && chatStatus[agent]) chatStatus[agent] = { ...chatStatus[agent], state: 'error', detail: why };
+    if (agent === 'codex') {
+      ready = false;
+      if (!sleep) { usageOffline = true; renderUsage(); }
+    } else if (!sleep && chatStatus[agent]) chatStatus[agent] = { ...chatStatus[agent], state: 'error', detail: why };
     for (const s of D.sessions) {
       // The VPS chat service sleeping or dropping does not stop a Windows-native chat, which runs on the PC.
       if (!s.live || agentOf(s) !== agent || (agent !== 'codex' && s.native)) continue;

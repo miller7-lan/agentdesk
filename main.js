@@ -443,15 +443,17 @@ async function removeProjectData(id) {
             if (info.thread?.cwd) directories.add(info.thread.cwd);
           } catch (error) { if (!/thread.*not (found|loaded)|no rollout found|does not exist/i.test(error.message)) throw error; }
         }
+        // A remote folder other projects also use (usually the shared default workspace): its conversations cannot be
+        // told apart by folder, so only the ones known to be this project's (codexIds above, native records) are
+        // deleted, and the rest stay for the projects still using the folder.
+        const sharedCwd = Boolean(cwd) && projects.some(other => other.id !== id && (other.remoteCwd || remote.cfg.workspace) === cwd);
         for (const directory of directories) {
+          if (directory === cwd && sharedCwd) continue;
           for (const archived of [false, true]) {
             let cursor;
             do {
               const page = await remote.request('thread/list', { cwd: directory, archived, sourceKinds: require('./orchestrator/codex-sessions').SOURCE_KINDS, limit: 100, ...(cursor && { cursor }) });
               const matching = (page.data || []).filter(thread => thread.cwd === directory && !nativeIds.has(thread.id));
-              if (directory === cwd && matching.length && projects.some(other => other.id !== id && (other.remoteCwd || remote.cfg.workspace) === cwd)) {
-                throw new Error('多个项目共用这个远程目录，旧单聊历史无法确定归属，请先为项目分别绑定远程目录。');
-              }
               for (const thread of matching) codexIds.add(thread.id);
               cursor = page.nextCursor;
             } while (cursor);
@@ -1955,6 +1957,15 @@ ipcMain.handle('updates:autoDownload', async (event, value) => {
     await appConfig.mutate((draft) => { draft.update = { ...(draft.update || {}), autoDownload: result.autoDownload }; }).catch(() => {});
   }
   return result;
+});
+// This version's section of the bundled CHANGELOG.md, shown in the update dialog ("本版更新内容").
+ipcMain.handle('updates:changelog', (event) => {
+  if (!fromMainWindow(event)) return null;
+  try {
+    const { changelogNotes } = require('./scripts/changelog-notes');
+    const version = app.getVersion();
+    return { version, notes: changelogNotes(fs.readFileSync(path.join(__dirname, 'CHANGELOG.md'), 'utf8'), version) };
+  } catch { return { version: app.getVersion(), notes: null }; }
 });
 ipcMain.handle('updates:online', (event) => { if (fromMainWindow(event)) updates?.networkRestored(); return true; });
 

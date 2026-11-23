@@ -267,3 +267,32 @@ test('native chats of a project that no longer exists are pruned after a clean c
   assert.match(main, /activateProject\(\);\n  pruneOrphanNativeChats\(\);/);
   assert.match(main, /if \(!native\?\.orphanProjects \|\| configError \|\| !appConfig\?\.value\.projects\.length\) return;/, 'never on a broken or empty configuration');
 });
+
+test('composer has a refresh-models button for Codex and every single-chat provider', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
+  const live = fs.readFileSync(path.join(__dirname, '..', 'src', 'live.js'), 'utf8');
+  assert.match(html, /id="modelRefresh"[^>]*aria-label="刷新模型列表"/);
+  assert.match(live, /\$\('#modelRefresh'\)\?\.addEventListener\('click', refreshModels\)/);
+  assert.match(live, /agyProfiles\.delete\(s\)/);
+  assert.match(live, /chatProfiles\.delete\(s\.project\)/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src', 'provider-direct.js'), 'utf8'), /'modelSelect', 'modelRefresh'/);
+});
+
+test('deleting a project in a shared remote folder keeps the other projects\' history instead of failing', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.doesNotMatch(main, /多个项目共用这个远程目录/);
+  assert.match(main, /if \(directory === cwd && sharedCwd\) continue;/);
+});
+
+test('quota: offline shows 离线, never example numbers or an old snapshot', () => {
+  const view = fs.readFileSync(path.join(__dirname, '..', 'src', 'quota-view.js'), 'utf8');
+  const group = fs.readFileSync(path.join(__dirname, '..', 'src', 'orchestrator.js'), 'utf8');
+  const live = fs.readFileSync(path.join(__dirname, '..', 'src', 'live.js'), 'utf8');
+  assert.doesNotMatch(view, /const sample = \{|下面是示例/);
+  assert.match(view, /data = \{ offline: true \}/);
+  assert.match(view, /const stale = found\?\.source === 'snapshot'/);
+  assert.doesNotMatch(group, /'快照'/);
+  assert.match(group, /!staleQuota\(quota\) && Number\.isFinite\(quota\.used\)/);
+  assert.match(live, /if \(!sleep\) \{ usageOffline = true; renderUsage\(\); \}/);
+  assert.match(live, /usage: \(\) => usageOffline \? null : usage/);
+});
