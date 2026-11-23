@@ -1,51 +1,154 @@
 # AgentDesk
 
-AgentDesk 是一个 Windows 和 macOS 桌面客户端，通过 SSH 连接 VPS 上的 Codex App Server。客户端可转发本机桌面操作，并在「完全访问」模式下使用当前 Windows 账户的权限访问 C 盘非系统位置和 D 盘。
+**把多个 AI 编程助手放进同一个桌面工作台，让它们在你的 Windows / macOS 电脑上完成真实开发任务。**
 
-应用支持本机 Git 和云端项目、SSH 指纹确认、群聊调度与诊断包导出。使用「工作区」管理项目和首次运行设置，使用「诊断」预览日志与主控状态以及检查更新。详见[安装](docs/INSTALL.md)、[本地如何部署（VPS2 / Mac / Windows）](docs/LOCAL-DEPLOY.md)、[权限](docs/PERMISSIONS.md)、[故障排查](docs/TROUBLESHOOTING.md)和[签名与发布](docs/SIGNING.md)。
+AgentDesk 是一个以 **本机开发、远程模型会话、多 Agent 协作** 为核心的 Electron 桌面项目。模型 CLI 和任务调度运行在 VPS 2，本机客户端与 Bridge 负责已授权的项目文件、终端、桌面能力及结果回传；VPS 1 提供故障时可选的中继和 SSH 跳板。
 
-## 从源码运行
+它不只是一个聊天界面：单聊适合直接让 AI 阅读、修改、运行和测试本机项目；群聊适合将规划、开发、审查、测试与验收组织成可追踪、可回滚的任务流程。
 
-需要 Windows x64、Node.js、npm、Git 和 Windows OpenSSH Client。
+> **项目状态（2026-11-23）**：持续开发与自用验证中，并非开箱即用的公共托管服务。完整功能依赖自行部署 VPS 2、配置受限 SSH 凭据、在本机安装匹配版本的客户端/Bridge，以及相应模型服务的有效登录。功能实现、自动测试、实际部署和真机端到端验收是不同层次，详见[部署记录](docs/DEPLOY-LOG.md)及[已知限制](#当前状态与已知限制)。
 
-~~~powershell
+## 核心能力
+
+| 能力 | 说明 |
+| --- | --- |
+| **四种 AI 独立单聊** | 支持 Codex、Claude Code、Grok Build、Antigravity CLI。各自使用独立连接与会话，流式呈现回复、工具执行和需要用户处理的交互。 |
+| **原生本机开发** | 在获准的“完全访问”单聊中访问选定的 Mac / Windows 本机项目；可读写文件、运行项目命令并使用本机工具链。平台和接入方式不同，能力与权限边界也不同。 |
+| **交互式终端** | 基于 `node-pty` + `xterm.js`，AI 与用户可查看同一个终端；支持用户接管/交还、Ctrl+C、中断、尺寸调整和重新连接。Windows 使用 PowerShell / CMD，Mac 使用 zsh / bash。 |
+| **多 Agent 群聊** | 规划、侦察、开发、审查、测试、诊断与验收可按依赖调度；支持不同成员和模型、阶段进度、失败处理、任务记录与人工确认。 |
+| **隔离开发与补丁交付** | 群聊任务使用独立工作树与快照；可先在隔离环境验证，再由用户审核是否将补丁应用到本机项目，并检查版本冲突。 |
+| **本地工作区与附件** | 管理本机 Git 仓库、云端项目、聊天关联工作区和附件；有关项目、工具及文件的操作依设备配置和授权执行。 |
+| **双 VPS 连接** | 优先通过 SSH 直连 VPS 2；VPS 1 可作为 SSH 跳板或 TLS Relay 备用线路。连接恢复、重复执行及写入结果查询有专门处理。 |
+| **诊断与客户端更新** | 提供连接状态、日志诊断与更新界面；更新通道具备差分下载适配、哈希校验和任务空闲门禁，但正式发布链路尚有前置条件。 |
+
+## 使用场景
+
+### 1. 直接在电脑上写代码
+
+1. 在「工作区」选择本机 Git 项目。
+2. 新建 Codex、Claude、Grok 或 Antigravity 单聊。
+3. 选择适合的权限模式；需要修改、编译或运行时，在已配置原生开发链路的设备上使用「完全访问」。
+4. 让 AI 编辑项目、运行 `npm test`、`pytest` 或本机编译命令；必要时打开交互终端，自己接管操作。
+5. 检查 Git diff、命令输出与实际结果，再决定是否提交。
+
+本机终端并不等于模型直接在 VPS 2 的普通 shell 中运行；其执行环境、持续运行与访问范围取决于本机 Worker 和已授权项目。详见 [Windows 原生单聊](docs/WINDOWS-NATIVE-CHAT-DEPLOY.md) 与 [Mac 原生单聊](docs/MAC-NATIVE-CHAT.md)。
+
+### 2. 把复杂任务交给多 Agent
+
+在群聊提出需求后，由组长和成员承担不同步骤：分析项目、提出方案、并行读取、修改代码、审查、执行测试和验收。写入步骤有项目级协调，改动可以先留在 VPS 2 工作树或本机隔离副本中，经过检查后再应用。
+
+群聊支持不同模型担任组长，部分能力受 VPS 2 的 `groupFeatures` 开关及 Bridge 版本限制，不能假定每台未升级设备都已启用。详见 [群聊 v7](docs/GROUP-V2.md) 和 [协作设计](docs/UPDATE-DIRECTION.md)。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    U["用户 · AgentDesk 桌面端<br/>Windows / macOS"]
+    B["本机 Bridge / Worker<br/>文件 · 终端 · 桌面"]
+    V2["VPS 2 · Orchestrator<br/>会话 · 调度 · 工作树"]
+    C["Codex · Claude Code<br/>Grok Build · Antigravity"]
+    V1["VPS 1 · 备用中继 / SSH 跳板"]
+    M["模型服务"]
+
+    U <--> B
+    U <-->|"SSH · 单聊 / 控制"| V2
+    B <-->|"SSH · 受限设备通道"| V2
+    U -.-> V1
+    B -.-> V1
+    V1 -.-> V2
+    V2 --> C --> M
+```
+
+- **桌面端**：Electron UI、项目管理、聊天与工具呈现、本机终端和用户确认。
+- **本机 Bridge / Worker**：执行获准的本地文件与命令操作，维护本机进程、会话和设备连接。
+- **VPS 2**：管理多模型 CLI 会话、群聊任务、Git 工作树、状态及受限设备通信。
+- **VPS 1**：在直连不可用时提供可选备用线路，而非独立的第二套任务主控。
+
+架构细节、线路安全边界和部署示例见 [双 VPS 架构](docs/ARCHITECTURE.md)、[VPS 2 运维](orchestrator/OPERATIONS.md)与 [Relay 协议](relay/PROTOCOL.md)。
+
+## 快速开始
+
+### 环境要求
+
+- **客户端**：Windows x64 或 macOS；本地源码开发建议 Node.js **24**、npm 和 Git。
+- **服务端**：自行管理的 Linux VPS 2，按需部署 VPS 1；配置所需模型 CLI、登录状态、SSH 身份和工作区。
+- **权限**：仅使用自己管理或已获授权的设备、项目和模型账户。SSH 密钥、令牌及服务器实际地址不应提交到仓库。
+
+### 本地运行与测试
+
+```sh
 git clone https://github.com/miller7-lan/agentdesk.git
 cd agentdesk
 npm ci
-npm start
-~~~
-
-首次运行会在用户目录的 .agentdesk 文件夹下生成 remote.json。可以从 [Windows 连接配置模板](config/remote.example.json) 开始，填入自己的 VPS 主机名、账号名和工作区。修改后重启 AgentDesk。
-
-~~~powershell
-npm run dist
-~~~
-
-构建产物位于 dist，包括便携版和安装版。构建时从 npm 的固定版本提取并校验 Windows 桌面组件。仓库内保留源码和图标，桌面组件及打包产物由构建生成。
-
-断线后客户端会自动重试，状态栏显示重试信息。状态栏的「重新连接」按钮可立即重建 VPS 连接及启用的 SSH 隧道。电脑从休眠恢复后也会重连。连接丢失时，当前请求会结束并显示失败，重新连接后可继续原会话。超时的写入或命令可能已在远端执行，请先确认结果再重试。
-
-~~~powershell
 npm test
-~~~
+npm start
+```
 
-## 配置连接
+`npm start` 启动桌面应用，但**不自动部署 VPS，也不会替你完成服务端密钥登记或模型登录**。第一次连接现有服务器，请先按照 [安装指南](docs/INSTALL.md) 与 [新电脑接入指南](docs/MIGRATION.md)完成设备登记、SSH 主机指纹确认及连接配置。
 
-1. 在 VPS 的专用非 root 账户下配置并登录 Codex CLI，确认该账户能运行 codex app-server。将 [启动脚本模板](config/agentdesk-app-server.example.sh) 中的 Codex 路径改成实际位置，并将它设为 AgentDesk 连接公钥的 SSH 强制命令。此公钥使用 restrict 选项。
-2. 在 Windows 和 VPS 的 SSH 客户端分别校验对端的主机公钥指纹。AgentDesk 默认从 Windows 用户的 .ssh/known_hosts 读取 VPS 主机公钥，并从 .agentdesk 读取名为 codex_vps_ed25519 的客户端私钥。需要变更路径时，在本机 remote.json 中设置 codexKey 和 knownHosts。
-3. 如需原有的 Windows SSH MCP 工作区，额外配置 [VPS 隧道规则](config/windows-tunnel.sshd.conf) 和 [SSH MCP profile 模板](config/windows-dev.ssh-profile.example.json)。Windows 的 sshd 仅监听 127.0.0.1:22，专用标准账户仅用于测试工作区。VPS 的 windows-tunnel 公钥可用 restrict,port-forwarding,permitlisten="127.0.0.1:2222" 限制，客户端私钥默认在 Windows 的 .agentdesk/tunnel_ed25519。VPS 使用另一把登录密钥访问 Windows，并预先登记回环端口对应的 Windows 主机公钥。修改 SSH 服务前用 sshd -t 校验。为 VPS 上的 Codex 配置名为 ssh 的 MCP 服务并使它加载该 profile，再将启动脚本里的 enable_windows_ssh_mcp 设为 true。
-4. 如只用 AgentDesk 的本机桌面和文件工具，在本机 remote.json 设置 "remoteForward": "" 和 "manageSshd": false，即可省去 Windows SSH MCP 隧道。
+### 本地构建
 
-## 权限
+**Windows x64**（在 Windows 环境中执行）：
 
-在 AgentDesk 新建会话可使用本机工具。通过状态栏的「本机桌面」开关启停鼠标、键盘和截图能力。发送时选「完全访问」，VPS 上的 Codex 使用无沙盒、无需审批模式，本机文件工具可操作当前系统用户本来就有权限的文件（Windows 为 `windows_file_*`，macOS 为 `agentdesk_file_*`）。本机 UAC、文件系统权限和系统目录边界仍然有效。桌面截图和文件内容会通过当前连接返回给 VPS 上的 AI。
+```powershell
+npm ci
+npm test
+npm run dist
+```
 
-运行时私钥、主机指纹记录和连接配置请存放在用户目录中。仓库只保存示例。
+**macOS Apple Silicon**（在 Mac 上执行）：
 
-## 双 VPS Relay
+```sh
+npm ci
+npm test
+npm run dist:mac -- --arm64 --publish never
+```
 
-VPS 1 负责转发 Windows Bridge 和 VPS 2 Orchestrator 之间的消息。详见 [Relay 通信协议](relay/PROTOCOL.md) 和 [Ubuntu 部署与运维](relay/OPERATIONS.md)。当前 Windows 客户端仍使用上述 SSH 连接方式。
+Windows 的安装版、便携版以及 macOS 构建产物位于 `dist/` 下。不同系统、架构、签名及公证条件可能影响安装方式；开发构建不等同于正式签名发布版。详见 [签名与发布](docs/SIGNING.md)。
 
-## VPS 2 Orchestrator
+已有部署的安全升级顺序通常为 **VPS 2 → 本机 Bridge → 桌面客户端**；Windows 的 Bridge 与客户端集成，Mac 后台 Bridge 和应用可能需要分别更新。请使用 [本地部署指南](docs/LOCAL-DEPLOY.md)和[部署记录](docs/DEPLOY-LOG.md)检查实际配置、备份与回滚要求，不要直接把示例安装脚本用于覆盖已有生产配置。
 
-macOS / Windows AgentDesk 优先直连 VPS 2 的 SSH 22，VPS 1 Relay 的 TLS 22022 作为手动切换备用链路。主控在 VPS 2 调度 Codex、Claude Code、Grok Build 和 Antigravity CLI。Codex、Claude、Grok、Antigravity 也各自支持单聊；单聊通过本机文件工具读写用户目录并即时生效。详见 [双 VPS 架构](docs/ARCHITECTURE.md)、[部署与运维](orchestrator/OPERATIONS.md) 和 [业务协议](orchestrator/PROTOCOL.md)。
+## 连接、数据和权限
+
+AgentDesk 通过 SSH 主机公钥校验、独立设备密钥、受限服务端入口及工作区登记来管理连接。Windows 使用用户目录下的 `~/.agentdesk/remote.json`，macOS 使用 `~/.agentdesk/mac-remote.json`；必要字段和密钥登记方法见 [新电脑接入指南](docs/MIGRATION.md)。
+
+使用「完全访问」前，请明确这些边界：
+
+- AI 执行本机命令时可能继承当前操作系统用户的权限，**并非所有命令都处于严格隔离的沙盒**；不要在不可信仓库中授予高权限。
+- Mac 原生命令路径按当前方案保护 AgentDesk 自身的凭据目录，但可能使用用户已有的 Git、SSH 或其他开发工具凭据；Windows 的部分本机命令隔离能力不同。
+- 本机文件、终端输出和截图在请求执行时可能经 VPS 2 传递给模型；不应在未经检查时提交敏感材料。
+- 群聊中的补丁审核、项目范围限制和单聊「完全访问」是不同机制，不能混为一种安全保证。
+- 断线或超时不代表远端命令一定没有执行。对写入、提交、推送等操作应先查询结果，再决定是否重试。
+
+有关桌面控制、文件权限及平台差异，参见 [权限说明](docs/PERMISSIONS.md)、[Mac 原生单聊](docs/MAC-NATIVE-CHAT.md) 和 [故障排查](docs/TROUBLESHOOTING.md)。
+
+## 当前状态与已知限制
+
+以下是 **2026-11-23 的仓库记录快照**，不是对所有设备当前运行状态的实时承诺。
+
+| 范围 | 已有证据 | 仍需注意 |
+| --- | --- | --- |
+| **VPS 2 与四模型入口** | 部署日志记录了主控在线、四家 CLI 健康检查和群聊开关核对。 | CLI 可用不代表每个供应商的真实模型轮次、子代理及完整群聊都已经逐项验收。 |
+| **桌面端与交互终端** | Mac 打包应用和本机 Bridge 有部署、真实终端交互记录；Windows / Mac 的打包终端检查也有自动化证据。 | 具体电脑上的版本、权限、模型认证和端到端行为仍应现场检查。 |
+| **单聊 v2** | 具备按设备登记、工作区和会话隔离等实现与测试。 | **默认关闭**；需按设备开通，旧客户端不能直接假定兼容。 |
+| **客户端自动更新** | VPS 2 更新服务、受限上传入口和隔离分块分发测试已有记录。 | 截至 11 月 23 日记录，仍需使 SSH 上传账户生效、配置 GitHub 发布凭据并推送首个正式版本标签；真实设备的差分下载与安装尚未验收。 |
+| **项目删除联动清理** | 开发分支 `codex/terminal-workspace-panel` 有跨本机/VPS 清理、失败重试及新的自动测试记录。 | 分支功能与 `main` 已合并功能须分开判断；不要直接视为所有正式客户端均已更新。 |
+
+主线部署记录中的一次自动测试为 **499 通过、6 跳过、0 失败**；更近的开发分支记录了 **513 通过、6 跳过、0 失败**。这些数字只说明相应提交及测试环境下的结果，**不等于四家真实模型与所有平台的完整验收**。
+
+更新服务的部署门禁和限制详见 [自动更新说明](docs/AUTO-UPDATE.md)；开发分支的终端、项目删除相关记录见 [该分支部署日志](https://github.com/miller7-lan/agentdesk/blob/codex/terminal-workspace-panel/docs/DEPLOY-LOG.md)。
+
+## 文档导航
+
+| 主题 | 文档 |
+| --- | --- |
+| 安装、迁移及接入 | [安装](docs/INSTALL.md) · [新电脑接入](docs/MIGRATION.md) |
+| 架构和连接链路 | [双 VPS 架构](docs/ARCHITECTURE.md) · [Relay 协议](relay/PROTOCOL.md) |
+| 部署、验证与回滚 | [本地部署](docs/LOCAL-DEPLOY.md) · [部署记录](docs/DEPLOY-LOG.md) |
+| 多 Agent 群聊 | [群聊 v7](docs/GROUP-V2.md) · [协作设计](docs/UPDATE-DIRECTION.md) |
+| 原生本机单聊 | [Windows](docs/WINDOWS-NATIVE-CHAT-DEPLOY.md) · [macOS](docs/MAC-NATIVE-CHAT.md) · [单聊 v2](docs/DIRECT-CHAT-V2.md) |
+| 安全、故障与发布 | [权限](docs/PERMISSIONS.md) · [故障排查](docs/TROUBLESHOOTING.md) · [签名发布](docs/SIGNING.md) · [自动更新](docs/AUTO-UPDATE.md) |
+
+---
+
+**AgentDesk 的目标不是替代每一个 AI CLI，而是让这些工具在真实的本机开发环境中协作，同时让任务、改动、验证和用户决策能够被看见、追踪与控制。**
