@@ -209,6 +209,14 @@ class CommandRuns {
     }
   }
 
+  forgetScopes(matches) {
+    this.load();
+    const selected = [...this.runs.values()].filter(item => matches(item.scope));
+    if (selected.some(item => !item.snapshot.finishedAt || item.snapshot.state === 'unknown')) throw Error('project_delete_busy');
+    for (const item of selected) { this.runs.delete(item.snapshot.id); this.keys.delete(item.key); }
+    this.save();
+  }
+
   close() {
     for (const item of this.runs.values()) this.abort(item);
   }

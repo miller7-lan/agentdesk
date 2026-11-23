@@ -16,7 +16,7 @@ function sameRoot(left, right) {
 // Windows and macOS: the official CLI on VPS2 works directly in this computer's project (mounted over SFTP),
 // and its local_shell runs here.
 function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onRequest, onCommand, reviewUnknown,
-  onTerminal = () => {} }) {
+  onTerminal = () => {}, isDeletingProject = () => false }) {
   const worker = createWorkerClient(stateDir, {
     onUpdate: (scope, run) => {
       try {
@@ -40,6 +40,12 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
     for (const entry of JSON.parse(fs.readFileSync(file, 'utf8'))) records.set(entry.threadId, entry);
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const seats = new Map();
+  const startingProjects = new Map();
+  const finishStart = id => {
+    const remaining = (startingProjects.get(id) || 1) - 1;
+    if (remaining) startingProjects.set(id, remaining);
+    else startingProjects.delete(id);
+  };
   let checkedAt = 0;
   let capability = false;
   let checking;
@@ -137,6 +143,7 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
     async select(provider, method, params = {}) {
       if (!supported.has(provider)) return null;
       const existing = params.threadId && records.get(params.threadId);
+      if (isDeletingProject(existing?.projectId || params.projectId)) throw new Error('项目正在删除。');
       if (existing) {
         if (existing.provider !== provider || (params.projectId && existing.projectId !== params.projectId)) {
           throw new Error('该单聊属于另一个已授权的本机项目。');
@@ -158,11 +165,13 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       };
       if (!await remote.wake()) return fallback('VPS 连接未就绪');
       if (!await hasHost().catch(() => false)) return fallback('VPS 缺少原生单聊服务');
+      if (isDeletingProject(project.id)) throw new Error('项目正在删除。');
+      startingProjects.set(project.id, (startingProjects.get(project.id) || 0) + 1);
       const pending = { provider, worktreeSession: params.worktreeSession, projectId: project.id, root: project.root, threadId: 'pending-' + randomUUID(),
         sessionKey: createHash('sha256').update(deviceId() + ':' + randomUUID()).digest('hex') };
       let seat;
       try { seat = await attached(pending, project); }
-      catch (error) { return fallback('原生会话启动失败：' + String(error.message).slice(0, 120)); }
+      catch (error) { finishStart(project.id); return fallback('原生会话启动失败：' + String(error.message).slice(0, 120)); }
       return {
         async request(name, request) {
           try {
@@ -175,9 +184,48 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
           } catch (error) {
             await seat.close().catch(() => {});
             throw error;
-          }
+          } finally { finishStart(project.id); }
         },
       };
+    },
+    async projectBusy(projectId) {
+      if (startingProjects.has(projectId)) return true;
+      for (const record of records.values()) {
+        if (record.projectId !== projectId || !seats.has(record.threadId)) continue;
+        if ((await seats.get(record.threadId)).busy) return true;
+      }
+      return false;
+    },
+    projectRecords(projectId) {
+      return [...records.values()].filter(record => record.projectId === projectId);
+    },
+    async deleteProject(projectId) {
+      const selected = [...records.values()].filter(record => record.projectId === projectId);
+      for (const record of selected) {
+        let seat;
+        try {
+          const project = resolveProject(projectId, record.worktreeSession);
+          if (!project) throw new Error('找不到本机项目目录。');
+          seat = await attached(record, project);
+          await seat.request('thread/delete', { threadId: record.threadId });
+        } catch (error) { if (!/thread_not_found|no rollout found/.test(error.message)) throw error; }
+        await seat?.close?.({ confirmedIdle: true });
+      }
+      let connection;
+      try { connection = await connectWorker(stateDir, createSecret(stateDir)); }
+      catch (error) { if (!['ENOENT', 'ECONNREFUSED'].includes(error.code)) throw error; }
+      if (!connection && ['leases.json', 'runs.json'].some(name => fs.existsSync(path.join(stateDir, name)))) connection = await worker.get();
+      if (connection) {
+        try { await connection.request('projectDelete', { projectId, device: deviceId() }); }
+        finally { connection.close(); }
+      }
+      const kept = [...records.values()].filter(record => record.projectId !== projectId);
+      fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      const temp = file + '.' + randomUUID();
+      fs.writeFileSync(temp, JSON.stringify(kept), { mode: 0o600 });
+      fs.renameSync(temp, file);
+      for (const record of selected) { records.delete(record.threadId); seats.delete(record.threadId); }
+      return selected.map(record => record.threadId);
     },
     async commands(provider, threadId, action, runId) {
       const record = records.get(threadId);

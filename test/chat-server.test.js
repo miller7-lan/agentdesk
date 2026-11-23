@@ -721,3 +721,36 @@ test('自动编辑 never skips approval for deleting or moving, nor without on-r
   assert.equal(state.approvals.length, 2);
   assert.equal(state.approvals[1].tool, 'agentdesk_file_trash');
 });
+
+for (const provider of ['claude', 'grok', 'antigravity']) {
+  test(provider + ': project deletion purges matching threads and keeps another project and login files', async t => {
+    const stateDir = temporary(t);
+    const client = await new ChatClient(t, provider, stateDir).start();
+    await client.request('initialize');
+    const mine = (await client.request('thread/start', { projectId: 'remove-me' })).thread.id;
+    const other = (await client.request('thread/start', { projectId: 'keep-me' })).thread.id;
+    const cwd = path.join(stateDir, 'chat-workspace', 'threads', mine);
+    fs.writeFileSync(path.join(cwd, 'file.txt'), 'private project data');
+    const login = path.join(client.home, 'login-test.json');fs.writeFileSync(login, 'keep login');
+    const original = JSON.parse(fs.readFileSync(path.join(stateDir, 'chat-' + provider + '.json'), 'utf8')).threads[mine];
+    const history = provider === 'claude' ? path.join(client.home, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+      : provider === 'grok' ? path.join(client.home, '.grok', 'sessions', encodeURIComponent(cwd)) : null;
+    if (history) { fs.mkdirSync(history, { recursive: true });fs.writeFileSync(path.join(history, 'history'), 'private history'); }
+    const preview = await client.request('project/delete', { projectId: 'remove-me', preview: true });
+    assert.deepEqual(preview.threadIds, [mine]);assert.ok(fs.existsSync(cwd));
+    const removed = await client.request('project/delete', { projectId: 'remove-me' });
+    assert.ok(removed.deleted);assert.ok(!fs.existsSync(cwd));
+    await assert.rejects(client.request('thread/resume', { threadId: mine }), /thread_not_found/);
+    assert.equal((await client.request('thread/resume', { threadId: other })).thread.id, other);
+    assert.equal(fs.readFileSync(login, 'utf8'), 'keep login');
+    assert.deepEqual((await client.request('project/delete', { projectId: 'remove-me' })).threadIds, []);
+    if (history) assert.ok(!fs.existsSync(history));
+    await assert.rejects(client.request('thread/start', { projectId: 'remove-me' }), /project_deleted/);
+    // A crash after the project marker is durable but before every directory was removed.
+    const marker = path.join(stateDir, 'chat-' + provider + '.json.deleted', 'projects', require('node:crypto').createHash('sha256').update('remove-me').digest('hex'));
+    fs.writeFileSync(marker, JSON.stringify({ threads: [original] }));
+    fs.mkdirSync(cwd, { recursive: true });fs.writeFileSync(path.join(cwd, 'remaining'), 'pending cleanup');
+    assert.deepEqual((await client.request('project/delete', { projectId: 'remove-me' })).threadIds, [mine]);
+    assert.ok(!fs.existsSync(cwd));
+  });
+}

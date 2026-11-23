@@ -594,10 +594,15 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
   }
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
-    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, fixId, backupId, update, workspace: requestedWorkspace }) => {
+    wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, fixId, backupId, update, taskIds, workspace: requestedWorkspace }) => {
       try {
         if (operation === 'attachment_state') {
           wire.send({ ok: true, value: config.stateDir });
+          return;
+        }
+        if (operation === 'project_delete' && action === 'local') {
+          if (!Array.isArray(taskIds) || taskIds.length > 10000 || taskIds.some(id => !/^[0-9a-f-]{36}$/i.test(id))) throw Error('invalid_project_delete');
+          wire.send({ ok: true, value: await operations.purgeTasks(taskIds) });
           return;
         }
         const id = taskId || randomUUID();
@@ -614,7 +619,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           wire.send({ ok: true, value });
           return;
         }
-        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore', 'client_update', 'client_update_read', 'open_tasks'].includes(operation)) {
+        if (!['submit', 'start_plan', 'plan_reply', 'plan_approve', 'status', 'cancel', 'stop_step', 'steer_step', 'revise_plan', 'set_step_models', 'approve_addition', 'handover_choose', 'permission_answer', 'apply', 'reconcile', 'select_route', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks', 'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance', 'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore', 'client_update', 'client_update_read', 'open_tasks', 'project_delete'].includes(operation)) {
           throw new Error('unsupported_operation');
         }
         const active = value.route?.split(':')[0];
@@ -624,6 +629,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
         if (!channel || (['submit', 'start_plan', 'broadcast'].includes(operation) && !value[active])) throw new Error('bridge_offline');
         const kind = operation === 'submit' ? 'task.request' : 'task.status';
         const body = { operation, route, revision, reply, project, after, stepId, artifact, action, reason, source,
+          ...(operation === 'project_delete' && { group }),
           ...(operation === 'task_artifacts' && offset !== undefined && { offset }),
           ...(operation === 'handover_choose' && { stop, role, model, effort }),
           ...(operation === 'set_step_models' && { models }),
@@ -640,7 +646,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
             body.grant = { kind: grant.kind, id: record.id, ...(record.path && { path: record.path }), ...(record.argv && { argv: record.argv, name: 'granted-' + record.id }) };
           }
         }
-        if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks'].includes(operation)) {
+        if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks', 'project_delete'].includes(operation)) {
           body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
           const workspaces = config.controlWorkspaces || {};
           const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace);
@@ -649,7 +655,7 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
             Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf, attachments, group, leadEffort, leadModel, approval, autoHandover, routeOrder });
           }
         }
-        const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : ['env_fix_revert', 'outside_restore'].includes(operation) ? 180000 : 10000);
+        const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : operation === 'project_delete' ? 110000 : ['env_fix_revert', 'outside_restore'].includes(operation) ? 180000 : 10000);
         wire.send({ ok: true, value: answer });
       } catch (error) {
         if (!socket.destroyed) wire.send({ ok: false, error: error.message });

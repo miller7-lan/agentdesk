@@ -195,7 +195,8 @@ class AppConfig {
 
   list() {
     const { projects, activeProject } = this.value;
-    return { projects: structuredClone(projects), activeProject };
+    return { projects: structuredClone(projects), activeProject,
+      ...(this.value.deletedProjects?.length && { deletedProjects: [...this.value.deletedProjects] }) };
   }
 
   mutate(apply) {
@@ -243,10 +244,11 @@ class AppConfig {
     });
   }
 
-  remove(id) {
+  remove(id, { purged = false } = {}) {
     return this.mutate((draft) => {
       if (!draft.projects.some((project) => project.id === id)) throw new Error('找不到该项目。');
       draft.projects = draft.projects.filter((project) => project.id !== id);
+      if (purged) draft.deletedProjects = [...new Set([...(draft.deletedProjects || []), id])];
       if (draft.activeProject === id) draft.activeProject = draft.projects[0]?.id ?? null;
     });
   }

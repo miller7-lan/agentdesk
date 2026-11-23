@@ -88,6 +88,7 @@ function nativeDesktop() {
     const { createNativeDesktop } = require('./orchestrator/windows-native-desktop');
     windowsNative = createNativeDesktop({
       stateDir: path.join(app.getPath('userData'), process.platform === 'win32' ? 'windows-native-chat' : 'native-chat'), remote,
+      isDeletingProject: (id) => deletingProjects.has(id),
       findProject: (id) => id ? appConfig?.value.projects.find((item) => item.id === id) : appConfig?.active,
       findWorktree: (key) => worktrees().get(key),
       bridgeSettings: () => localBridgeSettings || (mac ? macBridgeSettings() : null),
@@ -143,14 +144,19 @@ const fileTurns = new Map();
 // Per-turn file checkpoints, so a turn that changed files on this computer can be undone (checkpoints.js).
 const { Checkpoints } = require('./checkpoints');
 let checkpointStore;
+const checkpointCompletions = new Map();
 const checkpoints = () => checkpointStore ||= new Checkpoints(path.join(app.getPath('userData'), 'checkpoints'),
   { trash: (target) => shell.trashItem(target), allowed: (target) => {
     try { localFiles.allowedPath(target, true); } catch (error) { if (mac) throw error; windowsFiles.allowedPath(target, true); }
   } });
 function finishCheckpoint(turnId) {
   if (!turnId) return;
-  checkpoints().finish(turnId).then((summary) => { if (summary) toUi('checkpoint:ready', summary); })
-    .catch((error) => logger?.log('checkpoint_failed', { status: 'failed', error: error.message }));
+  const store = checkpoints();
+  const threadId = store.turns.get(turnId)?.threadId;
+  const done = store.finish(turnId).then((summary) => { if (summary) toUi('checkpoint:ready', summary); })
+    .catch((error) => logger?.log('checkpoint_failed', { status: 'failed', error: error.message }))
+    .finally(() => checkpointCompletions.delete(turnId));
+  checkpointCompletions.set(turnId, { threadId, done });
 }
 const filePolicies = new Map();
 // Claude / Grok / Antigravity 单聊：线程在 VPS 上，工具调用回到本机执行
@@ -158,6 +164,7 @@ const deviceIdentity = require('./device-identity');
 const deviceHello = () => deviceIdentity.hello({ appVersion: app.getVersion(), capabilities: ['attachmentsV2', 'statusSubscribe', 'localShell', 'nativeSeat'] });
 const chatLinks = new Map([...CHAT_AGENTS].map((agent) => [agent, new ChatLink({ agent, deviceHello })]));
 const chatThreads = new Map();
+const deletingProjects = new Set();
 const chatTurns = new Map();
 
 function toggleDesktop(value) {
@@ -181,11 +188,11 @@ let logger;
 let updates;
 // Turns in progress, as seen by this process (update gate): Codex over remote.js, and the native single chats.
 const codexTurns = new Set();
-const nativeTurns = new Set();
+const nativeTurns = new Map();
 function trackNativeTurn(agent, frame) {
   const id = frame?.params?.turn?.id;
   if (typeof id !== 'string') return;
-  if (frame.method === 'turn/started') nativeTurns.add(agent + ':' + id);
+  if (frame.method === 'turn/started') nativeTurns.set(agent + ':' + id, frame.params.threadId);
   if (frame.method === 'turn/completed') nativeTurns.delete(agent + ':' + id);
 }
 const updateGate = createUpdateGate();
@@ -323,6 +330,7 @@ ipcMain.handle('onboarding:reset', async (event) => {
 function currentRemoteDirectory(projectId) {
   const project = projectId === undefined ? appConfig?.active : appConfig?.value.projects.find(({ id }) => id === projectId);
   if (projectId !== undefined && !project) throw new Error('project_not_found');
+  if (deletingProjects.has(project?.id)) throw new Error('项目正在删除，请等待清理完成。');
   return project?.remoteCwd || enrolledSession?.remote.workspace;
 }
 
@@ -333,6 +341,8 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       if (operation === 'list') return { ok: true, ...appConfig.list(), configError };
       if (configError) throw new Error('配置文件无法读取，请修复或移走后再修改。');
       const { id, name, kind, remoteCwd, orchestratorWorkspace, pickLocal } = request;
+      if (['add', 'update', 'remove'].includes(operation) && deletingProjects.size) throw new Error('项目正在删除，完成后再编辑工作区。');
+      if (operation === 'update' && appConfig.value.projects.find(project => project.id === id)?.deletionPlan) throw new Error('项目清理尚未完成，请先重试删除。');
       if (operation === 'add' || operation === 'update') {
         let localRoot;
         if (kind === 'local' && (pickLocal || operation === 'add')) {
@@ -342,6 +352,9 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
         }
         appConfig.lastInit = undefined;
         await appConfig.saveProject(operation === 'update' ? id : undefined, { name, kind, remoteCwd, orchestratorWorkspace }, localRoot, request.groupId);
+      } else if (operation === 'remove') {
+        const removed = await removeProjectData(id);
+        if (removed.cancelled) return { ok: false, cancelled: true };
       } else await appConfig[operation](id);
       activateProject();
       logger?.audit('project_change', { operation, projectId: id || appConfig.active?.id, status: 'ok' });
@@ -352,6 +365,144 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       return { ok: false, error: error.message };
     }
   });
+}
+
+async function removeProjectData(id) {
+  const project = appConfig.value.projects.find(item => item.id === id);
+  if (!project) throw new Error('找不到该项目。');
+  if (deletingProjects.has(id)) throw new Error('项目正在删除。');
+  const removal = require('./project-deletion');
+  const native = nativeDesktop();
+  const nativeRecords = native?.projectRecords(id) || [];
+  const nativeIds = new Set(nativeRecords.map(record => record.threadId));
+  const projects = appConfig.value.projects;
+  const cwd = project.remoteCwd || remote.cfg.workspace;
+  const call = async (frame) => {
+    const result = await orchestratorControl({ ...frame, projectId: id, group: id, operation: 'project_delete' });
+    if (!result.ok) throw new Error('远程项目清理未完成：' + result.error);
+    return result.value;
+  };
+  deletingProjects.add(id);
+  try {
+    return await removal.deleteProject({
+      project, projects, protectedPaths: [__dirname, app.getPath('userData'), path.join(os.homedir(), '.agentdesk')],
+      preview: async () => {
+        if (await native?.projectBusy(id)) throw new Error('这个项目的原生单聊仍在执行，请先停止后再删除。');
+        if ([...nativeTurns.values()].some(threadId => nativeIds.has(threadId)) ||
+          [...fileTurns.values(), ...chatTurns.values()].some(turn => turn.projectId === id || turn.binding?.projectId === id || chatThreads.get(turn.threadId)?.projectId === id ||
+          nativeIds.has(turn.threadId) || codexCommandRoots.get(turn.threadId)?.projectId === id)) {
+          throw new Error('这个项目的单聊仍在执行，请先停止后再删除。');
+        }
+        if (!await remote.wake()) throw new Error('VPS 未连接，暂时无法完整删除项目。');
+        const codexIds = new Set([...codexCommandRoots].filter(([, entry]) => entry.projectId === id).map(([threadId]) => threadId));
+        const directories = new Set(cwd ? [cwd] : []);
+        for (const record of nativeRecords.filter(record => record.provider === 'codex')) {
+          try {
+            const info = await remote.request('thread/read', { threadId: record.threadId, includeTurns: false });
+            if (info.thread?.cwd) directories.add(info.thread.cwd);
+          } catch (error) { if (!/thread.*not found|no rollout found|does not exist/i.test(error.message)) throw error; }
+        }
+        for (const directory of directories) {
+          for (const archived of [false, true]) {
+            let cursor;
+            do {
+              const page = await remote.request('thread/list', { cwd: directory, archived, sourceKinds: require('./orchestrator/codex-sessions').SOURCE_KINDS, limit: 100, ...(cursor && { cursor }) });
+              const matching = (page.data || []).filter(thread => thread.cwd === directory && !nativeIds.has(thread.id));
+              if (directory === cwd && matching.length && projects.some(other => other.id !== id && (other.remoteCwd || remote.cfg.workspace) === cwd)) {
+                throw new Error('多个项目共用这个远程目录，旧单聊历史无法确定归属，请先为项目分别绑定远程目录。');
+              }
+              for (const thread of matching) codexIds.add(thread.id);
+              cursor = page.nextCursor;
+            } while (cursor);
+          }
+        }
+        const chatPlans = [];
+        for (const agent of CHAT_AGENTS) {
+          const link = chatLink(agent);
+          if (!await link.wake()) throw new Error(agent + ' 单聊服务未连接，暂时无法删除其项目数据。');
+          chatPlans.push({ agent, ...await link.request('project/delete', { projectId: id, preview: true }) });
+        }
+        const tasks = await call({ action: 'preview' });
+        let nextOffset = tasks.nextOffset;
+        while (nextOffset !== null && nextOffset !== undefined) {
+          const page = await call({ action: 'preview', after: nextOffset });
+          if (page.revision !== tasks.revision) throw new Error('项目任务已变化，请重新删除。');
+          tasks.taskIds.push(...page.taskIds);
+          nextOffset = page.nextOffset;
+        }
+        const threadIds = [...new Set([...nativeIds, ...codexIds, ...chatPlans.flatMap(plan => plan.threadIds)])];
+        const remoteDirectory = project.remoteCwd || remote.cfg.workspace || null;
+        if (remoteDirectory) {
+          const protectedDirectories = ['/root', '/home', '/etc', '/usr', '/var', '/opt',
+            '/var/lib/agentdesk-orchestrator', '/opt/agentdesk-orchestrator'];
+          if (path.posix.resolve(remoteDirectory) !== remoteDirectory || protectedDirectories.some(target =>
+            target === remoteDirectory || target.startsWith(remoteDirectory + '/')) ||
+            remoteDirectory === '/' || (remoteDirectory !== remote.cfg.workspace &&
+              ['/var/lib/agentdesk-orchestrator', '/opt/agentdesk-orchestrator'].some(target => remoteDirectory.startsWith(target + '/'))) ||
+            projects.some(other => {
+              const directory = other.remoteCwd || remote.cfg.workspace;
+              return other.id !== id && directory && (removal.inside(remoteDirectory, directory) || removal.inside(directory, remoteDirectory));
+            })) {
+            throw new Error('远程目录覆盖了共享或系统目录，请先绑定独立的项目目录。');
+          }
+          const resolved = await remote.request('command/exec', { command: ['/usr/bin/readlink', '-m', '--', remoteDirectory],
+            cwd: '/var/tmp', timeoutMs: 5000, sandboxPolicy: { type: 'dangerFullAccess' } });
+          if (resolved.exitCode !== 0 || resolved.stdout.trim() !== remoteDirectory) throw new Error('远程目录包含路径链接，请先绑定到实际目录后再删除。');
+        }
+        const previous = project.deletionPlan;
+        const combine = (left, right) => [...new Set([...(left || []), ...right])];
+        if (previous && previous.remoteDirectory !== remoteDirectory) throw new Error('远程目录已变化，请先恢复原目录完成清理。');
+        return { tasks: { ...tasks, taskIds: combine(previous?.tasks?.taskIds, tasks.taskIds) }, chatPlans,
+          codexIds: combine(previous?.codexIds, [...codexIds].filter(threadId => !nativeIds.has(threadId))),
+          threadIds: combine(previous?.threadIds, threadIds), remoteDirectory };
+      },
+      confirm: async plan => {
+        const lines = [plan.worktrees?.length && '本机关联工作树\n' + plan.worktrees.join('\n'), plan.root && '本机目录（包括 .git）\n' + plan.root,
+          plan.remoteDirectory && 'VPS 项目目录（包括 .git）\n' + plan.remoteDirectory,
+          plan.tasks.repository && 'VPS Git 副本\n' + plan.tasks.repository,
+          `关联单聊 ${plan.threadIds.length} 个，群聊任务 ${plan.tasks.tasks} 个`,
+          '会话、附件、工作树、项目 Git 分支和撤销存档将一并删除。',
+          plan.tasks.sharedRepository && '共用 Git 缓存中的本项目分支会清除，其他项目的分支由其项目管理。',
+          'GitHub 仓库保留。此操作不能撤销。'].filter(Boolean);
+        const answer = await dialog.showMessageBox(win, { type: 'warning', title: '删除项目及全部数据',
+          message: `彻底删除「${project.name}」？`, detail: lines.join('\n\n'),
+          buttons: ['取消', '删除全部数据'], defaultId: 0, cancelId: 0, noLink: true });
+        return answer.response === 1;
+      },
+      savePlan: plan => appConfig.mutate(draft => { draft.projects.find(project => project.id === id).deletionPlan = plan; }),
+      remote: async plan => {
+        // The remote task list is checked again using its preview revision before any local data is removed.
+        await call({ action: 'delete', revision: plan.tasks.revision });
+        await native?.deleteProject(id);
+        for (const { agent } of plan.chatPlans) await chatLink(agent).request('project/delete', { projectId: id });
+        for (const threadId of plan.codexIds) {
+          try { await remote.request('thread/delete', { threadId }); }
+          catch (error) { if (!/thread.*not found|no rollout found|does not exist/i.test(error.message)) throw error; }
+        }
+        if (plan.remoteDirectory) await remote.request('fs/remove', { path: plan.remoteDirectory, recursive: true, force: true });
+      },
+      local: async plan => {
+        for (let offset = 0; offset < plan.tasks.taskIds.length; offset += 1000) {
+          await call({ action: 'local', taskIds: plan.tasks.taskIds.slice(offset, offset + 1000) });
+        }
+        for (const [sessionId, record] of Object.entries(worktrees().records)) {
+          if (record.projectId !== id) continue;
+          await worktrees().discard(sessionId);
+          await fs.promises.rm(record.path, { recursive: true, force: true });
+        }
+        for (const taskId of plan.tasks.taskIds) await fs.promises.rm(path.join(os.homedir(), '.agentdesk', 'patches', taskId + '.patch'), { force: true });
+        await Promise.all([...checkpointCompletions.values()].filter(entry => plan.threadIds.includes(entry.threadId)).map(entry => entry.done));
+        await removal.purgeCheckpoints(path.join(app.getPath('userData'), 'checkpoints'), plan.threadIds);
+        for (const [threadId, mapping] of chatThreads) if (mapping.projectId === id) forgetChatThread(threadId);
+        commandRuns.forgetScopes(scope => {
+          try { return plan.threadIds.includes(JSON.parse(scope)[1]); } catch { return false; }
+        });
+        for (const [threadId, mapping] of codexCommandRoots) if (mapping.projectId === id) codexCommandRoots.delete(threadId);
+        for (const [attachmentId, attachment] of chatAttachments) if (attachment.projectId === id) chatAttachments.delete(attachmentId);
+      },
+      unregister: projectId => appConfig.remove(projectId, { purged: true }),
+    });
+  } finally { deletingProjects.delete(id); }
 }
 
 // "已设置，补做首个提交": commits .gitignore in a repository AgentDesk initialized empty, once the person's own
@@ -871,6 +1022,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     if (updateLocked() && method === 'turn/start') throw new Error(UPDATE_LOCKED);
     const { projectId, worktreeSession, ...request } = params || {};
+    if (deletingProjects.has(projectId || codexCommandRoots.get(params?.threadId)?.projectId)) throw new Error('项目正在删除。');
     const native = await nativeDesktop()?.select('codex', method, params);
     if (native) return { ok: true, result: await native.request(method, request) };
     params = request;
@@ -879,6 +1031,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     if (method === 'thread/start' || method === 'thread/list') params = { ...params, cwd: directory };
     if (method === 'skills/list') params = { ...params, cwds: directory ? [directory] : [] };
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
+    if (method === 'thread/start' && directory) await remote.request('fs/createDirectory', { path: directory, recursive: true });
     if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
       params = { ...params, dynamicTools: [...desktopSpecs, ...(mac && !enrollment ? localFiles.specs : []), ...(mac || enrollment ? [] : windowsFiles.specs),
@@ -960,6 +1113,7 @@ function localRootFor(projectId) {
     ? appConfig?.active
     : appConfig?.value.projects.find(({ id }) => id === projectId);
   if (projectId !== undefined && projectId !== null && !project) throw new Error('project_not_found');
+  if (deletingProjects.has(project?.id)) throw new Error('项目正在删除，请等待清理完成。');
   return project?.localRoot || null;
 }
 
@@ -1222,7 +1376,8 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
   try {
     if (!fromMainWindow(event) || !hostConfirmed()) throw new Error('invalid_request');
     if (typeof method !== 'string') throw new Error('invalid_method');
-    if (method.startsWith('attachment/')) throw new Error('invalid_method');
+    if (deletingProjects.has(params?.projectId || chatThreads.get(params?.threadId)?.projectId)) throw new Error('项目正在删除。');
+    if (method.startsWith('attachment/') || method.startsWith('project/')) throw new Error('invalid_method');
     if (updateLocked() && method === 'turn/start') throw new Error(UPDATE_LOCKED);
     // Grok can hang during native session initialization on macOS. Start new chats
     // on the existing direct channel, without replaying or moving any existing native chat.
@@ -1434,7 +1589,7 @@ const orchestrationOperations = new Set([
   'apply', 'reconcile', 'quota_status', 'resource_status', 'broadcast', 'compact_project', 'project_tasks',
   'task_diff', 'task_log', 'task_artifacts', 'task_activity', 'stop_command', 'onboarding_check', 'diagnostics', 'maintenance',
   'status_snapshot', 'cli_upgrade', 'cli_upgrade_status', 'patch_download', 'env_fix_revert', 'outside_restore',
-  'client_update', 'client_update_read', 'open_tasks',
+  'client_update', 'client_update_read', 'open_tasks', 'project_delete',
 ]);
 const auditedTasks = new Set(['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'cancel', 'compact_project']);
 
@@ -1479,7 +1634,7 @@ async function orchestratorControl(frame) {
       for (const item of attachments) await fs.promises.writeFile(path.join(folder, item.id), chatAttachments.get(item.id).bytes,
         { flag: 'wx', mode: 0o600 });
     }
-    const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : 16000);
+    const value = await request(socket, { ...operation, workspace }, frame.operation === 'apply' ? 310000 : frame.operation === 'project_delete' ? 120000 : 16000);
     for (const item of attachments || []) chatAttachments.delete(item.id);
     audit('ok', value);
     return { ok: true, value };
@@ -1490,6 +1645,7 @@ async function orchestratorControl(frame) {
 }
 
 ipcMain.handle('orchestrator:control', (event, frame) => {
+  if (frame?.operation === 'project_delete') return { ok: false, error: '请使用项目菜单中的删除项目。' };
   if (!fromMainWindow(event)) return { ok: false };
   if (updateLocked() && ['submit', 'start_plan', 'plan_approve', 'broadcast', 'apply', 'approve_addition'].includes(frame?.operation)) {
     return { ok: false, error: UPDATE_LOCKED };

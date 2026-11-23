@@ -69,6 +69,13 @@ class DirectChatStore {
     }
   }
 
+  purgeSession(id) {
+    fs.rmSync(path.join(this.directory, 'attachments', id), { recursive: true, force: true });
+    this.db.prepare('DELETE FROM attachments WHERE session_id=?').run(id);
+    this.db.prepare('DELETE FROM audit WHERE session_id=?').run(id);
+    this.db.prepare('DELETE FROM sessions WHERE id=?').run(id);
+  }
+
   migrated(name) {
     return Boolean(this.db.prepare('SELECT 1 FROM migrations WHERE name = ?').get(name));
   }
