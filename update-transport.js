@@ -35,7 +35,11 @@ function parseRange(header, size) {
 }
 
 // read(name, offset, length) → Buffer of exactly min(length, size - offset) bytes, from VPS2.
-function createLoopbackFeed({ manifest, read, chunk = READ_CHUNK, now = () => new Date() }) {
+// Reads in flight at once. Each read is a round trip over SSH (often through the VPS1 jump host), so one at a time
+// leaves the line idle most of the time; a few in flight keep it busy without flooding the control channel.
+const PARALLEL_READS = 4;
+
+function createLoopbackFeed({ manifest, read, chunk = READ_CHUNK, parallel = PARALLEL_READS, now = () => new Date() }) {
   const token = randomBytes(16).toString('hex');
   const user = 'agentdesk';
   const password = randomBytes(24).toString('base64url');
@@ -48,9 +52,21 @@ function createLoopbackFeed({ manifest, read, chunk = READ_CHUNK, now = () => ne
 
   async function stream(response, entry, start, end) {
     let offset = start;
+    let next = start;
+    const ahead = [];
+    // Keep up to `parallel` reads running ahead of what has been written; bytes still go out strictly in order.
+    const fill = () => {
+      while (ahead.length < parallel && next <= end) {
+        const length = Math.min(chunk, end - next + 1);
+        const pending = read(entry.name, next, length).then(bytes => ({ bytes, length }));
+        pending.catch(() => {});
+        ahead.push(pending);
+        next += length;
+      }
+    };
     while (offset <= end) {
-      const length = Math.min(chunk, end - offset + 1);
-      const bytes = await read(entry.name, offset, length);
+      fill();
+      const { bytes, length } = await ahead.shift();
       if (!Buffer.isBuffer(bytes) || bytes.length !== length) throw new Error('update_read_short');
       stats.bytesFromServer += bytes.length;
       stats.perFile[entry.name] = (stats.perFile[entry.name] || 0) + bytes.length;
@@ -135,15 +151,28 @@ function loopbackFeedUrl(value) {
 }
 
 // Reads one file range from VPS2 through the control channel, chunk by chunk, checking every reply.
-function controlChannelReader(control, { version, platform, arch, chunk = READ_CHUNK } = {}) {
+// A refused request (wrong file, version no longer offered, changed file) fails at once; anything else (a slow or
+// dropped line, the Bridge reconnecting) is retried a few times before the download gives up.
+const FINAL_READ_ERRORS = /invalid_update|update_version_not_offered|update_file_changed|unsupported_operation|无权操作主控线路/;
+
+function controlChannelReader(control, { version, platform, arch, chunk = READ_CHUNK, attempts = 5, backoff = 1000 } = {}) {
+  const ask = async (request) => {
+    for (let attempt = 1; ; attempt++) {
+      let reply;
+      try { reply = await control(request); } catch (error) { reply = { ok: false, error: error.message }; }
+      if (reply?.ok) return reply;
+      const message = reply?.error || 'update_read_failed';
+      if (attempt >= attempts || FINAL_READ_ERRORS.test(message)) throw new Error(message);
+      await new Promise(resolve => setTimeout(resolve, backoff * attempt));
+    }
+  };
   return async (name, offset, length) => {
     const parts = [];
     let position = offset;
     const end = offset + length;
     while (position < end) {
       const want = Math.min(chunk, end - position);
-      const reply = await control({ operation: 'client_update_read', update: { platform, arch, version, file: name, offset: position, length: want } });
-      if (!reply?.ok) throw new Error(reply?.error || 'update_read_failed');
+      const reply = await ask({ operation: 'client_update_read', update: { platform, arch, version, file: name, offset: position, length: want } });
       const value = reply.value || {};
       const data = Buffer.from(typeof value.data === 'string' ? value.data : '', 'base64');
       if (value.file !== name || value.offset !== position || !data.length || data.length > want) throw new Error('invalid_update_chunk');
@@ -154,4 +183,4 @@ function controlChannelReader(control, { version, platform, arch, chunk = READ_C
   };
 }
 
-module.exports = { createLoopbackFeed, loopbackFeedUrl, controlChannelReader, parseRange, READ_CHUNK };
+module.exports = { createLoopbackFeed, loopbackFeedUrl, controlChannelReader, parseRange, READ_CHUNK, PARALLEL_READS };

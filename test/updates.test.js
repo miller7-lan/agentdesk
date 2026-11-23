@@ -190,7 +190,17 @@ test('client_update_read chunks fit the control channel frame, and a file well o
   // A reply for another offset, or with nothing in it, is refused.
   await assert.rejects(controlChannelReader(async ({ update }) => ({ ok: true, value: { file: update.file, offset: update.offset + 1, data: 'AA==' } }))('f', 0, 4), /invalid_update_chunk/);
   await assert.rejects(controlChannelReader(async ({ update }) => ({ ok: true, value: { file: update.file, offset: update.offset, data: '' } }))('f', 0, 4), /invalid_update_chunk/);
-  await assert.rejects(controlChannelReader(async () => ({ ok: false, error: 'bridge_offline' }))('f', 0, 4), /bridge_offline/);
+  let tries = 0;
+  await assert.rejects(controlChannelReader(async () => { tries++; return { ok: false, error: 'bridge_offline' }; }, { attempts: 3, backoff: 1 })('f', 0, 4), /bridge_offline/);
+  assert.equal(tries, 3);
+  // A dropped read is retried; a refused one is not.
+  let flaky = 0;
+  const recovered = await controlChannelReader(async ({ update }) => (++flaky < 3 ? { ok: false, error: 'ETIMEDOUT' }
+    : { ok: true, value: { file: update.file, offset: update.offset, data: Buffer.alloc(update.length, 7).toString('base64') } }), { backoff: 1 })('f', 0, 4);
+  assert.equal(recovered.length, 4);
+  let refused = 0;
+  await assert.rejects(controlChannelReader(async () => { refused++; return { ok: false, error: 'update_version_not_offered' }; }, { backoff: 1 })('f', 0, 4), /not_offered/);
+  assert.equal(refused, 1);
 });
 
 // ---- the update state machine with a fake electron-updater ----
