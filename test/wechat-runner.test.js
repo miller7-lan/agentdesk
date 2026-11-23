@@ -3,8 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { runTask, parsePlan } = require('../orchestrator/wechat/runner');
-const { WechatService } = require('../orchestrator/wechat/service');
+const { planTask, executeTask, parsePlan, estimateText, overdueAfterMs } = require('../orchestrator/wechat/runner');
+const { WechatService, plainSummary } = require('../orchestrator/wechat/service');
 const { QuotaGate } = require('../orchestrator/wechat/quota');
 
 const adapters = { claude: { bin: 'claude' }, codex: { bin: 'codex' }, antigravity: { bin: 'agy' }, grok: { bin: 'grok' } };
@@ -15,7 +15,7 @@ function taskDir() {
   return dir;
 }
 
-// 假 runAdapter：按 name+readonly 返回脚本里的结果；可写调用时在 out/ 生成文件。
+// 假 runAdapter：按顺序返回脚本里的结果；可写调用时在 out/ 生成文件。
 function fakeAdapter(script) {
   const calls = [];
   const fn = async (options) => {
@@ -32,78 +32,67 @@ function fakeAdapter(script) {
   return fn;
 }
 
-const plan = (tier, brief = '按部门汇总') => ({ output: '分析完毕\n```json\n' + JSON.stringify({ tier, brief }) + '\n```', session: 'plan-1' });
+const plan = (text = '1. 做一份 Word\n2. 五个部分', brief = 'BRIEF', minutes = 4, session = 'plan-1') =>
+  ({ output: '好的\n```json\n' + JSON.stringify({ plan: text, brief, estimate_minutes: minutes }) + '\n```', session });
 
-test('parsePlan takes the last JSON block and tolerates junk', () => {
-  assert.deepEqual(parsePlan('```json\n{"tier":"low","brief":"a"}\n```\n```json\n{"tier":"mid","brief":"b"}\n```'), { tier: 'mid', brief: 'b' });
-  assert.deepEqual(parsePlan('{"tier":"weird","brief":"c"}'), { tier: null, brief: 'c' });
+test('parsePlan reads plan, brief and estimate; rejects junk', () => {
+  assert.deepEqual(parsePlan(plan('P', 'B', 7).output), { plan: 'P', brief: 'B', estimateMinutes: 7 });
+  assert.deepEqual(parsePlan('{"brief":"b","estimate_minutes":"abc"}'), { plan: '', brief: 'b', estimateMinutes: null });
   assert.equal(parsePlan('no json'), null);
+  assert.equal(estimateText({ estimateMinutes: 6 }), '约 6 分钟');
+  assert.equal(estimateText({ tier: 'mid' }), '约 3～10 分钟');
+  assert.equal(overdueAfterMs({ estimateMinutes: 4 }), 6 * 60_000);
 });
 
-test('/高 skips planning and lets Opus do the work', async () => {
-  const run = fakeAdapter([{ output: '做好了', file: '周报.docx', session: 'ex-1' }]);
-  const result = await runTask({ task: { id: 1, text: '写周报', tier: 'high' }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
-  assert.equal(result.status, 'succeeded');
-  assert.deepEqual(run.calls.map((c) => [c.name, c.readonly, c.model]), [['claude', false, 'claude-opus-5-5']]);
-  assert.deepEqual(result.outputs.map((f) => path.basename(f)), ['周报.docx']);
-  assert.equal(result.sessions.executor, 'ex-1');
+test('planTask: first plan is read-only; revision resumes the planner session', async () => {
+  const dir = taskDir();
+  const run = fakeAdapter([plan('v1'), plan('v2', 'B2', 5, 'plan-1')]);
+  const first = await planTask({ task: { id: 1, text: '写通知', tier: 'mid' }, dir, signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
+  assert.deepEqual([first.status, first.plan, first.sessions.planner], ['planned', 'v1', 'plan-1']);
+  assert.match(run.calls[0].prompt, /中档/);
+  const second = await planTask({ task: { id: 1, text: '写通知', tier: 'mid', sessions: first.sessions, plan: 'v1' }, dir, signal: new AbortController().signal,
+    deps: { adapters, runAdapter: run }, revision: { feedback: '标题改大', newInputs: ['新.xlsx'] } });
+  assert.deepEqual([run.calls[1].readonly, run.calls[1].session], [true, 'plan-1']);
+  assert.match(run.calls[1].prompt, /标题改大[\s\S]*新\.xlsx/);
+  assert.equal(second.plan, 'v2');
 });
 
-test('/中 plans with Opus read-only, then Codex does everything with the brief', async () => {
-  const run = fakeAdapter([plan('low', 'BRIEF-TEXT'), { output: '完成', file: '汇总.xlsx' }]);
-  const result = await runTask({ task: { id: 2, text: '汇总', tier: 'mid' }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
-  assert.equal(result.tier, 'mid');                       // 用户指定的档位优先
-  assert.deepEqual(run.calls.map((c) => [c.name, c.readonly]), [['claude', true], ['codex', false]]);
-  assert.match(run.calls[1].prompt, /BRIEF-TEXT/);
-  assert.equal(result.brief, 'BRIEF-TEXT');
+test('executeTask: mid uses Codex with the confirmed brief; low switches on quota', async () => {
+  const run = fakeAdapter([{ output: '完成', file: '通知.docx' }]);
+  const done = await executeTask({ task: { id: 2, text: '写通知', tier: 'mid', brief: 'BRIEF-OK' }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
+  assert.deepEqual([done.status, run.calls[0].name, run.calls[0].readonly], ['succeeded', 'codex', false]);
+  assert.match(run.calls[0].prompt, /BRIEF-OK/);
+  assert.deepEqual(done.outputs.map((f) => path.basename(f)), ['通知.docx']);
+  const low = fakeAdapter([{ error: 'cli_quota_exhausted' }, { output: 'ok', file: 'a.pptx' }]);
+  const switched = await executeTask({ task: { id: 3, text: 'x', tier: 'low', brief: 'B' }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: low } });
+  assert.deepEqual(low.calls.map((c) => c.name), ['antigravity', 'grok']);
+  assert.match(switched.note, /额度用尽/);
 });
 
-test('auto tier: planner picks low → Antigravity; quota switches to Grok with a note', async () => {
-  const run = fakeAdapter([plan('low'), { error: 'cli_quota_exhausted' }, { output: 'ok', file: 'a.xlsx' }]);
-  const result = await runTask({ task: { id: 3, text: '整理', tier: null }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
-  assert.equal(result.status, 'succeeded');
-  assert.deepEqual(run.calls.map((c) => c.name), ['claude', 'antigravity', 'grok']);
-  assert.match(result.note, /额度用尽/);
-  assert.equal(result.executor.provider, 'grok');
+test('executeTask: high continues in the planner session when the planner is also Claude', async () => {
+  const run = fakeAdapter([{ output: 'done', file: '方案.docx' }]);
+  await executeTask({ task: { id: 4, text: 'x', tier: 'high', brief: 'B', sessions: { planner: 'plan-9' } }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
+  assert.deepEqual([run.calls[0].name, run.calls[0].session, run.calls[0].readonly], ['claude', 'plan-9', false]);
+  const codexPlanner = fakeAdapter([{ output: 'done' }]);
+  await executeTask({ task: { id: 5, text: 'x', tier: 'high', brief: 'B', sessions: { planner: 'p' } }, dir: taskDir(), signal: new AbortController().signal,
+    deps: { adapters, runAdapter: codexPlanner, settings: { planner: { provider: 'codex' } } } });
+  assert.equal(codexPlanner.calls[0].session, undefined);                     // 组长不是 Claude：Opus 按简报重新开会话
+  assert.match(codexPlanner.calls[0].prompt, /B/);
 });
 
-test('auto tier: planner picks high and continues in its own session with write access', async () => {
-  const run = fakeAdapter([plan('high'), { output: 'done', file: '方案.docx' }]);
-  const result = await runTask({ task: { id: 4, text: '写方案', tier: null }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
-  assert.deepEqual(run.calls.map((c) => [c.name, c.readonly, c.session]), [['claude', true, undefined], ['claude', false, 'plan-1']]);
-  assert.equal(result.tier, 'high');
-});
-
-test('mid-tier failure is not switched; status maps from the error code', async () => {
-  const run = fakeAdapter([plan('mid'), { error: 'cli_auth_required' }]);
-  const result = await runTask({ task: { id: 5, text: 'x', tier: null }, dir: taskDir(), signal: new AbortController().signal, deps: { adapters, runAdapter: run } });
-  assert.equal(result.status, 'auth_expired');
-  assert.equal(run.calls.length, 2);
-});
-
-test('continuation resumes the same executor session without planning', async () => {
+test('executeTask: continuation resumes the executor session', async () => {
   const dir = taskDir();
   fs.writeFileSync(path.join(dir, 'out', '汇总.xlsx'), 'v1');
   const run = fakeAdapter([{ output: '改好了', file: '汇总-v2.xlsx' }]);
-  const task = { id: 6, text: '汇总', tier: 'low', executor: { provider: 'antigravity', model: 'm' }, sessions: { executor: 'conv-9' }, turns: 2 };
-  const result = await runTask({ task, dir, signal: new AbortController().signal, continuation: { text: '表头加粗', newInputs: [] }, deps: { adapters, runAdapter: run } });
-  assert.deepEqual(run.calls.map((c) => [c.name, c.session]), [['antigravity', 'conv-9']]);
-  assert.match(run.calls[0].prompt, /表头加粗/);
-  assert.match(run.calls[0].prompt, /汇总\.xlsx/);
+  const result = await executeTask({ task: { id: 6, text: '汇总', tier: 'low', executor: { provider: 'antigravity' }, sessions: { executor: 'conv-9' } },
+    dir, signal: new AbortController().signal, continuation: { text: '表头加粗', newInputs: [] }, deps: { adapters, runAdapter: run } });
+  assert.deepEqual([run.calls[0].name, run.calls[0].session], ['antigravity', 'conv-9']);
   assert.deepEqual(result.outputs.map((f) => path.basename(f)), ['汇总-v2.xlsx']);
 });
 
-test('stop aborts the running CLI and reports cancelled', async () => {
-  const run = fakeAdapter([{ wait: true }]);
-  const controller = new AbortController();
-  const pending = runTask({ task: { id: 7, text: 'x', tier: 'high' }, dir: taskDir(), signal: controller.signal, deps: { adapters, runAdapter: run } });
-  setTimeout(() => controller.abort(new Error('cancelled')), 20);
-  assert.equal((await pending).status, 'cancelled');
-});
+// ---------- 服务：引导流程 ----------
 
-// ---------- 服务层：文件配对、排队、交付 ----------
-
-function fakeClient() {
+function fakeChannel() {
   const sent = [];
   return {
     sent,
@@ -122,204 +111,190 @@ function fakeClient() {
 }
 
 async function settle(service) {
-  for (let i = 0; i < 200 && (service.running || service.queue.length); i += 1) await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 400 && (service.running || service.queue.length || service.planning.size); i += 1) await new Promise((r) => setTimeout(r, 5));
 }
 
-function newService(script, extra = {}) {
+function newService(script, { users = ['me'], extra = {} } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
-  const client = fakeClient();
+  const channel = fakeChannel();
   const run = fakeAdapter(script);
-  const service = new WechatService({ config: { stateDir, allowUsers: ['me'], sendPreview: false }, adapters, channel: client, runAdapter: run, validate: async () => ({ ok: true }), ...extra });
+  const service = new WechatService({ config: { stateDir, allowUsers: users, sendPreview: false, deliveryRetry: { sleep: async () => {} } }, adapters, channel, runAdapter: run, validate: async () => ({ ok: true }), ...extra });
   let n = 0;
-  const msg = (fields) => service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'k' + (++n), ...fields });
-  const say = (content) => msg({ type: 'text', text: content });
-  return { service, client, run, msg, say };
+  const from = (user, fields) => service.onMessage({ from: user, chatType: 'single', dedupeKey: 'k' + (++n), ...fields });
+  const say = async (content, user = 'me') => { await from(user, { type: 'text', text: content }); await settle(service); };
+  const last = (user = 'me') => channel.sent.filter(([kind, to]) => kind === 'text' && to === user).at(-1)?.[2] || '';
+  return { service, channel, run, from, say, last };
 }
 
-test('service: messages collect in a draft and only 开始 runs them, all at once', async () => {
-  const { service, client, run, msg, say } = newService([plan('low'), { output: '汇总好了', file: '部门汇总.xlsx', session: 'conv-1' }]);
-  await say('按部门汇总');
-  assert.match(client.sent.at(-1)[2], /已记下/);
-  await msg({ type: 'file', media: { url: 'u' }, fileName: '销售.xlsx' });
-  assert.match(client.sent.at(-1)[2], /已收到「销售\.xlsx」/);
-  const before = client.sent.length;
-  await say('再加一张柱状图');
-  assert.equal(client.sent.length, before);             // 后续文字不逐条回复
-  assert.equal(run.calls.length, 0);                     // 没发「开始」不执行
-  await say('开始');
-  await settle(service);
-  assert.equal(run.calls.length, 2);
-  assert.match(run.calls[0].prompt, /1\. 按部门汇总\n2\. 再加一张柱状图/);
-  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(1), 'in')), ['销售.xlsx']);
-  assert.ok(client.sent.some(([kind, , name]) => kind === 'file' && name === '部门汇总.xlsx'));
-  assert.match(client.sent.at(-1)[2], /✅ #1 完成（低档 · Antigravity/);
-  assert.match(client.sent.at(-1)[2], /\/进 1/);
-  // 重复的消息键不再处理
-  await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'k4', type: 'text', text: '开始' });
-  assert.equal(run.calls.length, 2);
-});
-
-test('service: after a task the next message is a new task; /进 returns to an old one', async () => {
-  const { service, client, run, say } = newService([
-    { output: 'v1', file: '方案.docx', session: 's-1' },
-    { output: '另一个', file: '别的.docx', session: 's-2' },
-    { output: 'v2', file: '方案-v2.docx' },
+test('guided flow: need → pick tier (wrong digit re-prompts) → collect → plan → revise → 完成 → files delivered', async () => {
+  const { service, channel, run, from, say, last } = newService([
+    plan('1. 一页通知', 'B1', 3), plan('1. 一页通知，标题加大', 'B2', 4, 'plan-1'), { output: '通知已完成', file: '消防通知.docx' },
   ]);
-  await say('/高 写方案');
+  await say('写一份消防检查通知');
+  assert.match(last(), /收到需求[\s\S]*1 → 低档[\s\S]*2 → 中档[\s\S]*3 → 高档/);
+  await say('5');
+  assert.match(last(), /没看懂，请回复数字 1、2 或 3[\s\S]*1 → 低档/);
+  await say('2');
+  assert.match(last(), /已选中档（约 3～10 分钟）/);
+  await from('me', { type: 'file', media: { url: 'u' }, fileName: '模板.docx' });
+  assert.match(last(), /已收到「模板\.docx」/);
+  await say('正式公文格式');
+  assert.equal(run.calls.length, 0);                                               // 没发「开始」不动
   await say('开始');
-  await settle(service);
-  await say('写个通知');
-  await say('开始 高');
-  await settle(service);
-  assert.equal(service.store.get(2).text, '写个通知');    // 新任务，不是续做 #1
-  assert.equal(run.calls[1].session, undefined);
-  assert.match(service.enter('me', 1), /已进入 #1/);
-  await say('标题改大');
-  assert.match(client.sent.at(-1)[2], /接着改 #1/);
+  assert.match(channel.sent.find(([, , t]) => /组长正在出方案/.test(t))[2], /收到 #1（中档）/);
+  assert.match(last(), /📋 #1 方案（中档 · 执行预计约 3 分钟）[\s\S]*一页通知[\s\S]*满意就发「完成」/);
+  assert.match(run.calls[0].prompt, /1\. 写一份消防检查通知\n2\. 正式公文格式/);
+  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(1), 'in')), ['模板.docx']);
+  await say('标题再大一点');
+  assert.match(last(), /📋 #1 修改后的方案（中档 · 执行预计约 4 分钟）[\s\S]*标题加大/);
+  assert.equal(run.calls[1].session, 'plan-1');
   await say('开始');
-  await settle(service);
-  assert.equal(run.calls[2].session, 's-1');
-  assert.equal(service.store.get(1).turns, 2);
-  assert.deepEqual(service.store.get(1).outputs, ['方案.docx', '方案-v2.docx']);
-  assert.equal(service.store.draft('me').target, null);   // 执行后回到新任务
-  assert.match(service.listText('me'), /#1 ✅ 高档·Claude Opus/);
+  assert.match(last(), /现在不需要「开始」[\s\S]*等你确认/);
+  await say('完成');
+  const task = service.store.get(1);
+  assert.equal(task.status, 'succeeded');
+  assert.deepEqual([run.calls[2].name, run.calls[2].readonly], ['codex', false]);
+  assert.match(run.calls[2].prompt, /B2/);                                           // 用最新方案
+  assert.ok(channel.sent.some(([kind, , name]) => kind === 'file' && name === '消防通知.docx'));
+  assert.match(last(), /✅ #1 完成（中档 · GPT · 用时[\s\S]*通知已完成[\s\S]*\/进1/);
+  assert.equal(service.draft('me').stage, 'idle');                                   // 提交后回到新任务
 });
 
-test('service: /清空 drops the draft, /新 leaves an old task, empty 开始 explains', async () => {
-  const { service, client, run, msg, say } = newService([{ output: 'ok', session: 's' }]);
-  await say('开始');
-  assert.match(client.sent.at(-1)[2], /草稿是空的/);
-  await msg({ type: 'file', media: { url: 'u' }, fileName: 'a.xlsx' });
-  await say('开始');
-  assert.match(client.sent.at(-1)[2], /还没说要做什么/);
-  await say('/清空');
-  assert.equal(service.store.draft('me').files.length, 0);
-  await say('/高 x');
-  await say('开始');
-  await settle(service);
-  service.enter('me', 1);
-  assert.match(service.leave('me'), /已退出 #1/);
-  assert.equal(run.calls.length, 1);
-});
-
-test('service: second task queues while the first runs, /stop removes it from the queue', async () => {
-  const { service, client, say } = newService([{ wait: true }]);
-  await say('/高 一'); await say('开始');
-  await say('/高 二'); await say('开始');
-  assert.match(client.sent.at(-1)[2], /排队中/);
-  await say('/stop 2');
-  assert.match(client.sent.at(-1)[2], /已从队列移除/);
-  await say('/stop 1');
-  await settle(service);
+test('/2 cancels at any step; while planning other text waits', async () => {
+  const { service, say, last } = newService([{ wait: true }]);
+  await say('3');
+  await say('写个方案');
+  const started = say('开始');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(service.draft('me').stage, 'planning');
+  await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'w1', type: 'text', text: '快点' });
+  assert.match(last(), /组长还在出方案/);
+  await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'w2', type: 'text', text: '/2' });
+  await started;
+  assert.match(last(), /已取消 #1/);
   assert.equal(service.store.get(1).status, 'cancelled');
-  assert.equal(service.store.get(2).status, 'cancelled');
-  assert.match(client.sent.at(-1)[2], /#1 已停止/);
+  assert.equal(service.draft('me').stage, 'idle');
+  await say('/2');
+  assert.match(last(), /现在没有进行中的步骤/);
 });
 
-test('service: low quota stops before any CLI runs; /重试 runs it later', async () => {
-  let codexUsed = 95;
-  const quotaStatus = async () => [
-    { provider: 'claude', state: 'available', buckets: [{ id: 'c', fiveHour: { usedPercent: 10 } }] },
-    { provider: 'codex', state: 'available', buckets: [{ id: 'x', fiveHour: { usedPercent: codexUsed, resetsAt: 1795460549 } }] },
-  ];
-  const quota = new QuotaGate({ adapters, quotaStatus, ttlMs: 0 });
-  const { service, client, run, say } = newService([plan('mid'), plan('mid'), { output: 'ok', file: 'a.xlsx' }], { quota });
-  await say('/中 做表'); await say('开始');
-  await settle(service);
-  assert.equal(service.store.get(1).status, 'quota_low');
-  assert.match(client.sent.at(-1)[2], /额度不够.*GPT 5 小时额度只剩 5%/);
-  assert.deepEqual(run.calls.map((c) => c.name), ['claude']);     // 规划了，但没有交给 Codex
-  codexUsed = 20;
-  await say('/重试 1');
-  await settle(service);
+test('wrong-stage commands remind the current step; unknown commands too', async () => {
+  const { say, last } = newService([]);
+  await say('/完成');
+  assert.match(last(), /现在没有等确认的方案[\s\S]*发需求或文件开始/);
+  await say('/乱七八糟');
+  assert.match(last(), /没有这个命令（\/0/);
+  await say('做个表');
+  await say('开始');                                                              // 还没选档：重新提示选档
+  assert.match(last(), /没看懂，请回复数字 1、2 或 3[\s\S]*1 → 低档/);
+  await say('/0');
+  assert.match(last(), /\/进12 → 接着修改 #12/);
+});
+
+test('/进 continues an old task with its executor, no plan; /1 and /看 show history', async () => {
+  const { service, run, say, last } = newService([plan(), { output: 'v1', file: 'a.docx', session: 'ex-1' }, { output: 'v2', file: 'a-v2.docx' }]);
+  await say('1'); await say('写通知'); await say('开始'); await say('完成');
   assert.equal(service.store.get(1).status, 'succeeded');
+  await say('/1');
+  assert.match(last(), /【最近任务】\n#1 ✅完成 低档·Antigravity[\s\S]*\/看编号 → 详情/);
+  await say('/看1');
+  assert.match(last(), /方案：/);
+  await say('/进1');
+  assert.match(last(), /已进入 #1/);
+  await say('3');                                                                 // 老任务不能换档
+  assert.match(last(), /不能换档/);
+  await say('标题加粗');
+  await say('开始');
+  assert.deepEqual([run.calls[2].name, run.calls[2].session], ['antigravity', 'ex-1']);
+  assert.equal(service.store.get(1).turns, 2);
 });
 
-test('store gc removes expired task folders and marks them archived', () => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
-  const service = new WechatService({ config: { stateDir }, adapters, channel: fakeClient(), runAdapter: fakeAdapter([]) });
-  const task = service.store.create({ user: 'me', text: 'x' });
-  service.store.update(task.id, { status: 'succeeded', finishedAt: Date.now() - 4 * 86400_000 });
-  service.gc();
-  assert.equal(fs.existsSync(service.store.taskDir(task.id)), true);    // 30 天内保留
-  service.store.update(task.id, { finishedAt: Date.now() - 31 * 86400_000 });
-  service.gc();
-  assert.equal(fs.existsSync(service.store.taskDir(task.id)), false);
-  assert.equal(service.store.get(task.id), null);                         // 记录也删
+test('slow execution gets one reminder', async () => {
+  const { service, channel, say } = newService([plan('p', 'b', 1), { wait: true }]);
+  await say('1'); await say('x'); await say('开始');
+  service.store.update(1, { estimateMinutes: 0.0001 });
+  const original = global.setTimeout;
+  global.setTimeout = (fn, ms, ...args) => original(fn, ms > 1000 ? 20 : ms, ...args);
+  try {
+    service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'slow', type: 'text', text: '完成' });
+    await new Promise((r) => original(r, 80));
+  } finally { global.setTimeout = original; }
+  assert.ok(channel.sent.some(([, , t]) => /比预估慢一些，还在做[\s\S]*\/停1/.test(t)));
+  await say('/停1');
 });
 
-test('plainSummary strips markdown links, paths and emphasis for WeChat', () => {
-  const { plainSummary } = require('../orchestrator/wechat/service');
-  assert.equal(plainSummary('交付 [汇总.xlsx](file:///var/lib/a/out/汇总.xlsx)，**新增** `部门汇总`，见 /var/lib/x/out/a.docx。'), '交付 汇总.xlsx，新增 部门汇总，见 a.docx。');
+test('plan failure ends the task with /重试; retry re-plans', async () => {
+  const { service, say, last } = newService([{ output: 'not json' }, plan()]);
+  await say('2'); await say('x'); await say('开始');
+  assert.match(last(), /组长没出成方案[\s\S]*\/重试1/);
+  assert.equal(service.draft('me').stage, 'idle');
+  await say('/重试1');
+  assert.match(last(), /📋 #1 方案/);
 });
 
-test('service: two users have separate drafts, tasks and files; results go only to the owner', async () => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
-  const client = fakeClient();
-  const run = fakeAdapter([{ output: 'A 完成', file: 'A.docx', session: 'sa' }, { output: 'B 完成', file: 'B.pptx', session: 'sb' }]);
-  const service = new WechatService({ config: { stateDir, allowUsers: ['alice', 'bob'], sendPreview: false }, adapters, channel: client, runAdapter: run, validate: async () => ({ ok: true }) });
-  let n = 0;
-  const from = (user, fields) => service.onMessage({ from: user, chatType: 'single', dedupeKey: 'm' + (++n), ...fields });
-  await from('alice', { type: 'file', media: { url: 'u' }, fileName: 'alice-data.xlsx' });
-  await from('bob', { type: 'text', text: '/高 写个 PPT' });
-  await from('alice', { type: 'text', text: '/高 写个 Word' });
-  await from('alice', { type: 'text', text: '开始' });
-  await from('bob', { type: 'text', text: '开始' });
-  await settle(service);
-  const [a, b] = [service.store.get(1), service.store.get(2)];
-  assert.deepEqual([a.user, b.user], ['alice', 'bob']);
-  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(1), 'in')), ['alice-data.xlsx']);
-  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(2), 'in')), []);           // bob 没拿到 alice 的文件
-  const files = client.sent.filter(([kind]) => kind === 'file').map(([, user, name]) => [user, name]);
+test('low quota blocks before the planner runs', async () => {
+  const quotaStatus = async () => [{ provider: 'claude', state: 'available', buckets: [{ id: 'c', fiveHour: { usedPercent: 95, resetsAt: 1795460549 } }] }];
+  const { run, say, last } = newService([], { extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
+  await say('3'); await say('写方案'); await say('开始');
+  assert.equal(run.calls.length, 0);
+  assert.match(last(), /额度不够[\s\S]*Claude 5 小时额度只剩 5%/);
+});
+
+test('two users: separate flows, tasks and files; results only to the owner', async () => {
+  const { service, channel, from, say } = newService([plan('A'), plan('B'), { output: 'A', file: 'A.docx' }, { output: 'B', file: 'B.pptx' }], { users: ['alice', 'bob'] });
+  await from('alice', { type: 'file', media: { url: 'u' }, fileName: 'alice.xlsx' });
+  await say('2', 'alice'); await say('2', 'bob');
+  await say('alice 的需求', 'alice'); await say('bob 的需求', 'bob');
+  await say('开始', 'alice'); await say('开始', 'bob');
+  await say('完成', 'alice'); await say('完成', 'bob');
+  assert.deepEqual([service.store.get(1).user, service.store.get(2).user], ['alice', 'bob']);
+  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(1), 'in')), ['alice.xlsx']);
+  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(2), 'in')), []);
+  const files = channel.sent.filter(([kind]) => kind === 'file').map(([, user, name]) => [user, name]);
   assert.deepEqual(files, [['alice', 'A.docx'], ['bob', 'B.pptx']]);
-  assert.match(service.showText('bob', 1), /没有 #1/);                                         // 看不到别人的任务
-  assert.match(service.stop('bob', 1), /没有 #1/);
+  assert.match(service.showText('bob', 1), /没有 #1/);
   assert.match(service.enter('bob', 1), /没有 #1/);
-  await from('bob', { type: 'text', text: '/重发 1' });
-  assert.match(client.sent.at(-1)[2], /没有 #1/);
 });
 
-test('service: per-user limits on active tasks; strangers are refused', async () => {
-  const { service, client, say, msg } = newService([{ wait: true }]);
-  service.limits.activeTasksPerUser = 1;
-  await say('/高 一'); await say('开始');
-  await say('/高 二'); await say('开始');
-  assert.match(client.sent.at(-1)[2], /已经有 1 个任务/);
-  await service.onMessage({ from: 'stranger', chatType: 'single', dedupeKey: 'zz', type: 'text', text: '开始' });
-  assert.match(client.sent.at(-1)[2], /只对已登记的成员开放/);
-  await say('/stop 1');
-  await settle(service);
-});
-
-test('service: failed file delivery is recorded and /重发 sends again to the owner', async () => {
-  const { service, client, say } = newService([{ output: '好了', file: '方案.docx', session: 's' }]);
+test('failed delivery is recorded and /重发 sends again', async () => {
+  const { service, channel, say, last } = newService([plan(), { output: '好了', file: '方案.docx' }]);
   let fail = true;
-  const original = client.sendFile;
-  client.sendFile = async (user, file) => { if (fail) throw new Error('upload failed'); return original(user, file); };
-  service.config.deliveryRetry = { sleep: async () => {} };
-  await say('/高 写方案'); await say('开始');
-  await settle(service);
+  const original = channel.sendFile;
+  channel.sendFile = async (user, file) => { if (fail) throw new Error('upload failed'); return original(user, file); };
+  await say('1'); await say('x'); await say('开始'); await say('完成');
   assert.equal(service.store.get(1).deliveries[0].status, 'failed');
-  assert.match(client.sent.at(-1)[2], /方案\.docx（upload failed）.*\/重发 1/s);
+  assert.match(last(), /方案\.docx（upload failed）.*\/重发1/s);
   fail = false;
-  await say('/重发 1');
+  await say('/重发1');
   assert.equal(service.store.get(1).deliveries[0].status, 'sent');
-  assert.ok(client.sent.some(([kind, user, name]) => kind === 'file' && user === 'me' && name === '方案.docx'));
 });
 
-test('service: 你好 gets a reply, /问 answers with a cheap model without creating a task', async () => {
-  const { service, client, run, say } = newService([{ output: '**今天**是周一' }]);
+test('你好 replies with help; /3 answers with a cheap model without a task', async () => {
+  const { service, run, say, last } = newService([{ output: '**今天**是周一' }]);
   await say('你好');
-  assert.match(client.sent.at(-1)[2], /你好！我是办公助手/);
-  await say('/问 今天周几');
-  assert.equal(run.calls[0].name, 'antigravity');
-  assert.equal(run.calls[0].readonly, true);
-  assert.equal(client.sent.at(-1)[2], '今天是周一');
+  assert.match(last(), /你好！我是办公助手[\s\S]*\/0 → 显示本帮助/);
+  await say('/3今天周几');
+  assert.deepEqual([run.calls[0].name, run.calls[0].readonly], ['antigravity', true]);
+  assert.equal(last(), '今天是周一');
   assert.equal(service.store.data.tasks.length, 0);
 });
 
-test('plainSummary drops Antigravity progress lines', () => {
-  const { plainSummary } = require('../orchestrator/wechat/service');
-  assert.equal(plainSummary('正在生成并检查 PPT 渲染预览图，请稍候。\n正在重新渲染，请稍候。\n已完成 5 页 PPT。'), '已完成 5 页 PPT。');
-  assert.equal(plainSummary('正在推进的项目有 3 个。'), '正在推进的项目有 3 个。');
+test('plainSummary strips links, paths and progress lines', () => {
+  assert.equal(plainSummary('交付 [汇总.xlsx](file:///var/lib/a/out/汇总.xlsx)，**新增** `部门汇总`，见 /var/lib/x/out/a.docx。'), '交付 汇总.xlsx，新增 部门汇总，见 a.docx。');
+  assert.equal(plainSummary('正在生成预览，请稍候。\n已完成 5 页 PPT。'), '已完成 5 页 PPT。');
+});
+
+test('store gc keeps 30 days and cancels stale unconfirmed plans', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
+  const service = new WechatService({ config: { stateDir }, adapters, channel: fakeChannel(), runAdapter: fakeAdapter([]) });
+  const done = service.store.create({ user: 'me', text: 'x' });
+  service.store.update(done.id, { status: 'succeeded', finishedAt: Date.now() - 4 * 86400_000 });
+  const stale = service.store.create({ user: 'me', text: 'y', status: 'review' });
+  service.store.update(stale.id, { createdAt: Date.now() - 4 * 86400_000 });
+  service.gc();
+  assert.equal(fs.existsSync(service.store.taskDir(done.id)), true);
+  assert.equal(service.store.get(stale.id).status, 'cancelled');
+  service.store.update(done.id, { finishedAt: Date.now() - 31 * 86400_000 });
+  service.gc();
+  assert.equal(service.store.get(done.id), null);
 });

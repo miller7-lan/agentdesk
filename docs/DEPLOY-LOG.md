@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 02:30（北京时间）· VPS2 · 微信办公助手改为个人微信 ClawBot + 引导式流程，合并到 main
+
+- **通道**：新增 `ilink.js`（个人微信 ClawBot，腾讯 iLink 协议，对齐官方插件 2.4.10）并设为默认；`login.js` 终端扫码登录，扫码人自动为管理员。企业微信智能机器人通道（`bot.js`）保留，`wechat.json` 的 `channel` 切换。用户已扫码，服务已连上。
+- **流程**：引导式——需求/文件 → 回 1/2/3 选档（回错重提示）→ 收集 →「开始」组长出方案（附预计用时）→ 改方案可多轮 →「完成」执行交付；执行超出预计 1.5 倍提醒一次。命令统一为「/」紧跟数字或词：`/0` 帮助、`/1` 历史、`/2` 取消、`/3问题`、`/进12`、`/看12`、`/停12`、`/重试12`、`/重发12`。
+- **VPS2**：替换 `/opt/agentdesk-orchestrator/wechat/*.js`，`npm ci` 增加 `qrcode-terminal`；unit 的 `EnvironmentFile` 改为可选；`wechat.json` 设 `channel: "ilink"`，保留临时 `tiers.planner = codex`（Claude 登录过期）。重启 `agentdesk-wechat`；主控未动。
+- **验证**：`npm test` 590 项，583 通过，7 跳过，0 失败（微信相关 45 项，含假 iLink 服务的收发与 AES 往返）。
+- **回滚**：`wechat.json` 改 `channel: "wecom"` 并重启，或按上一条整体回滚。
+
 ## 2026-11-24 01:40（北京时间）· VPS2 · 微信办公助手（企业微信智能机器人长连接）预部署
 
 - **改动**：新增独立服务 `agentdesk-wechat`（分支 `feat/wechat-lite`，`orchestrator/wechat/`）。通道为企业微信智能机器人 API 模式长连接，官方 SDK `@wecom/aibot-node-sdk` 1.0.7；取代当天早些时候的自建应用 HTTP 回调方案（`wecom.js`、`probe.js` 已删除）。草稿 +「开始」、三档执行、额度闸门（剩余低于 8% 不开工）、白名单与限流、按 userid 隔离、docx/pptx/xlsx 校验后上传并主动推送给任务所有者、失败重试与 `/重发`。

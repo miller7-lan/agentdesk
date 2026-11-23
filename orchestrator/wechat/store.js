@@ -6,7 +6,7 @@ const { execFileSync } = require('node:child_process');
 
 const KEEP_RECORDS = 2000;          // 安全上限；正常按保留天数删
 const ACTIVE = new Set(['queued', 'planning', 'running']);
-const FINISHED = new Set(['succeeded', 'failed', 'timeout', 'cancelled', 'quota_limited', 'quota_low', 'auth_expired']);
+const FINISHED = new Set(['succeeded', 'failed', 'timeout', 'cancelled', 'quota_limited', 'quota_low', 'auth_expired']);   // review 不算结束
 
 class TaskStore {
   constructor(root) {
@@ -25,7 +25,8 @@ class TaskStore {
     this.data.seen ||= [];
     // 服务重启时还在跑的任务已经没有进程了。
     for (const task of this.data.tasks) {
-      if (ACTIVE.has(task.status)) Object.assign(task, { status: 'failed', error: 'service_restarted', finishedAt: Date.now() });
+      if (task.status === 'planning' && task.plan) task.status = 'review';      // 改方案时重启：上一版方案还在
+      else if (ACTIVE.has(task.status)) Object.assign(task, { status: 'failed', error: 'service_restarted', finishedAt: Date.now() });
     }
     this.save();
   }
