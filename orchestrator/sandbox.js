@@ -11,10 +11,31 @@
 // the task database, sockets), the orchestrator and enrollment configuration and credentials, and other users'
 // homes. Each of those is covered by an empty tmpfs before the allowed paths are mounted back in.
 // The network is shared: the CLI needs its model API, web search and package registries.
+//
+// The system is mounted one top-level folder at a time rather than as "/" in one go. Mounting "/" read-only makes
+// bwrap remount every mount below it, and one broken mount anywhere fails every sandbox: on VPS2,
+// /srv/claude-shared/.claude.json is a single-file bind of /root/.claude.json, which goes stale ("deleted entry")
+// each time Claude Code replaces that file, and AppArmor then refuses the remount. Folders in SKIPPED_ROOTS (not
+// needed by any CLI) are left out entirely, so their mounts are never touched.
 const fs = require('node:fs');
 const path = require('node:path');
 
 const DEFAULT_HIDDEN = ['/etc/agentdesk-orchestrator', '/etc/agentdesk-enrollment', '/etc/agentdesk-relay', '/root', '/home'];
+// Not mounted at all. dev, proc and tmp get fresh ones below.
+const SKIPPED_ROOTS = new Set(['srv', 'dev', 'proc', 'tmp', 'lost+found', '.Recycle_bin']);
+
+// "/" as separate read-only binds (folders) and symlinks (bin -> usr/bin and the like); plain files are left out.
+function systemMounts(readRoot = () => fs.readdirSync('/', { withFileTypes: true }), readLink = fs.readlinkSync) {
+  const argv = [];
+  for (const entry of readRoot().sort((a, b) => a.name.localeCompare(b.name))) {
+    if (SKIPPED_ROOTS.has(entry.name)) continue;
+    const target = '/' + entry.name;
+    if (entry.isSymbolicLink()) {
+      try { argv.push('--symlink', readLink(target), target); } catch {}
+    } else if (entry.isDirectory()) argv.push('--ro-bind', target, target);
+  }
+  return argv;
+}
 
 // options: { bin, cwd, home, writable, hide: [paths], hideDefaults: [paths] (default DEFAULT_HIDDEN), sockets, extraWritable }
 function sandboxCommand(command, args, options) {
@@ -26,7 +47,7 @@ function sandboxCommand(command, args, options) {
   const hidden = [...new Set([...(options.hideDefaults || DEFAULT_HIDDEN), ...(options.hide || [])].map(real))]
     .filter((target) => target !== '/' && exists(target))
     .sort((a, b) => a.length - b.length);
-  const argv = ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp',
+  const argv = [...systemMounts(options.readRoot, options.readLink), '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp',
     '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--die-with-parent'];
   for (const target of hidden) argv.push('--tmpfs', target);
   if (home) { fs.mkdirSync(home, { recursive: true, mode: 0o700 }); argv.push('--bind', home, home); }
@@ -42,7 +63,9 @@ function sandboxCommand(command, args, options) {
   for (const target of options.mask || []) {
     if (exists(target)) argv.splice(argv.indexOf('--'), 0, '--tmpfs', real(target));
   }
+  // The new root itself (a tmpfs holding the mount points) is read-only too, as "/" was before.
+  argv.splice(argv.indexOf('--'), 0, '--remount-ro', '/');
   return { command: options.bin || '/usr/bin/bwrap', args: argv };
 }
 
-module.exports = { sandboxCommand, DEFAULT_HIDDEN };
+module.exports = { sandboxCommand, systemMounts, DEFAULT_HIDDEN, SKIPPED_ROOTS };

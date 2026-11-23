@@ -40,3 +40,17 @@ console.log(JSON.stringify({ bash: process.argv.join(' ').includes('--allow Bash
   assert.deepEqual(report, { bash: true, other: 'hidden', login: 'hidden' });
   assert.equal(await fs.readFile(path.join(cwd, 'result.txt'), 'utf8'), 'tests passed');
 });
+
+test('the system is mounted folder by folder, skipping /srv, so one stale mount there cannot break every sandbox', () => {
+  const { sandboxCommand, systemMounts } = require('../orchestrator/sandbox');
+  const entry = (name, kind) => ({ name, isDirectory: () => kind === 'dir', isSymbolicLink: () => kind === 'link' });
+  const root = () => [entry('usr', 'dir'), entry('bin', 'link'), entry('srv', 'dir'), entry('etc', 'dir'), entry('swapfile', 'file'),
+    entry('proc', 'dir'), entry('tmp', 'dir'), entry('dev', 'dir'), entry('var', 'dir')];
+  const mounts = systemMounts(root, () => 'usr/bin');
+  assert.deepEqual(mounts, ['--symlink', 'usr/bin', '/bin', '--ro-bind', '/etc', '/etc', '--ro-bind', '/usr', '/usr', '--ro-bind', '/var', '/var']);
+  const { args } = sandboxCommand('cli', ['x'], { cwd: __dirname, readRoot: root, readLink: () => 'usr/bin', hideDefaults: [] });
+  assert.ok(!args.join(' ').includes('/srv'));
+  assert.ok(!args.includes('--ro-bind') || args.indexOf('/') === args.indexOf('--remount-ro') + 1);
+  assert.equal(args[args.indexOf('--') - 1], '/');                  // root made read-only after every mount
+  assert.equal(args[args.indexOf('--') - 2], '--remount-ro');
+});

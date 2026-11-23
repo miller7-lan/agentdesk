@@ -2,6 +2,15 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-23 22:45（北京时间）· VPS2 · 单聊沙箱偶发「bwrap: Can't bind mount /oldroot/」、Antigravity 全部模型
+
+- **问题**：Antigravity / Claude / Grok 单聊偶发「本轮失败：bwrap: Can't bind mount /oldroot/ on /newroot/ … remount "/newroot/srv/claude-shared/.claude.json": No such file or directory」，6 小时内 17 次。`/srv/claude-shared/.claude.json` 是 `/root/.claude.json` 的单文件 bind；root 的 Claude Code 每次替换该文件后挂载指向已删除的文件，AppArmor 拒绝 bwrap 重新挂载它（"deleted entry"），整个沙箱起不来。
+- **修复**：`sandbox.js` 不再整体 `--ro-bind / /`，改为逐个只读挂载根目录下的文件夹、重建 bin/lib 等符号链接，跳过 `/srv`（没有 CLI 需要），最后把新根设为只读。在 VPS2 上人为制造 `/srv` 下的失效单文件挂载复现：旧沙箱报同样错误，新沙箱正常，`/usr` 与根目录仍只读。
+- **Antigravity**：单聊服务的 agy 登录换成能用 Gemini 4 的账号（旧凭据备份 `/root/backups/agy-chat-token.bak-20261123`）；`chat-server.js` / `model-catalog.js` 部署，单聊菜单列出 agy 全部 23 个模型（主控派活目录仍只用 Gemini）。
+- **VPS2**：替换 `/opt/agentdesk-orchestrator/{sandbox.js,chat-server.js,model-catalog.js}`，旧文件备份在 `/root/backups/orchestrator-20261123-sandbox-agy/`。单聊服务按连接启动，新连接即用新代码；**主控（群聊）需重启 `agentdesk-orchestrator` 才用新沙箱，尚未重启**。
+- **验证**：`npm test` 542 项，535 通过，7 项跳过，0 失败。
+- **回滚**：把备份的三个文件拷回 `/opt/agentdesk-orchestrator/`。
+
 ## 2026-11-23 22:20（北京时间）· 客户端 0.4.0 · 更新日志、自动下载更新、刷新模型、额度离线显示
 
 - **更新日志**：新增 `CHANGELOG.md`，每版一节；发版时取出这一节作为更新说明随包上传，「更新」对话框显示「X.Y.Z 更新内容」，更新后显示「本版更新内容」。没有这一节的版本，release.yml 在 meta 步骤就停止。
