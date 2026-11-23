@@ -59,7 +59,9 @@ function build(options) {
   if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error('run id required');
   if (!['true', 'false'].includes(options.signed)) throw new Error('--signed true|false required');
   const artifacts = options.artifacts.map((spec) => {
-    const [platform, arch, folder] = spec.split(':');
+    // platform:arch:folder — the folder may itself hold colons (a Windows drive, D:\\a\\…).
+    const [platform, arch, ...rest] = String(spec).split(':');
+    const folder = rest.join(':');
     if (!['win', 'mac'].includes(platform) || !['x64', 'arm64'].includes(arch) || !folder) throw new Error('bad --artifact ' + spec);
     return { platform, arch, files: updateFiles(platform, arch, folder, version) };
   });

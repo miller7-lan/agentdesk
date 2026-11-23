@@ -175,3 +175,13 @@ test('upload stream: only update files, refuses artifacts holding connection set
   assert.throws(() => upload.build(options), /connection settings/);
   assert.throws(() => upload.build({ ...options, version: '0.3.0-beta.1' }), /plain/);
 });
+
+test('upload stream: an artifact folder with a colon (a Windows drive path) is kept whole', (t) => {
+  const root = tempRoot(t);
+  const dist = path.join(root, 'D:', 'a', 'dist-win');
+  fs.mkdirSync(dist, { recursive: true });
+  fs.writeFileSync(path.join(dist, 'AgentDesk-0.3.0-setup.exe'), Buffer.alloc(10, 1));
+  fs.writeFileSync(path.join(dist, 'AgentDesk-0.3.0-setup.exe.blockmap'), 'bm');
+  const plan = upload.build({ version: '0.3.0', commit, 'run-id': '7', signed: 'false', artifacts: ['win:x64:' + dist] });
+  assert.equal(plan.files[0].file, path.join(dist, 'AgentDesk-0.3.0-setup.exe'));
+});
