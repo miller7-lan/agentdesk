@@ -139,6 +139,34 @@ test('loopback feed: only listed files, only with its credentials, ranges answer
   assert.equal(feed.stats.perFile['AgentDesk-0.3.0-setup.exe'], bytes.length * 2 + 1000);
 });
 
+test('loopback feed: a slow reader of a large file does not pile up listeners on the response', async (t) => {
+  // Found in the VPS2 acceptance run (2026-11-23): every backpressure wait added a 'close' listener that stayed,
+  // so a long download raised MaxListenersExceededWarning.
+  const bytes = Buffer.alloc(24 * 1024 * 1024, 7);
+  const { manifest } = validateManifest(manifestFor('0.3.0', bytes));
+  const feed = createLoopbackFeed({ manifest, read: async (name, offset, length) => bytes.subarray(offset, offset + length) });
+  const { url, headers } = await feed.listen();
+  t.after(() => feed.close());
+  const warnings = [];
+  const onWarning = (warning) => { if (warning.name === 'MaxListenersExceededWarning') warnings.push(warning); };
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
+  const received = await new Promise((resolve, reject) => {
+    http.get(url + 'AgentDesk-0.3.0-setup.exe', { headers }, (response) => {
+      let size = 0;
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        response.pause();
+        setTimeout(() => response.resume(), 1);
+      });
+      response.on('end', () => resolve(size));
+    }).on('error', reject);
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(received, bytes.length);
+  assert.deepEqual(warnings, []);
+});
+
 test('client_update_read chunks fit the control channel frame, and a file well over 20 MB is read in full', async () => {
   // The largest chunk, base64-encoded inside its reply, must stay under the frame limit (rpc.js keeps 512 bytes).
   const reply = JSON.stringify({ ok: true, value: { file: 'AgentDesk-10.10.10-arm64-mac.zip.blockmap', offset: 1_073_741_823,

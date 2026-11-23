@@ -55,9 +55,12 @@ function createLoopbackFeed({ manifest, read, chunk = READ_CHUNK, now = () => ne
       stats.bytesFromServer += bytes.length;
       stats.perFile[entry.name] = (stats.perFile[entry.name] || 0) + bytes.length;
       offset += bytes.length;
+      // Each wait removes its own listeners, so a long download does not pile them up on the response.
       if (!response.write(bytes)) await new Promise((resolve, reject) => {
-        response.once('drain', resolve);
-        response.once('close', () => reject(new Error('update_client_closed')));
+        const drained = () => { response.off('close', closed); resolve(); };
+        const closed = () => { response.off('drain', drained); reject(new Error('update_client_closed')); };
+        response.once('drain', drained);
+        response.once('close', closed);
       });
     }
   }
