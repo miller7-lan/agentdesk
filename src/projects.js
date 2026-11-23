@@ -179,6 +179,18 @@
     menu.style.top = Math.max(0, Math.min(event.clientY, innerHeight - menu.offsetHeight)) + 'px';
     remove.focus();
   });
+  // The ··· button on a project row opens the same menu, so deleting a project does not depend on a right click.
+  $('#sessionList').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-project-menu]');
+    if (!button || !snapshot?.projects.some(project => project.id === button.dataset.projectMenu)) return;
+    event.stopPropagation();
+    menu.dataset.project = button.dataset.projectMenu;
+    menu.hidden = false;
+    const box = button.getBoundingClientRect();
+    menu.style.left = Math.max(0, Math.min(box.left, innerWidth - menu.offsetWidth)) + 'px';
+    menu.style.top = Math.max(0, Math.min(box.bottom + 4, innerHeight - menu.offsetHeight)) + 'px';
+    remove.focus();
+  }, true);
   remove.addEventListener('click', () => {
     menu.hidden = true;
     removeProject(menu.dataset.project).catch(error => window.alert('删除项目没有完成：' + error.message));

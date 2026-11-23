@@ -202,7 +202,8 @@ function createUpdateManager({
         return { ok: true };
       } catch (error) {
         const category = errorCategory(error);
-        logger?.audit('update_download', { status: category === 'cancelled' ? 'cancelled' : 'failed', version: target.version, error: category });
+        logger?.audit('update_download', { status: category === 'cancelled' ? 'cancelled' : 'failed', version: target.version, error: category,
+          code: String(error?.code || error?.name || '').slice(0, 60) });
         updater = category === 'cancelled' ? undefined : updater;
         if (category === 'cancelled') { set('available', { deferred: true }); return { ok: false, error: category }; }
         set('download_failed', { error: category });

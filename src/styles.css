@@ -216,6 +216,9 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .btn.danger { color: var(--danger); }
 .btn.danger:hover { background: var(--danger-soft); }
 .ctx-menu button.danger { color: var(--danger); }
+.ctx-menu button.danger:not(:first-child) { margin-top: 4px; position: relative; }
+.ctx-menu button.danger:not(:first-child)::before { content: ''; position: absolute; left: 6px; right: 6px; top: -3px; border-top: 1px solid var(--border); }
+.project-quick [data-project-menu] svg { stroke-width: 3; }
 .approval .remember { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
 .approval.resolved { border-color: var(--border); background: var(--panel); }
 .approval.resolved .approval-title { color: var(--muted); }
@@ -315,7 +318,7 @@ code, pre, .mono { font-family: var(--mono, ui-monospace, "Cascadia Code", Conso
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--faint); }
 .dot.ok { background: var(--ok); } .dot.run { background: var(--accent); animation: blink 1s infinite; } .dot.wait { background: var(--warn); }
 
-.toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 8px 16px; border-radius: 8px; opacity: 0; pointer-events: none; transition: .2s; }
+.toast { position: fixed; z-index: 1000; max-width: min(560px, calc(100vw - 32px)); bottom: 40px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow); padding: 8px 16px; border-radius: 8px; opacity: 0; pointer-events: none; transition: .2s; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 body.dragging { cursor: col-resize; user-select: none; }
 body.dragging iframe, body.dragging .timeline { pointer-events: none; }

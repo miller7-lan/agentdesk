@@ -3,7 +3,7 @@ const path = require('node:path');
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_IDENTIFIER = 120;
-const tags = ['operation', 'status', 'kind', 'code', 'provider', 'projectId', 'taskId', 'route'];
+const tags = ['operation', 'status', 'kind', 'code', 'provider', 'projectId', 'taskId', 'route', 'error', 'version', 'agent'];
 
 function plainTag(value) {
   return typeof value === 'string' && value.length <= MAX_IDENTIFIER && /^[a-z0-9_.:-]+$/i.test(value) ? value : undefined;
