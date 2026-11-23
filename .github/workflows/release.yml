@@ -256,6 +256,8 @@ jobs:
           SIGNED: ${{ secrets.WIN_CSC_LINK != '' && secrets.MAC_CSC_LINK != '' }}
         run: |
           set -euo pipefail
+          # Secrets pasted in the GitHub form often end with a newline; ssh rejects "22\n" as a port.
+          PORT=$(printf '%s' "${PORT:-}" | tr -d '[:space:]'); TARGET=$(printf '%s' "$TARGET" | tr -d '[:space:]')
           if [ -z "$KEY" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$TARGET" ]; then
             echo "::notice::VPS2 upload secrets are not configured; packages stay as workflow artifacts only."
             exit 0
