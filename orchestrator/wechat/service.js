@@ -34,6 +34,16 @@ function short(text, size = 18) {
   return chars.length > size ? chars.slice(0, size).join('') + '…' : chars.join('');
 }
 
+// 微信里不渲染 Markdown：链接只留文字，绝对路径只留文件名，去掉加粗和行内代码记号。
+function plainSummary(text) {
+  return String(text || '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(?:file:\/\/)?\/(?:[^\s/「」（）()]+\/)+([^\s/「」（）()]+)/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .trim();
+}
+
 function friendlyError(task) {
   if (task.status === 'quota_low') return `额度不够，稍后再试（发 /重试 ${task.id}）。${task.blocked ? describeBlocked(task.blocked) + '。' : ''}`;
   if (task.status === 'timeout') return '超时了，可以把需求拆小一点再试。';
@@ -261,7 +271,7 @@ class WechatService {
     const lines = [head];
     if (result.note) lines.push(result.note);
     if (task.status === 'succeeded') {
-      if (result.summary) lines.push(result.summary);
+      if (result.summary) lines.push(plainSummary(result.summary));
       if (!result.outputs.length) lines.push('（这次没有生成文件）');
     } else {
       lines.push(friendlyError(task));
@@ -415,4 +425,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { WechatService, createServer, loadAdapters, duration, short };
+module.exports = { WechatService, createServer, loadAdapters, duration, short, plainSummary };

@@ -245,3 +245,8 @@ test('store gc removes expired task folders and marks them archived', () => {
   assert.equal(fs.existsSync(service.store.taskDir(task.id)), false);
   assert.equal(service.store.get(task.id), null);                         // 记录也删
 });
+
+test('plainSummary strips markdown links, paths and emphasis for WeChat', () => {
+  const { plainSummary } = require('../orchestrator/wechat/service');
+  assert.equal(plainSummary('交付 [汇总.xlsx](file:///var/lib/a/out/汇总.xlsx)，**新增** `部门汇总`，见 /var/lib/x/out/a.docx。'), '交付 汇总.xlsx，新增 部门汇总，见 a.docx。');
+});
