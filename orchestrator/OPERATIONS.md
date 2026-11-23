@@ -168,6 +168,22 @@ agent 在 VPS2 的代码副本里改代码。通过本机 Bridge，它还能看�
 
 系统日志由 `agentdesk-journal-retention.timer` 每天执行一次 `journalctl --vacuum-time=60d`，只保留最近 60 天的 journald 日志。
 
+### 四个 CLI 每日自动更新
+
+`agentdesk-cli-update.timer` 每天美东时间中午 12:00（`America/New_York`，自动跟随夏令时；错过的话开机后补跑）以 root 依次运行 Codex、Claude Code、Grok、Antigravity（`agy`）各自的官方 `update`，记录更新前后的 `--version`，然后通过主控的 admin socket 重新读取模型目录（`catalog`）。某个 CLI 更新失败时保留已安装版本、继续更新下一个，整次运行以非零退出码结束。Grok 的更新器把新版放在 `/root/.grok/bin`，脚本会把它装到主控实际调用的 `/usr/local/bin/grok`，下载缓存只留最新两份。它和客户端发起的 `cli-upgrade.js run-pending` 共用 `/run/agentdesk-cli-update.lock`，不会同时运行。
+
+文件：`orchestrator/agentdesk-cli-update.sh`（装到 `/usr/local/sbin/agentdesk-cli-update`）、`agentdesk-cli-update.service`、`agentdesk-cli-update.timer`。
+
+```sh
+install -m 0755 orchestrator/agentdesk-cli-update.sh /usr/local/sbin/agentdesk-cli-update
+install -m 0644 orchestrator/agentdesk-cli-update.service orchestrator/agentdesk-cli-update.timer /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now agentdesk-cli-update.timer
+
+systemctl list-timers agentdesk-cli-update.timer      # 下次运行时间
+systemctl start agentdesk-cli-update.service          # 立即更新一次
+journalctl -u agentdesk-cli-update.service -n 80      # 看结果（每个 CLI 的 before/after 和模型目录变化）
+```
+
 ### 管理命令补充
 
 ```sh

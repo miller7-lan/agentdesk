@@ -240,3 +240,24 @@ cd /tmp && sudo -u agentdesk env AGENTDESK_BRIDGE=mac /opt/agentdesk-orchestrato
 - 改了平台相关源码的环境修复只做标记，不会在云端重跑测试。
 - Windows 不做强制隔离或凭据保护，只做检测和标注（M1、M2、O3 的决定）。
 - 单聊 directChatV2 需要另外授权，本文不涉及；不要为此写设备密钥文件或 `devices.json`。
+
+## 6. 本机四个 CLI 每日自动更新（Mac / Windows）
+
+VPS2 上由 systemd 定时器负责（见 `orchestrator/OPERATIONS.md`「四个 CLI 每日自动更新」）；你自己的电脑用 `scripts/local-cli-update.js`，只需要电脑上有 Node.js。
+
+- 系统每小时启动它一次，它只在**美东时间每天中午 12:00 之后的第一次启动**时更新（跟随夏令时，和电脑本身的时区无关）；中午时电脑在睡眠或关机，醒来后补上。
+- 依次运行 `codex`、`claude`、`grok`、`agy` 各自的官方 `update`；没装的跳过，某个失败就保留原版本、继续下一个。
+- 日志 `~/.agentdesk/cli-update.log`（Windows 是 `%USERPROFILE%\.agentdesk\cli-update.log`），记录每个 CLI 更新前后的版本。
+
+安装（在仓库目录里，用平时能直接运行这四个 CLI 的终端执行，这样它们的位置能被找到）：
+
+```sh
+node scripts/local-cli-update.js --install     # Mac：launchd 任务 local.agentdesk.cli-update；Windows：计划任务「AgentDesk CLI Update」
+node scripts/local-cli-update.js --now         # 立即更新一次，确认能跑通
+node scripts/local-cli-update.js --status      # 上次更新时间、今天是否已更新、日志位置
+node scripts/local-cli-update.js --uninstall   # 移除定时任务
+```
+
+注意：
+- 仓库目录移动后要重新 `--install`（任务里记的是脚本的完整路径）。Mac 上新装了 CLI、PATH 变了，也要重新 `--install`。
+- Windows 上 CLI 正在被 AgentDesk 或终端使用时，更新可能因为文件被占用而失败，日志会记下，第二天再试。
