@@ -1,6 +1,6 @@
 'use strict';
-// 微信办公助手服务：企业微信智能机器人长连接 → 路由 → 排队执行 → 回文件和说明。
-// 用法：WECOM_BOT_ID=… WECOM_BOT_SECRET=… node service.js [wechat.json] [orchestrator config.json]
+// 微信办公助手服务：个人微信 ClawBot（iLink 长轮询，默认）或企业微信智能机器人长连接 → 路由 → 排队执行 → 回文件和说明。
+// 用法：node service.js [wechat.json] [orchestrator config.json]；通道见 createChannel。
 // 与主控是两个独立进程：共用 CLI 登录目录（stateDir/homes/<cli>），不走主控的调度器。
 const fs = require('node:fs');
 const path = require('node:path');
@@ -493,30 +493,57 @@ function loadAdapters(orchestratorConfig) {
   return adapters;
 }
 
+// 通道：wechat.json 的 channel = "ilink"（个人微信 ClawBot，默认）或 "wecom"（企业微信智能机器人）。
+function createChannel(config, onMessage) {
+  if ((config.channel || 'ilink') === 'wecom') {
+    const botId = process.env.WECOM_BOT_ID;
+    const secret = process.env.WECOM_BOT_SECRET;
+    if (!botId || !secret) { console.error('缺少环境变量 WECOM_BOT_ID / WECOM_BOT_SECRET（放在 /etc/agentdesk-orchestrator/wechat.env）'); process.exit(2); }
+    const { BotChannel, createBotClient } = require('./bot');
+    const client = createBotClient({ botId, secret, log, onMessage });
+    return { channel: new BotChannel({ client, log }), start: () => client.connect(), stop: () => client.disconnect(), owner: null };
+  }
+  const { IlinkChannel } = require('./ilink');
+  const dir = path.join(config.stateDir, 'wechat');
+  const accountFile = path.join(dir, 'ilink-account.json');
+  if (!fs.existsSync(accountFile)) return null;
+  const account = JSON.parse(fs.readFileSync(accountFile, 'utf8'));
+  const channel = new IlinkChannel({ account, stateFile: path.join(dir, 'ilink-state.json'), log });
+  const controller = new AbortController();
+  return {
+    channel, owner: account.userId || null,
+    start: () => channel.start(onMessage, controller.signal).catch((error) => { log('ilink loop crashed', error?.stack || error); process.exit(1); }),
+    stop: () => controller.abort(),
+  };
+}
+
 function main() {
   const wechatPath = process.argv[2] || '/etc/agentdesk-orchestrator/wechat.json';
   const orchestratorPath = process.argv[3] || '/etc/agentdesk-orchestrator/config.json';
-  const botId = process.env.WECOM_BOT_ID;
-  const secret = process.env.WECOM_BOT_SECRET;
-  if (!botId || !secret) { console.error('缺少环境变量 WECOM_BOT_ID / WECOM_BOT_SECRET（放在 /etc/agentdesk-orchestrator/wechat.env）'); process.exit(2); }
   const config = fs.existsSync(wechatPath) ? JSON.parse(fs.readFileSync(wechatPath, 'utf8')) : {};
-  if (!config.allowUsers?.length) log('提示：allowUsers 为空，所有人都会被拒绝；日志里会打印被拒绝的 userid，登记后重启服务');
   const orchestratorConfig = JSON.parse(fs.readFileSync(orchestratorPath, 'utf8'));
   config.stateDir ||= orchestratorConfig.stateDir;
-  const adapters = loadAdapters(orchestratorConfig);
-  const { BotChannel, createBotClient } = require('./bot');
   let service = null;
-  const client = createBotClient({ botId, secret, log, onMessage: (message) => service?.onMessage(message) });
-  const channel = new BotChannel({ client, log });
+  const transport = createChannel(config, (message) => service?.onMessage(message));
+  if (!transport) {
+    // 个人微信还没扫码登录：等登录文件出现再启动（不退出，免得 systemd 反复重启）。
+    log('个人微信 ClawBot 尚未登录：运行 sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js 扫码，然后 systemctl restart agentdesk-wechat');
+    setInterval(() => {}, 3600_000);
+    return;
+  }
+  // 扫码登录 ClawBot 的人自动是管理员。
+  if (transport.owner && !(config.allowUsers || []).includes(transport.owner)) config.allowUsers = [...(config.allowUsers || []), transport.owner];
+  if (!config.allowUsers?.length) log('提示：allowUsers 为空，所有人都会被拒绝；日志里会打印被拒绝的 userid，登记后重启服务');
+  const adapters = loadAdapters(orchestratorConfig);
   const quota = new QuotaGate({ adapters, quotaStatus: require('../quotas').quotaStatus, minRemaining: config.minQuotaPercent ?? 8 });
-  service = new WechatService({ config, adapters, channel, runAdapter: require('../adapters').runAdapter, quota });
+  service = new WechatService({ config, adapters, channel: transport.channel, runAdapter: require('../adapters').runAdapter, quota });
   service.gc();
   setInterval(() => { try { service.gc(); } catch (error) { log('gc failed', error.message); } }, 3600 * 1000).unref();
-  client.connect();
-  log(`wechat bot service started, adapters: ${Object.keys(adapters).join(',')}, allowUsers: ${service.allowUsers.size}`);
+  transport.start();
+  log(`wechat service started, channel: ${config.channel || 'ilink'}, adapters: ${Object.keys(adapters).join(',')}, allowUsers: ${service.allowUsers.size}`);
   const shutdown = () => {
     if (service.running) service.running.controller.abort(new Error('cancelled'));
-    try { client.disconnect(); } catch {}
+    try { transport.stop(); } catch {}
     setTimeout(() => process.exit(0), 3000).unref();
   };
   process.on('SIGTERM', shutdown);

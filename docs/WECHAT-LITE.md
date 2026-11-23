@@ -1,6 +1,19 @@
-# 微信办公助手（企业微信智能机器人）
+# 微信办公助手（个人微信 ClawBot / 企业微信智能机器人）
 
-> 2026-11-23 起。取代 [WECHAT_OMC_PLAN.md](WECHAT_OMC_PLAN.md) 的重方案。通道为 **企业微信智能机器人 · API 模式 · 长连接**（官方 SDK `@wecom/aibot-node-sdk` 1.0.7），不用 HTTP 回调，不需要备案域名和可信 IP。
+> 2026-11-23 起。取代 [WECHAT_OMC_PLAN.md](WECHAT_OMC_PLAN.md) 的重方案。两种通道，`wechat.json` 的 `channel` 二选一，上层逻辑相同：
+>
+> - **`ilink`（默认，当前使用）**：个人微信 ClawBot，腾讯 iLink 协议（与腾讯官方 OpenClaw 插件 `@tencent-weixin/openclaw-weixin` 2.4.10 相同的 HTTP 接口，`orchestrator/wechat/ilink.js`）。在个人微信里直接聊。**注意**：iLink 不是正式开放 API，协议可能变更；只用自己的微信号、低频使用。用户 2026-11-23 知情后选择此通道。
+> - **`wecom`**：企业微信智能机器人 · API 模式 · 长连接（官方 SDK `@wecom/aibot-node-sdk` 1.0.7，`bot.js`），只能在企业微信 App 里用。
+
+## 0. 个人微信 ClawBot 登录
+
+```sh
+# 在 VPS2 上（或从 Mac：ssh -t root@<VPS2> '…'）
+sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js   # 终端出二维码，手机微信扫码确认
+systemctl restart agentdesk-wechat
+```
+
+凭据存 `/var/lib/agentdesk-orchestrator/wechat/ilink-account.json`（0600），收信游标和各用户最近的 `context_token` 存 `ilink-state.json`。扫码人自动是管理员（白名单）。日志出现 `-14 session expired` 时服务暂停 1 小时；持续出现就重新登录（`login.js --force`）。出站文件上限按 50MB，入站 100MB；文件用 AES-128-ECB 加密后走微信 CDN。
 
 在企业微信里和「AgentDesk」机器人单聊，发 Word / Excel / PPT 和需求，VPS 2 在沙箱里处理，成品文件主动推送回来。不同步到桌面端，不碰 Mac/Windows 和主控调度器，不提供 shell。
 
