@@ -178,7 +178,9 @@ test('upload stream: only update files, refuses artifacts holding connection set
 
 test('upload stream: an artifact folder with a colon (a Windows drive path) is kept whole', (t) => {
   const root = tempRoot(t);
-  const dist = path.join(root, 'D:', 'a', 'dist-win');
+  // On Windows the temporary folder already starts with a drive (C:\\…); elsewhere a folder named D: stands in.
+  const dist = process.platform === 'win32' ? path.join(root, 'dist-win') : path.join(root, 'D:', 'a', 'dist-win');
+  assert.match(dist, /:/);
   fs.mkdirSync(dist, { recursive: true });
   fs.writeFileSync(path.join(dist, 'AgentDesk-0.3.0-setup.exe'), Buffer.alloc(10, 1));
   fs.writeFileSync(path.join(dist, 'AgentDesk-0.3.0-setup.exe.blockmap'), 'bm');

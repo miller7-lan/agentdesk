@@ -631,6 +631,7 @@
     if (result.windowsNative === true && !s.native) { s.native = true; s.mode = window.AgentDeskAccess.coerce(s.mode, true); }
     if (result.fullAccessNeedsNewChat === true && !s.native) s.fullAccessLocked = true;
     if (typeof result.model === 'string' && result.model) s.codexModel = result.model;
+    if (result.collaborationMode && typeof result.collaborationMode === 'object') s.codexPlanning = result.collaborationMode.mode === 'plan';
   }
 
   async function buildInput(text, files, projectId) {
@@ -742,11 +743,22 @@
       s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s); noteThread(s, r.result);
       if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
-    // Codex 规划: the plan collaboration mode (it also lets Codex ask with request_user_input). Not on a native seat,
+    if (s.fullAccessLocked && sandboxPolicy?.type === 'dangerFullAccess') {
+      // Resuming showed this chat is on the old route: 完全访问 would be refused, so say so instead of sending.
+      dropThinking(s); s.busy = false; s.status = 'idle';
+      if (!fromQueue) { const at = s.items.findLastIndex((x) => x.t === 'user' && x.text === text); if (at >= 0) s.items.splice(at, 1); }   // still in the input box
+      sysNote(s, '这个会话用的是旧线路，不能在原会话里使用完全访问。已改回' + (A.setMode(s, window.AgentDeskAccess.lastSafe(store), 'handover'), $('#modeSelect').selectedOptions[0]?.text || '') + '；要完全访问请在该项目新建单聊。', true);
+      A.renderAll();
+      return false;
+    }
+    // Codex 规划: the plan collaboration mode (it also lets Codex ask with request_user_input), and 'default' once to
+    // leave it. Sent only then: the field is experimental, ordinary turns keep their settings untouched. Whether the
+    // thread is in plan mode comes from Codex itself on resume, so it survives a restart. Not on a native seat,
     // whose developer instructions carry the permission statement; the read-only sandbox stays either way.
     const codexModel = model || s.codexModel;
-    const collaborationMode = !chat && !s.native && codexModel
-      ? { mode: turnMode === 'plan' ? 'plan' : 'default', settings: { model: codexModel, reasoning_effort: effort || null, developer_instructions: null } }
+    const planTurn = turnMode === 'plan';
+    const collaborationMode = !chat && !s.native && codexModel && (planTurn || s.codexPlanning)
+      ? { mode: planTurn ? 'plan' : 'default', settings: { model: codexModel, ...(effort && { reasoning_effort: effort }), developer_instructions: null } }
       : undefined;
     const turnParams = chat
       ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort,
@@ -769,6 +781,7 @@
     }
     s.turnId = r.result.turn.id;
     s.lastTurnMode = turnMode;
+    if (collaborationMode) s.codexPlanning = collaborationMode.mode === 'plan';
     return true;
   }
   async function steer(s, text) {
