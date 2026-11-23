@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-23 23:10（北京时间）· 客户端 0.4.1 · 更新下载先走 VPS1、失败退回 VPS2
+
+- **改动**：Windows Bridge 处理 `client_update` / `client_update_read` 时先走 Relay（VPS1），Relay 不在线或读取出错时同一请求改走直连 SSH（VPS2），并在 1 分钟内跳过 Relay；线路状态每 5 秒查一次，不再每块都查；单块超时 10 秒改 30 秒；客户端并发读取 4 块改 8 块。
+- **背景**：Lenovo 0.3.10 → 0.4.0 下载约 28–70 KB/s，Mac 29 秒完成；每块读取前多一次线路查询，往返翻倍。
+- **测试目的**：Lenovo 已在 22:53 自动安装 0.4.0（`update_install installed`），这是第一次验证 Windows 自动检查、自动后台下载。0.4.0 → 0.4.1 仍按 0.4.0 的方式（直连）下载。
+- **VPS2**：无改动（主控按 `relay:<名字>` 识别设备，原本就接受经 Relay 的更新读取）。
+- **验证**：`npm test` 543 项，536 通过，7 项跳过，0 失败。
+
 ## 2026-11-23 22:45（北京时间）· VPS2 · 单聊沙箱偶发「bwrap: Can't bind mount /oldroot/」、Antigravity 全部模型
 
 - **问题**：Antigravity / Claude / Grok 单聊偶发「本轮失败：bwrap: Can't bind mount /oldroot/ on /newroot/ … remount "/newroot/srv/claude-shared/.claude.json": No such file or directory」，6 小时内 17 次。`/srv/claude-shared/.claude.json` 是 `/root/.claude.json` 的单文件 bind；root 的 Claude Code 每次替换该文件后挂载指向已删除的文件，AppArmor 拒绝 bwrap 重新挂载它（"deleted entry"），整个沙箱起不来。
