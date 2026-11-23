@@ -538,6 +538,15 @@ function clientUpdateFields(update) {
   return pick;
 }
 
+const UPDATE_STATUS_TTL = 5000;
+const UPDATE_READ_TIMEOUT = 30000;
+const RELAY_SKIP_MS = 60000;
+// Which live channels an update read tries, in order: the Relay on VPS1 first (unless it failed in the last minute),
+// then the direct SSH line to VPS2.
+function updateChannels(value, relaySkipUntil = 0, now = Date.now()) {
+  return [...(value?.relay && now >= relaySkipUntil ? ['relay'] : []), ...(value?.ssh ? ['ssh'] : [])];
+}
+
 function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }) {
   fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   const store = new Store(path.join(config.stateDir, 'bridge.sqlite'));
@@ -592,6 +601,8 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
       mountDelay = Math.min(60000, mountDelay * 2);
     });
   }
+  let updateStatus = null;
+  let relaySkipUntil = 0;
   const control = config.controlSocket && unixServer(config.controlSocket, (socket) => {
     const wire = new Lines(socket);
     wire.once('frame', async ({ operation, taskId, prompt, provider, model, route, revision, reply, mode, project, replyTo, via, tags, reviewOf, stepId, artifact, offset, attachments, after, group, leadEffort, leadModel, approval, autoHandover, stop, role, effort, models, grant, routeOrder, action, reason, source, fixId, backupId, update, taskIds, workspace: requestedWorkspace }) => {
@@ -614,7 +625,10 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           }
           return { route: null, ssh: false, relay: false };
         };
-        const value = await status();
+        // An update download is hundreds of chunk reads: ask for the route once every few seconds, not per chunk.
+        const updateRead = ['client_update', 'client_update_read'].includes(operation);
+        const value = updateRead && updateStatus && Date.now() - updateStatus.at < UPDATE_STATUS_TTL ? updateStatus.value : await status();
+        if (updateRead) updateStatus = { value, at: Date.now() };
         if (operation === 'routes') {
           wire.send({ ok: true, value });
           return;
@@ -655,7 +669,24 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
             Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf, attachments, group, leadEffort, leadModel, approval, autoHandover, routeOrder });
           }
         }
-        const answer = await endpoint.request(channel, id, kind, body, operation === 'apply' ? 300000 : operation === 'project_delete' ? 110000 : ['env_fix_revert', 'outside_restore'].includes(operation) ? 180000 : 10000);
+        const timeout = operation === 'apply' ? 300000 : operation === 'project_delete' ? 110000
+          : ['env_fix_revert', 'outside_restore'].includes(operation) ? 180000 : updateRead ? UPDATE_READ_TIMEOUT : 10000;
+        let answer;
+        if (updateRead) {
+          // Updates prefer the Relay on VPS1 (often the faster path from home networks), and fall back to the direct
+          // line to VPS2 when the Relay is down or a read over it fails; a failing Relay is skipped for a while.
+          const order = updateChannels(value, relaySkipUntil);
+          if (!order.length) throw new Error('bridge_offline');
+          for (const [index, via] of order.entries()) {
+            try {
+              answer = await endpoint.request(via, index ? randomUUID() : id, kind, body, timeout);
+              break;
+            } catch (error) {
+              if (via === 'relay') { relaySkipUntil = Date.now() + RELAY_SKIP_MS; updateStatus = null; }
+              if (index === order.length - 1 || /invalid_update|update_version_not_offered|update_file_changed/.test(error.message)) throw error;
+            }
+          }
+        } else answer = await endpoint.request(channel, id, kind, body, timeout);
         wire.send({ ok: true, value: answer });
       } catch (error) {
         if (!socket.destroyed) wire.send({ ok: false, error: error.message });
@@ -699,4 +730,4 @@ if (require.main === module) {
   process.once('SIGINT', close);
 }
 
-module.exports = { start, startBridge, relayConfig, providerSettings, validateTemplate };
+module.exports = { start, startBridge, relayConfig, providerSettings, validateTemplate, updateChannels };

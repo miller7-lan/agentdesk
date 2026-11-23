@@ -37,7 +37,9 @@ function parseRange(header, size) {
 // read(name, offset, length) → Buffer of exactly min(length, size - offset) bytes, from VPS2.
 // Reads in flight at once. Each read is a round trip over SSH (often through the VPS1 jump host), so one at a time
 // leaves the line idle most of the time; a few in flight keep it busy without flooding the control channel.
-const PARALLEL_READS = 4;
+// 8 reads in flight: on a slow, high-latency line (a home connection in China to VPS2) 4 left the line idle
+// between round trips; each read is at most 128 KiB, so 8 stay well within the Bridge's per-request timeout.
+const PARALLEL_READS = 8;
 
 function createLoopbackFeed({ manifest, read, chunk = READ_CHUNK, parallel = PARALLEL_READS, now = () => new Date() }) {
   const token = randomBytes(16).toString('hex');

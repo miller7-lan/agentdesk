@@ -450,3 +450,15 @@ test('the Mac Bridge module only starts when run directly', () => {
   assert.equal(typeof bridge.main, 'function');
   assert.equal(typeof bridge.createSpawnSsh, 'function');
 });
+
+test('update downloads try the Relay on VPS1 first and fall back to the direct line to VPS2', () => {
+  const { updateChannels } = require('../orchestrator/service');
+  assert.deepEqual(updateChannels({ ssh: true, relay: true }, 0, 1000), ['relay', 'ssh']);
+  assert.deepEqual(updateChannels({ ssh: true, relay: false }, 0, 1000), ['ssh']);
+  assert.deepEqual(updateChannels({ ssh: false, relay: true }, 0, 1000), ['relay']);
+  assert.deepEqual(updateChannels({ ssh: true, relay: true }, 5000, 1000), ['ssh']);   // Relay failed recently: skipped
+  assert.deepEqual(updateChannels({ ssh: false, relay: false }), []);
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'orchestrator', 'service.js'), 'utf8');
+  assert.match(source, /Date\.now\(\) - updateStatus\.at < UPDATE_STATUS_TTL/);   // no route lookup before every chunk
+  assert.equal(require('../update-transport').PARALLEL_READS, 8);
+});
