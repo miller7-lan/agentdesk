@@ -71,7 +71,7 @@
   function sysNote(s, text, err) { s.items.push({ t: 'assist', html: `<p class="${err ? 'err-note' : 'sys-note'}">${esc(text)}</p>` }); }
   function newSession(extra = {}) {
     const session = { id: 'L' + Date.now() + Math.random().toString(36).slice(2, 6), project: 'live', agent: 'codex', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, term: [], diffs: [], ...extra };
-    if (!session.mode) session.mode = 'auto';
+    if (!session.mode) session.mode = window.AgentDeskAccess.newSessionMode(store);
     return session;
   }
 
@@ -435,7 +435,13 @@
       case 'error': if (!p.willRetry) sysNote(s, `${agentName(m.agent || agentOf(s))} 错误：` + (p.error?.message || JSON.stringify(p.error)), true); break;
       case 'serverRequest/resolved': {
         const it = s.items.find((x) => x.reqId === p.requestId && x.state === 'pending');
-        if (it) it.state = 'approved';
+        // An approval settled elsewhere counts as approved; a question that nobody here answered is gone.
+        if (it) { it.state = it.t === 'question' ? 'expired' : 'approved'; if (it.t === 'question') it.summary = []; }
+        break;
+      }
+      case 'agentdesk/requestExpired': {
+        const it = s.items.find((x) => x.t === 'question' && x.reqId === p.requestId && (x.state === 'pending' || x.state === 'sending'));
+        if (it) { it.state = 'expired'; it.summary = []; if (s.status === 'waiting') s.status = 'running'; }
         break;
       }
       case 'turn/completed': {
@@ -585,10 +591,13 @@
   // After a read-only planning turn: 执行此方案？ (goes to the last writable mode) or keep planning.
   function offerHandover(s) {
     s.items.forEach((x) => { if (x.t === 'handover' && x.state === 'pending') x.state = 'dismissed'; });
-    const target = window.AgentDeskAccess.handoverMode(store, { native: !!s.native });
+    const target = window.AgentDeskAccess.handoverMode(store, { native: !!s.native, locked: !!s.fullAccessLocked });
+    const wanted = window.AgentDeskAccess.handoverMode(store, { native: !!s.native });
     const last = [...s.items].reverse().find((x) => x.t === 'assist' && x.itemId && (x.text || x.html));
-    const plain = String(last?.text || '').replace(/\s+/g, ' ').trim();
-    s.items.push({ t: 'handover', agent: agentOf(s), target, state: 'pending', ephemeral: true,
+    // DOMParser: an inert document, so markup from the model never runs while its text is read.
+    const plain = String(last?.text || (last?.html ? new DOMParser().parseFromString(last.html, 'text/html').body.textContent : ''))
+      .replace(/\s+/g, ' ').trim();
+    s.items.push({ t: 'handover', agent: agentOf(s), target, state: 'pending', ephemeral: true, fullAccessNeedsNewChat: wanted !== target,
       excerpt: plain.length > 280 ? plain.slice(0, 280) + '…' : plain });
   }
 
@@ -608,7 +617,7 @@
   // 每步询问 asks for every change and command (Codex: untrusted); 自动编辑 lets file changes through and still asks
   // for commands (Codex: on-request; the chat server: autoApprove 'edits'). A native chat only knows plan and auto.
   function modeToPolicy(mode, s) {
-    mode = window.AgentDeskAccess.coerce(mode, !!s?.native);
+    mode = window.AgentDeskAccess.coerce(mode, !!s?.native, { locked: !!s?.fullAccessLocked, store });
     if (mode === 'auto') return { mode, approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
     if (mode === 'plan') return { mode, approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
     const write = { sandbox: 'workspace-write',
@@ -620,6 +629,7 @@
   function noteThread(s, result) {
     if (!result) return;
     if (result.windowsNative === true && !s.native) { s.native = true; s.mode = window.AgentDeskAccess.coerce(s.mode, true); }
+    if (result.fullAccessNeedsNewChat === true && !s.native) s.fullAccessLocked = true;
     if (typeof result.model === 'string' && result.model) s.codexModel = result.model;
   }
 
@@ -735,7 +745,7 @@
     // Codex 规划: the plan collaboration mode (it also lets Codex ask with request_user_input). Not on a native seat,
     // whose developer instructions carry the permission statement; the read-only sandbox stays either way.
     const codexModel = model || s.codexModel;
-    const collaborationMode = !chat && !s.native && codexModel && (turnMode === 'plan' || s.codexPlanning)
+    const collaborationMode = !chat && !s.native && codexModel
       ? { mode: turnMode === 'plan' ? 'plan' : 'default', settings: { model: codexModel, reasoning_effort: effort || null, developer_instructions: null } }
       : undefined;
     const turnParams = chat
@@ -759,7 +769,6 @@
     }
     s.turnId = r.result.turn.id;
     s.lastTurnMode = turnMode;
-    if (collaborationMode) s.codexPlanning = collaborationMode.mode === 'plan';
     return true;
   }
   async function steer(s, text) {
@@ -1143,7 +1152,8 @@
     if (s && modeSel) {
       // A conversation without its own choice starts in the last writable mode (never in 只读规划; first use 自动编辑).
       const Access = window.AgentDeskAccess;
-      const mode = Access.coerce(s.mode || Access.newSessionMode(store, { native: !!s.native }), !!s.native);
+      const mode = Access.coerce(s.mode || Access.newSessionMode(store, { native: !!s.native }), !!s.native,
+        { locked: !!s.fullAccessLocked, store });
       if (s.live && s.mode !== mode) s.mode = mode;
       A.syncModeControls(s, mode);
     }

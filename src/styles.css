@@ -608,3 +608,4 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .access-toggle { flex: none; white-space: nowrap; }
 .access-toggle.on { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); background: var(--warn-soft); }
 .access-toggle:disabled { opacity: .55; cursor: not-allowed; }
+.handover-note { margin: 0 0 8px; color: var(--warn); font-size: 12px; }

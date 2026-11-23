@@ -72,3 +72,13 @@ test('picksFrom reads checked options and own answers', () => {
   const qs = [{ id: 'a' }, { id: 'b' }];
   assert.deepEqual(Q.picksFrom(form, qs), { a: { selected: ['x'], other: '' }, b: { selected: ['m', 'n'], other: ' 自填 ' } });
 });
+
+test('a re-render keeps what was picked and typed on an open card (escaped)', () => {
+  const questions = Q.normalize({ questions: [{ id: 'a', question: '单选', options: ['x', 'y'], isOther: true }, { id: 'b', question: '多选', multiSelect: true, options: ['m', 'n'] }] });
+  const html = Q.render({ agent: 'claude', state: 'pending', questions }, 0, { a: { selected: ['y'], other: '"><img src=x>' }, b: { selected: ['m', 'n'] } });
+  assert.match(html, /value="y" data-q="0"\s+checked/);
+  assert.doesNotMatch(html, /value="x" data-q="0" data-first\s+checked/);
+  assert.equal((html.match(/data-q="1"\s+checked/g) || []).length, 2);
+  assert.match(html, /value="&quot;&gt;&lt;img src=x&gt;"/);
+  assert.doesNotMatch(html, /<img src=x>/);
+});

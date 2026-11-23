@@ -75,7 +75,7 @@
     });
   }
 
-  function render(item, idx) {
+  function render(item, idx, draft = null) {
     const pending = item.state === 'pending';
     const outcome = { answered: '已回答', skipped: '已跳过', expired: '已失效，未送达', sending: '提交中…' }[item.state] || '';
     const head = `<div class="question-title"><span>${esc(item.title || title(item.agent))}</span>${outcome
@@ -88,11 +88,14 @@
     const body = item.questions.map((question, qIndex) => {
       const name = `q${idx}-${qIndex}`;
       const type = question.multiSelect ? 'checkbox' : 'radio';
+      const picked = draft?.[question.id] || {};
       const options = question.options.map((option, oIndex) => `<label class="question-option">
-          <input type="${type}" name="${name}" value="${esc(option.label)}" data-q="${qIndex}" ${oIndex === 0 && qIndex === 0 ? 'data-first' : ''} />
+          <input type="${type}" name="${name}" value="${esc(option.label)}" data-q="${qIndex}" ${oIndex === 0 && qIndex === 0 ? 'data-first' : ''}
+            ${(picked.selected || []).includes(option.label) ? 'checked' : ''} />
           <span class="label">${esc(option.label)}</span>${option.description ? `<span class="desc">${esc(option.description)}</span>` : ''}</label>`).join('');
       const other = question.isOther ? `<input class="question-other" type="${question.isSecret ? 'password' : 'text'}" maxlength="2000"
-          data-q="${qIndex}" data-other placeholder="${question.options.length ? '其他（自己填写）' : '填写你的回答'}" autocomplete="off" />` : '';
+          data-q="${qIndex}" data-other placeholder="${question.options.length ? '其他（自己填写）' : '填写你的回答'}" autocomplete="off"
+          value="${esc(picked.other || '')}" />` : '';
       return `<fieldset class="question-item${item.missing?.includes(qIndex) ? ' missing' : ''}" data-q="${qIndex}">
         <legend>${item.questions.length > 1 ? `<span class="question-no">${qIndex + 1}</span>` : ''}${question.header ? `<span class="question-header">${esc(question.header)}</span>` : ''}
           <span class="question-text">${esc(question.question)}</span>${question.multiSelect ? '<span class="question-hint">可多选</span>' : ''}</legend>

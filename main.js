@@ -62,6 +62,16 @@ function answerNativeQuestion(id, result, error) {
   entry.resolve(error ? { answers: {}, cancelled: true } : result || { answers: {} });
   return true;
 }
+function expireNativeQuestion(agent, frame) {
+  for (const [id, entry] of nativeQuestions) {
+    if (entry.agent === agent && entry.threadId === frame.params?.threadId && entry.frameId === frame.params?.requestId) {
+      nativeQuestions.delete(id);
+      entry.resolve({ answers: {}, cancelled: true });
+      return { ...frame, params: { ...frame.params, requestId: id } };
+    }
+  }
+  return frame;
+}
 function questionSummary(message) {
   const list = Array.isArray(message?.params?.questions) ? message.params.questions : [];
   return list.map((question) => String(question?.question || question?.header || '')).filter(Boolean).join(' / ').slice(0, 160);
@@ -82,6 +92,8 @@ function nativeDesktop() {
       findWorktree: (key) => worktrees().get(key),
       bridgeSettings: () => localBridgeSettings || (mac ? macBridgeSettings() : null),
       onEvent: (agent, frame) => {
+        // The seat's own id for a withdrawn question → the id the app's card knows.
+        if (frame?.method === 'agentdesk/requestExpired') frame = expireNativeQuestion(agent, frame);
         trackNativeTurn(agent, frame);
         if (agent === 'codex') toUi('codex:event', frame);
         else toUi('chat:event', { ...frame, agent });
@@ -90,8 +102,15 @@ function nativeDesktop() {
       // codex:respond / chat:respond with its own id (never a remote request id).
       onRequest: (agent, frame) => new Promise((resolve, reject) => {
         const id = 'native-question-' + (++nativeQuestionSeq);
-        const timer = setTimeout(() => { nativeQuestions.delete(id); reject(new Error('question_timeout')); }, 16 * 60_000);
-        nativeQuestions.set(id, { resolve: (value) => { clearTimeout(timer); resolve(value); } });
+        const threadId = frame.params?.threadId;
+        // The same 15 minutes as the chat server; then the card is told the question is gone.
+        const timer = setTimeout(() => {
+          nativeQuestions.delete(id);
+          toUi(agent === 'codex' ? 'codex:event' : 'chat:event', { method: 'agentdesk/requestExpired',
+            params: { threadId, requestId: id }, ...(agent !== 'codex' && { agent }) });
+          reject(new Error('question_timeout'));
+        }, 15 * 60_000);
+        nativeQuestions.set(id, { agent, threadId, frameId: frame.id, resolve: (value) => { clearTimeout(timer); resolve(value); } });
         const message = { ...frame, id, ...(agent !== 'codex' && { agent }) };
         toUi(agent === 'codex' ? 'codex:server-request' : 'chat:server-request', message);
         notifyIfAway(`${agent === 'codex' ? 'Codex' : CHAT_LABEL[agent] || agent} 有问题要问你`, questionSummary(frame));
@@ -892,6 +911,10 @@ ipcMain.handle('codex:request', async (event, method, params) => {
       if (!codexCommandRoots.has(threadId)) codexCommandRoots.set(threadId, { projectId: project, root: localRootFor(project) });
     }
     if (method === 'thread/archive') codexCommandRoots.delete(params.threadId);
+    // This thread is on the MCP route although native chats exist here: 完全访问 would be refused on it (turn/start
+    // above), so the app offers that mode only in a new chat.
+    if ((method === 'thread/start' || method === 'thread/resume') && result?.thread?.id && nativeDesktop() &&
+        codexCommandRoots.get(result.thread.id)?.root) return { ok: true, result: { ...result, fullAccessNeedsNewChat: true } };
     return { ok: true, result };
   } catch (e) {
     if (method === 'turn/start') {
@@ -1209,6 +1232,9 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
     const link = native || chatLink(agent);
     if (enrollment && !enrolledSession) throw new Error('sign_in_required');
     let request = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
+    // See the turn/start check below: on the MCP route, with native chats available, 完全访问 needs a new chat.
+    const legacyRoute = (result) => (!native && !useGrokDirect && nativeDesktop() && result && typeof result === 'object'
+      ? { ...result, fullAccessNeedsNewChat: true } : result);
 
     if (method === 'thread/start') {
       const { projectId, worktreeSession, ...rest } = request;
@@ -1240,7 +1266,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
       if (useGrokDirect) toUi('chat:event', { agent, method: 'agentdesk/fallback',
         params: { threadId, reason: 'Grok Mac 原生会话初始化暂不可用' } });
       logger?.audit('chat_thread', { status: 'started', projectId: request.projectId, agent });
-      return { ok: true, result };
+      return { ok: true, result: legacyRoute(result) };
     }
 
     if (method === 'thread/resume') {
@@ -1256,7 +1282,7 @@ ipcMain.handle('chat:request', async (event, agent, method, params) => {
           sandboxPolicy: result?.sandboxPolicy ?? previous?.sandboxPolicy,
         });
       }
-      return { ok: true, result };
+      return { ok: true, result: legacyRoute(result) };
     }
 
     if (method === 'turn/start') {

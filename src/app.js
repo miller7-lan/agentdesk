@@ -11,7 +11,8 @@
   if (LIVE) {
     D.projects.forEach((p) => { p.name += '（示例）'; p.example = true; });
     D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区' : 'Windows 开发机', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
-    D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', mode: 'auto', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
+    // No mode here: a live chat without its own choice gets the last writable mode when it is opened (access-toggle.js).
+    D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });
   }
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -268,7 +269,8 @@
       return;
     }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
-    const base = { id, project, agent, mode: p.live ? 'auto' : 'ask', title: '新会话', status: 'idle', time: '刚刚', items: [] };
+    // A live chat starts in the last writable mode (never 只读规划; first use 自动编辑), set when it is opened.
+    const base = { id, project, agent, ...(!p.live && { mode: 'ask' }), title: '新会话', status: 'idle', time: '刚刚', items: [] };
     if (worktree) {
       // Its own branch and checkout, made before the first message so the AI never touches the project folder.
       if (!p.live || !p.configured || !window.desk?.worktrees) { toast('独立工作树需要已连接、并选好本机目录的项目'); return; }
@@ -338,13 +340,14 @@
           <span class="tool-kind">${esc(it.kind)}</span><span class="tool-arg mono">${esc(it.arg)}</span><span class="tool-meta">${esc(it.meta || '')}</span></div>
         <div class="tool-body"><div class="io-label">输入</div><pre class="io">${esc(it.input)}</pre><div class="io-label">输出</div><pre class="io">${esc(it.output)}</pre>
         ${it.link ? `<a class="tool-link" data-goto="${it.link}">在 Diff 面板中查看 →</a>` : ''}</div></div>`;
-    if (it.t === 'question') return window.AgentDeskQuestions.render(it, idx);
+    if (it.t === 'question') return window.AgentDeskQuestions.render(it, idx, questionDrafts.get(it));
     if (it.t === 'handover') {
       if (it.state === 'dismissed') return '';
       const label = MODE_NAMES[it.target] || it.target;
       if (it.state === 'executed') return `<div class="handover resolved"><span>已按方案开始执行（${esc(label)}）</span></div>`;
       return `<div class="handover" data-idx="${idx}"><div class="handover-title">执行此方案？</div>
         ${it.excerpt ? `<p class="handover-excerpt">${esc(it.excerpt)}</p>` : ''}
+        ${it.fullAccessNeedsNewChat ? '<p class="handover-note">这个会话用的是旧线路，不能在原会话里切到完全访问；要完全访问请在该项目新建单聊。</p>' : ''}
         <div class="handover-actions"><button class="btn primary" data-handover="run">按此方案执行（${esc(label)}）</button>
           <button class="btn" data-handover="stay">继续规划</button></div></div>`;
     }
@@ -415,6 +418,15 @@
     if (atBottom) tl.scrollTop = tl.scrollHeight;
   }
 
+  // What the person has picked or typed on an open card survives re-renders (memory only, never stored).
+  const questionDrafts = new WeakMap();
+  const keepDraft = (e) => {
+    const form = e.target.closest?.('[data-question-card]');
+    const it = form && sess(state.active)?.items[+form.dataset.idx];
+    if (it?.t === 'question' && it.state === 'pending') questionDrafts.set(it, window.AgentDeskQuestions.picksFrom(form, it.questions));
+  };
+  $('#timeline').addEventListener('change', keepDraft);
+  $('#timeline').addEventListener('input', keepDraft);
   // Question cards: submit = answer every question; Enter in an own-answer field submits the whole card.
   $('#timeline').addEventListener('submit', (e) => {
     const form = e.target.closest('[data-question-card]');
@@ -588,10 +600,12 @@
   function syncModeControls(s, mode) {
     const sel = $('#modeSelect');
     const native = !!s?.native;
-    const allowed = Access.allowed(native);
+    const locked = !native && !!s?.fullAccessLocked;
+    const allowed = Access.allowed(native, locked);
     for (const option of sel.options) {
       option.disabled = !allowed.includes(option.value);
-      option.title = option.disabled ? '原生单聊只支持完全访问或只读规划' : (MODE_TITLES[option.value] || '');
+      option.title = !option.disabled ? (MODE_TITLES[option.value] || '')
+        : native ? '原生单聊只支持完全访问或只读规划' : '这个会话用的是旧线路：要完全访问请在该项目新建单聊';
     }
     if (mode && sel.value !== mode) sel.value = mode;
     $('#sbMode').textContent = sel.selectedOptions[0]?.text || '';
@@ -600,23 +614,26 @@
       const on = sel.value === 'auto';
       toggle.setAttribute('aria-checked', String(on));
       toggle.classList.toggle('on', on);
-      toggle.disabled = native;
+      toggle.disabled = native || locked;
       toggle.title = native ? '原生单聊请用权限下拉在完全访问与只读规划间切换'
+        : locked ? '这个会话用的是旧线路，不能切到完全访问；要完全访问请在该项目新建单聊'
         : on ? '完全访问：AI 直接读写本机文件和运行命令，不再逐次批准。点击回到' + (MODE_NAMES[Access.lastSafe(store)] || '自动编辑')
           : '打开完全访问：AI 直接读写本机文件和运行命令，不再逐次批准（下一轮生效）';
     }
   }
-  function setMode(s, mode, source) {
-    mode = Access.coerce(mode, !!s?.native);
+  // record: only a choice the person made is remembered for new chats (not a mode set by code, e.g. the group
+  // lead's suggested chat).
+  function setMode(s, mode, source, { record = true } = {}) {
+    mode = Access.coerce(mode, !!s?.native, { locked: !!s?.fullAccessLocked, store });
     if (s && s.live) s.mode = mode;
-    Access.record(store, mode);
+    if (record) Access.record(store, mode);
     syncModeControls(s, mode);
     if (source !== 'handover') toast('权限模式：' + (MODE_NAMES[mode] || mode) + (s?.busy ? '（下一轮生效）' : ''));
   }
-  $('#modeSelect').addEventListener('change', (e) => setMode(sess(state.active), e.target.value, 'select'));
+  $('#modeSelect').addEventListener('change', (e) => setMode(sess(state.active), e.target.value, 'select', { record: e.isTrusted }));
   $('#fullAccessToggle')?.addEventListener('click', () => {
     const s = sess(state.active);
-    const next = Access.toggled($('#modeSelect').value !== 'auto', store, { native: !!s?.native });
+    const next = Access.toggled($('#modeSelect').value !== 'auto', store, { native: !!s?.native, locked: !!s?.fullAccessLocked });
     if (next) setMode(s, next, 'toggle');
   });
   $('#modelSelect').addEventListener('change', (e) => {

@@ -59,3 +59,14 @@ test('handover after a plan goes to the last writable mode', () => {
   M.record(store, 'auto'); M.record(store, 'plan');
   assert.equal(M.handoverMode(store), 'auto');
 });
+
+test('a chat on the old route where native chats exist cannot switch to 完全访问 in place', () => {
+  const store = memory();
+  M.record(store, 'ask'); M.record(store, 'auto');
+  assert.deepEqual(M.allowed(false, true), ['ask', 'edit', 'plan']);
+  assert.equal(M.toggled(true, store, { locked: true }), null);
+  assert.equal(M.toggled(false, store, { locked: true }), 'ask');
+  assert.equal(M.coerce('auto', false, { locked: true, store }), 'ask');
+  assert.equal(M.handoverMode(store, { locked: true }), 'ask', 'the handover falls back to the last ask/edit');
+  assert.equal(M.handoverMode(store), 'auto');
+});

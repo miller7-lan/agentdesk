@@ -38,9 +38,13 @@
   }
 
   // A native chat (the project is mounted, Codex/CLI run with the person's rights) only knows plan and auto.
-  function coerce(mode, native) {
+  // A locked chat is on the MCP route on a computer that has native chats: 完全访问 there needs a new chat
+  // (the app refuses it on the old route), so auto falls back to the last ask/edit.
+  function coerce(mode, native, { locked = false, store = null } = {}) {
     if (!valid(mode)) mode = FIRST;
-    return native && !NATIVE.has(mode) ? 'auto' : mode;
+    if (native) return NATIVE.has(mode) ? mode : 'auto';
+    if (locked && mode === 'auto') return store ? lastSafe(store) : FIRST;
+    return mode;
   }
 
   // What a new chat starts in: the last writable mode, never plan.
@@ -56,17 +60,20 @@
   }
 
   // The switch: on → auto; off → the last ask/edit. Never back to plan. Not available in a native chat.
-  function toggled(on, store, { native = false } = {}) {
-    if (native) return null;
+  function toggled(on, store, { native = false, locked = false } = {}) {
+    if (native || (locked && on)) return null;
     return on ? 'auto' : lastSafe(store);
   }
 
   // Which mode a plan hands over to.
-  function handoverMode(store, { native = false } = {}) {
-    return coerce(lastWritable(store), native);
+  function handoverMode(store, { native = false, locked = false } = {}) {
+    return coerce(lastWritable(store), native, { locked, store });
   }
 
-  function allowed(native) { return native ? [...NATIVE] : [...MODES]; }
+  function allowed(native, locked = false) {
+    if (native) return [...NATIVE];
+    return locked ? MODES.filter((mode) => mode !== 'auto') : [...MODES];
+  }
 
   return { MODES, migrate, newSessionMode, record, toggled, handoverMode, coerce, allowed, lastSafe, lastWritable };
 });
