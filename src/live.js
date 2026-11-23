@@ -608,9 +608,19 @@
     it.state = 'executed';
     A.setMode(s, it.target, 'handover');
     const text = '按上面已确认的方案开始实施。';
-    s.items.push({ t: 'user', text, chips: [] });
+    const bubble = { t: 'user', text, chips: [] };
+    s.items.push(bubble);
     A.renderAll();
-    await send(s, false, { fromQueue: true, text, policy: modeToPolicy(it.target, s) });
+    const sent = await send(s, false, { fromQueue: true, text, policy: modeToPolicy(it.target, s) });
+    if (!sent) {
+      // Nothing went out (e.g. the chat turned out to be on the old route): offer the card again.
+      const at = s.items.indexOf(bubble);
+      if (at >= 0) s.items.splice(at, 1);
+      it.state = 'pending';
+      it.target = window.AgentDeskAccess.handoverMode(store, { native: !!s.native, locked: !!s.fullAccessLocked });
+      it.fullAccessNeedsNewChat = it.target !== window.AgentDeskAccess.handoverMode(store, { native: !!s.native });
+      A.renderAll();
+    }
   }
 
   /* ---------- 发送 / 插话 / 停止 ---------- */
@@ -747,7 +757,10 @@
       // Resuming showed this chat is on the old route: 完全访问 would be refused, so say so instead of sending.
       dropThinking(s); s.busy = false; s.status = 'idle';
       if (!fromQueue) { const at = s.items.findLastIndex((x) => x.t === 'user' && x.text === text); if (at >= 0) s.items.splice(at, 1); }   // still in the input box
-      sysNote(s, '这个会话用的是旧线路，不能在原会话里使用完全访问。已改回' + (A.setMode(s, window.AgentDeskAccess.lastSafe(store), 'handover'), $('#modeSelect').selectedOptions[0]?.text || '') + '；要完全访问请在该项目新建单聊。', true);
+      const fallback = window.AgentDeskAccess.lastSafe(store);
+      A.setMode(s, fallback, 'handover', { record: false });   // not the person's choice: the default stays
+      if (chat) s.chatPolicy = modeToPolicy(fallback, s);   // queued interjections go out in the allowed mode
+      sysNote(s, `这个会话用的是旧线路，不能在原会话里使用完全访问。已改回${{ ask: '每步询问', edit: '自动编辑' }[fallback]}；要完全访问请在该项目新建单聊。`, true);
       A.renderAll();
       return false;
     }

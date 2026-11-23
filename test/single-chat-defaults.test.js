@@ -24,3 +24,10 @@ test('the access and question scripts load before the app', () => {
   assert.match(html, /id="fullAccessToggle" role="switch"/);
   assert.doesNotMatch(source('app.js'), /Shift\+Tab|shiftKey\s*&&\s*e\.key\s*===\s*'Tab'/);
 });
+
+test('a late old-route lock never changes the remembered default and never loses the handover', () => {
+  const live = source('live.js');
+  assert.match(live, /A\.setMode\(s, fallback, 'handover', \{ record: false \}\)/);
+  assert.match(live, /if \(chat\) s\.chatPolicy = modeToPolicy\(fallback, s\)/);
+  assert.match(live, /if \(!sent\) \{[\s\S]{0,400}it\.state = 'pending';/);
+});
