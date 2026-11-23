@@ -71,6 +71,7 @@
       <div class="side-footer">
         <button class="side-action" id="workspaceSettings" type="button" hidden>工作区</button>
         <button class="side-action" id="diagnosticsOpen" type="button" hidden>诊断</button>
+        <button class="side-action" id="updatesOpen" type="button" hidden>更新</button>
         <button class="side-action" id="sbOrchestrator" type="button" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="5" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/><rect x="14" y="16" width="7" height="5" rx="1"/><path d="M12 8v4m-5.5 4v-4h11v4"/></svg>
           <span>主控线路</span>
@@ -151,10 +152,11 @@
             <button class="chip" id="attachBtn" title="附加任意类型的文件（按住 Shift 选择文件夹，打包成 .zip）；也可以拖入或粘贴"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
             <button type="button" class="chip" id="terminalBtn" title="本机终端：和 AI 共用，可接管；关闭窗口后终端继续运行"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>终端</button>
             <div class="select-wrap" id="permissionModeWrap">
+              <button type="button" class="chip access-toggle" id="fullAccessToggle" role="switch" aria-checked="false" title="打开完全访问：AI 直接读写本机文件和运行命令，不再逐次批准（下一轮生效）"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3z"/></svg>完全访问</button>
               <select id="modeSelect" title="权限模式">
-                <option value="ask">每步询问</option>
-                <option value="edit">自动编辑</option>
-                <option value="plan">只读规划</option>
+                <option value="ask" title="每次修改本机文件和运行命令前都询问你">每步询问</option>
+                <option value="edit" title="本机文件修改直接生效，运行命令前仍询问你">自动编辑</option>
+                <option value="plan" title="只读：AI 只读取和规划，不修改文件">只读规划</option>
                 <option value="auto" title="本机用户文件、外接卷与临时目录。AI 通过本机文件工具读写并即时生效，不再逐次批准。">完全访问</option>
               </select>
             </div>
@@ -324,6 +326,29 @@
       <button type="button" class="btn" id="updatesCheck">检查更新</button>
     </div>
   </dialog>
+  <dialog id="updatesDialog" class="orchestrator-dialog" aria-labelledby="updatesTitle">
+    <form method="dialog" class="orchestrator-heading">
+      <h2 id="updatesTitle">更新</h2>
+      <button type="submit" class="orchestrator-close" aria-label="关闭">×</button>
+    </form>
+    <p id="updatesTitleStatus" role="status" aria-live="polite"></p>
+    <ul id="updatesLines" class="updates-lines"></ul>
+    <progress id="updatesProgress" class="updates-progress" max="100" value="0" hidden></progress>
+    <p id="updatesProgressText" class="updates-muted"></p>
+    <p id="updatesNotice"></p>
+    <ul id="updatesReasons" class="updates-reasons"></ul>
+    <p id="updatesError" class="updates-error" role="alert"></p>
+    <label class="updates-auto"><input type="checkbox" id="updatesAutoDownload" /> 自动下载更新（仅已签名版本）</label>
+    <div class="task-actions">
+      <button type="button" class="btn" id="updatesCheckNow">检查更新</button>
+      <button type="button" class="btn" id="updatesDownload">立即下载</button>
+      <button type="button" class="btn" id="updatesRetry">重试</button>
+      <button type="button" class="btn" id="updatesLater">稍后更新</button>
+      <button type="button" class="btn" id="updatesWatch" hidden>任务结束后提醒我</button>
+      <button type="button" class="btn" id="updatesReveal" hidden>打开下载位置</button>
+      <button type="button" class="btn primary" id="updatesInstall">重启并更新</button>
+    </div>
+  </dialog>
   <dialog id="onboardingDialog" class="orchestrator-dialog" aria-labelledby="onboardingTitle">
     <h2 id="onboardingTitle"></h2>
     <div id="onboardingContent" class="group-project-form"></div>
@@ -414,6 +439,8 @@
   <script src="boot.js"></script>
   <script src="appearance.js"></script>
   <script src="fluid.js"></script>
+  <script src="access-toggle.js"></script>
+  <script src="question-card.js"></script>
   <script src="app.js"></script>
   <script src="attach-notice.js"></script>
   <script src="live.js"></script>
@@ -434,5 +461,6 @@
   <script src="projects.js"></script>
   <script src="wizard.js"></script>
   <script src="diagnostics-ui.js"></script>
+  <script src="updates-ui.js"></script>
 </body>
 </html>

@@ -561,3 +561,51 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 
 /* 群聊 v7：上传云端与补丁下载成功提示 */
 .upload-ok { color: #2e7d4f; }
+
+/* Update dialog (updates-ui.js) */
+.updates-lines, .updates-reasons { margin: 6px 0; padding-left: 18px; }
+.updates-lines { list-style: none; padding-left: 0; color: var(--muted); }
+.updates-reasons li { color: var(--warn); }
+.updates-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.updates-muted { color: var(--muted); margin: 4px 0; }
+.updates-error { color: var(--danger); margin: 4px 0; }
+.updates-error:empty, .updates-muted:empty, #updatesNotice:empty { display: none; }
+.updates-auto { display: flex; gap: 8px; align-items: center; margin: 8px 0; color: var(--muted); }
+#updatesOpen.has-update::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px;
+  border-radius: 50%; background: var(--accent); vertical-align: middle; }
+
+/* 单聊问答卡（item/tool/requestUserInput）：一页列出全部问题；不是审批卡 */
+.question-card { margin-left: 35px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); background: var(--panel); border-radius: 10px; padding: 12px 14px; }
+.question-card.resolved { border-color: var(--border); }
+.question-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--accent); margin-bottom: 8px; }
+.question-card.resolved .question-title { color: var(--muted); margin-bottom: 4px; }
+.question-list { display: flex; flex-direction: column; gap: 12px; }
+.question-item { border: 0; margin: 0; padding: 0; min-width: 0; }
+.question-item legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 0; margin-bottom: 6px; color: var(--text); }
+.question-item.missing legend .question-text { color: var(--danger, #c0392b); }
+.question-no { display: inline-grid; place-items: center; min-width: 18px; height: 18px; border-radius: 9px; background: var(--accent-soft, var(--code-bg)); font-size: 11px; }
+.question-header { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.question-hint { font-size: 11px; color: var(--muted); }
+.question-options { display: flex; flex-direction: column; gap: 4px; }
+.question-option { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.question-option:hover { border-color: var(--accent); }
+.question-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.question-option .desc { grid-column: 2; color: var(--muted); font-size: 12px; }
+.question-other { margin-top: 6px; width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
+.question-actions { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 8px; background: var(--panel); }
+.question-warn { color: var(--danger, #c0392b); font-size: 12px; }
+.question-summary { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.question-summary .q { color: var(--muted); margin-right: 8px; }
+.question-summary .a { color: var(--text); }
+/* 规划交接卡 */
+.handover { margin-left: 35px; border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 10px; padding: 10px 14px; background: var(--panel); }
+.handover.resolved { color: var(--muted); border-style: solid; border-color: var(--border); font-size: 12px; }
+.handover-title { font-weight: 600; margin-bottom: 6px; }
+.handover-excerpt { margin: 0 0 8px; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+.handover-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 输入框「完全访问」开关 */
+#permissionModeWrap:not([hidden]) { display: inline-flex; align-items: center; gap: 6px; }
+.access-toggle { flex: none; white-space: nowrap; }
+.access-toggle.on { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); background: var(--warn-soft); }
+.access-toggle:disabled { opacity: .55; cursor: not-allowed; }
+.handover-note { margin: 0 0 8px; color: var(--warn); font-size: 12px; }

@@ -175,7 +175,9 @@ class ChatLink extends EventEmitter {
     try { device = this.deviceHello?.(); } catch {}
     this.request('initialize', {
       clientInfo: { name: 'agentdesk', title: 'AgentDesk', version: require('./package.json').version },
-      capabilities: {},
+      // questionCards: this client renders item/tool/requestUserInput as a card, so the server may offer
+      // agentdesk_ask_user to the CLI.
+      capabilities: { questionCards: true },
       ...(device && { device }),
     }, { internal: true, timeoutMs: this.timing.handshake }).then((info) => {
       if (this.child !== child) return;

@@ -71,7 +71,7 @@
   function sysNote(s, text, err) { s.items.push({ t: 'assist', html: `<p class="${err ? 'err-note' : 'sys-note'}">${esc(text)}</p>` }); }
   function newSession(extra = {}) {
     const session = { id: 'L' + Date.now() + Math.random().toString(36).slice(2, 6), project: 'live', agent: 'codex', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, term: [], diffs: [], ...extra };
-    if (!session.mode) session.mode = 'auto';
+    if (!session.mode) session.mode = window.AgentDeskAccess.newSessionMode(store);
     return session;
   }
 
@@ -92,6 +92,11 @@
     }
     const current = await rm.status();
     if (ready && current.codex === 'ready') return true;
+    // Nothing connects before the server is confirmed (or before the sign-in): say what to do, not "cannot connect".
+    if (current.started === false) {
+      toast('还没有连接服务器：请先完成设置向导（工作区 → 运行设置向导）或登录。');
+      return false;
+    }
     if (current.codex !== 'ready') ready = false;
     toast('正在连接 VPS 上的 Codex…');
     const ok = await rm.wake();
@@ -115,7 +120,7 @@
       if (!(await ensureReady(s))) return { ok: false, error: `${agentName(agent)} 未连接` };
       last = await apiFor(agent).request('thread/resume', { threadId: s.threadId, ...params,
         ...(agent === 'codex' && A.proj(s.project)?.configured && { projectId: s.project }) });
-      if (last.ok) return last;
+      if (last.ok) { noteThread(s, last.result); return last; }
       if (!/active writer/i.test(last.error || '')) break;
     }
     return last;
@@ -378,6 +383,10 @@
     if (m.method === 'skills/changed') { loadSkills(); return; }
     // Direct chat v2 notices: MCP fallback (D14), waiting in line (D15/Q6) or behind a CLI upgrade (Q5), status pushes.
     if (m.method === 'agentdesk/fallback') {
+      if (m.agent === 'grok' && p.threadId) {
+        toast('Grok 使用单聊线路。本机文件通过已授权工具访问，交互终端暂不可用。');
+        return;
+      }
       toast(`本机原生会话不可用，已改用 MCP 工具（${p.reason || '原因未知'}）：模型自带的读写和 Bash 不能直接作用于本机项目，本机终端与 local_shell 仍可用。`);
       return;
     }
@@ -426,7 +435,13 @@
       case 'error': if (!p.willRetry) sysNote(s, `${agentName(m.agent || agentOf(s))} 错误：` + (p.error?.message || JSON.stringify(p.error)), true); break;
       case 'serverRequest/resolved': {
         const it = s.items.find((x) => x.reqId === p.requestId && x.state === 'pending');
-        if (it) it.state = 'approved';
+        // An approval settled elsewhere counts as approved; a question that nobody here answered is gone.
+        if (it) { it.state = it.t === 'question' ? 'expired' : 'approved'; if (it.t === 'question') it.summary = []; }
+        break;
+      }
+      case 'agentdesk/requestExpired': {
+        const it = s.items.find((x) => x.t === 'question' && x.reqId === p.requestId && (x.state === 'pending' || x.state === 'sending'));
+        if (it) { it.state = 'expired'; it.summary = []; if (s.status === 'waiting') s.status = 'running'; }
         break;
       }
       case 'turn/completed': {
@@ -434,7 +449,12 @@
         const st = p.turn?.status;
         if (st === 'interrupted' && !s.steerQueue?.length && !s.steerInterrupting) sysNote(s, '已停止。');
         if (st === 'failed') sysNote(s, '本轮失败：' + (p.turn?.error?.message || ''), true);
-        s.items.forEach((x) => { if (x.t === 'approval' && x.state === 'pending') x.state = 'rejected'; if (x.t === 'reason' && !x.done) x.done = true; });
+        s.items.forEach((x) => {
+          if (x.t === 'approval' && x.state === 'pending') x.state = 'rejected';
+          if (x.t === 'question' && (x.state === 'pending' || x.state === 'sending')) { x.state = 'expired'; x.summary = []; }
+          if (x.t === 'reason' && !x.done) x.done = true;
+        });
+        if (st === 'completed' && s.lastTurnMode === 'plan' && !s.steerQueue?.length) offerHandover(s);
         s.busy = false; s.status = st === 'completed' ? 'done' : 'idle'; s.turnId = null; s.time = '刚刚';
         s.steerInterrupting = false;
         if (!isActive(s) && st === 'completed') toast(`「${s.title}」已完成`);
@@ -458,6 +478,20 @@
     const s = session || (!p.threadId && sess(state.active));
     if (!s || !s.live) {
       try { apiFor(agent).respond(m.id, null, { code: -32603, message: 'no session' }); } catch {}
+      return;
+    }
+    if (m.method === 'item/tool/requestUserInput') {
+      const Q = window.AgentDeskQuestions;
+      const who = CHAT_AGENTS.includes(p.agent) ? p.agent : agent;
+      const questions = Q.normalize(p);
+      if (!questions.length) { try { apiFor(agent).respond(m.id, { answers: {} }); } catch {} return; }
+      dropThinking(s);
+      // origin: the connection that asked (the answer goes back there, whichever chat is open).
+      s.items.push({ t: 'question', reqId: m.id, method: m.method, origin: agent, agent: who, source: p.source || who, title: Q.title(who),
+        questions, state: 'pending' });
+      s.status = 'waiting';
+      if (!isActive(s)) toast(`「${s.title}」等待你回答`);
+      render(); pet(s, 'notification', 'Notification');
       return;
     }
     const base = { t: 'approval', reqId: m.id, method: m.method, state: 'pending' };
@@ -485,9 +519,6 @@
       card = { ...base, title: '请求在 VPS 上运行命令', desc: p.reason || `工作目录：${p.cwd || ''}`, cmd };
     } else if (m.method === 'item/fileChange/requestApproval' || m.method === 'applyPatchApproval') {
       card = { ...base, title: '请求修改文件（VPS）', desc: p.reason || '助手想应用以下改动：', cmd: p.grantRoot || JSON.stringify(p.fileChanges || p.changes || {}, null, 2).slice(0, 2000) };
-    } else if (m.method === 'item/tool/requestUserInput') {
-      const qs = p.questions || []; s.lastQuestions = qs;
-      card = { ...base, sessionable: false, title: 'Codex 有问题要问你', desc: qs.map((q) => q.question || q.header).join('\n'), cmd: '在输入框写好回答后点“批准”提交；点“拒绝”跳过。' };
     } else {
       card = { ...base, sessionable: false, title: '暂不支持的请求：' + m.method, desc: '只能拒绝。', cmd: JSON.stringify(p, null, 2).slice(0, 1500) };
     }
@@ -509,10 +540,6 @@
         result = { decision: ok ? (remember ? 'acceptForSession' : 'accept') : 'decline' }; break;
       case 'execCommandApproval': case 'applyPatchApproval':
         result = { decision: ok ? (remember ? 'approved_for_session' : 'approved') : 'denied' }; break;
-      case 'item/tool/requestUserInput': {
-        const ans = $('#input').value.trim(); $('#input').value = ''; A.autosize();
-        result = { answers: ok ? Object.fromEntries((s.lastQuestions || []).map((q) => [q.id, { answers: [ans] }])) : {} }; break;
-      }
       default: error = { code: -32601, message: 'unsupported request' };
     }
     it.state = ok ? 'approved' : 'rejected';
@@ -531,14 +558,90 @@
     });
   }
 
+  // A question card's answer (or skip). Not an approval: nothing is remembered for the session.
+  function answerQuestion(s, it, picks, skip) {
+    if (it.state !== 'pending') return false;
+    const Q = window.AgentDeskQuestions;
+    let result;
+    const origin = it.origin || agentOf(s);
+    if (skip) result = origin === 'codex' ? { answers: {} } : { answers: {}, cancelled: true };
+    else {
+      const checked = Q.answer(it.questions, picks);
+      if (checked.missing) { it.missing = checked.missing; A.renderAll(); return false; }
+      result = { answers: checked.answers };
+    }
+    it.missing = null;
+    it.state = 'sending';
+    it.summary = skip ? [] : Q.summary(it.questions, result.answers);
+    s.status = 'running'; thinking(s, '继续中');
+    A.renderAll(); pet(s, 'working', 'PostToolUse');
+    Promise.resolve(apiFor(origin).respond(it.reqId, result)).catch(() => false).then((delivered) => {
+      if (delivered === false) {
+        it.state = 'expired'; it.summary = [];
+        dropThinking(s);
+        sysNote(s, '这个问题已经失效（超时或连接已断开），你的回答没有送达。需要的话请重新发送消息。', true);
+        if (!s.turnId) { s.busy = false; s.status = 'idle'; } else s.status = 'running';
+        toast('回答没有送达：问题已经失效');
+      } else if (it.state === 'sending') it.state = skip ? 'skipped' : 'answered';
+      A.renderAll();
+    });
+    return true;
+  }
+
+  // After a read-only planning turn: 执行此方案？ (goes to the last writable mode) or keep planning.
+  function offerHandover(s) {
+    s.items.forEach((x) => { if (x.t === 'handover' && x.state === 'pending') x.state = 'dismissed'; });
+    const target = window.AgentDeskAccess.handoverMode(store, { native: !!s.native, locked: !!s.fullAccessLocked });
+    const wanted = window.AgentDeskAccess.handoverMode(store, { native: !!s.native });
+    const last = [...s.items].reverse().find((x) => x.t === 'assist' && x.itemId && (x.text || x.html));
+    // DOMParser: an inert document, so markup from the model never runs while its text is read.
+    const plain = String(last?.text || (last?.html ? new DOMParser().parseFromString(last.html, 'text/html').body.textContent : ''))
+      .replace(/\s+/g, ' ').trim();
+    s.items.push({ t: 'handover', agent: agentOf(s), target, state: 'pending', ephemeral: true, fullAccessNeedsNewChat: wanted !== target,
+      excerpt: plain.length > 280 ? plain.slice(0, 280) + '…' : plain });
+  }
+
+  async function runHandover(s, it, execute) {
+    if (it.state !== 'pending') return;
+    if (!execute) { it.state = 'dismissed'; A.renderAll(); return; }
+    if (s.busy) { toast('这一轮还没结束'); return; }
+    it.state = 'executed';
+    A.setMode(s, it.target, 'handover');
+    const text = '按上面已确认的方案开始实施。';
+    const bubble = { t: 'user', text, chips: [] };
+    s.items.push(bubble);
+    A.renderAll();
+    const sent = await send(s, false, { fromQueue: true, text, policy: modeToPolicy(it.target, s) });
+    if (!sent) {
+      // Nothing went out (e.g. the chat turned out to be on the old route): offer the card again.
+      const at = s.items.indexOf(bubble);
+      if (at >= 0) s.items.splice(at, 1);
+      it.state = 'pending';
+      it.target = window.AgentDeskAccess.handoverMode(store, { native: !!s.native, locked: !!s.fullAccessLocked });
+      it.fullAccessNeedsNewChat = it.target !== window.AgentDeskAccess.handoverMode(store, { native: !!s.native });
+      A.renderAll();
+    }
+  }
+
   /* ---------- 发送 / 插话 / 停止 ---------- */
-  function modeToPolicy(mode) {
-    if (mode === 'auto') return { approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
-    if (mode === 'plan') return { approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
-    return {
-      approvalPolicy: 'on-request', sandbox: 'workspace-write',
-      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
-    };
+  // 每步询问 asks for every change and command (Codex: untrusted); 自动编辑 lets file changes through and still asks
+  // for commands (Codex: on-request; the chat server: autoApprove 'edits'). A native chat only knows plan and auto.
+  function modeToPolicy(mode, s) {
+    mode = window.AgentDeskAccess.coerce(mode, !!s?.native, { locked: !!s?.fullAccessLocked, store });
+    if (mode === 'auto') return { mode, approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } };
+    if (mode === 'plan') return { mode, approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } };
+    const write = { sandbox: 'workspace-write',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } };
+    if (mode === 'ask') return { mode, approvalPolicy: isChat(s) ? 'on-request' : 'untrusted', ...write };
+    return { mode, approvalPolicy: 'on-request', ...(isChat(s) && { autoApprove: 'edits' }), ...write };
+  }
+
+  function noteThread(s, result) {
+    if (!result) return;
+    if (result.windowsNative === true && !s.native) { s.native = true; s.mode = window.AgentDeskAccess.coerce(s.mode, true); }
+    if (result.fullAccessNeedsNewChat === true && !s.native) s.fullAccessLocked = true;
+    if (typeof result.model === 'string' && result.model) s.codexModel = result.model;
+    if (result.collaborationMode && typeof result.collaborationMode === 'object') s.codexPlanning = result.collaborationMode.mode === 'plan';
   }
 
   async function buildInput(text, files, projectId) {
@@ -597,9 +700,11 @@
     }
     if (!text && !attachments.length) return false;
     if (!fromQueue && text.startsWith('/') && runCommand(text)) return false;
-    const { approvalPolicy, sandbox, sandboxPolicy } = fromQueue
-      ? (options.policy || s.chatPolicy || modeToPolicy($('#modeSelect').value))
-      : modeToPolicy($('#modeSelect').value);
+    const policy = fromQueue
+      ? (options.policy || s.chatPolicy || modeToPolicy(s.mode || $('#modeSelect').value, s))
+      : modeToPolicy($('#modeSelect').value, s);
+    const { approvalPolicy, sandbox, sandboxPolicy, autoApprove } = policy;
+    const turnMode = sandboxPolicy?.type === 'readOnly' ? 'plan' : policy.mode;
     // Snapshot this turn before waking a CLI: the user may switch chats during the handshake.
     const sel = $('#modelSelect');
     const profile = profileFor(s);
@@ -609,7 +714,7 @@
     const effort = chat ? (profile?.models?.[model]?.efforts?.includes(s.effort) ? s.effort : undefined)
       : (model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined);
     const serviceTier = !chat && model ? $('#tierSelect').value || undefined : undefined;
-    if (chat) s.chatPolicy = { approvalPolicy, sandboxPolicy };
+    if (chat) s.chatPolicy = { mode: turnMode, approvalPolicy, sandboxPolicy, autoApprove };
     if (!(await ensureReady(s))) return false;
     if (agent === 'antigravity') {
       try {
@@ -645,15 +750,35 @@
         : { projectId, approvalPolicy, sandbox, approvalsReviewer: 'user', model, ...(s.worktree && { worktreeSession: s.worktree.key || s.id }) };
       const r = await api.request('thread/start', params);
       if (!r.ok) return fail(s, '新建会话失败：' + r.error);
-      s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s);
+      s.threadId = r.result.thread.id; s.subscribed = true; byThread.set(s.threadId, s); noteThread(s, r.result);
       if (s.worktree && !chat) window.desk.worktrees?.bind(s.worktree.key || s.id, s.threadId);
     } else if (!(await subscribe(s))) return fail(s, '会话恢复失败' + (s.resumeError ? '：' + s.resumeError : ''));
+    if (s.fullAccessLocked && sandboxPolicy?.type === 'dangerFullAccess') {
+      // Resuming showed this chat is on the old route: 完全访问 would be refused, so say so instead of sending.
+      dropThinking(s); s.busy = false; s.status = 'idle';
+      if (!fromQueue) { const at = s.items.findLastIndex((x) => x.t === 'user' && x.text === text); if (at >= 0) s.items.splice(at, 1); }   // still in the input box
+      const fallback = window.AgentDeskAccess.lastSafe(store);
+      A.setMode(s, fallback, 'handover', { record: false });   // not the person's choice: the default stays
+      if (chat) s.chatPolicy = modeToPolicy(fallback, s);   // queued interjections go out in the allowed mode
+      sysNote(s, `这个会话用的是旧线路，不能在原会话里使用完全访问。已改回${{ ask: '每步询问', edit: '自动编辑' }[fallback]}；要完全访问请在该项目新建单聊。`, true);
+      A.renderAll();
+      return false;
+    }
+    // Codex 规划: the plan collaboration mode (it also lets Codex ask with request_user_input), and 'default' once to
+    // leave it. Sent only then: the field is experimental, ordinary turns keep their settings untouched. Whether the
+    // thread is in plan mode comes from Codex itself on resume, so it survives a restart. Not on a native seat,
+    // whose developer instructions carry the permission statement; the read-only sandbox stays either way.
+    const codexModel = model || s.codexModel;
+    const planTurn = turnMode === 'plan';
+    const collaborationMode = !chat && !s.native && codexModel && (planTurn || s.codexPlanning)
+      ? { mode: planTurn ? 'plan' : 'default', settings: { model: codexModel, ...(effort && { reasoning_effort: effort }), developer_instructions: null } }
+      : undefined;
     const turnParams = chat
       ? { threadId: s.threadId, input, approvalPolicy, sandboxPolicy, model, effort,
-        ...(attachments.length && { attachments }) }
+        ...(autoApprove && { autoApprove }), ...(attachments.length && { attachments }) }
       : {
         threadId: s.threadId, input, approvalPolicy, sandboxPolicy, approvalsReviewer: 'user', model, summary: 'auto',
-        effort, serviceTier,
+        effort, serviceTier, ...(collaborationMode && { collaborationMode }),
       };
     const r = await api.request('turn/start', turnParams);
     if (!r.ok) return fail(s, '发送失败：' + r.error);
@@ -668,6 +793,8 @@
       }
     }
     s.turnId = r.result.turn.id;
+    s.lastTurnMode = turnMode;
+    if (collaborationMode) s.codexPlanning = collaborationMode.mode === 'plan';
     return true;
   }
   async function steer(s, text) {
@@ -677,7 +804,7 @@
         if (ta.value.trim() === text) { ta.value = ''; A.autosize(); }
         s.model = $('#modelSelect').value || s.model;
         s.effort = $('#effortWrap').hidden ? s.effort : ($('#effortSelect').value || s.effort);
-        s.chatPolicy = modeToPolicy($('#modeSelect').value);
+        s.chatPolicy = modeToPolicy($('#modeSelect').value, s);
       }
       const item = { t: 'user', text, steer: true, queued: true };
       s.items.push(item);
@@ -1049,13 +1176,12 @@
     ta.title = chat ? '@ 引用本机文件 · Enter 发送 · Shift+Enter 换行' : '/ 命令 · $ 技能 · @ 文件';
     const modeSel = $('#modeSelect');
     if (s && modeSel) {
-      // A conversation without its own choice starts in the mode last chosen (kept across restarts).
-      const mode = s.mode || 'auto';
-      if (!s.mode && s.live) s.mode = mode;
-      if (modeSel.value !== mode) {
-        modeSel.value = mode;
-        $('#sbMode').textContent = modeSel.selectedOptions[0]?.text || '';
-      }
+      // A conversation without its own choice starts in the last writable mode (never in 只读规划; first use 自动编辑).
+      const Access = window.AgentDeskAccess;
+      const mode = Access.coerce(s.mode || Access.newSessionMode(store, { native: !!s.native }), !!s.native,
+        { locked: !!s.fullAccessLocked, store });
+      if (s.live && s.mode !== mode) s.mode = mode;
+      A.syncModeControls(s, mode);
     }
     renderConn();
     const sel = $('#modelSelect');
@@ -1628,7 +1754,7 @@
     refreshChanges();
   });
 
-  window.__live = { md, send, resolve, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
+  window.__live = { md, send, resolve, answerQuestion, runHandover, modeToPolicy, itemHtml, renderPanel, attach, onOpen, newSession, applyDropResult, avatarState, usage: () => usage, syncSession };
   async function workspaceChanged() {
     const revision = ++workspaceRevision;
     const [config, access] = await Promise.all([rm.config(), wsApi.access()]);

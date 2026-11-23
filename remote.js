@@ -30,7 +30,13 @@ const VERSION = require('./package.json').version;
 // Server settings baked into the installer by the release workflow (agentdesk-server.json next to the app's
 // resources). They take precedence over ~/.agentdesk/remote.json, so a new build reaches the server it was built
 // for even when an older install left a different host behind. Keys are never bundled; they stay on the machine.
-const BUNDLED_SERVER = process.resourcesPath ? path.join(process.resourcesPath, 'agentdesk-server.json') : null;
+// Since updates no longer carry them, the first version with updates copies them to this computer's user-data folder
+// and reads that copy first (connection-config.js), so replacing the install folder never loses them.
+const BUNDLED_SERVER = (() => {
+  const connection = require('./connection-config');
+  const dirs = connection.electronDirs();
+  return dirs.resourcesDir ? connection.resolve('agentdesk-server.json', dirs) : null;
+})();
 
 function bundledServer(file = BUNDLED_SERVER) {
   if (!file) return null;

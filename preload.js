@@ -34,7 +34,20 @@ contextBridge.exposeInMainWorld('desk', {
     login: (password) => ipcRenderer.invoke('enrollment:login', password),
     onExpired: on('enrollment:expired'),
   },
-  updates: { check: () => ipcRenderer.invoke('updates:check') },
+  // Client updates: every action is decided in the main process (updates.js, update-gate.js).
+  updates: {
+    state: () => ipcRenderer.invoke('updates:state'),
+    check: () => ipcRenderer.invoke('updates:check'),
+    download: () => ipcRenderer.invoke('updates:download'),
+    retry: () => ipcRenderer.invoke('updates:retry'),
+    later: () => ipcRenderer.invoke('updates:later'),
+    install: () => ipcRenderer.invoke('updates:install'),
+    watch: () => ipcRenderer.invoke('updates:watch'),
+    reveal: () => ipcRenderer.invoke('updates:reveal'),
+    setAutoDownload: (value) => ipcRenderer.invoke('updates:autoDownload', value === true),
+    online: () => ipcRenderer.invoke('updates:online'),
+    onState: on('updates:state'),
+  },
   diagnostics: {
     preview: () => ipcRenderer.invoke('diagnostics:preview'),
     export: () => ipcRenderer.invoke('diagnostics:export'),

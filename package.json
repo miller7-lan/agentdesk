@@ -15,7 +15,9 @@
     "dist:mac": "electron-builder --mac dir",
     "predist:mac:release": "npm run prepare:desktop -- --mac",
     "dist:mac:release": "electron-builder --mac dmg zip",
-    "postinstall": "node scripts/fix-node-pty.js"
+    "postinstall": "node scripts/fix-node-pty.js",
+    "dist:bundle": "electron-builder --win portable nsis --x64 --config build/bundle-connection.config.js",
+    "predist:bundle": "npm run prepare:desktop -- --win"
   },
   "build": {
     "appId": "local.agentdesk.ui",
@@ -23,6 +25,12 @@
     "directories": {
       "output": "dist"
     },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "http://127.0.0.1/agentdesk-client-updates/"
+      }
+    ],
     "files": [
       "main.js",
       "app-config.js",
@@ -46,7 +54,11 @@
       "local-change.js",
       "orchestrator/*.js",
       "updates.js",
-      "device-identity.js"
+      "device-identity.js",
+      "update-transport.js",
+      "update-gate.js",
+      "connection-config.js",
+      "build-info.json"
     ],
     "win": {
       "target": [
@@ -67,7 +79,8 @@
     "nsis": {
       "artifactName": "AgentDesk-${version}-setup.exe",
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
     },
     "extraResources": [
       {
@@ -77,13 +90,6 @@
       {
         "from": "orchestrator/ssh-jump.js",
         "to": "ssh-jump.js"
-      },
-      {
-        "from": ".",
-        "filter": [
-          "agentdesk-enrollment.json",
-          "agentdesk-server.json"
-        ]
       }
     ],
     "mac": {

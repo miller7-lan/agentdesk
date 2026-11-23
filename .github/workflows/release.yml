@@ -1,30 +1,54 @@
 name: Build release artifacts
 
+# Client updates (docs/AUTO-UPDATE.md). Only a pushed plain version tag (vX.Y.Z, equal to package.json's version)
+# builds packages that are handed to VPS2; VPS2 then offers them to clients without a manual approval (the owner's
+# decision). Ordinary pushes to main build nothing here (CI runs the tests). A manual run builds artifacts for
+# downloading by hand and is never uploaded to VPS2; with bundle_connection it embeds connection settings and is
+# therefore never an update package.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       bundle_connection:
-        description: Embed repository server and enrollment settings
+        description: Embed repository server and enrollment settings (hand-distributed only; never an update)
         type: boolean
         default: false
       macos_release_tag:
         description: Existing GitHub release tag for the generic macOS DMG (optional)
         type: string
-  # Every code push builds both generic installers so Windows and macOS can be updated by downloading
-  # the agentdesk-windows / agentdesk-mac artifact and installing it by hand. Documentation-only pushes
-  # do not need new binaries.
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
 
 permissions:
   contents: read
 
 jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      pushable: ${{ steps.decide.outputs.pushable }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: decide
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          pushable=false
+          if [ "$EVENT" = push ] && [[ "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [ "${REF#refs/tags/}" = "v$version" ]; then pushable=true
+            else echo "::error::tag ${REF#refs/tags/} does not match package.json version $version"; exit 1; fi
+          fi
+          echo "pushable=$pushable" >> "$GITHUB_OUTPUT"
+          echo "pushable=$pushable version=$version"
+
   build:
+    needs: meta
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +58,9 @@ jobs:
           - os: windows-latest
             platform: windows
     runs-on: ${{ matrix.os }}
+    # Secrets cannot appear in step conditions; whether signing material exists is decided here once.
+    env:
+      HAS_SIGNING: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_LINK != '' || matrix.platform == 'windows' && secrets.WIN_CSC_LINK != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,7 +69,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      # Bake the server address into the installer. The values live in repository secrets, not in Git:
+      # Inside the app: whether signing material was supplied (an unsigned build never downloads or installs updates
+      # by itself; see updates.js). The step after packaging fails the job when material was supplied but the result
+      # is not validly signed.
+      - name: Build information
+        shell: bash
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          signed=false; [ "$HAS_SIGNING" = true ] && signed=true
+          printf '{"signed":%s,"commit":"%s"}\n' "$signed" "$COMMIT" > build-info.json
+          cat build-info.json
+      # Bake the server address into a hand-distributed installer. The values live in repository secrets, not in Git:
       #   AGENTDESK_SERVER_JSON      host, port and SSH host key (key-based login, see docs/INSTALL.md)
       #   AGENTDESK_ENROLLMENT_JSON  optional; switches the build to password login (orchestrator/ENROLLMENT.md)
       - name: Bundle server settings
@@ -63,12 +101,14 @@ jobs:
           if [ ! -f agentdesk-server.json ] && [ ! -f agentdesk-enrollment.json ]; then
             echo "::warning::No server settings bundled; the app will read ~/.agentdesk/remote.json on each computer."
           fi
-      - if: matrix.platform == 'mac' && !inputs.bundle_connection
-        run: npm run dist:mac:release -- --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - if: matrix.platform == 'mac' && inputs.bundle_connection
-        run: npm run dist:mac:release -- --publish never
+      - name: Package (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          npm run predist:mac:release
+          config=()
+          [ "${{ inputs.bundle_connection }}" = true ] && config=(--config build/bundle-connection.config.js)
+          npx electron-builder --mac dmg zip --publish never "${config[@]}"
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -76,23 +116,155 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - if: matrix.platform == 'windows' && !inputs.bundle_connection
-        run: npm run dist -- --publish never
-      - if: matrix.platform == 'windows' && inputs.bundle_connection
-        run: npm run dist -- --publish never
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          npm run predist
+          config=()
+          [ "${{ inputs.bundle_connection }}" = true ] && config=(--config build/bundle-connection.config.js)
+          npx electron-builder --win portable nsis --x64 --publish never "${config[@]}"
         env:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      # Update packages: consistent metadata, block maps present, updater configuration inside the app, no connection
+      # settings or keys anywhere, and a valid signature whenever signing material was supplied.
+      - name: Verify update artifacts
+        if: ${{ !inputs.bundle_connection }}
+        shell: bash
+        run: node scripts/verify-update-artifacts.js "${{ matrix.platform }}" dist "${{ needs.meta.outputs.version }}"
+      - name: Verify signature (Windows)
+        if: matrix.platform == 'windows' && env.HAS_SIGNING == 'true'
+        shell: pwsh
+        run: |
+          $file = Get-Item "dist/AgentDesk-${{ needs.meta.outputs.version }}-setup.exe"
+          $signature = Get-AuthenticodeSignature $file.FullName
+          if ($signature.Status -ne 'Valid') { Write-Error "installer signature: $($signature.Status)"; exit 1 }
+      - name: Verify signature (macOS)
+        if: matrix.platform == 'mac' && env.HAS_SIGNING == 'true'
+        shell: bash
+        run: |
+          app=$(ls -d dist/mac*/AgentDesk.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl -a -vv "$app"
       - uses: actions/upload-artifact@v4
         with:
-          name: agentdesk-${{ matrix.platform }}
+          name: agentdesk-${{ matrix.platform }}${{ inputs.bundle_connection && '-bundled' || '' }}
           if-no-files-found: error
+          retention-days: 14
           path: |
             dist/*.exe
             dist/*.dmg
             dist/*.zip
             dist/*.blockmap
             dist/latest*.yml
+
+  # Windows: installing the next version over this one keeps the user's data and connection copy, and leaves no
+  # connection settings in the install folder (docs/AUTO-UPDATE.md §4). A CI runner, not a person's computer.
+  windows-upgrade-check:
+    needs: meta
+    if: ${{ !inputs.bundle_connection }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build this version and the next one
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run predist
+          npx electron-builder --win nsis --x64 --publish never -c.directories.output=dist-current
+          node -e "const p=require('./package.json');const v=p.version.split('.').map(Number);v[2]++;p.version=v.join('.');require('fs').writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          npx electron-builder --win nsis --x64 --publish never -c.directories.output=dist-next
+      - name: Install, upgrade with --updated, compare
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $current = Get-ChildItem dist-current/AgentDesk-*-setup.exe | Select-Object -First 1
+          $next = Get-ChildItem dist-next/AgentDesk-*-setup.exe | Select-Object -First 1
+          Start-Process -Wait -FilePath $current.FullName -ArgumentList '/S'
+          $userData = Join-Path $env:APPDATA 'AgentDesk'
+          New-Item -ItemType Directory -Force -Path (Join-Path $userData 'bundled-connection') | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE '.agentdesk') | Out-Null
+          $files = @(
+            (Join-Path $userData 'config.json'),
+            (Join-Path $userData 'bundled-connection/agentdesk-server.json'),
+            (Join-Path $env:USERPROFILE '.agentdesk/remote.json')
+          )
+          foreach ($f in $files) { Set-Content -Path $f -Value ('{"test":"' + [guid]::NewGuid() + '"}') }
+          $before = $files | ForEach-Object { (Get-FileHash $_).Hash }
+          Start-Process -Wait -FilePath $next.FullName -ArgumentList '/S','--updated'
+          $after = $files | ForEach-Object { if (Test-Path $_) { (Get-FileHash $_).Hash } else { 'missing' } }
+          if (Compare-Object $before $after) { Write-Error 'user data changed by the upgrade'; exit 1 }
+          $install = Join-Path $env:LOCALAPPDATA 'Programs/AgentDesk/resources'
+          if (-not (Test-Path (Join-Path $install 'app-update.yml'))) { Write-Error 'app-update.yml missing'; exit 1 }
+          foreach ($name in 'agentdesk-server.json','agentdesk-enrollment.json') {
+            if (Test-Path (Join-Path $install $name)) { Write-Error "$name in the install folder"; exit 1 }
+          }
+          # Reported, not required: whether the installer left a copy of itself for differential downloads.
+          $cached = Get-ChildItem (Join-Path $env:LOCALAPPDATA '*-updater') -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          Write-Output "updater cache after install: $($cached -join ', ')"
+          Write-Output 'upgrade kept user data and connection copy'
+      # Measured on this runner, informational: the real electron-updater downloads vN+1 through the loopback feed
+      # (reads from a local folder stand in for VPS2) while vN is installed. Does not install.
+      - name: Differential download through the loopback feed (informational)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $current = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $parts = $current.Split('.'); $parts[2] = [int]$parts[2] - 1; $previous = $parts -join '.'
+          New-Item -ItemType Directory -Force -Path feed | Out-Null
+          Copy-Item dist-next/AgentDesk-*-setup.exe* feed/
+          Copy-Item "dist-current/AgentDesk-$previous-setup.exe.blockmap" feed/
+          npx electron scripts/update-feed-smoke.js $previous (Resolve-Path feed) (Join-Path $env:LOCALAPPDATA 'Programs/AgentDesk/resources')
+
+  # Hands the tag's packages to VPS2 (the intake, orchestrator/client-update-intake.js). Runs only for a pushable tag,
+  # only in the "vps2-intake" environment (its secrets are limited to v*.*.* tags in the repository settings), and is
+  # skipped with a notice while those secrets are not configured.
+  upload-vps2:
+    needs: [meta, build, windows-upgrade-check]
+    if: needs.meta.outputs.pushable == 'true'
+    runs-on: ubuntu-latest
+    environment: vps2-intake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentdesk-windows
+          path: dist-win
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentdesk-mac
+          path: dist-mac
+      - name: Upload to VPS2
+        shell: bash
+        env:
+          KEY: ${{ secrets.VPS2_UPDATE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS2_UPDATE_KNOWN_HOSTS }}
+          TARGET: ${{ secrets.VPS2_UPDATE_TARGET }}
+          PORT: ${{ secrets.VPS2_UPDATE_PORT }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          SIGNED: ${{ secrets.WIN_CSC_LINK != '' && secrets.MAC_CSC_LINK != '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEY" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$TARGET" ]; then
+            echo "::notice::VPS2 upload secrets are not configured; packages stay as workflow artifacts only."
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          node scripts/client-update-upload.js --version "$VERSION" --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+            --signed "$SIGNED" --artifact win:x64:dist-win --artifact mac:arm64:dist-mac \
+            | ssh -i "$RUNNER_TEMP/key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+                -o StrictHostKeyChecking=yes -o BatchMode=yes -p "${PORT:-22}" "$TARGET" > "$RUNNER_TEMP/result.json"
+          node -e "const r=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(JSON.stringify(r));process.exit(r.ok?0:1)" "$RUNNER_TEMP/result.json"
+          rm -f "$RUNNER_TEMP/key"
 
   publish-macos:
     if: inputs.macos_release_tag != '' && !inputs.bundle_connection
