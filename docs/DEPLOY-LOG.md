@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-23 20:00 后（北京时间）· 客户端 0.3.8 · 删除时跳过未加载的会话
+
+- **问题**：Mac 上删除项目「ai」报「删除项目没有完成：thread not loaded: 01a20661-…」。删除前会向 VPS2 的 Codex 查每个原生单聊的工作目录；这个会话在 Codex 那边未加载，回的是 `thread not loaded`，只有 `not found` 被当作可跳过，删除整体中止。
+- **修复**：`thread not loaded` 与 `not found` 同样视为会话已不存在（项目删除的预览和远程步骤、单聊删除）。原生会话一侧另外放行「Codex 尚无可恢复的历史记录」。
+- **VPS2**：主控代码无改动。同日把 autumnmoon.top / claude.autumnmoon.top 的 HTTPS 从宝塔 nginx 443 迁到 Caddy 8443，443 交还 AgentDesk 密码登录服务（见服务器备份 `/root/backups/site-443-to-8443-*`，内含 ROLLBACK.sh）。
+- **验证**：`npm test` 529 项，522 通过，7 项跳过，0 失败。
+
 ## 2026-11-23 20:50（北京时间）· 客户端 0.3.7 · 缩放快捷键
 
 - **问题**：Windows 上 Ctrl+`-` 能缩小，Ctrl+`=` 不能放大。Electron 默认菜单的放大键是 Ctrl+Plus，在 Windows 键盘上需要 Shift。

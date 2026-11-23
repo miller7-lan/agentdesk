@@ -211,7 +211,7 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
         if (!project) throw new Error('找不到本机项目目录。');
         seat = await attached(record, project);
         await seat.request('thread/delete', { threadId });
-      } catch (error) { if (!/thread_not_found|no rollout found/.test(error.message)) throw error; }
+      } catch (error) { if (!/thread_not_found|thread not (found|loaded)|no rollout found|尚无可恢复的历史记录/.test(error.message)) throw error; }
       await seat?.close?.({ confirmedIdle: true });
       fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
       const temp = file + '.' + randomUUID();
@@ -229,7 +229,7 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
           if (!project) throw new Error('找不到本机项目目录。');
           seat = await attached(record, project);
           await seat.request('thread/delete', { threadId: record.threadId });
-        } catch (error) { if (!/thread_not_found|no rollout found/.test(error.message)) throw error; }
+        } catch (error) { if (!/thread_not_found|thread not (found|loaded)|no rollout found|尚无可恢复的历史记录/.test(error.message)) throw error; }
         await seat?.close?.({ confirmedIdle: true });
       }
       let connection;

@@ -403,7 +403,7 @@ async function removeProjectData(id) {
           try {
             const info = await remote.request('thread/read', { threadId: record.threadId, includeTurns: false });
             if (info.thread?.cwd) directories.add(info.thread.cwd);
-          } catch (error) { if (!/thread.*not found|no rollout found|does not exist/i.test(error.message)) throw error; }
+          } catch (error) { if (!/thread.*not (found|loaded)|no rollout found|does not exist/i.test(error.message)) throw error; }
         }
         for (const directory of directories) {
           for (const archived of [false, true]) {
@@ -497,7 +497,7 @@ async function removeProjectData(id) {
         for (const { agent } of plan.chatPlans) await chatLink(agent).request('project/delete', { projectId: id });
         for (const threadId of plan.codexIds) {
           try { await remote.request('thread/delete', { threadId }); }
-          catch (error) { if (!/thread.*not found|no rollout found|does not exist/i.test(error.message)) throw error; }
+          catch (error) { if (!/thread.*not (found|loaded)|no rollout found|does not exist/i.test(error.message)) throw error; }
         }
         if (plan.remoteDirectory) await remote.request('fs/remove', { path: plan.remoteDirectory, recursive: true, force: true });
         if (plan.remoteClear) {
@@ -608,7 +608,7 @@ ipcMain.handle('sessions:remove', async (event, request = {}) => {
       buttons: ['取消', '删除'], defaultId: 0, cancelId: 0, noLink: true });
     if (answer.response !== 1) return { ok: false, cancelled: true };
     if (threadId) {
-      const missing = (error) => /thread.*not.?found|no rollout found|does not exist/i.test(error.message);
+      const missing = (error) => /thread.*not.?(found|loaded)|no rollout found|does not exist/i.test(error.message);
       if (record) await native.deleteThread(threadId);
       else if (agent === 'codex') {
         if (!await remote.wake()) throw new Error('VPS 未连接，暂时无法删除会话。');
