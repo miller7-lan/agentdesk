@@ -24,13 +24,20 @@ async function personalFolder(root, home = os.homedir()) {
 
 // A Git repository with no commit (what AgentDesk's git init leaves in a folder that was not a repository) holds no
 // history, so it can go with the project. Any repository with commits stays.
+// Anything it cannot check (macOS refusing access to 桌面/文稿, no git) means "keep": the folder is never touched then.
+const DENIED = new Set(['EPERM', 'EACCES']);
 async function emptyRepository(root) {
-  const git = await fs.lstat(path.join(root, '.git')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  const git = await fs.lstat(path.join(root, '.git')).catch(error => { if (error.code !== 'ENOENT' && !DENIED.has(error.code)) throw error; });
   if (!git?.isDirectory()) return false;
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^GIT_/.test(key)) delete env[key];
   try { await exec('git', ['-C', root, 'rev-parse', '--verify', '--quiet', 'HEAD'], { env, timeout: 15000 }); return false; }
-  catch (error) { if (error.code === 1) return true; throw error; }
+  catch (error) {
+    if (error.code !== 1) return false;
+    // Exit 1 is also what git gives when it cannot read the folder; only an empty repository has no HEAD *and* a
+    // readable objects folder.
+    return fs.readdir(path.join(root, '.git', 'objects')).then(() => true, () => false);
+  }
 }
 
 // Every target comes from the main process's saved project, never from a renderer-supplied path.
@@ -50,9 +57,11 @@ async function projectDirectory(project, projects, protectedPaths = [], linked =
     const resolved = await canonical(other.localRoot);
     if (inside(root, resolved) || inside(resolved, root)) throw new Error('该目录与另一个项目重叠，请先为两个项目分别绑定独立文件夹。');
   }
-  // A linked worktree/submodule stores Git data outside this folder, in another repository.
+  // A linked worktree/submodule stores Git data outside this folder, in another repository. A personal folder the
+  // app may not read (macOS privacy) is never deleted anyway, so its .git is not needed.
+  const personal = !linked && await personalFolder(root);
   const git = await fs.lstat(path.join(root, '.git')).catch(error => {
-    if (error.code !== 'ENOENT') throw error;
+    if (error.code !== 'ENOENT' && !(personal && DENIED.has(error.code))) throw error;
   });
   if (!linked && git && !git.isDirectory()) throw new Error('该项目使用外部 Git 目录，请在所属仓库的项目入口删除。');
   return root;

@@ -170,3 +170,16 @@ test('a personal folder with real Git history keeps its .git too', async t => {
     confirm: async plan => { assert.equal(plan.removeGit, false); return true; }, remote: async () => {}, local: async () => {}, unregister: async () => {} });
   assert.ok(await exists(path.join(documents, '.git')));assert.ok(await exists(path.join(documents, 'file.txt')));
 });
+
+test('a personal folder the app may not read is unbound without touching it', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+  const home = await fixture(t), desktop = path.join(home, 'Desktop');
+  await fs.mkdir(desktop);await fs.writeFile(path.join(desktop, 'notes.txt'), 'keep me');git(desktop, 'init', '-q');
+  await fs.chmod(path.join(desktop, '.git'), 0);await fs.chmod(desktop, 0o311);
+  const project = { id: 'p', localRoot: desktop };let removed = false;
+  const result = await deleteProject({ project, projects: [project], home, preview: async () => ({ threadIds: [] }),
+    confirm: async plan => { assert.equal(plan.keepFolder, true);assert.equal(plan.removeGit, false); return true; },
+    remote: async () => {}, local: async () => {}, unregister: async () => { removed = true; } });
+  await fs.chmod(desktop, 0o755);await fs.chmod(path.join(desktop, '.git'), 0o755);
+  assert.ok(result.deleted);assert.ok(removed);assert.ok(await exists(path.join(desktop, '.git')));
+  assert.equal(await fs.readFile(path.join(desktop, 'notes.txt'), 'utf8'), 'keep me');
+});
