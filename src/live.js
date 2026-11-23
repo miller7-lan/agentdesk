@@ -1778,7 +1778,22 @@
   }
   rm.onStatus(renderConn);
   rm.status().then(renderConn);
-  function reconnectActive() {
+  async function reconnectActive() {
+    // A Windows-native chat runs on the PC itself: reconnecting resumes the thread and picks up a turn still running there.
+    const session = sess(state.active);
+    if (!state.group && session?.native && session.threadId) {
+      const reply = await resumeThread(session, { excludeTurns: true });
+      if (!reply.ok) { toast('恢复会话失败：' + reply.error); return; }
+      session.subscribed = true; byThread.set(session.threadId, session);
+      session.turnId = reply.result.activeTurnId || null;
+      session.busy = !!session.turnId;
+      session.status = session.busy ? 'running' : 'idle';
+      if (session.busy) thinking(session, '正在继续原任务…');
+      await restoreLocalCommands(session);
+      A.renderAll();
+      toast(session.busy ? '已接回正在运行的任务' : '已恢复原会话');
+      return;
+    }
     const agent = activeAgent();
     if (agent !== 'codex' && chatApi) {
       if (chatStatus[agent]?.state === 'sleeping') { chatApi.wake(agent); toast(`正在唤醒 ${agentName(agent)}…`); }
@@ -1845,7 +1860,8 @@
     if (agent === 'codex') ready = false;
     else if (!sleep && chatStatus[agent]) chatStatus[agent] = { ...chatStatus[agent], state: 'error', detail: why };
     for (const s of D.sessions) {
-      if (!s.live || agentOf(s) !== agent) continue;
+      // The VPS chat service sleeping or dropping does not stop a Windows-native chat, which runs on the PC.
+      if (!s.live || agentOf(s) !== agent || (agent !== 'codex' && s.native)) continue;
       s.subscribed = false;
       if (s.busy) fail(s, why);
     }
