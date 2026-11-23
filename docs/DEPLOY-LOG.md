@@ -2,6 +2,20 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 01:40（北京时间）· VPS2 · 微信办公助手（企业微信智能机器人长连接）预部署
+
+- **改动**：新增独立服务 `agentdesk-wechat`（分支 `feat/wechat-lite`，`orchestrator/wechat/`）。通道为企业微信智能机器人 API 模式长连接，官方 SDK `@wecom/aibot-node-sdk` 1.0.7；取代当天早些时候的自建应用 HTTP 回调方案（`wecom.js`、`probe.js` 已删除）。草稿 +「开始」、三档执行、额度闸门（剩余低于 8% 不开工）、白名单与限流、按 userid 隔离、docx/pptx/xlsx 校验后上传并主动推送给任务所有者、失败重试与 `/重发`。
+- **VPS2**：
+  - 办公工具链：apt 装 LibreOffice（writer/calc/impress）、pandoc、fonts-noto-cjk；`/opt/agentdesk-office/{venv,bin,GUIDE.md}`（`install-office.sh`）。
+  - 代码：`/opt/agentdesk-orchestrator/wechat/`（含 `node_modules`，`npm ci --omit=dev --ignore-scripts`）。
+  - 配置：`/etc/agentdesk-orchestrator/wechat.env`（Bot ID / Secret，root:agentdesk 0640，**尚未填写**）、`wechat.json`（`allowUsers` 为空）。
+  - systemd：`/etc/systemd/system/agentdesk-wechat.service` 已安装，**未启用、未启动**。
+  - Caddy：早些时候为 HTTP 回调加的 `/wecom/*` 路由已撤回，恢复原配置（备份 `Caddyfile.bak-20261123-161719-wecom`），重启 Caddy 两次，各断约 1 秒。
+  - 主控 `agentdesk-orchestrator`、enrollment：未改动、未重启。
+- **验证**：`npm test` 581 项，574 通过，7 跳过，0 失败（微信相关 36 项）。用假凭据启动服务：VPS2 能连上长连接，官方返回 853000 认证失败，日志与重连行为正确。真实 CLI 端到端：低档（组长临时换 Codex，因 Claude 登录过期）把 40 行销售明细做成带公式、柱状图、排名的 xlsx，约 8.6 分钟。
+- **待办**：填写机器人凭据后启用服务并做手机端实测；Claude 在 `homes/claude` 的登录已过期（11-22），需管理员重新登录（主控群聊和单聊同样受影响）。
+- **回滚**：`systemctl disable --now agentdesk-wechat`，删除 `/etc/systemd/system/agentdesk-wechat.service`、`/opt/agentdesk-orchestrator/wechat/`、`/etc/agentdesk-orchestrator/wechat.{env,json}`；工具链可保留或 `apt remove` 并删除 `/opt/agentdesk-office`。
+
 ## 2026-11-23 23:10（北京时间）· 客户端 0.4.1 · 更新下载先走 VPS1、失败退回 VPS2
 
 - **改动**：Windows Bridge 处理 `client_update` / `client_update_read` 时先走 Relay（VPS1），Relay 不在线或读取出错时同一请求改走直连 SSH（VPS2），并在 1 分钟内跳过 Relay；线路状态每 5 秒查一次，不再每块都查；单块超时 10 秒改 30 秒；客户端并发读取 4 块改 8 块。

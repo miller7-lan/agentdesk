@@ -1,122 +1,117 @@
-# 微信办公助手（轻便版）
+# 微信办公助手（企业微信智能机器人）
 
-> 2026-11-23 起。取代 [WECHAT_OMC_PLAN.md](WECHAT_OMC_PLAN.md) 的重方案（OpenClaw + 容器 + 多 CLI 组队）。
+> 2026-11-23 起。取代 [WECHAT_OMC_PLAN.md](WECHAT_OMC_PLAN.md) 的重方案。通道为 **企业微信智能机器人 · API 模式 · 长连接**（官方 SDK `@wecom/aibot-node-sdk` 1.0.7），不用 HTTP 回调，不需要备案域名和可信 IP。
 
-在**个人微信**里给「办公助手」发 Word / Excel / PPT 和需求，VPS2 上全程处理，成品文件发回微信。不同步到桌面端，不碰 Mac/Windows，不经过主控调度器。
+在企业微信里和「AgentDesk」机器人单聊，发 Word / Excel / PPT 和需求，VPS 2 在沙箱里处理，成品文件主动推送回来。不同步到桌面端，不碰 Mac/Windows 和主控调度器，不提供 shell。
 
-## 1. 怎么用
+## 1. 用法
 
-1. 发需求文字和文件，可以分多条发。消息先**攒进草稿**，不会马上执行。
-2. 发「**开始**」：草稿里的全部文字（按顺序编号）和文件一次交给 AI。
-3. 完成后收到成品文件和 1～3 句说明；PPT 另附第一页预览图。
+1. 发需求文字和文件，可以分多条发。消息先**攒进草稿**。
+2. 发「**开始**」：草稿里的全部文字（按顺序编号）和文件一次交给 AI。机器人回「收到 #编号」，做完**主动推送**成品文件和说明；PPT 另附第一页预览图。
 
 | 命令 | 作用 |
 |---|---|
+| `你好` | 打招呼，回用法 |
+| `/问 问题` | 快问快答：便宜模型只读回答，不进草稿、不建任务 |
 | `开始` / `开始 高` | 执行草稿；可顺带指定档位 |
-| `/低` `/中` `/高`（可带内容，如 `/高 写方案`） | 选档位；不选由组长判断 |
-| `/清空` | 丢掉草稿（文字和文件） |
-| `/ls` | 最近 10 个任务 |
-| `/进 编号` | 回到老任务：之后的草稿「开始」时在该任务里接着改（同一执行者、同一会话，上一版成品作为输入） |
-| `/新` | 退出老任务 |
-| `/s 编号` · `/stop 编号` · `/重试 编号` | 详情 · 停止（运行中或排队中）· 失败/额度不够的任务重做 |
-| `/help` | 用法 |
+| `/低` `/中` `/高`（可带内容） | 选档位；不选由组长判断 |
+| `/清空` | 丢掉草稿 |
+| `/ls` · `/s 编号` | 最近任务 · 详情（含没发出去的文件） |
+| `/进 编号` · `/新` | 回到老任务接着改（同执行者同会话）· 退出 |
+| `/stop 编号` · `/重试 编号` · `/重发 编号` | 停止 · 失败或额度不够的任务重做 · 再发一次成品文件 |
 
-**一个任务结束后，再发的内容就是新任务**；要接着改老任务必须 `/进 编号`。
+一个任务结束后，再发的内容就是新任务。
 
-## 2. 三档
+## 2. 三档与额度
 
 | 档位 | 流程 | 执行者 |
 |---|---|---|
-| 低 | 组长（Claude Opus，只读）规划一次 → 执行者做完 | Antigravity、Grok 里**剩余额度多的**；做的过程中额度用尽/掉登录时换另一个 |
+| 低 | Claude Opus 组长只读规划一次 → 执行者做完 | Antigravity、Grok 里剩余额度多的；途中额度用尽/掉登录换另一个 |
 | 中 | 同上 | Codex（GPT） |
-| 高 | Opus 直接做（`/高` 跳过规划；自动判成高档时沿用规划会话接着做） | Claude Opus |
+| 高 | Opus 直接做 | Claude Opus |
 
-组长只规划，不验收、不中途干预。没指定档位时由组长判断。
+开始前读额度（`orchestrator/quotas.js`，缓存 60 秒）：看 5 小时窗口，没有的看周额度；**剩余低于 8%** 的不用。组长或该档执行者都不够时直接回「🪫 额度不够」和恢复时间。读不到额度时不拦。
 
-**额度闸门**：开始规划前和选执行者时读额度（`orchestrator/quotas.js`，与桌面端同源，缓存 60 秒）。看 5 小时窗口，没有的看周额度。**剩余低于 8%**（`wechat.json` 的 `minQuotaPercent`）的 CLI 不用；组长或该档所有执行者都不够时，任务直接以「🪫 额度不够」结束并给出恢复时间，之后发 `/重试 编号`。读不到额度时不拦。
+## 3. 身份、多人与权限
 
-## 3. 架构
+- **userid**（`frame.body.from.userid`）= 任务所有者。草稿、任务、文件目录、限流都按 userid 分开；`/s /进 /stop /重试 /重发` 只能操作自己的任务。
+- **chatid** 只在群聊出现。**群里不处理任务和文件**；所有结果用主动推送发到所有者单聊（会话 ID 填 userid），不会发到群里或别人那里。
+- **原始帧**只用于 24 小时内的被动回复（透传 `req_id`），不落盘。
+- **白名单** `allowUsers`：为空时拒绝所有人。被拒的人收到固定回复，日志打印其 userid 以便登记。当前只登记管理员本人，模型订阅不对外开放。
+- **限流**（`limits`）：每人每分钟 30 条消息、同时最多 2 个排队/执行中的任务、24 小时 20 个任务、`/问` 每小时 30 次。全局同时只执行 1 个任务。
+- 微信里**没有** shell、root、本机 Bridge 或主控访问；AI 只在本任务的 bubblewrap 沙箱目录里读写。
+
+## 4. 文件
+
+- **收**：`message.file` / `message.image` → SDK `downloadFile(url, aeskey)` 解密 → 存到该用户的草稿目录。下载链接 5 分钟有效，最大 100MB；消息里没有文件名，取下载响应里的名字（去掉路径）。
+- **发**：成品写在任务的 `out/`。交付前校验：docx/pptx/xlsx 必须是完整 zip 且含 `[Content_Types].xml` 和主部件（`word/document.xml` / `ppt/presentation.xml` / `xl/workbook.xml`），坏文件不发并说明。然后 `uploadMedia(buffer, {type:'file', filename})` 拿 `media_id`，`sendMediaMessage(userid, 'file', media_id)` 主动推送。
+- **限制**：SDK 分片 512KB × 最多 100 片（约 50MB）；官方文档普通文件 20MB、图片 10MB，本服务按 **20MB** 卡，超出不上传并告知。`media_id` 3 天有效。
+- **失败**：每个文件最多试 3 次（2 秒、8 秒退避，断线时等重连最多 2 分钟）；结果记在任务的 `deliveries`。发送失败可以 `/重发 编号`，文件仍在 `out/` 里（保留 30 天）。
+
+## 5. 普通微信的能力边界
+
+| 场景 | 状态 |
+|---|---|
+| 企业微信内部成员，在企业微信 App 里和机器人单聊 | ✅ 官方支持（本方案） |
+| 企业微信群里 @机器人 | 官方支持；本服务只回一句「请单聊使用」 |
+| 普通微信用户（外部联系人 / 外部群）直接和智能机器人聊 | ❌ 官方文档（101031、101463、100719、101138）只描述企业内单聊和群聊，userid 为企业成员，**没有任何外部联系人、微信插件或互通的说明**。不能假设支持 |
+| 成员用个人微信经「微信插件」使用机器人 | ❓ 文档未提及，需实测：管理员在「我的企业 → 微信插件」绑定个人微信后，看个人微信里能否看到并和机器人对话 |
+
+朋友要用的官方做法：**把朋友加入你的企业成为成员**（下载企业微信 App，或经微信插件，未认证企业有人数上限），再加进 `allowUsers`。若最终需要不加入企业的普通微信用户使用，官方通道是「微信客服」，但它需要 HTTP 回调和可信域名，与当前不备案、不用回调的条件冲突，暂不做。**不使用任何非官方个人微信协议。**
+
+## 6. 架构
 
 ```
-个人微信「企业微信」入口（微信插件） ⇄ 企业微信服务器
-  ├─ 回调 https://<你的域名>:8443/wecom/callback ── Caddy ──▶ 127.0.0.1:9460
-  └─ 主动 API qyapi.weixin.qq.com（出口 IP 在「企业可信 IP」）
+企业微信 App（单聊） ⇄ 企业微信服务器 ⇄ wss://openws.work.weixin.qq.com（长连接，VPS2 主动连出）
 agentdesk-wechat.service（User=agentdesk）
-  wecom.js   回调验签/AES 解密、access_token、发文字/文件/图片、素材上传下载
-  router.js  消息 → 动作（草稿、开始、档位、命令），纯函数
-  quota.js   额度闸门
-  runner.js  规划 + 执行（复用 adapters.runAdapter，bwrap 沙箱）
-  store.js   tasks.json、草稿、去重、gc
-  service.js HTTP 回调、排队（同时 1 个）、交付
+  bot.js      SDK 封装：帧 → 统一消息；被动回复 / 主动推送；上传下载
+  router.js   消息 → 动作（草稿、开始、档位、命令），纯函数
+  quota.js    额度闸门
+  runner.js   规划 + 执行（复用 adapters.runAdapter + bwrap 沙箱）
+  deliver.js  成品校验、重试发送、发送记录
+  store.js    tasks.json、草稿、去重、gc
+  service.js  白名单、限流、排队、交付
 ```
 
-- 每个任务一个目录 `/var/lib/agentdesk-orchestrator/wechat/tasks/<id>/`：`in/` 原件、`work/` 草稿、`out/` 交付（新文件会发回）、`.logs/` CLI 日志。目录是空 git 仓库（Codex 只在 git 仓库里干活）。
-- CLI 登录与主控共用 `homes/<cli>`。Claude、Grok、Antigravity 在 bwrap 沙箱里运行，看不到状态目录的其它部分和 `/etc/agentdesk-*`；Codex 用自己的 workspace-write 沙箱。
-- 办公规范 `/opt/agentdesk-office/GUIDE.md`，提示词要求先读。
+- **一个机器人只能有一条长连接**，新连接会踢掉旧的（服务会记录 `disconnected_event`）。不要在别处用同一个 Bot ID 跑测试脚本。
+- SDK 自动心跳（30 秒）和断线指数退避重连（`maxReconnectAttempts: -1`）；连续 5 次认证失败时进程退出，systemd 60 秒后重启。
+- 任务目录 `/var/lib/agentdesk-orchestrator/wechat/tasks/<id>/{in,work,out,.logs}`，是空 git 仓库（Codex 需要）。
 
-## 4. 办公工具链
-
-`orchestrator/wechat/install-office.sh`（root，可重复跑）安装：
-
-- LibreOffice（headless，只在转换时启动，单次峰值约 220 MB）、pandoc、Noto CJK 字体；
-- `/opt/agentdesk-office/venv`：python-docx、openpyxl、python-pptx、XlsxWriter、pandas、matplotlib、pdfplumber（版本见 `office/requirements.txt`）；
-- `/opt/agentdesk-office/bin`：`office-convert`（格式互转）、`office-preview`（渲染 PNG 自查/预览）、`xlsx-recalc`（重算公式并报错误单元格）。
-
-## 5. 部署
+## 7. 部署
 
 ```sh
-# 1. 工具链
+# 工具链（一次）
 sh orchestrator/wechat/install-office.sh
-# 2. 代码
+# 代码和 SDK
 install -d -m 755 /opt/agentdesk-orchestrator/wechat
-install -m 644 orchestrator/wechat/*.js /opt/agentdesk-orchestrator/wechat/
-# 3. 配置（密钥不进仓库）
-install -m 640 -o root -g agentdesk orchestrator/wechat/wechat.example.json /etc/agentdesk-orchestrator/wechat.json   # 然后填写
-# 4. 服务
+install -m 644 orchestrator/wechat/*.js orchestrator/wechat/package*.json /opt/agentdesk-orchestrator/wechat/
+(cd /opt/agentdesk-orchestrator/wechat && npm ci --omit=dev --ignore-scripts)
+# 凭据（不进仓库）
+install -m 640 -o root -g agentdesk orchestrator/wechat/wechat.env.example /etc/agentdesk-orchestrator/wechat.env   # 填 WECOM_BOT_ID / WECOM_BOT_SECRET
+install -m 640 -o root -g agentdesk orchestrator/wechat/wechat.example.json /etc/agentdesk-orchestrator/wechat.json  # allowUsers 等
+# 服务
 install -m 644 orchestrator/agentdesk-wechat.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now agentdesk-wechat
+journalctl -u agentdesk-wechat -f      # 应看到 wecom authenticated
 ```
 
-Caddy（`/etc/caddy/Caddyfile`，`<你的域名>:8443` 站点里）：
+改 `wechat.json` 或 `wechat.env` 后 `systemctl restart agentdesk-wechat`。
 
-```
-handle /wecom/* {
-	reverse_proxy 127.0.0.1:9460
-}
-handle {
-	reverse_proxy 127.0.0.1:9443 { header_up X-Real-IP {remote_host} }
-}
-```
+`wechat.json` 字段：`allowUsers`、`minQuotaPercent`（8）、`limits`、`sendPreview`（true）、`tiers`（覆盖各档 provider/model，见 `runner.js` 的 `DEFAULTS`）、`ask`（`/问` 用的模型）、`retention.days`（30）、`retention.draftDays`（3）、`deliveryRetry`。
 
-Caddy 配置了 `admin off`，`systemctl reload caddy` 会失败，改配置后用 `systemctl restart caddy`（8443 上的站点断一两秒）。
+## 8. 办公工具链
 
-`wechat.json` 字段：`corpId`、`agentId`、`secret`、`token`、`encodingAesKey`、`allowUsers`（企业微信 userid 白名单）、`listen`、`minQuotaPercent`（默认 8）、`sendPreview`（默认 true）、`tiers`（覆盖各档的 provider/model，见 `runner.js` 的 `DEFAULTS`）、`retention.days`（默认 30）、`retention.draftDays`（默认 3）。
+`install-office.sh`（root，可重复跑）：LibreOffice headless（单次转换峰值约 220 MB）、pandoc、Noto CJK 字体；`/opt/agentdesk-office/venv`（python-docx、openpyxl、python-pptx、XlsxWriter、pandas、matplotlib、pdfplumber）；`/opt/agentdesk-office/bin` 的 `office-convert`、`office-preview`、`xlsx-recalc`；执行规范 `/opt/agentdesk-office/GUIDE.md`。
 
-### 企业微信后台
-
-1. 应用管理 → 自建 → 创建应用，可见范围只选自己；记下 CorpID（我的企业页底部）、AgentId、Secret。
-2. 应用详情 → 企业可信 IP：`<VPS2 公网 IP>`。
-3. 应用详情 → 接收消息 → 设置 API 接收：URL `https://<你的域名>:8443/wecom/callback`，Token、EncodingAESKey 随机获取；**服务先启动，再点保存**（保存时企业微信发 GET 校验）。
-4. 我的企业 → 微信插件：个人微信扫码关注。
-
-第一次部署可以先跑探路服务 `sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/probe.js`：不调用 AI，验证收发文字/文件和 `/push 秒数` 主动推送；allowUsers 为空时日志会打印你的 userid。
-
-## 6. 保留与清理
-
-每小时 gc：任务目录和记录保留 **30 天**；没「开始」的草稿 3 天后丢弃。消息正文不写日志（只记类型、发送人、长度）。
-
-## 7. 排障
+## 9. 排障
 
 | 现象 | 查 |
 |---|---|
-| 后台保存 URL 失败 | `journalctl -u agentdesk-wechat` 有无 `url verified`；`curl -I https://<你的域名>:8443/wecom/callback` 应为 400（缺签名）而不是 502 |
-| 发消息没反应 | 日志里 `callback rejected`（Token/AESKey 不一致）；`send failed ... 60020`（可信 IP 没配） |
-| 🔑 需要重新登录 | 对应 CLI 在 `homes/<cli>` 的登录过期，和主控同一份，按主控文档重新登录 |
+| 日志 `853000 invalid bot_id or secret` | `wechat.env` 的 Bot ID / Secret；后台重置过 Secret 要同步 |
+| 日志 `disconnected_event` / 反复被踢 | 有别的程序用同一个 Bot ID 连着 |
+| 发消息回「只对已登记的成员开放」 | 日志里 `denied user` 那行的 userid 加进 `allowUsers`，重启 |
+| 🔑 需要重新登录 | 对应 CLI 在 `homes/<cli>` 的登录过期，与主控同一份 |
+| 文件没收到 | `/s 编号` 看「没发出去」；`journalctl -u agentdesk-wechat | grep delivery`；`/重发 编号` |
 | 任务细节 | `/var/lib/agentdesk-orchestrator/wechat/tasks/<id>/.logs/` |
 
-## 8. 待验证（第 0 步）
-
-- [ ] 回调 URL 用 8443 端口能否保存；域名有无备案/主体要求（不行时：443 按 SNI 分流，需与 AgentDesk 协调）
-- [ ] 微信插件里能否给应用**发文件**（docx/xlsx/pptx）；不能时的备选：企业微信 App 里发文件、个人微信收结果
-- [ ] 应用发的文件在个人微信里能否打开
-- [ ] 主动推送（长任务完成通知）与频率限制
+日志只记消息类型、userid 哈希、文件扩展名和大小，不记消息正文。

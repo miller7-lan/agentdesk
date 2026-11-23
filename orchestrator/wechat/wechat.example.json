@@ -1,10 +1,7 @@
 {
-  "corpId": "ww0000000000000000",
-  "agentId": 1000002,
-  "secret": "应用 Secret",
-  "token": "接收消息 API 的 Token",
-  "encodingAesKey": "接收消息 API 的 EncodingAESKey（43 位）",
-  "allowUsers": ["你的企业微信 userid"],
-  "listen": { "host": "127.0.0.1", "port": 9460 },
-  "stateDir": "/var/lib/agentdesk-orchestrator"
+  "allowUsers": ["管理员的企业微信 userid（首次发消息被拒时日志里会打印）"],
+  "minQuotaPercent": 8,
+  "limits": { "messagesPerMinute": 30, "activeTasksPerUser": 2, "tasksPerDay": 20, "asksPerHour": 30 },
+  "sendPreview": true,
+  "retention": { "days": 30, "draftDays": 3 }
 }

@@ -5,6 +5,7 @@
 const TIERS = { '低': 'low', '中': 'mid', '高': 'high', l: 'low', m: 'mid', h: 'high', low: 'low', mid: 'mid', high: 'high' };
 const TIER_LABEL = { low: '低档', mid: '中档', high: '高档' };
 const START_WORDS = new Set(['开始', '开始吧', '开始执行', '执行', 'go', 'start']);
+const GREETINGS = /^(你好|您好|嗨|hi|hello|hey|在吗|在不在|哈喽|早上好|晚上好|下午好)[!！。.~～？?]*$/i;
 
 const HELP = [
   '办公助手用法：',
@@ -14,8 +15,9 @@ const HELP = [
   '  低：组长规划 → Antigravity 或 Grok 完成',
   '  中：组长规划 → GPT 完成',
   '  高：Claude Opus 直接做',
+  '快问快答：/问 你的问题（不进草稿，马上回答）',
   '其它：/清空 放弃草稿　/ls 最近任务　/进 编号 回到老任务接着改',
-  '　　　/新 退出老任务　/s 编号 详情　/stop 编号 停止　/重试 编号',
+  '　　　/新 退出老任务　/s 编号 详情　/stop 编号 停止　/重试 编号　/重发 编号',
   '任务记录和文件保留 30 天。',
 ].join('\n');
 
@@ -24,6 +26,7 @@ function tierOf(word) { return TIERS[String(word).toLowerCase()] || TIERS[word] 
 // 文本 → 动作（不看状态）。
 function parseText(raw) {
   const text = String(raw || '').trim();
+  if (GREETINGS.test(text)) return { kind: 'greet' };
   const bare = text.replace(/^[/／]/, '');
   const startWithTier = /^(\S+?)\s*([低中高])?$/.exec(bare);
   if (startWithTier && START_WORDS.has(startWithTier[1].toLowerCase())) {
@@ -40,21 +43,31 @@ function parseText(raw) {
   if (name === '清空' || name === 'clear') return { kind: 'clear' };
   if (name === 'ls' || name === '列表') return { kind: 'list' };
   if (name === 'help' || name === '帮助' || name === '?') return { kind: 'help' };
+  if (name === '问' || name === 'ask') return rest ? { kind: 'ask', text: rest } : { kind: 'reply', text: '用法：/问 你的问题' };
   const id = /^#?(\d+)$/.exec(rest);
   if ((name === '进' || name === 'open' || name === '切') && id) return { kind: 'enter', id: Number(id[1]) };
   if ((name === 's' || name === '详情') && id) return { kind: 'show', id: Number(id[1]) };
   if ((name === 'stop' || name === '停') && id) return { kind: 'stop', id: Number(id[1]) };
   if ((name === '重试' || name === 'retry') && id) return { kind: 'retry', id: Number(id[1]) };
-  if (['进', 'open', '切', 's', '详情', 'stop', '停', '重试', 'retry'].includes(name)) return { kind: 'list' };
+  if ((name === '重发' || name === 'resend') && id) return { kind: 'resend', id: Number(id[1]) };
+  if (['进', 'open', '切', 's', '详情', 'stop', '停', '重试', 'retry', '重发', 'resend'].includes(name)) return { kind: 'list' };
   // 不认识的斜杠开头（如 /usr/bin），当普通内容。
   return { kind: 'append', text };
 }
 
 // 消息 → 动作。state = { allowUsers:Set, hasHistory }
 function route(message, state) {
-  if (message.type === 'event') return { kind: message.event === 'enter_agent' && !state.hasHistory ? 'help' : 'ignore' };
-  if (state.allowUsers.size && !state.allowUsers.has(message.from)) return { kind: 'deny' };
+  if (message.type === 'event') {
+    if (message.event === 'enter_chat' && message.chatType !== 'group') return { kind: 'welcome' };
+    if (message.event === 'disconnected_event') return { kind: 'kicked' };
+    return { kind: 'ignore' };
+  }
+  if (!message.from) return { kind: 'ignore' };
+  if (!state.allowUsers.size || !state.allowUsers.has(message.from)) return { kind: 'deny' };
+  // 任务、文件都只在单聊里处理，结果也只发回所有者单聊，群里不处理。
+  if (message.chatType === 'group') return { kind: 'reply', text: '请在和我的单聊里使用办公助手（群里不处理任务和文件）。' };
   if (['file', 'image'].includes(message.type)) return { kind: 'file' };
+  if (message.type === 'mixed') return message.media ? { kind: 'file', text: message.text } : (message.text ? parseText(message.text) : { kind: 'ignore' });
   if (message.type === 'voice' && !message.text) return { kind: 'reply', text: '语音没有转成文字，请打字或在企业微信里开启语音转文字。' };
   if (message.type === 'video') return { kind: 'reply', text: '暂不处理视频，请发文件或文字。' };
   if (!['text', 'voice'].includes(message.type)) return { kind: 'ignore' };

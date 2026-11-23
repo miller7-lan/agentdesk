@@ -107,12 +107,14 @@ function fakeClient() {
   const sent = [];
   return {
     sent,
+    reply: async (message, text, user) => { sent.push(['text', user || message.from, text]); },
+    welcome: async () => {},
     sendText: async (user, text) => { sent.push(['text', user, text]); },
     sendFile: async (user, file) => { sent.push(['file', user, path.basename(file)]); },
     sendImage: async (user, file) => { sent.push(['image', user, path.basename(file)]); },
-    download: async (mediaId, dir, name) => {
+    download: async (message, dir) => {
       fs.mkdirSync(dir, { recursive: true });
-      const target = path.join(dir, name || mediaId);
+      const target = path.join(dir, message.fileName || 'file');
       fs.writeFileSync(target, 'data');
       return target;
     },
@@ -127,9 +129,9 @@ function newService(script, extra = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
   const client = fakeClient();
   const run = fakeAdapter(script);
-  const service = new WechatService({ config: { stateDir, allowUsers: ['me'], sendPreview: false }, adapters, client, runAdapter: run, ...extra });
+  const service = new WechatService({ config: { stateDir, allowUsers: ['me'], sendPreview: false }, adapters, channel: client, runAdapter: run, validate: async () => ({ ok: true }), ...extra });
   let n = 0;
-  const msg = (fields) => service.onMessage({ from: 'me', dedupeKey: 'k' + (++n), ...fields });
+  const msg = (fields) => service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'k' + (++n), ...fields });
   const say = (content) => msg({ type: 'text', text: content });
   return { service, client, run, msg, say };
 }
@@ -138,7 +140,7 @@ test('service: messages collect in a draft and only 开始 runs them, all at onc
   const { service, client, run, msg, say } = newService([plan('low'), { output: '汇总好了', file: '部门汇总.xlsx', session: 'conv-1' }]);
   await say('按部门汇总');
   assert.match(client.sent.at(-1)[2], /已记下/);
-  await msg({ type: 'file', mediaId: 'M1', fileName: '销售.xlsx' });
+  await msg({ type: 'file', media: { url: 'u' }, fileName: '销售.xlsx' });
   assert.match(client.sent.at(-1)[2], /已收到「销售\.xlsx」/);
   const before = client.sent.length;
   await say('再加一张柱状图');
@@ -153,7 +155,7 @@ test('service: messages collect in a draft and only 开始 runs them, all at onc
   assert.match(client.sent.at(-1)[2], /✅ #1 完成（低档 · Antigravity/);
   assert.match(client.sent.at(-1)[2], /\/进 1/);
   // 重复的消息键不再处理
-  await service.onMessage({ from: 'me', dedupeKey: 'k4', type: 'text', text: '开始' });
+  await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'k4', type: 'text', text: '开始' });
   assert.equal(run.calls.length, 2);
 });
 
@@ -187,7 +189,7 @@ test('service: /清空 drops the draft, /新 leaves an old task, empty 开始 ex
   const { service, client, run, msg, say } = newService([{ output: 'ok', session: 's' }]);
   await say('开始');
   assert.match(client.sent.at(-1)[2], /草稿是空的/);
-  await msg({ type: 'file', mediaId: 'M', fileName: 'a.xlsx' });
+  await msg({ type: 'file', media: { url: 'u' }, fileName: 'a.xlsx' });
   await say('开始');
   assert.match(client.sent.at(-1)[2], /还没说要做什么/);
   await say('/清空');
@@ -235,7 +237,7 @@ test('service: low quota stops before any CLI runs; /重试 runs it later', asyn
 
 test('store gc removes expired task folders and marks them archived', () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
-  const service = new WechatService({ config: { stateDir }, adapters, client: fakeClient(), runAdapter: fakeAdapter([]) });
+  const service = new WechatService({ config: { stateDir }, adapters, channel: fakeClient(), runAdapter: fakeAdapter([]) });
   const task = service.store.create({ user: 'me', text: 'x' });
   service.store.update(task.id, { status: 'succeeded', finishedAt: Date.now() - 4 * 86400_000 });
   service.gc();
@@ -249,4 +251,69 @@ test('store gc removes expired task folders and marks them archived', () => {
 test('plainSummary strips markdown links, paths and emphasis for WeChat', () => {
   const { plainSummary } = require('../orchestrator/wechat/service');
   assert.equal(plainSummary('交付 [汇总.xlsx](file:///var/lib/a/out/汇总.xlsx)，**新增** `部门汇总`，见 /var/lib/x/out/a.docx。'), '交付 汇总.xlsx，新增 部门汇总，见 a.docx。');
+});
+
+test('service: two users have separate drafts, tasks and files; results go only to the owner', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-state-'));
+  const client = fakeClient();
+  const run = fakeAdapter([{ output: 'A 完成', file: 'A.docx', session: 'sa' }, { output: 'B 完成', file: 'B.pptx', session: 'sb' }]);
+  const service = new WechatService({ config: { stateDir, allowUsers: ['alice', 'bob'], sendPreview: false }, adapters, channel: client, runAdapter: run, validate: async () => ({ ok: true }) });
+  let n = 0;
+  const from = (user, fields) => service.onMessage({ from: user, chatType: 'single', dedupeKey: 'm' + (++n), ...fields });
+  await from('alice', { type: 'file', media: { url: 'u' }, fileName: 'alice-data.xlsx' });
+  await from('bob', { type: 'text', text: '/高 写个 PPT' });
+  await from('alice', { type: 'text', text: '/高 写个 Word' });
+  await from('alice', { type: 'text', text: '开始' });
+  await from('bob', { type: 'text', text: '开始' });
+  await settle(service);
+  const [a, b] = [service.store.get(1), service.store.get(2)];
+  assert.deepEqual([a.user, b.user], ['alice', 'bob']);
+  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(1), 'in')), ['alice-data.xlsx']);
+  assert.deepEqual(fs.readdirSync(path.join(service.store.taskDir(2), 'in')), []);           // bob 没拿到 alice 的文件
+  const files = client.sent.filter(([kind]) => kind === 'file').map(([, user, name]) => [user, name]);
+  assert.deepEqual(files, [['alice', 'A.docx'], ['bob', 'B.pptx']]);
+  assert.match(service.showText('bob', 1), /没有 #1/);                                         // 看不到别人的任务
+  assert.match(service.stop('bob', 1), /没有 #1/);
+  assert.match(service.enter('bob', 1), /没有 #1/);
+  await from('bob', { type: 'text', text: '/重发 1' });
+  assert.match(client.sent.at(-1)[2], /没有 #1/);
+});
+
+test('service: per-user limits on active tasks; strangers are refused', async () => {
+  const { service, client, say, msg } = newService([{ wait: true }]);
+  service.limits.activeTasksPerUser = 1;
+  await say('/高 一'); await say('开始');
+  await say('/高 二'); await say('开始');
+  assert.match(client.sent.at(-1)[2], /已经有 1 个任务/);
+  await service.onMessage({ from: 'stranger', chatType: 'single', dedupeKey: 'zz', type: 'text', text: '开始' });
+  assert.match(client.sent.at(-1)[2], /只对已登记的成员开放/);
+  await say('/stop 1');
+  await settle(service);
+});
+
+test('service: failed file delivery is recorded and /重发 sends again to the owner', async () => {
+  const { service, client, say } = newService([{ output: '好了', file: '方案.docx', session: 's' }]);
+  let fail = true;
+  const original = client.sendFile;
+  client.sendFile = async (user, file) => { if (fail) throw new Error('upload failed'); return original(user, file); };
+  service.config.deliveryRetry = { sleep: async () => {} };
+  await say('/高 写方案'); await say('开始');
+  await settle(service);
+  assert.equal(service.store.get(1).deliveries[0].status, 'failed');
+  assert.match(client.sent.at(-1)[2], /方案\.docx（upload failed）.*\/重发 1/s);
+  fail = false;
+  await say('/重发 1');
+  assert.equal(service.store.get(1).deliveries[0].status, 'sent');
+  assert.ok(client.sent.some(([kind, user, name]) => kind === 'file' && user === 'me' && name === '方案.docx'));
+});
+
+test('service: 你好 gets a reply, /问 answers with a cheap model without creating a task', async () => {
+  const { service, client, run, say } = newService([{ output: '**今天**是周一' }]);
+  await say('你好');
+  assert.match(client.sent.at(-1)[2], /你好！我是办公助手/);
+  await say('/问 今天周几');
+  assert.equal(run.calls[0].name, 'antigravity');
+  assert.equal(run.calls[0].readonly, true);
+  assert.equal(client.sent.at(-1)[2], '今天是周一');
+  assert.equal(service.store.data.tasks.length, 0);
 });

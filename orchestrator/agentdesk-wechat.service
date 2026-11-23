@@ -1,5 +1,5 @@
 [Unit]
-Description=AgentDesk WeChat office assistant (WeCom self-built app)
+Description=AgentDesk WeChat office assistant (WeCom smart bot, long connection)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 User=agentdesk
 Group=agentdesk
+# Bot ID / Secret 只放在这个文件里（root:agentdesk 0640），不进仓库。
+EnvironmentFile=/etc/agentdesk-orchestrator/wechat.env
 ExecStart=/opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/service.js /etc/agentdesk-orchestrator/wechat.json /etc/agentdesk-orchestrator/config.json
 # 办公工具链在 /opt/agentdesk-office；CLI 在 /usr/local/bin、/usr/bin。
 Environment=PATH=/opt/agentdesk-office/bin:/opt/agentdesk-office/venv/bin:/opt/agentdesk-orchestrator:/usr/local/bin:/usr/bin:/bin
@@ -18,7 +20,8 @@ StateDirectory=agentdesk-orchestrator
 StateDirectoryMode=0700
 UMask=0077
 Restart=on-failure
-RestartSec=5
+# 凭据错时不要高频重连（会被企业微信限流）
+RestartSec=60
 KillMode=control-group
 TimeoutStopSec=20
 NoNewPrivileges=true
