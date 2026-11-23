@@ -214,9 +214,9 @@
   window.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) menu.hidden = true; });
   window.addEventListener('keydown', event => { if (event.key === 'Escape') menu.hidden = true; });
   api.onChanged(apply);
-  async function bindForDirect(project) {
+  async function bindForDirect(project, folderToken) {
     const result = await api.add({ groupId: project.id, name: project.name, kind: 'local',
-      orchestratorWorkspace: project.serverProject || '' });
+      orchestratorWorkspace: project.serverProject || '', ...(folderToken && { folderToken }) });
     if (!result.ok) {
       if (!result.cancelled) A.toast(result.error);
       return false;
@@ -249,7 +249,8 @@
     }
     return registering.get(project.id);
   }
-  window.AgentDeskProjects = { select, bindForDirect, ensureRegistered, openSettings: () => $('#workspaceSettings').click() };
+  const pickFolder = () => api.pickFolder ? api.pickFolder() : Promise.resolve({ ok: false });
+  window.AgentDeskProjects = { select, bindForDirect, pickFolder, ensureRegistered, openSettings: () => $('#workspaceSettings').click() };
   api.list().then((result) => {
     if (!result.ok) return;
     apply(result);

@@ -336,6 +336,19 @@ function currentRemoteDirectory(projectId) {
   return project?.remoteCwd || enrolledSession?.remote.workspace;
 }
 
+// The 新建项目 dialog picks its local folder before 创建. The chosen path stays here; the window only gets a one-time
+// token (and the path to show), so a page can never hand the main process a folder the person did not pick.
+const pickedFolders = new Map();
+ipcMain.handle('projects:pickFolder', async (event) => {
+  if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
+  const picked = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: '选择本机工作文件夹（普通文件夹将初始化 Git）' });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
+  const token = randomUUID();
+  pickedFolders.clear();
+  pickedFolders.set(token, picked.filePaths[0]);
+  return { ok: true, token, path: picked.filePaths[0] };
+});
+
 for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
   ipcMain.handle('projects:' + operation, async (event, request = {}) => {
     if (!fromMainWindow(event)) return { ok: false, error: 'invalid_request' };
@@ -347,7 +360,12 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       if (operation === 'update' && appConfig.value.projects.find(project => project.id === id)?.deletionPlan) throw new Error('项目清理尚未完成，请先重试删除。');
       if (operation === 'add' || operation === 'update') {
         let localRoot;
-        if (kind === 'local' && (pickLocal || operation === 'add')) {
+        const pickedToken = operation === 'add' && typeof request.folderToken === 'string' ? request.folderToken : '';
+        if (pickedToken) {
+          localRoot = pickedFolders.get(pickedToken);
+          pickedFolders.delete(pickedToken);
+          if (!localRoot || kind !== 'local') throw new Error('所选文件夹已失效，请重新选择。');
+        } else if (kind === 'local' && (pickLocal || operation === 'add')) {
           const picked = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '选择本机工作文件夹（普通文件夹将初始化 Git）' });
           if (picked.canceled) return { ok: false, cancelled: true };
           [localRoot] = picked.filePaths;
@@ -1035,6 +1053,13 @@ ipcMain.handle('skills:upload', async (_e, skill, projectId) => {
 remote.on('codex-down', () => skillCache.clear());
 
 // 附件：选择或粘贴的文件上传到 VPS 的 .agentdesk-uploads（VPS 端 7 天后自动清理）
+// Codex attachments go up one whole file per request, so the window is told which file of how many is on its way
+// (a progress bar per batch); progress() with no arguments ends the batch.
+function uploadProgress(count) {
+  const batch = randomUUID();
+  return (index, name) => toUi('files:uploadProgress', index === undefined ? { batch, done: true }
+    : { batch, index, count, name: String(name).slice(0, 120) });
+}
 async function uploadOne(name, b64, projectId) {
   const safe = randomUUID() + '-' + String(name).replace(/[^\w.\-一-龥]/g, '_').slice(-80);
   const workspace = currentRemoteDirectory(projectId);
@@ -1050,8 +1075,15 @@ ipcMain.handle('files:pick', async (_event, folders = false, projectId = appConf
   });
   if (r.canceled) return { ok: true, files: [] };
   const out = [];
-  try { for (const f of r.filePaths) { const d = await readAttachment(f, attachmentLimit); out.push(await uploadOne(d.name, d.bytes.toString('base64'), projectId)); } }
-  catch (e) { return { ok: false, error: String(e.message || e), files: out }; }
+  const progress = uploadProgress(r.filePaths.length);
+  try {
+    for (const [index, f] of r.filePaths.entries()) {
+      progress(index, path.basename(f));
+      const d = await readAttachment(f, attachmentLimit);
+      out.push(await uploadOne(d.name, d.bytes.toString('base64'), projectId));
+    }
+  } catch (e) { return { ok: false, error: String(e.message || e), files: out }; }
+  finally { progress(); }
   return { ok: true, files: out };
 });
 const { attachmentLimit, maxAttachments, attachmentRoot, validAttachments } = require('./orchestrator/attachments');
@@ -1145,20 +1177,30 @@ ipcMain.handle('files:forgetChat', (event, id) => fromMainWindow(event) && chatA
 ipcMain.handle('files:drop', async (_e, paths, projectId = appConfig?.active?.id) => {
   const root = localRootFor(projectId);
   const files = [], mentions = [], errors = [];
-  for (const p of (Array.isArray(paths) ? paths : []).slice(0, 20)) {
-    try {
-      const rel = ws.relIfInside(p, root);
-      if (rel !== null) { mentions.push(rel); continue; }
-      // Any file; a folder outside the test folder is packed into one .zip.
-      const d = await readAttachment(p, attachmentLimit);
-      files.push(await uploadOne(d.name, d.bytes.toString('base64'), projectId));
-    } catch (e) { errors.push(`${path.basename(p)}：${e.message || e}`); }
-  }
+  const list = (Array.isArray(paths) ? paths : []).slice(0, 20);
+  const progress = uploadProgress(list.length);
+  try {
+    for (const [index, p] of list.entries()) {
+      try {
+        const rel = ws.relIfInside(p, root);
+        if (rel !== null) { mentions.push(rel); continue; }
+        // Any file; a folder outside the test folder is packed into one .zip.
+        progress(index, path.basename(p));
+        const d = await readAttachment(p, attachmentLimit);
+        files.push(await uploadOne(d.name, d.bytes.toString('base64'), projectId));
+      } catch (e) { errors.push(`${path.basename(p)}：${e.message || e}`); }
+    }
+  } finally { progress(); }
   return { files, mentions, errors };
 });
 ipcMain.handle('files:uploadData', async (_e, name, b64, projectId = appConfig?.active?.id) => {
-  try { if (typeof b64 !== 'string' || b64.length > Math.ceil(attachmentLimit / 3) * 4) throw new Error('文件超过 25 MB'); return { ok: true, file: await uploadOne(name, b64, projectId) }; }
-  catch (e) { return { ok: false, error: String(e.message || e) }; }
+  const progress = uploadProgress(1);
+  try {
+    if (typeof b64 !== 'string' || b64.length > Math.ceil(attachmentLimit / 3) * 4) throw new Error('文件超过 25 MB');
+    progress(0, name);
+    return { ok: true, file: await uploadOne(name, b64, projectId) };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  finally { progress(); }
 });
 ipcMain.handle('remote:config', () => ({ workspace: currentRemoteDirectory(), host: remote.cfg.host, localWorkspace: ws.root, projectId: appConfig?.active?.id }));
 ipcMain.handle('codex:request', async (event, method, params) => {

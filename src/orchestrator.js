@@ -2693,14 +2693,35 @@ window.__groupReady = (async () => {
     setRecipient(group);
   });
   $('#newGroupProject').hidden = false;
+  // The local folder is chosen in the dialog itself (main keeps the path; the window holds only a token).
+  let pickedFolder = null;
+  const localProjects = () => LIVE && !temporary && Boolean(window.AgentDeskProjects?.bindForDirect);
+  const showPickedFolder = () => {
+    $('#groupProjectFolder').textContent = pickedFolder?.path || '未选择';
+    $('#groupProjectFolder').title = pickedFolder?.path || '';
+  };
+  $('#groupProjectFolderPick').addEventListener('click', async () => {
+    const picked = await window.AgentDeskProjects?.pickFolder?.().catch((error) => ({ ok: false, error: error?.message }));
+    if (picked?.ok) {
+      pickedFolder = picked;
+      showPickedFolder();
+      const name = $('#groupProjectName');
+      if (!name.value.trim()) name.value = picked.path.split(/[\\/]/).filter(Boolean).pop()?.slice(0, 60) || '';
+    } else if (picked?.error) A.toast(picked.error);
+  });
   $('#newGroupProject').addEventListener('click', () => {
+    pickedFolder = null;
+    showPickedFolder();
+    $('#groupProjectFolderRow').hidden = $('#groupProjectHint').hidden = !localProjects();
     projectDialog.showModal();
     syncProjectChoices();
     refresh();
   });
   $('#groupProjectClose').addEventListener('click', () => projectDialog.close());
-  $('#groupProjectForm').addEventListener('submit', (event) => {
+  let creatingProject = false;
+  $('#groupProjectForm').addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (creatingProject) return;
     const name = $('#groupProjectName').value.trim();
     if (!name) return;
     const binding = projectBinding.value;
@@ -2713,15 +2734,36 @@ window.__groupReady = (async () => {
       return;
     }
     const project = { id: 'group-' + crypto.randomUUID(), name, branch: 'main', live: Boolean(binding), serverProject: binding || undefined };
+    // A new project starts from its folder on this computer: the person picks it first and AgentDesk turns it into a
+    // Git repository (git init, or the parent repository it sits in) before the project exists. Cancelling the
+    // folder picker creates nothing. The folder is only the working directory: group and single chats still read
+    // files anywhere their file permissions allow, not just inside it.
+    const local = localProjects();
+    // Listed first (unconfigured) so registering it keeps its orchestrator binding; taken back out if nothing was made.
     A.D.projects.push(project);
+    if (local) {
+      creatingProject = true;
+      let made = false;
+      // The folder picked in the dialog, or (none picked) the picker opens now.
+      try { made = await window.AgentDeskProjects.bindForDirect(project, pickedFolder?.token); }
+      catch (error) { A.toast('没能建好本机仓库：' + (error?.message || String(error))); }
+      finally { creatingProject = false; pickedFolder = null; showPickedFolder(); }
+      if (!made) {
+        const at = A.D.projects.findIndex((item) => item.id === project.id && !item.configured);
+        if (at >= 0) A.D.projects.splice(at, 1);
+        A.renderAll();
+        return;
+      }
+    }
     savedProjects.push(project);
     if (!temporary) store.set('groupProjectBindings', savedProjects);
     createGroup(project.id);
     event.target.reset();
     projectDialog.close();
     A.openGroup(project.id);
-    // Created from the orchestrator: the project is set up straight away, so attachments and single chats work.
-    if (binding && !temporary) {
+    // With a local folder the Git result was already reported (projects.js reportInit). Otherwise, created from the
+    // orchestrator: the project is set up straight away, so attachments and single chats work.
+    if (!local && binding && !temporary) {
       Promise.resolve(window.AgentDeskProjects?.ensureRegistered?.(project)).then((ok) => {
         if (ok) A.toast(`项目「${name}」已建好，可以直接添加附件、开始单聊`);
       }).catch((error) => A.toast(error.message));

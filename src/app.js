@@ -264,8 +264,10 @@
     if (!p) { toast('找不到这个项目，请在左侧重新选择'); return; }
     if (!Object.hasOwn(AGENT_NAMES, agent)) { toast('该 AI 尚未启用原生单聊'); return; }
     if (LIVE && !p.configured && p.id.startsWith('group-')) {
-      // Bound to an orchestrator workspace: set up automatically (no folder to pick); otherwise choose a folder.
-      const ready = p.serverProject ? await window.AgentDeskProjects?.ensureRegistered?.(p) : await window.AgentDeskProjects?.bindForDirect(p);
+      // A group project made before projects started from a local folder: its first single chat picks the folder now
+      // and AgentDesk makes it a Git repository, keeping the orchestrator binding so the group chat is unchanged.
+      // (A single chat needs a local folder anyway; one registered cloud-only cannot start.)
+      const ready = await window.AgentDeskProjects?.bindForDirect(p);
       if (!ready) return;
       p = proj(project);
     }

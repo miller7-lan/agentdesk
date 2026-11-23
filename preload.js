@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('desk', {
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     add: (project) => ipcRenderer.invoke('projects:add', project),
+    pickFolder: () => ipcRenderer.invoke('projects:pickFolder'),
     update: (project) => ipcRenderer.invoke('projects:update', project),
     remove: (id) => ipcRenderer.invoke('projects:remove', { id }),
     select: (id) => ipcRenderer.invoke('projects:select', { id }),
@@ -117,6 +118,7 @@ contextBridge.exposeInMainWorld('desk', {
   },
   files: {
     pick: (folders = false, projectId) => ipcRenderer.invoke('files:pick', folders, projectId),
+    onUploadProgress: on('files:uploadProgress'),
     pickChat: (projectId, folders = false) => ipcRenderer.invoke('files:pickChat', projectId, folders),
     // Direct chat v2: upload staged attachments to their conversation now; states arrive through chat.onAttachment.
     uploadChat: (agent, threadId, ids) => ipcRenderer.invoke('files:uploadChat', agent, threadId, ids),

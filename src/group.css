@@ -202,6 +202,10 @@
 .group-approval pre, .group-output pre { overflow: auto; background: var(--bg); border: 1px solid var(--border); padding: 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .group-output { display: grid; gap: 8px; margin-top: 8px; }
 .group-project-form { display: grid; gap: 12px; }
+.group-project-hint { margin: 0; font-size: 12px; opacity: .75; }
+.group-project-folder:not([hidden]) { display: grid; gap: 4px; }
+.group-project-folder-pick { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.group-project-folder-pick span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; opacity: .85; }
 .group-unread { background: var(--accent); color: white; border-radius: 9px; padding: 1px 6px; font-size: 11px; }
 .side-title:has(#newGroupProject) { display: flex; justify-content: space-between; align-items: center; }
 #workspaceList { max-height: 175px; overflow: auto; margin-bottom: 10px; }

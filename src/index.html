@@ -382,6 +382,10 @@
       <h2 id="groupProjectTitle">新建项目</h2>
       <label>项目名称 <input id="groupProjectName" maxlength="60" required /></label>
       <label>主控项目 <select id="groupProjectBinding"><option value="">本地示例</option></select></label>
+      <div class="group-project-folder" id="groupProjectFolderRow" hidden>本机文件夹
+        <div class="group-project-folder-pick"><span id="groupProjectFolder">未选择</span><button class="btn" id="groupProjectFolderPick" type="button">选择…</button></div>
+      </div>
+      <p class="group-project-hint" id="groupProjectHint" hidden>所选文件夹会初始化为 Git 仓库（已在仓库里的用现有仓库）；不选的话点「创建」时会请你选择。群聊和单聊仍可读取其他位置的文件。</p>
       <div class="task-actions"><button class="btn primary" type="submit">创建</button><button class="btn" id="groupProjectClose" type="button">关闭</button></div>
     </form>
   </dialog>

@@ -1400,6 +1400,49 @@
   });
 
   /* ---------- 附件 ---------- */
+  // Codex uploads in progress (main reports them per batch), shown on the session that started them.
+  const codexUploads = new Map();
+  let uploadSession = null;
+  const uploadsFor = (s) => s && uploadSession === s.id ? [...codexUploads.values()] : [];
+  fileApi?.onUploadProgress?.((event) => {
+    if (!event?.batch) return;
+    if (event.done) codexUploads.delete(event.batch);
+    else {
+      if (!codexUploads.size) uploadSession = state.active;
+      codexUploads.set(event.batch, event);
+    }
+    if (!codexUploads.size) uploadSession = null;
+    if (!state.group) renderAtt();
+    renderUploadPanel();
+  });
+  // Every upload in progress, wherever it started (a single chat, a single chat inside a group, a Codex chat), also
+  // shows in one floating panel on the top layer: inside the open modal dialog if there is one (the same rule as the
+  // toast), otherwise over the page, so it is never hidden behind a dialog, the group view or another chat.
+  const chatUploads = new Map();
+  let uploadPanel = null;
+  function renderUploadPanel() {
+    const rows = [
+      ...[...chatUploads.values()].map((up) => ({ name: up.name, pct: Math.round((up.progress || 0) * 100), text: `${Math.round((up.progress || 0) * 100)}%` })),
+      ...[...codexUploads.values()].map((up) => ({ name: up.name, pct: Math.round((up.index + 1) / up.count * 100), busy: true,
+        text: up.count > 1 ? `${up.index + 1}/${up.count}` : '上传中' })),
+    ];
+    if (!rows.length) { uploadPanel?.remove(); uploadPanel = null; return; }
+    if (!uploadPanel) {
+      uploadPanel = document.createElement('div');
+      uploadPanel.className = 'upload-panel';
+      uploadPanel.setAttribute('role', 'status');
+      uploadPanel.setAttribute('aria-live', 'polite');
+    }
+    const modal = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).at(-1);
+    const host = modal || document.body;
+    if (uploadPanel.parentElement !== host) host.append(uploadPanel);
+    uploadPanel.innerHTML = `<div class="upload-panel-title">正在上传 ${rows.length} 个附件</div>` + rows.map((row) =>
+      `<div class="upload-row"><span class="upload-name" title="${esc(row.name)}">${esc(row.name)}</span><span class="upload-pct">${esc(row.text)}</span>
+        <span class="upload-track${row.busy ? ' busy' : ''}"><span style="width:${Math.max(2, Math.min(100, row.pct))}%"></span></span></div>`).join('');
+  }
+  // A dialog opening or closing moves the panel to the new top layer.
+  new MutationObserver(() => { if (uploadPanel) renderUploadPanel(); })
+    .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] });
   function renderAtt() {
     const s = sess(state.active);
     if (window.__providerDirect?.handles(s)) { window.__providerDirect.render(s); return; }
@@ -1408,11 +1451,16 @@
       const label = (file) => file.upload?.state === 'received' ? '✓ 已上传（服务器已校验）'
         : file.upload?.state === 'uploading' ? `上传中 ${Math.round((file.upload.progress || 0) * 100)}%`
           : file.upload?.state === 'failed' ? '上传失败，发送时会重试' : '仅在本机，未上传';
+      // While uploading, the pill fills from left to right with the bytes the server has taken.
+      const bar = (file) => file.upload?.state === 'uploading'
+        ? ` uploading" style="--upload:${Math.max(2, Math.min(100, Math.round((file.upload.progress || 0) * 100)))}%` : '';
       $('#attachList').innerHTML = (s.chatAttachments || []).map(file =>
-        `<button type="button" class="attach-pill${file.upload?.state === 'received' ? ' ok' : file.upload?.state === 'failed' ? ' failed' : ''}" data-live-chat-attachment="${esc(file.id)}" title="${esc(label(file))}；点击移除">${esc(file.name)} · ${esc(label(file))} ×</button>`).join('');
+        `<button type="button" class="attach-pill${file.upload?.state === 'received' ? ' ok' : file.upload?.state === 'failed' ? ' failed' : ''}${bar(file)}" data-live-chat-attachment="${esc(file.id)}" title="${esc(label(file))}；点击移除">${esc(file.name)} · ${esc(label(file))} ×</button>`).join('');
       return;
     }
-    $('#attachList').innerHTML = (s?.codexAttachments || []).map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('');
+    // Codex: a file goes up in one request, so the pill shows which file of how many, with a moving bar.
+    const sending = uploadsFor(s).map((up) => `<span class="attach-pill uploading busy" style="--upload:${Math.round((up.index + 1) / up.count * 100)}%" title="正在上传到 VPS">${esc(up.name)} · 上传中${up.count > 1 ? ` ${up.index + 1}/${up.count}` : ''}…</span>`).join('');
+    $('#attachList').innerHTML = (s?.codexAttachments || []).map((a, i) => `<span class="attach-pill" data-li="${i}" title="${esc(a.path)}（点击移除）">${a.image ? '🖼 ' : ''}${esc(a.name)} ×</span>`).join('') + sending;
   }
   $('#attachList').addEventListener('click', (e) => {
     const id = e.target.closest('[data-live-chat-attachment]')?.dataset.liveChatAttachment;
@@ -1443,6 +1491,9 @@
       if (!file) continue;
       const before = file.upload?.state;
       file.upload = { state: event.state, progress: event.progress, receivedAt: event.receivedAt, error: event.error };
+      if (event.state === 'uploading') chatUploads.set(event.id, { name: file.name, progress: event.progress });
+      else chatUploads.delete(event.id);
+      renderUploadPanel();
       if (state.active === s.id && !state.group) renderAtt();
       // The success the server confirmed, once per file.
       if (event.state === 'received' && before !== 'received' && notice) toast(notice.received(file.name));

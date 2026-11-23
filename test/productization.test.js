@@ -211,5 +211,53 @@ test('group and single chats set up an orchestrator-bound project automatically 
   assert.match(projects, /api\.add\(\{ groupId: project\.id, name: project\.name, kind: 'remote', orchestratorWorkspace: project\.serverProject \}\)/);
   assert.match(read('orchestrator.js'), /ensureRegistered\?\.\(project\)/, 'on creation');
   assert.match(read('orchestrator.js'), /ensureRegistered\?\.\(entry\)/, 'before adding attachments in an older group project');
-  assert.match(read('app.js'), /p\.serverProject \? await window\.AgentDeskProjects\?\.ensureRegistered\?\.\(p\)/, 'before a single chat');
+  // A single chat in such a project picks its local folder (and Git) first, keeping the orchestrator binding.
+  assert.match(read('app.js'), /const ready = await window\.AgentDeskProjects\?\.bindForDirect\(p\);/, 'before a single chat');
+});
+
+test('a new project picks its local folder and becomes a Git repository before it is created', async (t) => {
+  const read = (file) => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8');
+  const orchestrator = read('orchestrator.js');
+  const submit = orchestrator.slice(orchestrator.indexOf("$('#groupProjectForm').addEventListener('submit'"));
+  // The folder (and git init) comes first; cancelling the picker leaves no project behind.
+  assert.ok(submit.indexOf('bindForDirect(project)') < submit.indexOf('createGroup(project.id)'));
+  assert.match(submit, /if \(!made\) \{[\s\S]*?A\.D\.projects\.splice\(at, 1\)[\s\S]*?return;/);
+  assert.match(read('projects.js'), /api\.add\(\{ groupId: project\.id, name: project\.name, kind: 'local',\s*orchestratorWorkspace: project\.serverProject \|\| '', \.\.\.\(folderToken && \{ folderToken \}\) \}\)/);
+  // Binding the folder keeps the orchestrator workspace (group chat) and initializes Git.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-new-project-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const folder = path.join(dir, 'work');
+  fs.mkdirSync(folder);
+  const config = new AppConfig(path.join(dir, 'config.json'));
+  await config.load();
+  const id = 'group-' + require('node:crypto').randomUUID();
+  await config.saveProject(undefined, { name: '新项目', kind: 'local', orchestratorWorkspace: 'mac' }, folder, id);
+  const record = config.value.projects.find((project) => project.id === id);
+  assert.equal(record.orchestratorWorkspace, 'mac');
+  assert.equal(fs.realpathSync(record.localRoot), fs.realpathSync(folder));
+  assert.ok(fs.existsSync(path.join(folder, '.git')), 'git init ran');
+});
+
+test('the new-project dialog picks the local folder itself; the window only ever holds a one-time token', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(main, /ipcMain\.handle\('projects:pickFolder'/);
+  assert.match(main, /localRoot = pickedFolders\.get\(pickedToken\);\s*pickedFolders\.delete\(pickedToken\);/);
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
+  assert.match(html, /id="groupProjectFolderPick"/);
+  const orchestrator = fs.readFileSync(path.join(__dirname, '..', 'src', 'orchestrator.js'), 'utf8');
+  assert.match(orchestrator, /bindForDirect\(project, pickedFolder\?\.token\)/);
+});
+
+test('attachments show a progress bar while they upload', () => {
+  const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const live = read('src/live.js');
+  assert.match(live, /uploading" style="--upload:/, 'direct chat v2 pills fill with the bytes the server took');
+  assert.match(live, /attach-pill uploading busy/, 'Codex uploads show which file of how many');
+  assert.match(read('src/styles.css'), /\.attach-pill\.uploading/);
+  // The floating panel goes to the top layer: inside the open modal dialog, else the page.
+  assert.match(live, /function renderUploadPanel\(\)[\s\S]*?dialog\[open\][\s\S]*?const host = modal \|\| document\.body;/);
+  assert.match(read('src/styles.css'), /\.upload-panel \{ position: fixed; z-index: 1001;/);
+  const main = read('main.js');
+  assert.match(main, /toUi\('files:uploadProgress'/);
+  assert.equal((main.match(/finally \{ progress\(\); \}/g) || []).length, 3, 'every Codex upload path ends its batch');
 });
