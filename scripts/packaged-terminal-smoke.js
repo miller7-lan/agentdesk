@@ -130,7 +130,10 @@ async function main() {
   await second.request('terminalInput', { binding: again, terminalId: ids[shells[0]], data: marker[shells[0]] });
   await until(async () => (await second.request('terminalRead', { binding: again, terminalId: ids[shells[0]], cursor: mark2 })).data.includes('agentdesk-ok'), 30_000, 'reattached terminal');
   log('reattach', { running: listed.terminals.length, ok: true });
-  for (const id of Object.values(ids)) await second.request('terminalClose', { binding: again, terminalId: id });
+  const purged = await second.request('projectDelete', { device: identity.device, projectId: identity.projectId });
+  assert.equal(purged.deleted, true);
+  assert.equal(await second.request('lookup', { binding: identity }), null);
+  log('project-delete', { terminalsClosed: true, leaseRemoved: true });
   second.close();
   server.close();
   log('done', { ok: true });

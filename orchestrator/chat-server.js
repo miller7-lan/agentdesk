@@ -243,10 +243,29 @@ let nextClientId = 1;
 let stdoutClosed = false;
 let shuttingDown = false;
 
-function persist() {
+function deletedProject(projectId) {
+  return typeof projectId === 'string' && fs.existsSync(path.join(STATE_FILE + '.deleted', 'projects', createHash('sha256').update(projectId).digest('hex')));
+}
+
+function markDeleted(kind, id, value = '') {
+  const folder = path.join(STATE_FILE + '.deleted', kind);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const name = createHash('sha256').update(id).digest('hex');
+  const target = path.join(folder, name);
+  const temporary = target + '.' + randomUUID();
+  fs.writeFileSync(temporary, value, { mode: 0o600 });
+  fs.renameSync(temporary, target);
+}
+
+function deletedThread(thread) {
+  return deletedProject(thread.projectId);
+}
+
+function persist({ strict = false } = {}) {
+  for (const [id, thread] of Object.entries(state.threads)) if (deletedThread(thread)) delete state.threads[id];
   if (V2) {
     try { store.saveSessions(PROVIDER, state.threads); }
-    catch (error) { log('state_write_failed', error.message); }
+    catch (error) { log('state_write_failed', error.message); if (strict) throw error; }
     return;
   }
   try {
@@ -257,6 +276,7 @@ function persist() {
     try { fs.chmodSync(STATE_FILE, 0o600); } catch {}
   } catch (error) {
     log('state_write_failed', error.message);
+    if (strict) throw error;
   }
 }
 
@@ -398,6 +418,7 @@ function readOnlyOf(sandboxPolicy) {
 function threadById(id) {
   if (typeof id !== 'string' || !/^(claude|grok|antigravity)-[0-9a-f-]{36}$/.test(id)) return null;
   const thread = state.threads[id] || null;
+  if (thread && deletedThread(thread)) return null;
   // Belt and braces: a v2 store only holds this device's sessions, but a row from elsewhere is never served.
   if (thread && V2 && thread.deviceId !== IDENTITY.deviceId) throw fail('SESSION_NOT_OWNED', -32003);
   return thread;
@@ -424,6 +445,7 @@ function setSession(turn, id) {
   if (typeof id !== 'string' || !id || id.length > 256) return;
   turn.sessionSeen = true;
   if (turn.thread.sessionId !== id) {
+    if (turn.thread.sessionId) turn.thread.previousSessions = [...new Set([...(turn.thread.previousSessions || []), turn.thread.sessionId])];
     turn.thread.sessionId = id;
     turn.thread.updatedAt = Date.now();
     persist();
@@ -431,6 +453,7 @@ function setSession(turn, id) {
 }
 
 function resetSession(thread) {
+  if (thread.sessionId) thread.previousSessions = [...new Set([...(thread.previousSessions || []), thread.sessionId])];
   thread.sessionId = freshSession();
   thread.started = false;
   delete thread.instructionsSent;
@@ -1465,6 +1488,18 @@ async function dispatchV2(method, params) {
   }
 }
 
+async function deleteThread(thread) {
+  if (activeTurns.has(thread.id)) throw fail('turn_in_progress');
+  const cwd = NATIVE_PROJECT || thread.legacyWorkspace || path.join(THREADS_DIR, thread.id);
+  await require('./project-delete').cliHistory({ home: HOME, provider: PROVIDER, cwd, sessions: [...(thread.previousSessions || []), thread.sessionId].filter(Boolean) });
+  // Never remove a native mount. Its host detaches it after the seat closes.
+  if (!NATIVE_PROJECT) await fs.promises.rm(cwd, { recursive: true, force: true });
+  if (store) store.purgeSession(thread.id);
+  for (const [id, upload] of incoming) if (upload.threadId === thread.id) incoming.delete(id);
+  delete state.threads[thread.id];
+  persist({ strict: true });
+}
+
 /* ---------- JSON-RPC 方法 ---------- */
 async function dispatch(method, params) {
   checkDevice(method);
@@ -1497,6 +1532,7 @@ async function dispatch(method, params) {
       return { items: await statusHub.refresh(), subscribed: statusSubscribed };
 
     case 'thread/start': {
+      if (deletedProject(params.projectId)) throw fail('project_deleted');
       const id = `${PROVIDER}-${randomUUID()}`;
       const thread = {
         id,
@@ -1560,13 +1596,38 @@ async function dispatch(method, params) {
       return {};
     }
 
+    case 'project/delete': {
+      if (typeof params.projectId !== 'string' || !params.projectId) throw fail('invalid_project');
+      const marker = path.join(STATE_FILE + '.deleted', 'projects', createHash('sha256').update(params.projectId).digest('hex'));
+      let pending = [];
+      try { const text = fs.readFileSync(marker, 'utf8'); if (text) pending = JSON.parse(text).threads || []; }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const matching = Object.values(state.threads).filter(thread => thread.projectId === params.projectId);
+      const threads = [...new Map([...pending, ...matching].map(thread => [thread.id, thread])).values()];
+      if (threads.some(thread => activeTurns.has(thread.id))) throw fail('turn_in_progress');
+      if (params.preview === true) return { threadIds: threads.map(thread => thread.id) };
+      markDeleted('projects', params.projectId, JSON.stringify({ threads }));
+      for (const thread of threads) await deleteThread(thread);
+      markDeleted('projects', params.projectId);
+      persist({ strict: true });
+      return { threadIds: threads.map(thread => thread.id), deleted: true };
+    }
+
     case 'thread/archive': {
       const thread = threadById(params.threadId);
       if (!thread) throw fail('thread_not_found');
       if (activeTurns.has(thread.id)) throw fail('turn_in_progress');
       delete state.threads[thread.id];
       persist();
-      try { fs.rmSync(path.join(THREADS_DIR, thread.id), { recursive: true, force: true }); } catch {}
+      await fs.promises.rm(path.join(THREADS_DIR, thread.id), { recursive: true, force: true });
+      return {};
+    }
+
+    case 'thread/delete': {
+      if (typeof params.threadId !== 'string' || !/^(claude|grok|antigravity)-[0-9a-f-]{36}$/.test(params.threadId)) throw fail('invalid_thread');
+      const thread = threadById(params.threadId);
+      if (!thread) { persist({ strict: true }); return {}; }
+      await deleteThread(thread);
       return {};
     }
 

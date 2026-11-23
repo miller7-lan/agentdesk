@@ -54,6 +54,13 @@ class Store {
     return list.length;
   }
 
+  deleteTaskMessages(ids) {
+    const selected = new Set(ids);
+    for (const bucket of ['sent', 'received', 'streams', 'grants']) {
+      for (const record of this.all(bucket)) if (selected.has(record.taskId)) this.delete(bucket, record.id);
+    }
+  }
+
   // SQLite keeps the pages of deleted rows until a VACUUM. Run it only after a history prune, not hourly.
   vacuum() {
     this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');

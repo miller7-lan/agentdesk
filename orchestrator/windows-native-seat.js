@@ -9,7 +9,7 @@ const { terminalSpec, lockSpec } = require('./terminal-sessions');
 const { nativePermissionPrompt } = require('./permission-prompt');
 const NATIVE_TOOLS = new Set(['local_shell', 'terminal', 'file_lock_acquire']);
 
-const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive',
+const METHODS = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/name/set', 'thread/archive', 'thread/delete',
   'thread/unsubscribe', 'turn/start', 'turn/interrupt', 'turn/steer', 'skills/list', 'model/list',
   'attachment/reset', 'attachment/chunk']);
 
@@ -201,6 +201,7 @@ async function openWindowsNativeSeat({
   }
   return {
     get closed() { return closed; },
+    get busy() { return Boolean(turnId || startingTurn); },
     onClose: (listener) => seatClosed.once('close', listener),
     async request(method, params = {}) {
       if (method === 'review/start') throw new Error('原生项目请在只读规划模式下发起审查。');
@@ -246,7 +247,7 @@ async function openWindowsNativeSeat({
         binding = { ...binding, ...promoted, threadId: actual };
         threadId = actual;
       }
-      if (method === 'thread/archive' || method === 'thread/unsubscribe') await this.close({ confirmedIdle: !turnId });
+      if (method === 'thread/archive' || method === 'thread/delete' || method === 'thread/unsubscribe') await this.close({ confirmedIdle: !turnId });
       if (launch) return { ...reply, windowsNative: true, activeTurnId: turnId };
       return reply;
     },

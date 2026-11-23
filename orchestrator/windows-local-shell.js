@@ -166,6 +166,7 @@ function createWindowsLocalShell({ leases, journal, notify, syncMs = 15_000, sta
       }
       return { running, unknown };
     },
+    forgetProject(matches) { runs.forgetScopes(matches); },
     canResume(lease, { acknowledgeUnknown = false } = {}) {
       return runs.listAll(lease.scope).every((run) => run.finishedAt && (acknowledgeUnknown || run.state !== 'unknown'));
     },

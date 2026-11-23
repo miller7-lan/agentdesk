@@ -689,6 +689,8 @@ event(task, state, detail) {
   }
 
   submit(id, body, groupPlan = false) {
+    if (this.deletingWorkspaces?.has(body.workspace) || body.group && this.deletingProjects?.has(body.group.split('~')[0])) throw Error('project_delete_in_progress');
+    if (body.group && this.store.get('settings', 'deleted-project:' + this.ownerOf(body.workspace) + ':' + body.group.split('~')[0])) throw Error('project_deleted');
     const mode = body.mode ?? 'normal';
     // Attachments go with a single chat or with a group task (its lead and every member see them); a review of
     // a patch has nothing to attach to.
@@ -2035,7 +2037,10 @@ event(task, state, detail) {
         // the project's live folder on the mount is hidden while the step works on the snapshot
         hidePaths: mount && task.snapshot && mount.project ? [mount.project] : [],
         onSession: (id) => {
+          task.projectSessions ||= [];
+          if (!task.projectSessions.some(entry => entry.role === step.role && entry.id === id)) task.projectSessions.push({ role: step.role, id });
           if (step.session === id) return;
+          if (step.session) step.previousSessions = [...new Set([...(step.previousSessions || []), step.session])];
           step.session = id;
           this.save(task, task.state, step.id + ':session');
         },
@@ -2074,6 +2079,7 @@ event(task, state, detail) {
     delete task.notBefore;
     delete task.waitingFor;
     const repo = this.config.workspaces[task.workspace].repository;
+    await this.restoreDeletedRepository(task, repo, signal);
     const root = path.join(this.config.stateDir, 'worktrees', task.id);
     await mkdir(path.join(this.config.stateDir, 'logs', task.id), { recursive: true, mode: 0o700 });
     if (task.groupPlan && !task.groupPlan.approved) {
@@ -2253,6 +2259,29 @@ event(task, state, detail) {
       }
     }
     this.save(task, 'completed', 'completed');
+  }
+
+  async restoreDeletedRepository(task, repo, signal) {
+    const key = 'deleted-repository:' + task.workspace;
+    const deleted = this.store.get('settings', key);
+    if (!deleted) return;
+    if (deleted.repository !== repo) throw Error('project_repository_changed');
+    this.repositoryResets ||= new Map();
+    if (!this.repositoryResets.has(repo)) {
+      const reset = (async () => {
+        await mkdir(repo, { recursive: true, mode: 0o700 });
+        await git(repo, ['init', '--bare', '--quiet'], signal);
+        const { head } = await this.files.call(this.bridgeRoute(task.workspace), task.id, 'command.execute',
+          { operation: 'git_baseline', workspace: task.workspace }, 35000, signal);
+        if (!/^[0-9a-f]{40,64}$/.test(head || '')) throw Error('invalid_workspace_baseline');
+        await this.ensureCommit(task, repo, head, signal);
+        await git(repo, ['update-ref', 'HEAD', head], signal);
+        this.store.delete('settings', key);
+      })();
+      this.repositoryResets.set(repo, reset);
+      reset.finally(() => this.repositoryResets.delete(repo)).catch(() => {});
+    }
+    await this.repositoryResets.get(repo);
   }
 
   // The mirror on VPS2 must have the commit the person's project is on. When it does not (a local commit not
@@ -3773,6 +3802,7 @@ event(task, state, detail) {
       return this.status(this.submit(id, body, groupPlan).id);
     }
     if (frame.kind !== 'task.status') throw new Error('unsupported_operation');
+    if (body.operation === 'project_delete' && named) return require('./project-delete').projectDelete(this, body, named);
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
     if (body.operation === 'model_catalog' && route === 'admin') return this.refreshModelCatalog();

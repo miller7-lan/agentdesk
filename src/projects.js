@@ -18,6 +18,7 @@
 
   function apply(result) {
     if (!result || !Array.isArray(result.projects)) return;
+    for (const id of result.deletedProjects || []) window.__group?.removeProject?.(id);
     const old = new Set(D.projects.filter((item) => item.configured).map(({ id }) => id));
     const records = result.projects.map((item) => {
       const serverProject = D.projects.find(project => project.id === item.id)?.serverProject;
@@ -144,11 +145,18 @@
   }
   async function removeProject(id) {
     const project = snapshot?.projects.find(item => item.id === id);
-    if (!project || !window.confirm(`从 AgentDesk 删除「${project.name}」？本机文件和远程仓库会保留。`)) return;
+    if (!project) return;
+    status.textContent = '正在核对删除范围，确认后清理本机与 VPS 数据…';
     const result = await api.remove(id);
-    if (!result.ok) { A.toast(result.error); return; }
+    if (!result.ok) {
+      status.textContent = result.cancelled ? '' : result.error;
+      if (!result.cancelled) A.toast(result.error);
+      return;
+    }
+    window.__group?.removeProject?.(id);
     apply(result);
     if (dialog.open) dialog.close();
+    A.toast('项目及本机、VPS 关联数据已删除。');
   }
   $('#workspaceRemove').addEventListener('click', () => removeProject(editing));
 

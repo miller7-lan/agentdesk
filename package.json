@@ -46,6 +46,7 @@
       "attachment-files.js",
       "checkpoints.js",
       "session-worktrees.js",
+      "project-deletion.js",
       "workspace.js",
       "build/icon.png",
       "src/**/*",

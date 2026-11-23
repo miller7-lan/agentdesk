@@ -110,20 +110,6 @@
         <button type="button" class="btn primary" id="threadBannerNew"></button>
       </div>
       <div class="timeline" id="timeline" data-direct></div>
-      <section class="terminal-panel" id="terminalPanel" data-direct hidden aria-label="本机终端">
-        <header class="terminal-bar">
-          <div class="terminal-tabs" id="terminalTabs" role="tablist"></div>
-          <div class="grow"></div>
-          <select id="terminalShell" aria-label="新终端的 shell"></select>
-          <button type="button" class="btn" id="terminalNew">新建</button>
-          <button type="button" class="btn" id="terminalTakeover" disabled>接管</button>
-          <button type="button" class="btn" id="terminalInterrupt" title="发送 Ctrl+C" disabled>Ctrl+C</button>
-          <button type="button" class="btn" id="terminalClose" disabled>关闭</button>
-          <button type="button" class="btn" id="terminalHide" title="收起面板（终端继续运行）">收起</button>
-        </header>
-        <p class="terminal-note" id="terminalNote" hidden></p>
-        <div class="terminal-body" id="terminalBody"></div>
-      </section>
       <div class="composer" data-direct>
         <div class="composer-box">
           <div class="provider-send-error" id="providerSendError" hidden>
@@ -272,6 +258,20 @@
         <button class="ptab" data-panel="terminal" data-direct-panel><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 6 6 6-6 6m9 0h7"/></svg>终端</button>
         <button class="ptab" data-panel="files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"/></svg>文件</button>
       </div>
+      <section class="terminal-panel" id="terminalPanel" hidden aria-label="本机终端">
+        <header class="terminal-bar">
+          <div class="terminal-tabs" id="terminalTabs" role="tablist"></div>
+          <div class="grow"></div>
+          <select id="terminalShell" aria-label="新终端的 shell"></select>
+          <button type="button" class="btn" id="terminalNew">新建</button>
+          <button type="button" class="btn" id="terminalTakeover" disabled>接管</button>
+          <button type="button" class="btn" id="terminalInterrupt" title="发送 Ctrl+C" disabled>Ctrl+C</button>
+          <button type="button" class="btn" id="terminalClose" disabled>关闭</button>
+          <button type="button" class="btn" id="terminalHide" title="收起面板（终端继续运行）">收起</button>
+        </header>
+        <p class="terminal-note" id="terminalNote" hidden></p>
+        <div class="terminal-body" id="terminalBody"></div>
+      </section>
       <div class="panel-body" id="panelBody"></div>
     </section>
   </div>
@@ -370,7 +370,7 @@
       <label>主控工作区标识 <input id="workspaceBinding" maxlength="64" /></label>
       <div class="task-actions">
         <button class="btn primary" id="workspaceSave" type="submit">添加</button>
-        <button class="btn danger" id="workspaceRemove" type="button" hidden>移除</button>
+        <button class="btn danger" id="workspaceRemove" type="button" hidden>删除项目…</button>
         <button class="btn" id="workspaceClose" type="button">关闭</button>
         <button class="btn" id="onboardingOpen" type="button">运行设置向导</button>
       </div>

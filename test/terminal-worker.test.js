@@ -203,3 +203,27 @@ test('a lease is found again when the project folder is given through a link or 
   assert.equal(leases.lookup({ ...identity, root: real })?.id, lease.id);
   assert.equal(leases.lookup({ ...identity, root: real, threadId: 'other' }), null);
 });
+
+test('project deletion closes only its terminals and removes only its authenticated device leases', async t => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-project-worker-'));
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ad-project-root-')));
+  createSecret(stateDir);
+  const terminals = new TerminalSessions({ pty: fakePty() });
+  const server = serveWorker(stateDir, { terminals });
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => { terminals.closeAll();server.close();fs.rmSync(stateDir, { recursive: true, force: true });fs.rmSync(project, { recursive: true, force: true }); });
+  const client = await connectWorker(stateDir, createSecret(stateDir));t.after(() => client.close());
+  const identity = { device: 'dev', provider: 'claude', threadId: 'delete-thread', projectId: 'delete-project', root: project, fullAccess: true };
+  const keep = { ...identity, threadId: 'keep-thread', projectId: 'keep-project' };
+  const binding = { ...identity, ...await client.request('acquire', { binding: identity }) };
+  const other = { ...keep, ...await client.request('acquire', { binding: keep }) };
+  await client.request('terminalOpen', { binding, shell: WINDOWS ? 'cmd' : 'bash' });
+  await client.request('terminalOpen', { binding: other, shell: WINDOWS ? 'cmd' : 'bash' });
+  assert.equal(terminals.terminals.size, 2);
+  assert.ok((await client.request('projectDelete', { projectId: identity.projectId, device: 'another-device' })).deleted);
+  assert.equal(terminals.terminals.size, 2);
+  assert.ok((await client.request('projectDelete', { projectId: identity.projectId, device: identity.device })).deleted);
+  assert.equal(terminals.terminals.size, 1);
+  assert.equal(await client.request('lookup', { binding: identity }), null);
+  assert.ok(await client.request('lookup', { binding: keep }));
+});

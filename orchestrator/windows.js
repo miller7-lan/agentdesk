@@ -224,6 +224,24 @@ class WindowsOperations {
     }, { stateDir: config.stateDir, config });
   }
 
+  async purgeTasks(taskIds) {
+    const selected = new Set(taskIds);
+    if (taskIds.some(id => this.activeTests.has(id))) throw Error('project_delete_busy');
+    this.commands.forgetScopes(scope => selected.has(scope));
+    for (const stream of this.store.all('streams')) {
+      if (!selected.has(stream.taskId)) continue;
+      await fs.rm(this.streamPath(stream.id), { force: true });
+    }
+    for (const id of taskIds) {
+      for (const kind of ['chat-attachments', 'isolated-tests', 'snapshots', 'env-fixes', 'outside-backups']) {
+        await fs.rm(path.join(this.config.stateDir, kind, id), { recursive: true, force: true });
+      }
+      await fs.rm(path.join(this.group.copiesRoot(), id), { recursive: true, force: true });
+    }
+    this.store.deleteTaskMessages(taskIds);
+    return { deleted: true };
+  }
+
   async call(frame) {
     const { task_id: taskId, message_id: requestId, kind, body } = frame;
     if (kind === 'task.status' && body.operation === 'stream_status') {

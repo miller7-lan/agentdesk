@@ -204,6 +204,19 @@ function serveWorker(stateDir, setup = {}) {
             });
             return { ...status, shutdown: true };
           }
+          case 'projectDelete': {
+            if (typeof frame.projectId !== 'string' || typeof frame.device !== 'string') throw Error('invalid_project_delete');
+            const selected = [...leases.leases.values()].filter(lease => lease.projectId === frame.projectId && lease.device === frame.device);
+            if (selected.some(lease => lease.turn || lease.activeTurn || !shell.canResume(lease))) throw Error('project_delete_busy');
+            const matches = scope => {
+              try { const parts = JSON.parse(scope); return parts[0] === frame.device && parts[3] === frame.projectId; }
+              catch { return false; }
+            };
+            shell.forgetProject(matches);
+            for (const terminal of [...terminals.terminals.values()]) if (matches(terminal.scope)) terminals.close(terminal.scope, terminal.id);
+            return Promise.all(selected.map(lease => leases.settle({ ...lease, ...leases.view(lease) }, shell.canResume, { release: true })))
+              .then(values => { if (values.some(value => !value)) throw Error('project_delete_busy'); return { deleted: true }; });
+          }
           case 'acquire': return leases.acquire(binding);
           case 'lookup': return leases.lookup(binding);
           case 'suspend': return leases.suspend(binding);

@@ -545,18 +545,22 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .qv-reset { margin-left: 8px; font-size: 11px; color: var(--accent); }
 
 /* 本机终端面板（D4） */
-.terminal-panel { display: flex; flex-direction: column; margin: 0 16px 8px; border: 1px solid var(--line, #8884); border-radius: 10px; background: #1e1e1e; overflow: hidden; height: 300px; min-height: 160px; resize: vertical; }
-.terminal-panel[hidden] { display: none; }
-.terminal-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: #2a2a2a; color: #ddd; font-size: 12px; }
+.terminal-panel { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; margin: 0; background: var(--panel); color: var(--text); overflow: hidden; }
+.terminal-panel[hidden], .panel-body[hidden] { display: none; }
+.terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel); color: var(--text); font-size: 12px; }
 .terminal-bar .grow { flex: 1; }
-.terminal-bar select, .terminal-bar .btn { font-size: 11.5px; padding: 2px 8px; }
-.terminal-tabs { display: flex; gap: 4px; overflow-x: auto; }
-.terminal-tab { background: transparent; color: #bbb; border: 1px solid transparent; border-radius: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; font-size: 11.5px; }
-.terminal-tab.active { background: #3a3a3a; color: #fff; border-color: #555; }
+.terminal-bar select, .terminal-bar .btn { font-size: 11.5px; padding: 3px 7px; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; }
+.terminal-bar .btn:disabled { opacity: .45; cursor: default; }
+.terminal-tabs { display: flex; flex: 1 0 100%; gap: 4px; min-width: 0; overflow-x: auto; }
+.terminal-tabs:empty { display: none; }
+.terminal-tab { color: var(--muted); border: 1px solid transparent; border-radius: 6px; padding: 4px 8px; cursor: pointer; white-space: nowrap; font-size: 11.5px; }
+.terminal-tab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--border); }
 .terminal-tab.exited { opacity: .6; }
-.terminal-note { margin: 0; padding: 6px 10px; color: #ccc; font-size: 12px; background: #252525; }
-.terminal-body { position: relative; flex: 1; min-height: 0; padding: 4px 6px; }
-.terminal-screen { position: absolute; inset: 4px 6px; }
+.terminal-note { margin: 0; padding: 12px; color: var(--muted); font-size: 12px; }
+.terminal-body { position: relative; flex: 1; min-height: 0; padding: 8px 12px; }
+.terminal-screen { position: absolute; inset: 8px 12px; }
+.terminal-screen[hidden] { display: none; }
+.terminal-screen .xterm-viewport { background: var(--panel) !important; }
 .chip#terminalBtn.on { background: var(--accent-soft); color: var(--accent); }
 
 /* 群聊 v7：上传云端与补丁下载成功提示 */

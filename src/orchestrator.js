@@ -300,7 +300,7 @@ window.__groupReady = (async () => {
 
   // Deleting a group removes it, its saved task list and the lead-dispatched records of its work from this
   // computer, after a warning. The tasks themselves stay on the orchestrator.
-  function deleteGroup(id) {
+  function deleteGroup(id, { confirmed = false } = {}) {
     if (!groups.has(id)) return false;
     const records = window.__agentThreads?.threadsOf?.(id) || [];
     const projectId = projectIdOf(id);
@@ -308,7 +308,7 @@ window.__groupReady = (async () => {
     const groupProject = !A.proj(projectId)?.configured && lastInProject && savedProjects.some((project) => project.id === projectId);
     const localChats = groupProject ? A.D.sessions.filter((session) => session.project === projectId).length : 0;
     const message = `删除「${nameOf(id)}」？\n\n将从本机一并删除：\n· 这个群聊的消息和任务列表\n· 组长派遣给成员的 ${records.length} 个只读记录（${records.map((s) => s.title).join('、') || '无'}）${groupProject ? `\n· 群聊项目「${A.proj(projectId)?.name || ''}」和它的 ${localChats} 个单聊会话` : ''}\n\n主控上的任务不会被删除；正在执行的任务会继续执行。此操作不能撤销。`;
-    if (!window.confirm(message)) return false;
+    if (!confirmed && !window.confirm(message)) return false;
     groups.delete(id);
     endedGroups.delete(id);
     if (!temporary) store.set('endedGroups', [...endedGroups]);
@@ -332,6 +332,22 @@ window.__groupReady = (async () => {
     A.renderSidebar();
     A.toast(`已删除「${nameOf(id)}」及 ${records.length} 个派遣记录`);
     return true;
+  }
+
+  function removeProject(projectId) {
+    const dropped = A.D.sessions.filter(session => session.project === projectId);
+    const stages = store.get('sessionStages', {});
+    for (const session of dropped) {
+      delete stages[session.id];
+      A.D.sessions.splice(A.D.sessions.indexOf(session), 1);
+    }
+    store.set('sessionStages', stages);
+    for (const id of [...groups.keys()]) if (projectIdOf(id) === projectId) deleteGroup(id, { confirmed: true });
+    const index = savedProjects.findIndex(project => project.id === projectId);
+    if (index !== -1) savedProjects.splice(index, 1);
+    if (!temporary) store.set('groupProjectBindings', savedProjects);
+    const at = A.D.projects.findIndex(project => project.id === projectId);
+    if (at !== -1 && !A.D.projects[at].configured) A.D.projects.splice(at, 1);
   }
 
   // Clearing keeps every group chat but drops its messages, task list and read-only dispatch records
@@ -2982,7 +2998,7 @@ window.__groupReady = (async () => {
     group.panel = panel;
     saveWorkbench(group);
   }
-  window.__group = { panelFor, rememberPanel, demoUpdate, addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
+  window.__group = { removeProject, panelFor, rememberPanel, demoUpdate, addFiles, createGroup, deleteGroup, clearAll: clearAllGroups, hasGroup, switchGroup, taskCount, unreadCount, acceptApproval, refresh, render, renderPanel,
     projects: () => [...groups.keys()], isExample, groupsOf, nameOf, projectOf: projectIdOf,
     // Full status fetched for members' conversations also feeds the group's summaries.
     merge(project, task) {
