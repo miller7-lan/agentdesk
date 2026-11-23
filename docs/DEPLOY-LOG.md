@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 02:40（北京时间）· VPS2 · 微信办公助手删除企业微信通道，只保留个人微信 ClawBot
+
+- **改动**：删除企业微信智能机器人通道（`bot.js`、`wechat.env.example`、`@wecom/aibot-node-sdk` 依赖、对应测试；文件校验测试移到 `test/wechat-deliver.test.js`）；`service.js` 只用 ClawBot；unit 去掉 `EnvironmentFile`。文档改为只描述 ClawBot。
+- **VPS2**：删除 `/etc/agentdesk-orchestrator/wechat.env`（企业微信 Bot ID / Secret）和 `wechat.json` 的旧备份；`wechat.json` 去掉 `channel` 和企业微信 userid；`/opt/agentdesk-orchestrator/wechat/` 重新部署（`node_modules` 只剩 `qrcode-terminal`）；重启 `agentdesk-wechat`，日志 `ilink connected`，白名单 1 人（扫码人）。企业微信后台的 AgentDesk 机器人需管理员自行删除或停用。
+- **验证**：微信相关测试 39 项全部通过。
+- **回滚**：git 回到 df4dd89 重新部署；企业微信机器人需在后台重新获取 Secret。
+
 ## 2026-11-24 02:30（北京时间）· VPS2 · 微信办公助手改为个人微信 ClawBot + 引导式流程，合并到 main
 
 - **通道**：新增 `ilink.js`（个人微信 ClawBot，腾讯 iLink 协议，对齐官方插件 2.4.10）并设为默认；`login.js` 终端扫码登录，扫码人自动为管理员。企业微信智能机器人通道（`bot.js`）保留，`wechat.json` 的 `channel` 切换。用户已扫码，服务已连上。

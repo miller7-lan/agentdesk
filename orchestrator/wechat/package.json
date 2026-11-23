@@ -1,10 +1,9 @@
 {
   "name": "agentdesk-wechat",
   "private": true,
-  "description": "AgentDesk 微信办公助手（个人微信 ClawBot / 企业微信智能机器人）。依赖只安装在部署目录：npm ci --omit=dev --ignore-scripts",
+  "description": "AgentDesk 微信办公助手（个人微信 ClawBot）。依赖只安装在部署目录：npm ci --omit=dev --ignore-scripts",
   "license": "UNLICENSED",
   "dependencies": {
-    "@wecom/aibot-node-sdk": "1.0.7",
     "qrcode-terminal": "0.12.0"
   }
 }

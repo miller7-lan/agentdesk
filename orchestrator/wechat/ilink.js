@@ -1,6 +1,6 @@
 'use strict';
 // 个人微信 ClawBot 通道（腾讯 iLink 协议，与官方 OpenClaw 插件 @tencent-weixin/openclaw-weixin 2.4.10 相同的 HTTP 接口）。
-// 提供与 bot.js（企业微信）相同的通道接口：reply / welcome / sendText / sendFile / sendImage / download，
+// 通道接口：reply / welcome / sendText / sendFile / sendImage / download，
 // 外加 start(onMessage) 长轮询收消息。只用 Node 内置模块。
 //
 // 协议要点（读自插件源码 src/api、src/cdn、src/auth）：

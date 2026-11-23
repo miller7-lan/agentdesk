@@ -82,7 +82,6 @@ function parseCommand(raw) {
 function route(message, state) {
   if (message.type === 'event') {
     if (message.event === 'enter_chat' && message.chatType !== 'group') return { kind: 'welcome' };
-    if (message.event === 'disconnected_event') return { kind: 'kicked' };
     return { kind: 'ignore' };
   }
   if (!message.from) return { kind: 'ignore' };

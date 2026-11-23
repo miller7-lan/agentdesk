@@ -28,7 +28,7 @@
 | 严格路由、自动验收、升级诊断、报告与基准、按人日额度、项目内可见性 | ✅ 已实现（`claude/scheduling-lead-triage`）；待 VPS2 实机验证 |
 | Docker 隔离与定期清理 | ⬜ |
 | 白色玻璃主题、开机动画、Windows / macOS 双平台外观 | ✅ 阶段 3 已实现，本机 macOS 验证通过 |
-| 微信入口 | 轻便版办公助手进行中（企业微信自建应用 + 微信插件），见 [WECHAT-LITE.md](WECHAT-LITE.md) |
+| 微信入口 | 微信办公助手（个人微信 ClawBot）已上线 VPS2，手机实测中，见 [WECHAT-LITE.md](WECHAT-LITE.md) |
 | 安全底线（P0） | ✅ 5 项已修复 |
 | CI | ✅ Windows / macOS / Linux 的 Node 测试和中转服务的 Python 测试 |
 | 签名、更新检查、首次运行向导 | ✅ 本地实现和打包验证，正式签名依赖发布凭据 |
@@ -137,9 +137,9 @@
 
 ## 4. 微信入口
 
-微信办公助手（2026-11-23）：个人微信 ClawBot（默认）或企业微信智能机器人，引导式提交 Word/Excel/PPT 任务，VPS2 处理后回文件。独立服务，不经过调度器。详见 [WECHAT-LITE.md](WECHAT-LITE.md)。
+微信办公助手（2026-11-23）：个人微信 ClawBot，引导式提交 Word/Excel/PPT 任务，VPS2 处理后回文件。独立服务，不经过调度器。详见 [WECHAT-LITE.md](WECHAT-LITE.md)。
 
-- [x] 通道：个人微信 ClawBot（iLink）、企业微信智能机器人长连接（官方 SDK）
+- [x] 通道：个人微信 ClawBot（iLink）；企业微信智能机器人通道试过后已删除
 - [x] 办公工具链（LibreOffice、Python 办公库、转换/预览/重算脚本）
 - [x] 引导式流程：选档（1/2/3）→ 收集 →「开始」组长出方案 → 改方案 →「完成」执行交付；`/0`～`/3`、`/进12` 等命令
 - [x] 额度闸门、白名单与限流、多用户隔离、文件校验与 `/重发`、超时提醒、30 天保留

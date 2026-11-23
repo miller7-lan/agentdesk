@@ -69,7 +69,7 @@ class TaskStore {
 
   last(user) { return this.recent(user, 1)[0] || null; }
 
-  // 去重：企业微信超时会重试同一条消息。保留最近 500 个键。
+  // 去重：同一条消息可能重复投递（重连、重试）。保留最近 500 个键。
   seen(key) {
     if (this.data.seen.includes(key)) return true;
     this.data.seen.push(key);

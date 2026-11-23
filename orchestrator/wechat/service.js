@@ -1,6 +1,6 @@
 'use strict';
-// 微信办公助手服务：个人微信 ClawBot（iLink 长轮询，默认）或企业微信智能机器人长连接 → 路由 → 排队执行 → 回文件和说明。
-// 用法：node service.js [wechat.json] [orchestrator config.json]；通道见 createChannel。
+// 微信办公助手服务：个人微信 ClawBot（iLink 长轮询）→ 引导式路由 → 出方案 / 排队执行 → 回文件和说明。
+// 用法：node service.js [wechat.json] [orchestrator config.json]
 // 与主控是两个独立进程：共用 CLI 登录目录（stateDir/homes/<cli>），不走主控的调度器。
 const fs = require('node:fs');
 const path = require('node:path');
@@ -128,13 +128,12 @@ class WechatService {
       log('denied user (add to allowUsers to enable):', user);
       return this.respond(message, '这个助手目前只对已登记的成员开放，请联系管理员。');
     }
-    if (user && !['ignore', 'kicked', 'welcome'].includes(action.kind)
+    if (user && !['ignore', 'welcome'].includes(action.kind)
         && !this.allow(this.messageTimes, user, this.limits.messagesPerMinute, 60_000)) {
       return log('rate limited', userTag(user));
     }
     switch (action.kind) {
       case 'ignore': return undefined;
-      case 'kicked': return log('WARNING: 另一个连接用同一个机器人登录，本连接被踢下线');
       case 'welcome': return this.channel.welcome(message, router.HELP).catch(() => {});
       case 'greet': return this.respond(message, `你好！我是办公助手，帮你处理 Word、Excel、PPT。\n\n${router.HELP}${draft.stage !== 'idle' ? '\n\n' + this.stagePrompt(draft) : ''}`);
       case 'help': return this.respond(message, router.HELP);
@@ -631,16 +630,8 @@ function loadAdapters(orchestratorConfig) {
   return adapters;
 }
 
-// 通道：wechat.json 的 channel = "ilink"（个人微信 ClawBot，默认）或 "wecom"（企业微信智能机器人）。
+// 个人微信 ClawBot 通道；还没扫码登录时返回 null。
 function createChannel(config, onMessage) {
-  if ((config.channel || 'ilink') === 'wecom') {
-    const botId = process.env.WECOM_BOT_ID;
-    const secret = process.env.WECOM_BOT_SECRET;
-    if (!botId || !secret) { console.error('缺少环境变量 WECOM_BOT_ID / WECOM_BOT_SECRET（放在 /etc/agentdesk-orchestrator/wechat.env）'); process.exit(2); }
-    const { BotChannel, createBotClient } = require('./bot');
-    const client = createBotClient({ botId, secret, log, onMessage });
-    return { channel: new BotChannel({ client, log }), start: () => client.connect(), stop: () => client.disconnect(), owner: null };
-  }
   const { IlinkChannel } = require('./ilink');
   const dir = path.join(config.stateDir, 'wechat');
   const accountFile = path.join(dir, 'ilink-account.json');
@@ -678,7 +669,7 @@ function main() {
   service.gc();
   setInterval(() => { try { service.gc(); } catch (error) { log('gc failed', error.message); } }, 3600 * 1000).unref();
   transport.start();
-  log(`wechat service started, channel: ${config.channel || 'ilink'}, adapters: ${Object.keys(adapters).join(',')}, allowUsers: ${service.allowUsers.size}`);
+  log(`wechat service started, channel: ilink, adapters: ${Object.keys(adapters).join(',')}, allowUsers: ${service.allowUsers.size}`);
   const shutdown = () => {
     if (service.running) service.running.controller.abort(new Error('cancelled'));
     try { transport.stop(); } catch {}
