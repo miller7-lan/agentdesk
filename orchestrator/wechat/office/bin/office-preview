@@ -1,0 +1,15 @@
+#!/bin/sh
+# office-preview <文件> [页数=3] [输出目录=同目录/preview]
+# 转 PDF 后渲染前几页 PNG（120dpi），打印生成的图片路径，用于自查排版和发预览图。
+set -eu
+[ $# -ge 1 ] || { echo "用法: office-preview <文件> [页数] [输出目录]" >&2; exit 2; }
+src=$1; pages=${2:-3}; out=${3:-$(dirname "$src")/preview}
+mkdir -p "$out"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/pv-XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+case "$src" in
+  *.pdf|*.PDF) pdf=$src ;;
+  *) pdf=$(office-convert "$src" pdf "$tmp") ;;
+esac
+base=$(basename "$src"); base=${base%.*}
+pdftoppm -r 120 -png -f 1 -l "$pages" "$pdf" "$out/$base"
+ls -1 "$out/$base"*.png

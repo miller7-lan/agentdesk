@@ -1,0 +1,10 @@
+#!/bin/sh
+# office-convert <文件> <目标格式: pdf|docx|xlsx|pptx|...> [输出目录]
+# 用 LibreOffice headless 转换；每次独立的用户目录，避免并发锁冲突。
+set -eu
+[ $# -ge 2 ] || { echo "用法: office-convert <文件> <格式> [输出目录]" >&2; exit 2; }
+src=$1; fmt=$2; out=${3:-$(dirname "$src")}
+profile=$(mktemp -d "${TMPDIR:-/tmp}/lo-XXXXXX")
+trap 'rm -rf "$profile"' EXIT
+timeout 180 soffice -env:UserInstallation=file://"$profile" --headless --norestore --convert-to "$fmt" --outdir "$out" "$src" >/dev/null 2>&1 || { echo "转换失败: $src -> $fmt" >&2; exit 1; }
+base=$(basename "$src"); echo "$out/${base%.*}.${fmt%%:*}"

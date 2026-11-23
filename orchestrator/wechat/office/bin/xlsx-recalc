@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""xlsx-recalc <文件.xlsx>：用 LibreOffice 重算全部公式并保存缓存值，再列出出错的单元格。
+openpyxl 写的公式没有缓存值，Excel/微信预览可能显示空白；交付前跑一次。"""
+import os, shutil, subprocess, sys, tempfile
+import openpyxl
+
+ERRORS = ('#REF!', '#DIV/0!', '#VALUE!', '#NAME?', '#N/A', '#NUM!', '#NULL!')
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit('用法: xlsx-recalc <文件.xlsx>')
+    src = os.path.abspath(sys.argv[1])
+    profile = tempfile.mkdtemp(prefix='lo-')
+    out = tempfile.mkdtemp(prefix='recalc-')
+    try:
+        # 先转 ods 再转回 xlsx 会丢格式；直接 xlsx→xlsx，LibreOffice 打开时重算并写入缓存值。
+        subprocess.run(['timeout', '180', 'soffice', f'-env:UserInstallation=file://{profile}', '--headless', '--norestore',
+                        '--convert-to', 'xlsx:Calc MS Excel 2007 XML', '--outdir', out, src],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = os.path.join(out, os.path.basename(src))
+        shutil.copyfile(result, src)
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+    book = openpyxl.load_workbook(src, data_only=True)
+    bad = [f'{ws.title}!{c.coordinate}={c.value}' for ws in book.worksheets for row in ws.iter_rows() for c in row
+           if isinstance(c.value, str) and c.value in ERRORS]
+    shutil.rmtree(out, ignore_errors=True)
+    if bad:
+        print('公式错误：\n' + '\n'.join(bad[:50]))
+        sys.exit(1)
+    print('重算完成，没有公式错误')
+
+main()
