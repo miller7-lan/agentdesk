@@ -100,6 +100,10 @@ const instance = V2 ? `chat-${PROVIDER}-v2-${createHash('sha256').update(IDENTIT
 const runtimeDir = nativeProject && (process.env.AGENTDESK_NATIVE_RUNTIME || process.env.AGENTDESK_CLAUDE_NATIVE_RUNTIME) || STATE_DIR;
 const SOCKET = path.join(runtimeDir, `${instance}.sock`);
 const STATE_FILE = path.join(STATE_DIR, `${instance}.json`);
+// This instance's own CLI conversation history, bound over the shared CLI home in the sandbox (cli-history.js):
+// one per device, or per native session (whose STATE_DIR is its own).
+const HISTORY_ROOT = path.join(STATE_DIR, 'cli-history', instance);
+const cliHistory = require('./cli-history');
 // The v1 state file a v2 device's threads are copied from once (originals stay where they are).
 const LEGACY_STATE_FILE = V2 && IDENTITY.legacyTag
   ? path.join(STATE_DIR, IDENTITY.legacyTag === 'default' ? `chat-${PROVIDER}.json` : `chat-${PROVIDER}-${IDENTITY.legacyTag}.json`) : null;
@@ -1024,6 +1028,13 @@ function startTurn(turn) {
         extraWritable: turn.nativeGrokLeader ? [turn.nativeGrokLeader] : [],
         extraReadOnly: turn.attachmentDirectory ? [turn.attachmentDirectory] : [] })
       : { command: BIN, args };
+    if (SANDBOX) {
+      try {
+        const adopted = cliHistory.adopt(PROVIDER, HOME, HISTORY_ROOT, turn.thread.sessionId);
+        if (adopted) log('history_adopted', turn.threadId, 'items=' + adopted);
+      } catch (error) { log('history_adopt_failed', turn.threadId, error.code || error.message); }
+      launch.args.splice(launch.args.indexOf('--chdir'), 0, ...cliHistory.bwrapArgs(cliHistory.binds(PROVIDER, HOME, HISTORY_ROOT)));
+    }
     const privateMcpConfig = turn.nativeAntigravityConfig || turn.nativeGrokConfig;
     if (privateMcpConfig) {
       const { source, target } = privateMcpConfig;
@@ -1491,7 +1502,10 @@ async function dispatchV2(method, params) {
 async function deleteThread(thread) {
   if (activeTurns.has(thread.id)) throw fail('turn_in_progress');
   const cwd = NATIVE_PROJECT || thread.legacyWorkspace || path.join(THREADS_DIR, thread.id);
-  await require('./project-delete').cliHistory({ home: HOME, provider: PROVIDER, cwd, sessions: [...(thread.previousSessions || []), thread.sessionId].filter(Boolean) });
+  const sessions = [...(thread.previousSessions || []), thread.sessionId].filter(Boolean);
+  // The conversation may be in this instance's own history and, if it began before that existed, in the shared home.
+  for (const home of [HISTORY_ROOT, HOME]) await require('./project-delete').cliHistory({ home, provider: PROVIDER, cwd, sessions });
+  cliHistory.purge(PROVIDER, HISTORY_ROOT, sessions);
   // Never remove a native mount. Its host detaches it after the seat closes.
   if (!NATIVE_PROJECT) await fs.promises.rm(cwd, { recursive: true, force: true });
   if (store) store.purgeSession(thread.id);
