@@ -11,7 +11,7 @@ const runner = require('./runner');
 const { TaskStore } = require('./store');
 const { QuotaGate, describeBlocked } = require('./quota');
 const { deliverFiles, validateFile } = require('./deliver');
-const { Devices, changeText, statusText } = require('./devices');
+const { Devices, changeText, statusText, since: sinceText } = require('./devices');
 
 const STATUS_ICON = { review: '📋', queued: '⏳', planning: '🧭', running: '▶️', succeeded: '✅', failed: '❌', timeout: '⌛', cancelled: '⏹', quota_limited: '🪫', quota_low: '🪫', auth_expired: '🔑' };
 const STATUS_TEXT = { review: '方案待确认', queued: '排队中', planning: '组长出方案中', running: '执行中', succeeded: '完成', failed: '失败', timeout: '超时', cancelled: '已停止', quota_limited: '额度用尽', quota_low: '额度不够', auth_expired: 'AI 需要重新登录' };
@@ -146,6 +146,7 @@ class WechatService {
       case 'welcome': return this.channel.welcome(message, this.helpText(user)).catch(() => {});
       case 'greet': return this.respond(message, `你好！\n${this.helpText(user)}${!this.isAdmin(user) && draft.stage !== 'idle' ? '\n\n' + this.stagePrompt(draft) : ''}`);
       case 'help': return this.respond(message, this.helpText(user));
+      case 'devices': return this.isAdmin(user) ? this.devicesNow(message) : this.respond(message, '这个命令只有管理员能用。');
       case 'model': return this.respond(message, this.isAdmin(user) ? this.chooseModel(user, action.choice) : '这个命令只有管理员能用。');
       case 'computer': return this.respond(message, this.isAdmin(user) ? this.chooseComputer(user, action.choice) : '这个命令只有管理员能用。');
       case 'chat': return this.chat(message, action.text);
@@ -207,6 +208,18 @@ class WechatService {
       || runner.ADMIN_MODELS.find((item) => this.adapters[item.provider]);
     const device = this.devices?.find(pref.device || '') || this.devices?.list[0] || null;
     return { model, device, chatTask: pref.chatTask || null };
+  }
+
+  async devicesNow(message) {
+    if (!this.devices) return this.respond(message, '没有配置关联电脑。');
+    const results = await this.devices.check();
+    const lines = results.map(({ device, online }) => {
+      const since = this.devices.state.get(device.id);
+      const lasting = since && since.online === online ? `（已${online ? '在线' : '离线'} ${sinceText(this.now() - since.since)}）` : '';
+      return `${online ? '🟢' : '🔴'} ${device.label}：${online ? '在线' : '离线'}${lasting}`;
+    });
+    const tip = results.some((item) => !item.online) ? '\n离线的电脑开机并登录后会自动连上（不用打开 AgentDesk）。' : '';
+    return this.respond(message, `【设备 · 刚查的】\n${lines.join('\n')}${tip}`);
   }
 
   chooseModel(user, choice) {

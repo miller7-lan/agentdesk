@@ -25,7 +25,7 @@ systemctl restart agentdesk-wechat
 - AI 能做办公文件（`out/` 的新文件发回微信），也能经 MCP 工具（`orchestrator/mcp.js` 的 `remote` 范围，`wechat/remote.js`）操作所选电脑：整机文件增删改查（覆盖前 Bridge 备份、删除进废纸篓）、执行命令（Mac 上凭据目录仍被沙箱挡住）、桌面操作、`remote_save_screenshot` 截屏发回、`remote_fetch_file` 取回文件、`remote_push_file` 把成品放到电脑。截屏等都由 CLI 自己调工具，服务不硬编码。
 - 电脑操作走主控 `admin.sock` → 对应 Bridge（`devices.js`）；每轮对话发一次性 capability，只能操作本轮选中的电脑、只能把文件存进本对话目录。
 - 2026-11-24 实测：Codex、Grok 能用全部远程工具（截屏发回、改文件、执行命令）；Antigravity 只能用文件增删改查——它的 `homes/antigravity/.gemini/config/mcp_config.json` 有固定 `enabledTools` 白名单（与主控群聊共用），要放开命令/桌面/截屏需在白名单加 `local_shell_run`、`local_desktop`、`remote_*`（会同时影响群聊里 Antigravity 的 local 步骤）。Claude 当时 5 小时额度剩 2%，未实测。
-- **设备在线提醒**：每分钟查一次各电脑（`devices`，默认只有 Mac）到主控的 SSH/Relay 通道；上线立即提醒、连续 2 次查不到才算离线，提醒所有管理员；服务启动时有离线的也提醒一次。`/电脑` 查看并 `/电脑2` 切换。电脑要「开机即连」：Bridge 用 LaunchAgent（RunAtLoad + KeepAlive）常驻并用 `desktopExecutable`，不依赖打开 AgentDesk（Mac 端提示词见 `docs/WECHAT-MAC-BRIDGE-PROMPT.md`）。
+- **设备在线提醒**：每分钟查一次各电脑（`devices`，默认只有 Mac）到主控的 SSH/Relay 通道；上线立即提醒、连续 2 次查不到才算离线，提醒所有管理员；服务启动时有离线的也提醒一次。`/设备` 马上现查一次各电脑（不等轮询、不防抖）；`/电脑` 查看并 `/电脑2` 切换要操作的电脑。电脑要「开机即连」：Bridge 用 LaunchAgent（RunAtLoad + KeepAlive）常驻并用 `desktopExecutable`，不依赖打开 AgentDesk（Mac 端提示词见 `docs/WECHAT-MAC-BRIDGE-PROMPT.md`）。
 - **普通成员**：只有办公流程（下面第 1 节）。任务做完后接着发消息 = 继续改上一个任务；`/新` 开新任务。
 - **隔离**：每人自己的任务编号（#1 起）和目录 `wechat/users/<userid 哈希>/{tasks/<编号>,pending,ask}`；查询都按本人过滤，AI 的当前目录只是本人的一个任务目录（沙箱看不到别人的）。旧数据启动时自动迁移。
 

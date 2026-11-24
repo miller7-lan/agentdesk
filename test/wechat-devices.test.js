@@ -44,6 +44,13 @@ test('probe errors count as offline and status text lists every device', async (
 });
 
 test('admin device commands parse', () => {
-  assert.deepEqual(parseCommand('/设备'), { kind: 'computer', choice: null });
+  assert.deepEqual(parseCommand('/设备'), { kind: 'devices' });
   assert.deepEqual(parseCommand('/电脑'), { kind: 'computer', choice: null });
+});
+
+test('/设备 probes right now, without waiting for two misses', async () => {
+  const { request } = fake({ mac: [true, false], lenovo: [true, true] });
+  const devices = new Devices({ config: { devices: { mac: { label: 'Mac' }, lenovo: { label: '联想' } } }, socket: 's', request, now: () => 0 });
+  await devices.poll();
+  assert.deepEqual((await devices.check()).map((item) => [item.device.id, item.online]), [['mac', false], ['lenovo', true]]);
 });

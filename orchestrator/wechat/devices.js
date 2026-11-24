@@ -62,6 +62,11 @@ class Devices {
     return changes;
   }
 
+  // 现查所有电脑（不等定时轮询、不做防抖），返回 [{ device, online }]。
+  async check() {
+    return Promise.all(this.list.map(async (device) => ({ device, online: await this.probe(device) })));
+  }
+
   snapshot() {
     return this.list.map((device) => ({ device, ...(this.state.get(device.id) || { online: null, since: null }) }));
   }

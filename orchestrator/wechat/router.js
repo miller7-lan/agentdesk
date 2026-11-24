@@ -42,7 +42,8 @@ const ADMIN_HELP = [
   'AI 能处理办公文件，也能操作关联电脑：截屏发来、看/建/改/删文件、执行命令。',
   '',
   '/模型 查看和切换 AI（/模型1～4）',
-  '/电脑 设备在线情况和切换（/电脑1、/电脑2…）；上线/离线会主动提醒',
+  '/设备 马上查一次各电脑是否在线；上线/离线也会主动提醒',
+  '/电脑 查看和切换要操作的电脑（/电脑1、/电脑2…）',
   '/新 开新对话　/2 停止当前回复　/1 历史',
   '/3问题 快问快答',
 ].join('\n');
@@ -72,7 +73,8 @@ function parseCommand(raw) {
   if (/^(进|看|停|重试|重发)$/.test(body)) return { kind: 'reply', text: `要接任务编号，不加空格，例：/${body}12。发 /1 查看历史任务的编号。` };
   // /新 开新任务（默认是接着上一个）；管理员：/模型 /模型2 选 AI，/电脑 /电脑2 看设备、选电脑（service 里校验身份）
   if (/^(新|新开|新任务|新对话|new)$/i.test(body)) return { kind: 'new' };
-  const pick = /^(模型|电脑|设备)\s*(\d*)$/.exec(body);
+  if (body === '设备') return { kind: 'devices' };            // 现查一次在线情况
+  const pick = /^(模型|电脑)\s*(\d*)$/.exec(body);
   if (pick) return { kind: pick[1] === '模型' ? 'model' : 'computer', choice: pick[2] ? Number(pick[2]) : null };
   const name = word(text);
   if (['帮助', 'help', '?'].includes(name)) return { kind: 'help' };
