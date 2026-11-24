@@ -292,3 +292,8 @@
 - service.js 新增 wechat.json `deviceNotify`（默认 true）；false 时仍轮询、写日志，`/电脑` 仍可查，但不主动推送，启动时也不推离线提示。
 - 主实例 /etc/agentdesk-orchestrator/wechat.json 设 `"deviceNotify": false`（备份 *.bak-*-notify）；@2（联想）不变，仍提醒。
 - 两个实例已重启，active。恢复：删掉该键或改 true 后 `systemctl restart agentdesk-wechat`。
+
+## 2026-11-24 22:56 CST 微信助手：合盖短暂唤醒不再算上线
+- 查因：Mac 合盖后 macOS 会定时短暂唤醒（Power Nap/维护），Bridge 能应答几十秒随即再睡，于是 20:53、22:39、22:45 报上线、随后又报离线；Mac 上 15 分钟一次的 dazzle-probe 在 20:42–22:51 没跑，证明期间在睡眠。
+- devices.js 新增 `deviceOnlineChecks`（默认 3）：连续 3 次（约 3 分钟）查到才算上线；离线仍是连续 2 次查不到。/电脑 现查不受影响。
+- 两个实例已重启 active；备份 devices.js.bak-*-wake。

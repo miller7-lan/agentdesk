@@ -23,10 +23,10 @@ test('default device list is just the Mac', () => {
   assert.deepEqual(deviceList({}), [{ id: 'mac', label: 'Mac', bridge: 'mac', workspace: 'mac' }]);
 });
 
-test('first poll is a baseline; offline needs two misses, online is immediate', async () => {
+test('first poll is a baseline; offline needs two misses, online is immediate when configured', async () => {
   const { request, calls } = fake({ mac: [true, false, false, true] });
   let now = 0;
-  const devices = new Devices({ config: {}, socket: 's', request, now: () => now });
+  const devices = new Devices({ config: { deviceOnlineChecks: 1 }, socket: 's', request, now: () => now });
   assert.deepEqual(await devices.poll(), []);
   assert.equal(calls[0].body.operation, 'route_status');
   now = 60_000; assert.deepEqual(await devices.poll(), []);           // 一次没查到不算离线
@@ -87,4 +87,15 @@ test('deviceNotify:false keeps watching but sends no on/offline pushes', async (
     await watchDevices.call(self, { first: true });
     assert.equal(sent.length, deviceNotify === false ? 0 : 2);
   }
+});
+
+test('a short dark wake (lid closed) is not reported; three checks in a row are', async () => {
+  // 在线 → 两次查不到离线 → 醒来 2 分钟又睡（不报）→ 连续 3 次在线才报上线
+  const { request } = fake({ mac: [true, false, false, true, true, false, true, true, true] });
+  let now = 0;
+  const devices = new Devices({ config: {}, socket: 's', request, now: () => now });
+  const seen = [];
+  for (let i = 0; i < 9; i++) { now = i * 60_000; seen.push(...(await devices.poll()).map((c) => c.online)); }
+  assert.deepEqual(seen, [false, true]);
+  assert.equal(devices.snapshot()[0].online, true);
 });

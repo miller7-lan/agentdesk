@@ -21,8 +21,10 @@ class Devices {
     this.request = request;
     this.now = now;
     this.log = log;
-    this.state = new Map();      // id → { online, since, misses }
+    this.state = new Map();      // id → { online, since, misses, hits }
     this.offlineAfter = config.deviceOfflineChecks ?? 2;   // 连续几次查不到才算离线，免得网络抖动刷屏
+    // 连续几次查到才算上线：Mac 合盖睡眠时会定时短暂醒来（Power Nap/维护唤醒）几十秒，Bridge 能应答，但随即又睡。
+    this.onlineAfter = config.deviceOnlineChecks ?? 3;
     this.pingTimeout = config.devicePingTimeoutMs ?? 8_000;
   }
 
@@ -52,16 +54,20 @@ class Devices {
     for (const device of this.list) {
       const online = await this.probe(device);
       const previous = this.state.get(device.id);
-      if (!previous) { this.state.set(device.id, { online, since: this.now(), misses: online ? 0 : this.offlineAfter }); continue; }
+      if (!previous) { this.state.set(device.id, { online, since: this.now(), misses: online ? 0 : this.offlineAfter, hits: online ? this.onlineAfter : 0 }); continue; }
       if (online) {
-        if (!previous.online) changes.push({ device, online: true, offlineFor: this.now() - previous.since });
-        this.state.set(device.id, { online: true, since: previous.online ? previous.since : this.now(), misses: 0 });
+        const hits = (previous.hits || 0) + 1;
+        if (previous.online) this.state.set(device.id, { ...previous, misses: 0, hits });
+        else if (hits >= this.onlineAfter) {
+          changes.push({ device, online: true, offlineFor: this.now() - previous.since });
+          this.state.set(device.id, { online: true, since: this.now(), misses: 0, hits });
+        } else this.state.set(device.id, { ...previous, hits });
       } else {
         const misses = previous.misses + 1;
         if (previous.online && misses >= this.offlineAfter) {
           changes.push({ device, online: false });
-          this.state.set(device.id, { online: false, since: this.now(), misses });
-        } else this.state.set(device.id, { ...previous, misses });
+          this.state.set(device.id, { online: false, since: this.now(), misses, hits: 0 });
+        } else this.state.set(device.id, { ...previous, misses, hits: 0 });
       }
     }
     return changes;
