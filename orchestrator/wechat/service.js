@@ -891,7 +891,7 @@ function main() {
   const transport = createChannel(config, (message) => service?.onMessage(message));
   if (!transport) {
     // 个人微信还没扫码登录：等登录文件出现再启动（不退出，免得 systemd 反复重启）。
-    log('个人微信 ClawBot 尚未登录：运行 sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js 扫码，然后 systemctl restart agentdesk-wechat');
+    log(`个人微信 ClawBot 尚未登录：运行 sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js --dir ${config.dataDir} 扫码，然后重启本服务`);
     setInterval(() => {}, 3600_000);
     return;
   }
