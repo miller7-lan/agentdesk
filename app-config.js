@@ -38,6 +38,10 @@ function refusedRoot(root, { home = require('node:os').homedir(), platform = pro
   const normal = path.resolve(root);
   const fold = platform === 'win32' || platform === 'darwin' ? (value) => value.toLowerCase() : (value) => value;
   if (normal === path.parse(normal).root || fold(normal) === fold(path.resolve(home))) return true;
+  // The person's own top-level folders (Desktop, Documents, Downloads…): a project there would put Git and the AI's
+  // write access over everything else in it. A subfolder (Desktop/my-app) is fine.
+  const personal = ['Desktop', 'Documents', 'Downloads', 'Pictures', 'Movies', 'Music', 'Videos', 'Library', 'OneDrive'];
+  if (personal.some((name) => fold(normal) === fold(path.join(path.resolve(home), name)))) return true;
   const system = platform === 'win32'
     ? [process.env.SystemRoot || 'C:\\Windows', process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'C:\\ProgramData']
     : ['/System', '/Library', '/bin', '/sbin', '/usr', '/etc', '/private/etc', '/dev', '/proc', '/sys', '/boot', '/Applications'];
@@ -75,7 +79,7 @@ async function initialCommit(root, options = gitOptions()) {
 //   existing     a folder with any entry (even only .DS_Store / Thumbs.db / desktop.ini): git init only
 async function initializeWorkspace(root) {
   const options = gitOptions();
-  if (refusedRoot(root)) throw new Error('不能把磁盘根目录、用户主目录或系统目录作为项目。');
+  if (refusedRoot(root)) throw new Error('不能把磁盘根目录、用户主目录、桌面/文稿/下载等个人文件夹或系统目录直接作为项目，请在里面新建一个子文件夹再选。');
   // Both sides through the native realpath: on Windows a path may arrive in 8.3 form (RUNNER~1) while Git
   // reports the long form, and comparing them as text would make a repository root look like a subfolder.
   const chosen = await fs.realpath(root);

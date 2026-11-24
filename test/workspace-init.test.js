@@ -115,4 +115,7 @@ test('system folders, the disk root and the home folder are refused as projects'
   assert.equal(refusedRoot('/usr/local/src', { platform: 'linux', home: '/home/me' }), true);
   assert.equal(refusedRoot('/home/me/code', { platform: 'linux', home: '/home/me' }), false);
   assert.equal(refusedRoot('/Users/Me', { platform: 'darwin', home: '/Users/me' }), true);
+  assert.equal(refusedRoot('/Users/me/Desktop', { platform: 'darwin', home: '/Users/me' }), true);
+  assert.equal(refusedRoot('/Users/me/documents', { platform: 'darwin', home: '/Users/me' }), true);
+  assert.equal(refusedRoot('/Users/me/Desktop/app', { platform: 'darwin', home: '/Users/me' }), false);
 });

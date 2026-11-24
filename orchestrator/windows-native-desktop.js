@@ -69,7 +69,13 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       if (!bridge?.ssh || bridge.ssh.host !== remote.cfg.host ||
           Number(bridge.ssh.port || 22) !== Number(remote.cfg.port || 22) ||
           config?.write !== true || !sameRoot(config.root, project.localRoot)) {
-        throw new Error('该项目的 Bridge 写入授权与本机目录不匹配，请检查项目绑定。');
+        const sameHost = bridge?.ssh && bridge.ssh.host === remote.cfg.host && Number(bridge.ssh.port || 22) === Number(remote.cfg.port || 22);
+        throw new Error(!bridge?.ssh ? '这台电脑没有可用的主控 Bridge 配置，群聊工作区的项目暂时不能开完全访问单聊。'
+          : !sameHost ? '这台电脑的主控 Bridge 连接的不是当前 VPS（主机或端口不一致），请检查 Bridge 配置。'
+          : config?.write !== true || !config?.root
+          ? `这台电脑的主控 Bridge 没有授权写入「${project.orchestratorWorkspace}」工作区，请检查 Bridge 配置。`
+          : `项目文件夹（${project.localRoot}）和主控 Bridge 的工作目录（${config.root}）不一致。` +
+            '桌面、文稿、下载等个人文件夹不能作为项目文件夹，请在项目「···」里「更改本机文件夹…」选一个子文件夹；其他情况重启 AgentDesk 会自动对齐。');
       }
     }
     if (worktreeSession !== undefined) {

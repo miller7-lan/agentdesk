@@ -35,6 +35,7 @@
       if ((old.has(project) || priorExamples.has(project)) && !valid.has(project)) D.sessions.splice(index, 1);
     }
     snapshot = result;
+    if (result.bridgeWarning) window.alert(result.bridgeWarning);
     if (A.state.group ? !valid.has(A.state.group.split('~')[0]) : !A.sess(A.state.active)) openProject(result.activeProject);
     if (dialog.open) render();
     A.renderAll();
@@ -158,11 +159,21 @@
     A.renderAll();
     A.toast(`已删除「${project.name}」，VPS 上清理了 ${result.tasks} 个群聊任务。`);
   }
+  // A deletion takes a while (it checks and cleans this computer and VPS2). Started from the ··· menu its progress
+  // used to go to the closed workspace dialog, so nothing seemed to happen and a second click failed with
+  // 「项目正在删除」. Say it is running, and ignore repeats until it is done.
+  const removing = new Set();
   async function removeProject(id) {
+    if (removing.has(id)) { A.toast('正在删除这个项目，请稍候…'); return; }
+    removing.add(id);
+    try { return await removeProjectOnce(id); } finally { removing.delete(id); }
+  }
+  async function removeProjectOnce(id) {
     if (groupOnly(id) && !snapshot?.projects.some(item => item.id === id)) return removeGroupProject(id);
     const project = snapshot?.projects.find(item => item.id === id);
     if (!project) return;
     status.textContent = '正在核对删除范围，确认后清理本机与 VPS 数据…';
+    A.toast(`正在删除「${project.name}」：核对并清理本机与 VPS 数据…`);
     const result = await api.remove(id);
     if (!result.ok) {
       status.textContent = result.cancelled ? '' : result.error;

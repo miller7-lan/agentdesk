@@ -28,7 +28,14 @@ test('D14: without the native host a new full-access chat falls back to the MCP 
   assert.ok(notices.every(([, method, reason]) => method === 'agentdesk/fallback' && /缺少原生单聊服务/.test(reason)));
   await assert.rejects(desktop.select('claude', 'thread/start', { ...params, worktreeSession: 'unknown' }), /工作树/);
   project.orchestratorWorkspace = 'named';
-  await assert.rejects(desktop.select('claude', 'thread/start', params), /Bridge 写入授权/);
+  await assert.rejects(desktop.select('claude', 'thread/start', params), /没有可用的主控 Bridge 配置/);
+  // A Bridge whose workspace root is another folder says which two folders disagree and what to do.
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-other-'));
+  t.after(() => fs.rmSync(other, { recursive: true, force: true }));
+  const mismatched = createWindowsNativeDesktop({ stateDir: directory, remote, findProject: () => project, findWorktree: () => null,
+    bridgeSettings: () => ({ ssh: {}, workspaces: { named: { root: other, write: true } } }), onEvent: () => {} });
+  await assert.rejects(mismatched.select('claude', 'thread/start', params), (error) =>
+    error.message.includes(directory) && error.message.includes(other) && /更改本机文件夹/.test(error.message));
 });
 
 test('records left over from a deleted project are found and removed without attaching to a missing folder', async (t) => {

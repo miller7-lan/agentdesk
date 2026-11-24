@@ -220,6 +220,37 @@ function activateProject() {
   toUi('projects:changed', appConfig.list());
 }
 
+// Points each bound workspace's Bridge root at its project's folder (bridge-root.js) and restarts the Bridge when
+// anything moved: on Windows the Bridge runs in this process; on a Mac it is a launchd job (KeepAlive) that is
+// kick-started. Returns the problems the person should hear about (a folder that cannot be a Bridge root).
+async function syncBridgeRoots() {
+  if (!appConfig || configError || enrollment) return [];
+  const { syncBridgeRoots: sync } = require('./bridge-root');
+  let result;
+  try {
+    result = sync({ file: commandsFile(), projects: appConfig.value.projects, activeId: appConfig.active?.id });
+  } catch (error) {
+    logger?.audit('bridge_root', { status: 'failed', error: String(error.code || error.message).slice(0, 120) });
+    return [{ error: 'Bridge 配置无法更新：' + (error.code || error.message) }];
+  }
+  if (result.changed.length) {
+    logger?.audit('bridge_root', { status: 'ok', workspaces: result.changed });
+    if (stopBridge) {
+      try { stopBridge(); } catch {}
+      stopBridge = null;
+      startOrchestratorBridge();
+    } else if (mac) {
+      await new Promise((resolve) => require('node:child_process').execFile('/bin/launchctl',
+        ['kickstart', '-k', `gui/${process.getuid()}/local.agentdesk.mac-bridge`], { timeout: 15000 }, (error) => {
+          if (error) logger?.audit('bridge_root', { status: 'restart_failed', error: String(error.code || 'failed') });
+          resolve();
+        }));
+    }
+  }
+  for (const problem of result.problems) logger?.audit('bridge_root', { status: 'refused', workspace: problem.workspace });
+  return result.problems;
+}
+
 async function loadAppConfig() {
   const legacyFiles = (mac ? ['remote.json', 'mac.json', 'mac-remote.json'] : ['mac.json', 'remote.json', 'windows.json'])
     .map((name) => path.join(legacyDir, name));
@@ -236,6 +267,7 @@ async function loadAppConfig() {
   if (!process.env.AGENTDESK_APPEARANCE && appConfig.value.appearance?.boot === 'off') bootMode = 'off';
   activateProject();
   pruneOrphanNativeChats();
+  syncBridgeRoots().catch(() => {});
 }
 
 // Native single chats whose project is gone (deleted before 0.3.8 cleaned them up, or by hand) are listed under any
@@ -400,7 +432,10 @@ for (const operation of ['list', 'add', 'update', 'remove', 'select']) {
       logger?.audit('project_change', { operation, projectId: id || appConfig.active?.id, status: 'ok' });
       // What binding the folder did to Git (D7/Q3/Q4), so the window can tell the person.
       const init = (operation === 'add' || operation === 'update') ? appConfig.lastInit : undefined;
-      return { ok: true, ...appConfig.list(), ...(init && { init }) };
+      const bridgeProblems = operation === 'list' ? [] : await syncBridgeRoots();
+      const bridgeWarning = bridgeProblems.length ? '主控 Bridge 没有切到这个项目的文件夹：' + bridgeProblems.map((item) => item.error).join('；') +
+        '。群聊和完全访问单聊暂时不能在这里工作，请在项目「···」里「更改本机文件夹…」换一个子文件夹。' : undefined;
+      return { ok: true, ...appConfig.list(), ...(init && { init }), ...(bridgeWarning && { bridgeWarning }) };
     } catch (error) {
       if (operation === 'remove') logger?.audit('project_change', { operation, projectId: request.id, status: 'failed', error: removeFailure(error.message) });
       return { ok: false, error: error.message };
