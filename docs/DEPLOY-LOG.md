@@ -2,12 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
-## 2026-11-24 13:10（北京时间）· 客户端 0.4.6 · Bridge 目录跟随项目；禁止个人文件夹作项目；删除防重复
+## 2026-11-24 13:10（北京时间）· 客户端 0.4.7（0.4.6 打包失败未发布）· Bridge 目录跟随项目；禁止个人文件夹作项目；删除防重复
 
 - **起因**：Mac「hi」项目（文件夹为桌面）自动连上主控 `mac` 后，完全访问单聊报「该项目的 Bridge 写入授权与本机目录不匹配」；群聊任务 `d60f32a5` 的快照来自 `~/AgentDeskWorkspace`（`mountProject: AgentDeskWorkspace`），不是项目文件夹。Bridge 配置（Mac 为 launchd 的 `mac-bridge.json`，Windows 为进程内 Bridge）里工作区 `root` 是装机时写死的，客户端从未随项目更新（此前记录里「Bridge 根目录跟随当前项目」的说法不成立：`activateProject` 只改本机 workspace 服务）。
 - **改动**：新增 `bridge-root.js`：项目绑定主控工作区时把该工作区的 Bridge `root` 改为项目文件夹（只改 root，保留 write/commands 等，先备份 `*.bak-root-<时间>`，原子写入，保持权限），然后 Windows 重启进程内 Bridge、Mac `launchctl kickstart -k local.agentdesk.mac-bridge`；在项目增改/选择后和启动时执行。个人文件夹（桌面、文稿、下载等）和不存在的目录不切换并提示。`refusedRoot` 新增个人顶层文件夹。单聊不匹配错误分三种说明（无 Bridge / 主机不一致 / 目录不一致）。项目菜单删除：进行中提示并忽略重复点击（Mac 审计日志里 9 次 `already_deleting`）。
 - **VPS2**：无改动（`mountFor` 每个任务向 Bridge 现问 `mount_info`，会跟随新 root）。
 - **验证**：`npm test` 通过；新增 `test/bridge-root.test.js`、扩展 `windows-native-desktop.test.js`。
+- **0.4.6**：标签已推送，但 Mac/Windows 打包时新测试失败（macOS 临时目录 `/var`→`/private/var` 使「桌面」判断未识别；Windows 无 0600 权限位），未上传。0.4.7 改为两边都用真实路径比较用户目录，测试在 Windows 跳过权限位检查。
 - **回滚**：客户端回到 0.4.5；Bridge 配置用 `mac-bridge.json.bak-root-*` 恢复并重启 Bridge。
 
 ## 2026-11-24 12:40（北京时间）· VPS2 配置 + 客户端 0.4.5 · 去掉本地示例，新建项目必须连主控

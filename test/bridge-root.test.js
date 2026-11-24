@@ -19,7 +19,7 @@ function setup() {
 
 test('a bound project moves its workspace Bridge root to the project folder and keeps the rest', () => {
   const t = setup();
-  const result = syncBridgeRoots({ file: t.file, activeId: 'g1', options: { home: t.home, platform: 'linux' },
+  const result = syncBridgeRoots({ file: t.file, activeId: 'g1', options: { home: t.home },
     projects: [{ id: 'g1', kind: 'local', localRoot: t.project, orchestratorWorkspace: 'mac' }] });
   assert.deepEqual(result, { changed: ['mac'], problems: [] });
   const after = t.read();
@@ -27,17 +27,17 @@ test('a bound project moves its workspace Bridge root to the project folder and 
   assert.equal(after.workspaces.mac.write, true);
   assert.deepEqual(after.workspaces.mac.commands, { 'git-status': ['/usr/bin/git', 'status'] });
   assert.equal(after.ssh.host, 'h');
-  assert.equal(fs.statSync(t.file).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(t.file).mode & 0o777, 0o600);
   assert.ok(fs.readdirSync(t.dir).some((name) => name.startsWith('mac-bridge.json.bak-root-')));
   // Already aligned: nothing is written again.
-  assert.deepEqual(syncBridgeRoots({ file: t.file, activeId: 'g1', options: { home: t.home, platform: 'linux' },
+  assert.deepEqual(syncBridgeRoots({ file: t.file, activeId: 'g1', options: { home: t.home },
     projects: [{ id: 'g1', kind: 'local', localRoot: t.project, orchestratorWorkspace: 'mac' }] }).changed, []);
 });
 
 test('a personal top-level folder (Desktop) or a missing folder is refused and the Bridge is left alone', () => {
   const t = setup();
   for (const localRoot of [path.join(t.home, 'Desktop'), path.join(t.home, 'gone')]) {
-    const result = syncBridgeRoots({ file: t.file, activeId: 'g1', options: { home: t.home, platform: 'linux' },
+    const result = syncBridgeRoots({ file: t.file, activeId: 'g1', options: { home: t.home },
       projects: [{ id: 'g1', kind: 'local', localRoot, orchestratorWorkspace: 'mac' }] });
     assert.deepEqual(result.changed, []);
     assert.equal(result.problems.length, 1);
@@ -49,12 +49,12 @@ test('unbound, remote and foreign-workspace projects do not touch the Bridge; th
   const t = setup();
   const other = path.join(t.home, 'code', 'other');
   fs.mkdirSync(other, { recursive: true });
-  assert.deepEqual(syncBridgeRoots({ file: t.file, activeId: 'x', options: { home: t.home, platform: 'linux' }, projects: [
+  assert.deepEqual(syncBridgeRoots({ file: t.file, activeId: 'x', options: { home: t.home }, projects: [
     { id: 'a', kind: 'local', localRoot: t.project },
     { id: 'b', kind: 'remote', remoteCwd: '/srv', orchestratorWorkspace: 'mac' },
     { id: 'c', kind: 'local', localRoot: t.project, orchestratorWorkspace: 'windows' },
   ] }).changed, []);
-  syncBridgeRoots({ file: t.file, activeId: 'second', options: { home: t.home, platform: 'linux' }, projects: [
+  syncBridgeRoots({ file: t.file, activeId: 'second', options: { home: t.home }, projects: [
     { id: 'first', kind: 'local', localRoot: t.project, orchestratorWorkspace: 'mac' },
     { id: 'second', kind: 'local', localRoot: other, orchestratorWorkspace: 'mac' },
   ] });

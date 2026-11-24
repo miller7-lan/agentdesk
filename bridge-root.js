@@ -41,7 +41,10 @@ function syncBridgeRoots({ file, projects, activeId, options = {} }) {
     if (!current) continue; // A workspace of another computer, or a Bridge that does not serve it: nothing to move.
     if (current.root && same(current.root, project.localRoot)) continue;
     const root = real(project.localRoot);
-    const problem = !root ? '项目文件夹不存在' : refusedRoot(root, options) ? '项目文件夹是桌面、文稿、下载、用户主目录等个人文件夹或系统目录' : '';
+    // Compare real paths on both sides: a home folder reached through a link (macOS /var → /private/var) would
+    // otherwise not recognise its own Desktop.
+    const home = options.home ?? require('node:os').homedir();
+    const problem = !root ? '项目文件夹不存在' : refusedRoot(root, { ...options, home: real(home) || home }) ? '项目文件夹是桌面、文稿、下载、用户主目录等个人文件夹或系统目录' : '';
     if (problem) { result.problems.push({ workspace, project: project.id, error: problem }); continue; }
     settings.workspaces[workspace] = { ...current, root };
     result.changed.push(workspace);
