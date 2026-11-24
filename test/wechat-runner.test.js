@@ -328,7 +328,7 @@ test('admin assistant: chosen CLI, continuing session, remote tools granted per 
   assert.equal(run.calls[0].name, 'claude');
   assert.match(run.calls[0].prompt, /管理员的微信助理[\s\S]*「Mac」[\s\S]*remote_save_screenshot[\s\S]*管理员：截个屏发我/);
   assert.deepEqual(run.calls[0].mcp, { socket: 's', capability: 'cap1', scope: 'remote', scopeArg: true });
-  assert.ok(channel.sent.some(([kind, , name]) => kind === 'file' && name === 'mac-屏幕.png'));
+  assert.ok(channel.sent.some(([kind, , name]) => kind === 'image' && name === 'mac-屏幕.png'));
   assert.equal(last(), '已截屏');
   await say('在桌面建个 a.txt');
   assert.equal(run.calls[1].session, 'chat-1');                                     // 默认接着聊

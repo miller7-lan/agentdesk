@@ -739,8 +739,24 @@ class WechatService {
   sendFiles(user, files) {
     return deliverFiles({
       files, validate: this.validate, log: (...parts) => log('deliver', ...parts), now: this.now,
-      send: (file) => this.channel.sendFile(user, file), retry: this.config.deliveryRetry,
+      send: (file) => (IMAGE_EXT.test(file) && this.channel.sendImage ? this.sendPicture(user, file) : this.channel.sendFile(user, file)),
+      retry: this.config.deliveryRetry,
     });
+  }
+
+  // 图片直接发成微信里能点开看的图片；大图先压成 JPEG（长边 ≤1920），慢线路上几秒就能传完。
+  // 压缩或按图片发失败时，退回按文件发原图。
+  async sendPicture(user, file) {
+    let small = null;
+    try {
+      if (fs.statSync(file).size > IMAGE_COMPRESS_OVER) small = await compressImage(file);
+      return await this.channel.sendImage(user, small || file);
+    } catch (error) {
+      log('send image failed, sending as file', path.extname(file), String(error?.message || error).slice(0, 120));
+      return this.channel.sendFile(user, file);
+    } finally {
+      if (small) fs.rmSync(path.dirname(small), { recursive: true, force: true });
+    }
   }
 
   async deliver(task, result, elapsed) {
@@ -841,6 +857,36 @@ class WechatService {
   }
 }
 
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const IMAGE_COMPRESS_OVER = 1024 * 1024;
+const IMAGE_PYTHON = '/opt/agentdesk-office/venv/bin/python';
+const COMPRESS_SCRIPT = `
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1])
+im.thumbnail((1920, 1920))
+if im.mode not in ('RGB', 'L'):
+    bg = Image.new('RGB', im.size, 'white')
+    bg.paste(im.convert('RGBA'), mask=im.convert('RGBA').split()[-1])
+    im = bg
+im.save(sys.argv[2], 'JPEG', quality=82, optimize=True)
+`;
+
+// 把图片压成临时 JPEG，返回路径（调用方负责删掉所在临时目录）。
+function compressImage(file, python = IMAGE_PYTHON) {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'wechat-img-'));
+  const out = path.join(dir, path.basename(file).replace(/\.[^.]+$/, '') + '.jpg');
+  return new Promise((resolve, reject) => {
+    execFile(python, ['-I', '-c', COMPRESS_SCRIPT, file, out], { timeout: 60_000 }, (error) => {
+      if (error || !fs.existsSync(out)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        return reject(error || new Error('compress_failed'));
+      }
+      resolve(out);
+    });
+  });
+}
+
 function mergeDeliveries(previous = [], results = []) {
   const byName = new Map((previous || []).map((item) => [item.name, item]));
   for (const item of results) byName.set(item.name, item);
@@ -930,4 +976,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { WechatService, loadAdapters, duration, short, plainSummary, mergeDeliveries, deliverySummary, userTag };
+module.exports = { WechatService, loadAdapters, duration, short, plainSummary, mergeDeliveries, deliverySummary, userTag, compressImage };

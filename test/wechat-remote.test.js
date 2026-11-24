@@ -54,3 +54,21 @@ test('remote errors: orchestrator restart and sleeping computer are explained fo
   assert.match(explain(new Error('mcp_request_timeout')), /^computer_not_responding/);
   assert.equal(explain(new Error('path_not_allowed')), 'path_not_allowed');
 });
+
+test('compressImage: large screenshot becomes a small JPEG', { skip: !require('node:fs').existsSync('/opt/agentdesk-office/venv/bin/python') }, async () => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const { execFileSync } = require('node:child_process');
+  const { compressImage } = require('../orchestrator/wechat/service');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'img-test-'));
+  const png = path.join(dir, 'shot.png');
+  execFileSync('/opt/agentdesk-office/venv/bin/python', ['-I', '-c', 'import sys,os\nfrom PIL import Image\nImage.frombytes("RGBA",(3000,2000),os.urandom(3000*2000*4)).save(sys.argv[1])', png]);
+  const out = await compressImage(png);
+  try {
+    assert.match(out, /shot\.jpg$/);
+    assert.ok(fs.statSync(out).size < fs.statSync(png).size);
+    assert.deepEqual([...fs.readFileSync(out).subarray(0, 2)], [0xff, 0xd8]);
+  } finally {
+    fs.rmSync(path.dirname(out), { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
