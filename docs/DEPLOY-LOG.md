@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 19:25（北京时间）· VPS2 · 微信助手电脑在线检测改为真实应答
+
+- **问题**：16:52 Mac 合盖/睡眠时 `/设备` 仍显示「在线 1.8 小时」。旧检测只看主控的 SSH/Relay 通道标记；睡眠的电脑不会断开 TCP，VPS2 sshd（ClientAliveInterval 900 × 3）约 45 分钟才发现，Relay 同理。
+- **改动**：`orchestrator/wechat/devices.js` 的 `probe` 在通道可用后再向 Bridge 发一次只读 `file.read locations`（默认 8 秒超时，`devicePingTimeoutMs` 可调），答不上来算离线；通道不可用时不发。新增 2 项测试。
+- **VPS2**：只替换 `/opt/agentdesk-orchestrator/wechat/devices.js`（原文件备份 `devices.js.bak-20261124-ping`），重启 `agentdesk-wechat` 与 `agentdesk-wechat@2`；主控未重启。
+- **验证**：微信相关测试 58 项全部通过；线上实测 Mac 在线（应答约 235 ms）、联想离线。
+- **回滚**：用备份文件覆盖回去并重启两个微信实例。
+
 ## 2026-11-24 02:40（北京时间）· VPS2 · 微信办公助手删除企业微信通道，只保留个人微信 ClawBot
 
 - **改动**：删除企业微信智能机器人通道（`bot.js`、`wechat.env.example`、`@wecom/aibot-node-sdk` 依赖、对应测试；文件校验测试移到 `test/wechat-deliver.test.js`）；`service.js` 只用 ClawBot；unit 去掉 `EnvironmentFile`。文档改为只描述 ClawBot。

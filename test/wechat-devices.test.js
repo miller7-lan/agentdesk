@@ -7,6 +7,11 @@ function fake(states) {
   const calls = [];
   const request = async (_socket, frame) => {
     calls.push(frame);
+    if (frame.operation === 'bridge') {                     // 真正问 Bridge 的那一下
+      if (frame.body.operation !== 'locations') throw new Error('unexpected');
+      if (states.asleep?.includes(frame.bridge)) throw new Error('timeout');
+      return { locations: [] };
+    }
     const up = states[frame.bridge].shift();
     if (up === 'error') throw new Error('mcp_socket_closed');
     return { ssh: up, relay: false };
@@ -41,6 +46,22 @@ test('probe errors count as offline and status text lists every device', async (
   assert.equal(devices.find('联想').bridge, 'lenovo');
   assert.equal(devices.find('').id, 'mac');
   assert.equal(devices.find('nope'), null);
+});
+
+test('channel still up but Bridge not answering (Mac asleep, lid closed) counts as offline', async () => {
+  const { request, calls } = fake({ mac: [true], lenovo: [true], asleep: ['mac'] });
+  const devices = new Devices({ config: { devices: { mac: { label: 'Mac' }, lenovo: { label: '联想' } } }, socket: 's', request, now: () => 0 });
+  assert.deepEqual((await devices.check()).map((item) => [item.device.id, item.online]), [['mac', false], ['lenovo', true]]);
+  const ping = calls.find((frame) => frame.operation === 'bridge' && frame.bridge === 'mac');
+  assert.equal(ping.kind, 'file.read');
+  assert.equal(ping.body.workspace, 'mac');
+});
+
+test('a channel that is down is not pinged', async () => {
+  const { request, calls } = fake({ mac: [false] });
+  const devices = new Devices({ config: {}, socket: 's', request, now: () => 0 });
+  assert.deepEqual((await devices.check()).map((item) => item.online), [false]);
+  assert.equal(calls.filter((frame) => frame.operation === 'bridge').length, 0);
 });
 
 test('admin device commands parse', () => {

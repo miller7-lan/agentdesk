@@ -1,7 +1,7 @@
 'use strict';
 // 管理员关联的电脑：在线监测 + 远程操作（截屏、读写文件、执行命令）。
 // 走主控的 admin.sock（与 admin.js 相同），由主控按 Bridge 名转发给对应电脑；本服务不直接连电脑。
-// 在线 = 主控到该 Bridge 的 SSH 或 Relay 通道任一可用（Bridge 在电脑上开机自启，不依赖打开 AgentDesk）。
+// 在线 = 主控到该 Bridge 的 SSH 或 Relay 通道任一可用，并且 Bridge 真的应答了一次请求（睡眠的电脑通道可能还挂着）。
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
@@ -23,6 +23,7 @@ class Devices {
     this.log = log;
     this.state = new Map();      // id → { online, since, misses }
     this.offlineAfter = config.deviceOfflineChecks ?? 2;   // 连续几次查不到才算离线，免得网络抖动刷屏
+    this.pingTimeout = config.devicePingTimeoutMs ?? 8_000;
   }
 
   find(name) {
@@ -31,10 +32,14 @@ class Devices {
     return this.list.find((device) => device.id.toLowerCase() === key || device.label.toLowerCase() === key) || null;
   }
 
+  // 通道「连着」不等于电脑醒着：Mac 合盖/睡眠时 TCP 不会断，VPS2 的 SSH 要 45 分钟、Relay 也要很久才发现。
+  // 所以通道可用后再真的问 Bridge 一次（只读的 locations，几百毫秒），答不上来就算离线。
   async probe(device) {
     try {
       const value = await this.request(this.socket, { kind: 'task.status', task_id: randomUUID(), bridge: device.bridge, body: { operation: 'route_status' } }, 10_000);
-      return Boolean(value?.ssh || value?.relay);
+      if (!(value?.ssh || value?.relay)) return false;
+      await this.bridge(device, 'file.read', { operation: 'locations' }, this.pingTimeout);
+      return true;
     } catch (error) {
       this.log('device probe failed', device.id, error?.message || error);
       return false;
