@@ -9,7 +9,14 @@
   }
   document.documentElement.classList.toggle('native-mac', window.desk?.platform === 'darwin');
   if (LIVE) {
-    D.projects.forEach((p) => { p.name += '（示例）'; p.example = true; });
+    // The built-in demo (billing-service, web-dashboard…) is only for the browser preview. A real client never
+    // shows it: demo projects looked like real work and their chats only played canned replies.
+    D.projects.splice(0);
+    D.sessions.splice(0);
+    D.diffs.splice(0);
+    D.tree.splice(0);
+    D.terminal.splice(0);
+    D.fileContents = {};
     D.projects.unshift({ id: 'live', name: window.desk.platform === 'darwin' ? 'Mac 工作区' : 'Windows 开发机', branch: window.desk.platform === 'darwin' ? 'main' : 'windows-dev', live: true });
     // No mode here: a live chat without its own choice gets the last writable mode when it is opened (access-toggle.js).
     D.sessions.unshift({ id: 'L1', project: 'live', agent: 'codex', title: '新会话', status: 'idle', time: '刚刚', items: [], live: true, diffs: [], term: [] });

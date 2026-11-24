@@ -258,15 +258,16 @@ window.__groupReady = (async () => {
     if (!projectDialog.open) return;
     const chosen = projectBinding.value;
     const free = freeWorkspaces();
-    setHtml(projectBinding, free.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('') +
-      '<option value="">本地示例（不连主控，AI 不会真的工作）</option>');
+    // No local-example choice: a project made without a workspace never worked, so creating one is not offered.
+    setHtml(projectBinding, free.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('') ||
+      `<option value="">${!knownRoutes ? '正在读取主控工作区…' : '没有可用的主控工作区'}</option>`);
     if (projectBinding.dataset.touched && [...projectBinding.options].some((option) => option.value === chosen)) projectBinding.value = chosen;
     else projectBinding.value = free[0] || '';
     const hint = $('#groupProjectBindingHint');
     const users = workspaceUsers();
     hint.textContent = free.length ? '' : !knownRoutes ? '正在读取主控工作区…' : users.length
       ? `这台电脑的主控工作区已被项目「${users.join('」「')}」使用，一个工作区同一时间只能连一个项目。要连主控，请先删除或改用那个项目。`
-      : '主控没有给这台电脑分配工作区，只能建本地示例。';
+      : '主控没有给这台电脑分配工作区，暂时不能新建项目。';
     hint.hidden = !hint.textContent;
   }
   projectBinding.addEventListener('change', () => { projectBinding.dataset.touched = '1'; });
@@ -1370,11 +1371,11 @@ window.__groupReady = (async () => {
 
   // Turns an example project into a real one bound to this computer's free workspace. Its demo records are cleared;
   // the project's folder, name and chats stay.
-  async function connectProject(projectId) {
+  async function connectProject(projectId, { silent = false } = {}) {
     const workspace = freeWorkspaces()[0];
     const project = A.proj(projectId);
-    if (!workspace || !project) { A.toast('现在没有可用的主控工作区'); return; }
-    if (!window.confirm(`把项目「${project.name}」连接到主控工作区「${workspace}」？\n\n之后组长和 AI 会真正工作；这个项目里的示例记录会清掉，项目文件夹和单聊不变。`)) return;
+    if (!workspace || !project) { if (!silent) A.toast('现在没有可用的主控工作区'); return; }
+    if (!silent && !window.confirm(`把项目「${project.name}」连接到主控工作区「${workspace}」？\n\n之后组长和 AI 会真正工作；这个项目里的示例记录会清掉，项目文件夹和单聊不变。`)) return;
     if (project.configured && window.AgentDeskProjects?.bindWorkspace) {
       const ok = await window.AgentDeskProjects.bindWorkspace(projectId, workspace);
       if (!ok) return;
@@ -1395,6 +1396,20 @@ window.__groupReady = (async () => {
     A.toast(`项目「${project.name}」已连接到主控，可以开始派活了`);
     repaint();
     refresh();
+  }
+  // Projects left unbound by older versions (or made while the orchestrator had no workspace for this computer)
+  // are connected as soon as a free workspace shows up, instead of sitting there as a demo.
+  const unbound = () => temporary ? [] : A.D.projects.filter((item) => /^group-[a-f0-9-]+$/.test(item.id) && !item.serverProject);
+  let autoConnecting = false;
+  async function autoConnect() {
+    if (autoConnecting || !supported || temporary || !knownRoutes) return;
+    autoConnecting = true;
+    try {
+      for (const project of unbound()) {
+        if (!freeWorkspaces().length) break;
+        await connectProject(project.id, { silent: true }).catch((error) => A.toast('自动连接主控没有完成：' + error.message));
+      }
+    } finally { autoConnecting = false; }
   }
   $('#groupConnect').addEventListener('click', () => {
     const projectId = projectIdOf(state.group);
@@ -2009,7 +2024,7 @@ window.__groupReady = (async () => {
   }
 
   function refresh() {
-    if (!supported || busy || (![...groups.keys()].some((id) => !isExample(id)) && !dialog.open && !projectDialog.open)) return;
+    if (!supported || busy || (![...groups.keys()].some((id) => !isExample(id)) && !dialog.open && !projectDialog.open && !unbound().length)) return;
     if (checking) return checking;
     const current = generation;
     refreshResources(current);
@@ -2026,6 +2041,7 @@ window.__groupReady = (async () => {
       knownRoutes = true;
       connected = Boolean(routeState.ssh || routeState.relay);
       syncProjectChoices();
+      autoConnect();
       if (connected && !busy) await Promise.all([...groups.values()].filter((group) => !isExample(group.id)).map(async (group) => {
         try {
           const project = A.proj(group.id);
@@ -2807,6 +2823,10 @@ window.__groupReady = (async () => {
     if (!binding && supported && !knownRoutes && !temporary) {
       A.toast('正在读取主控的工作区，读到后再选择并创建');
       Promise.resolve(refresh()).finally(syncProjectChoices);
+      return;
+    }
+    if (!binding) {
+      A.toast($('#groupProjectBindingHint').textContent || '没有可用的主控工作区，暂时不能新建项目');
       return;
     }
     const project = { id: 'group-' + crypto.randomUUID(), name, branch: 'main', live: Boolean(binding), serverProject: binding || undefined };
