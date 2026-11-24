@@ -1,0 +1,11 @@
+{
+  "dataDir": "/var/lib/agentdesk-orchestrator/wechat-2",
+  "ownerIsAdmin": false,
+  "devices": false,
+  "allowUsers": [],
+  "admins": [],
+  "minQuotaPercent": 8,
+  "limits": { "messagesPerMinute": 30, "activeTasksPerUser": 2, "tasksPerDay": 20, "asksPerHour": 30 },
+  "sendPreview": true,
+  "retention": { "days": 30, "draftDays": 3 }
+}

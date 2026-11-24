@@ -2,14 +2,19 @@
 // 个人微信 ClawBot 扫码登录：在终端显示二维码，用手机微信扫码确认后，把机器人凭据保存到状态目录。
 // 用法（在 VPS2 上，以 agentdesk 身份）：
 //   sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js
-// 保存位置：/var/lib/agentdesk-orchestrator/wechat/ilink-account.json（0600），扫码人自动成为管理员（白名单）。
+// 保存位置：/var/lib/agentdesk-orchestrator/wechat/ilink-account.json（0600），扫码人自动在白名单里（默认是管理员）。
+// 另开一个 ClawBot：加 --dir <数据目录>。
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const { fetchQrCode, pollQrStatus, DEFAULT_BASE_URL } = require('./ilink');
 
 const stateDir = process.env.AGENTDESK_STATE_DIR || '/var/lib/agentdesk-orchestrator';
-const accountFile = path.join(stateDir, 'wechat', 'ilink-account.json');
+// --dir <数据目录>：给另一个 ClawBot 登录（例 --dir /var/lib/agentdesk-orchestrator/wechat-2）。
+const dirFlag = process.argv.indexOf('--dir');
+const dataDir = dirFlag > 0 && process.argv[dirFlag + 1] ? process.argv[dirFlag + 1] : path.join(stateDir, 'wechat');
+fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+const accountFile = path.join(dataDir, 'ilink-account.json');
 
 function showQr(content) {
   try {

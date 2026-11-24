@@ -1,6 +1,7 @@
 'use strict';
 // 微信办公助手服务：个人微信 ClawBot（iLink 长轮询）→ 引导式路由 → 出方案 / 排队执行 → 回文件和说明。
 // 用法：node service.js [wechat.json] [orchestrator config.json]
+// 多个 ClawBot：每个一份 wechat-<名>.json（dataDir 各自独立），用 agentdesk-wechat@<名>.service 跑，数据互不相通。
 // 与主控是两个独立进程：共用 CLI 登录目录（stateDir/homes/<cli>），不走主控的调度器。
 const fs = require('node:fs');
 const path = require('node:path');
@@ -74,7 +75,7 @@ class WechatService {
     this.validate = validate;
     this.now = now;
     this.limits = { ...DEFAULT_LIMITS, ...(config.limits || {}) };
-    this.store = new TaskStore(path.join(config.stateDir, 'wechat'));
+    this.store = new TaskStore(config.dataDir || path.join(config.stateDir, 'wechat'));
     this.allowUsers = new Set(config.allowUsers || []);
     // 管理员：扫码登录 ClawBot 的人 + wechat.json 的 admins。管理员能看设备、远程操作电脑。
     this.admins = new Set(config.admins || []);
@@ -865,7 +866,7 @@ function loadAdapters(orchestratorConfig) {
 // 个人微信 ClawBot 通道；还没扫码登录时返回 null。
 function createChannel(config, onMessage) {
   const { IlinkChannel } = require('./ilink');
-  const dir = path.join(config.stateDir, 'wechat');
+  const dir = config.dataDir;
   const accountFile = path.join(dir, 'ilink-account.json');
   if (!fs.existsSync(accountFile)) return null;
   const account = JSON.parse(fs.readFileSync(accountFile, 'utf8'));
@@ -884,6 +885,8 @@ function main() {
   const config = fs.existsSync(wechatPath) ? JSON.parse(fs.readFileSync(wechatPath, 'utf8')) : {};
   const orchestratorConfig = JSON.parse(fs.readFileSync(orchestratorPath, 'utf8'));
   config.stateDir ||= orchestratorConfig.stateDir;
+  config.dataDir ||= path.join(config.stateDir, 'wechat');
+  fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   let service = null;
   const transport = createChannel(config, (message) => service?.onMessage(message));
   if (!transport) {
@@ -898,10 +901,11 @@ function main() {
   const adapters = loadAdapters(orchestratorConfig);
   const quota = new QuotaGate({ adapters, quotaStatus: require('../quotas').quotaStatus, minRemaining: config.minQuotaPercent ?? 8 });
   // 扫码人是管理员；admins 里登记的也是。
-  if (transport.owner) config.admins = [...new Set([...(config.admins || []), transport.owner])];
+  // ownerIsAdmin: false（给别人单独开的 ClawBot）：扫码人只是普通成员，不能选模型、不能操作电脑。
+  if (transport.owner && config.ownerIsAdmin !== false) config.admins = [...new Set([...(config.admins || []), transport.owner])];
   const devices = config.devices === false ? null : new Devices({ config, socket: path.join(orchestratorConfig.stateDir, 'admin.sock'), log });
   const { RemoteTools } = require('./remote');
-  const remote = devices && new RemoteTools({ socket: path.join(config.stateDir, 'wechat', 'remote.sock'), devices, log });
+  const remote = devices && new RemoteTools({ socket: path.join(config.dataDir, 'remote.sock'), devices, log });
   remote?.listen();
   service = new WechatService({ config, adapters, channel: transport.channel, runAdapter: require('../adapters').runAdapter, quota, devices, remote });
   service.gc();

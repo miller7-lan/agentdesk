@@ -19,6 +19,17 @@ systemctl restart agentdesk-wechat
 凭据存 `/var/lib/agentdesk-orchestrator/wechat/ilink-account.json`（0600），收信游标和各用户最近的 `context_token` 存 `ilink-state.json`。扫码人自动是管理员（白名单）。日志出现 `-14 session expired` 时服务暂停 1 小时；持续出现就重新登录（`login.js --force`）。出站文件上限按 50MB，入站 100MB；文件用 AES-128-ECB 加密后走微信 CDN。
 
 
+## 0.4 再开一个隔离的 ClawBot（给别人用，2026-11-24）
+
+一个 ClawBot 绑定一个扫码的微信号。给别人用时让对方用自己的微信扫码，得到他自己的 ClawBot，背后跑独立实例：配置 `/etc/agentdesk-orchestrator/wechat-<名>.json`（照 `wechat-extra.example.json`：`dataDir` 独立、`ownerIsAdmin: false`、`devices: false`），服务 `agentdesk-wechat@<名>`。登录凭据、任务、文件、编号与主 ClawBot 完全分开；扫码人只是普通成员（只有办公流程，不能选模型、不能操作电脑）。CLI 登录和额度与主 ClawBot 共用。
+
+```sh
+install -m 640 -o root -g agentdesk orchestrator/wechat/wechat-extra.example.json /etc/agentdesk-orchestrator/wechat-2.json
+install -m 644 orchestrator/agentdesk-wechat@.service /etc/systemd/system/ && systemctl daemon-reload
+sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js --dir /var/lib/agentdesk-orchestrator/wechat-2   # 对方扫码
+systemctl enable --now agentdesk-wechat@2
+```
+
 ## 0.5 管理员和普通成员（2026-11-24）
 
 - **管理员**：扫码登录 ClawBot 的人 + `wechat.json` 的 `admins`。发的消息（命令除外）直接交给所选 CLI，**默认接着当前对话**，`/新` 开新对话；`/模型`、`/模型1～4` 在 Claude Opus / GPT（Codex）/ Antigravity / Grok 间切换（换 AI 即开新对话）；`/2` 停止当前回复。
