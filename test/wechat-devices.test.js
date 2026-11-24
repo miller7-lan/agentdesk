@@ -75,3 +75,16 @@ test('/设备 probes right now, without waiting for two misses', async () => {
   await devices.poll();
   assert.deepEqual((await devices.check()).map((item) => [item.device.id, item.online]), [['mac', false], ['lenovo', true]]);
 });
+
+test('deviceNotify:false keeps watching but sends no on/offline pushes', async () => {
+  const { watchDevices } = require('../orchestrator/wechat/service').WechatService.prototype;
+  for (const deviceNotify of [undefined, false]) {
+    const sent = [];
+    const changes = [{ device: { id: 'mac', label: 'Mac' }, online: false }];
+    const self = { config: { deviceNotify }, admins: ['a'], send: (to, text) => sent.push(text), now: () => 0,
+      devices: { poll: async () => changes, snapshot: () => [{ device: changes[0].device, online: false, since: 0 }] },
+      devicesText: () => 'x' };
+    await watchDevices.call(self, { first: true });
+    assert.equal(sent.length, deviceNotify === false ? 0 : 2);
+  }
+});

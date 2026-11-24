@@ -286,3 +286,9 @@
 - 数据：`tasks.json` 升级到 v2（每人编号、`users/<哈希>/tasks/<编号>`），原 #1 迁移到管理员目录。备份 `/var/lib/agentdesk-orchestrator/wechat.bak-20261124`。
 - 实测：经 admin.sock 对 Mac 截屏（2940×1912 PNG）、列桌面、在桌面建文件、执行命令均成功；Windows 离线，联想在线。
 - 回滚：恢复 `/opt/agentdesk-orchestrator/{wechat,mcp.js,adapters.js}` 的 `.bak-20261124` 备份和上面的数据备份，重启 `agentdesk-wechat`。
+
+## 2026-11-24 22:48 CST 微信助手：关闭 Mac 上线/离线主动提醒
+- 原因：用户合盖/开盖时反复收到上线/离线提醒，打扰。
+- service.js 新增 wechat.json `deviceNotify`（默认 true）；false 时仍轮询、写日志，`/电脑` 仍可查，但不主动推送，启动时也不推离线提示。
+- 主实例 /etc/agentdesk-orchestrator/wechat.json 设 `"deviceNotify": false`（备份 *.bak-*-notify）；@2（联想）不变，仍提醒。
+- 两个实例已重启，active。恢复：删掉该键或改 true 后 `systemctl restart agentdesk-wechat`。

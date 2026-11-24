@@ -250,11 +250,13 @@ class WechatService {
   async watchDevices({ first = false } = {}) {
     if (!this.devices) return;
     const changes = await this.devices.poll();
+    // wechat.json deviceNotify:false → 只记日志、不主动推送上线/离线（/电脑 仍可手动查）。
+    const notify = this.config.deviceNotify !== false;
     for (const change of changes) {
       log('device', change.device.id, change.online ? 'online' : 'offline');
-      for (const admin of this.admins) this.send(admin, changeText(change));
+      if (notify) for (const admin of this.admins) this.send(admin, changeText(change));
     }
-    if (first) {
+    if (first && notify) {
       const offline = this.devices.snapshot().filter((item) => item.online === false);
       if (offline.length) for (const admin of this.admins) this.send(admin, `${this.devicesText()}\n离线的电脑开机并登录后会自动连上（Bridge 开机自启，不用打开 AgentDesk）。`);
     }
