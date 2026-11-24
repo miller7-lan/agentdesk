@@ -74,3 +74,9 @@ test('main.js re-aims the Bridge after a project change and at start; the window
   assert.match(projects, /if \(result\.bridgeWarning\) window\.alert\(result\.bridgeWarning\);/);
   assert.match(projects, /if \(removing\.has\(id\)\) \{ A\.toast\('正在删除这个项目，请稍候…'\); return; \}/);
 });
+
+test('on a Mac without agentCommandsFile the Bridge file is found where the installer put it', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(main, /function macBridgeFile\(\) \{[\s\S]*?path\.join\(app\.getPath\('userData'\), 'bridge', 'mac-bridge\.json'\)/);
+  assert.match(main, /const commandsFile = \(\) => remote\.cfg\.agentCommandsFile \|\| remote\.cfg\.orchestratorBridge \|\| macBridgeFile\(\);/);
+});

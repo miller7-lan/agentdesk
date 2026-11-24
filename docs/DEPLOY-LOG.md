@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 13:15（北京时间）· 客户端 0.4.8 · Mac 找不到 Bridge 配置文件
+
+- **起因**：Mac 装上 0.4.7 后，「hi」（文件夹 `~/大学学习/华为ict`）完全访问单聊报「这台电脑没有可用的主控 Bridge 配置」；`mac-bridge.json` 未被改动、审计日志没有 `bridge_root`。`commandsFile()` 只认 `mac-remote.json` 的 `agentCommandsFile` / `orchestratorBridge`，这台 Mac 都没写 → `macBridgeSettings()` 为 null，`syncBridgeRoots` 无文件可改，本机命令列表也为空。0.4.5 之前的「Bridge 写入授权与本机目录不匹配」很可能也是这个原因。
+- **改动**：Mac 上两者都没写时，回退到 `<userData>/bridge/mac-bridge.json`（launchd `local.agentdesk.mac-bridge` 实际使用的文件，存在才用）。
+- **VPS2**：无改动。
+- **验证**：`npm test` 通过；装上后看 Mac 审计日志 `bridge_root` ok、`mac-bridge.json` 的 `workspaces.mac.root` 变为项目文件夹。
+- **回滚**：客户端回到 0.4.7；Bridge 配置用 `mac-bridge.json.bak-root-*` 恢复。
+
 ## 2026-11-24 13:10（北京时间）· 客户端 0.4.7（0.4.6 打包失败未发布）· Bridge 目录跟随项目；禁止个人文件夹作项目；删除防重复
 
 - **起因**：Mac「hi」项目（文件夹为桌面）自动连上主控 `mac` 后，完全访问单聊报「该项目的 Bridge 写入授权与本机目录不匹配」；群聊任务 `d60f32a5` 的快照来自 `~/AgentDeskWorkspace`（`mountProject: AgentDeskWorkspace`），不是项目文件夹。Bridge 配置（Mac 为 launchd 的 `mac-bridge.json`，Windows 为进程内 Bridge）里工作区 `root` 是装机时写死的，客户端从未随项目更新（此前记录里「Bridge 根目录跟随当前项目」的说法不成立：`activateProject` 只改本机 workspace 服务）。

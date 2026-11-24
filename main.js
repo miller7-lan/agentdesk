@@ -43,7 +43,16 @@ const commandRuns = new CommandRuns((scope, run) => {
 const codexCommandRoots = new Map();
 // Where the person's authorized commands are defined: the Bridge configuration (Windows runs its Bridge in the
 // app), or on a Mac the file named by agentCommandsFile in mac-remote.json (normally the Mac Bridge's config).
-const commandsFile = () => remote.cfg.agentCommandsFile || remote.cfg.orchestratorBridge || null;
+// A Mac whose mac-remote.json never named agentCommandsFile still has its Bridge at the place the installer puts it
+// (the launchd job local.agentdesk.mac-bridge runs <userData>/bridge/mac-bridge.json). Without this fallback the
+// app thought there was no Bridge at all: full-access chats in a project connected to the orchestrator failed with
+// 「没有可用的主控 Bridge 配置」, the Bridge never followed the project's folder, and the command list was empty.
+function macBridgeFile() {
+  if (process.platform !== 'darwin') return null;
+  const file = path.join(app.getPath('userData'), 'bridge', 'mac-bridge.json');
+  try { return fs.statSync(file).isFile() ? file : null; } catch { return null; }
+}
+const commandsFile = () => remote.cfg.agentCommandsFile || remote.cfg.orchestratorBridge || macBridgeFile();
 const chatFileTools = process.platform === 'win32' ? windowsFiles : localFiles;
 const chatFileSpecs = chatFileTools.specs.map((tool) =>
   ({ ...tool, name: tool.name.replace(/^windows_file_/, 'agentdesk_file_') }));
