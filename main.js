@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor, session } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, dialog, Notification, shell, powerMonitor, session, Tray, Menu } = require('electron');
+const background = require('./background');
 const path = require('path');
 const fs = require('fs');
 const { randomUUID, createHash } = require('crypto');
@@ -186,7 +187,33 @@ function toggleDesktop(value) {
 }
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
-app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+app.on('second-instance', () => showWindow());
+
+// Windows 后台常驻（background.js）：没有窗口时打开一个，有就拉到前面。
+function showWindow() {
+  if (!app.isReady()) return;
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+let tray;
+let trayHintShown = false;
+// 配了 Bridge 的 Windows：托盘常驻，关窗口不退出，远程（微信助理、群聊主控）一直能连上。
+const keepsRunning = () => !mac && Boolean(stopBridge) && !ending;
+function ensureTray() {
+  if (mac || tray || !stopBridge) return;
+  try {
+    tray = background.createTray({ Tray, Menu, icon: path.join(__dirname, 'build', 'icon.png'), open: showWindow, quit: () => app.quit() });
+  } catch (error) { logger?.log('tray', { status: 'failed', error: error.message }); }
+}
+function syncBridgeAtLogin() {
+  if (mac || !app.isPackaged) return;
+  try {
+    const enabled = background.wantsLoginItem({ packaged: app.isPackaged, bridgeConfigured: Boolean(stopBridge && remote.cfg.orchestratorBridge), setting: appConfig.value.bridgeAtLogin });
+    if (background.syncLoginItem(app, enabled)) logger?.audit('bridge_at_login', { status: enabled ? 'enabled' : 'disabled' });
+  } catch (error) { logger?.log('bridge_at_login', { status: 'failed', error: error.message }); }
+}
 
 const OVERLAY = {
   dark: { color: '#191c20', symbolColor: '#e5e8ed', height: 49 },
@@ -351,6 +378,8 @@ function startConnectivity() {
   remote.start();
   startOrchestratorBridge();
   startMacDesktop();
+  ensureTray();
+  syncBridgeAtLogin();
 }
 
 ipcMain.handle('onboarding:status', (event) => fromMainWindow(event) ? onboardingStatus() : { ok: false });
@@ -840,6 +869,7 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   win.once('ready-to-show', () => win.show());
+  win.on('closed', () => { win = null; });
 
   // 验证用：AGENTDESK_LIVETEST=<脚本.js> 时，在界面里执行该脚本（真实连接），按脚本要求截图后退出
   const liveTest = process.env.AGENTDESK_LIVETEST;
@@ -2290,7 +2320,10 @@ app.whenReady().then(async () => {
   await loadAppConfig();
   logger.log('application_start', { status: configError ? 'config_error' : 'ok' });
   trustedHost = await configuredHost(enrollment, remote.cfg);
-  createWindow();
+  // 开机后台启动（--background）只连主控、不开窗口；连不上 Bridge（没配置或主机未确认）就照常开窗口。
+  const hidden = background.startedInBackground() && Boolean(remote.cfg.orchestratorBridge) && hostConfirmed()
+    && !process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE;
+  if (!hidden) createWindow();
   if (!process.env.AGENTDESK_OFFLINE && !process.env.AGENTDESK_SHOT) startUpdates();
   if (!process.env.AGENTDESK_SHOT && !process.env.AGENTDESK_OFFLINE) {
     startConnectivity();
@@ -2298,5 +2331,14 @@ app.whenReady().then(async () => {
     powerMonitor.on('resume', () => { if (!ending) updates?.networkRestored(); });
   }
   if (connectionMigration.conflicts.length) askConnectionConflict(connectionMigration.conflicts);
+  if (hidden && !stopBridge) createWindow();     // Bridge 没起来：后台留着也没用
+  logger.log('application_mode', { status: hidden && stopBridge ? 'background' : 'window' });
 });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => {
+  if (!keepsRunning()) { app.quit(); return; }
+  ensureTray();
+  if (tray && !trayHintShown && typeof tray.displayBalloon === 'function') {
+    trayHintShown = true;
+    try { tray.displayBalloon({ title: 'AgentDesk 仍在后台', content: '远程连接保持在线。右键托盘图标可打开或退出。', iconType: 'info' }); } catch {}
+  }
+});

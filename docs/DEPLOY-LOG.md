@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 19:50（北京时间）· 客户端 0.4.11 · Windows 后台常驻 Bridge
+
+- **改动**：新增 `background.js`；Windows 打包版在配置了主控 Bridge（`remote.json` 的 `orchestratorBridge`）时，把自己登记为开机启动（`HKCU\…\Run`，参数 `--background`）。后台启动不开窗口、只连主控并显示托盘图标；关掉窗口不退出（留在托盘、首次弹提示），托盘「退出」才真正退出并断开。再次打开 AgentDesk 会在同一进程里打开窗口。Bridge 没起来时照常开窗口。`config.json` 的 `"bridgeAtLogin": false` 可关闭开机启动。Mac 不受影响（仍是 LaunchAgent 独立 Bridge）。
+- **VPS2**：无改动。
+- **验证**：全部测试通过（新增 `test/background.test.js` 4 项）。Windows 实机（联想）待升级后核对：重启电脑不打开 AgentDesk，微信 `/设备` 显示联想在线。
+- **回滚**：发更高版本撤回；单台电脑可在 `config.json` 设 `"bridgeAtLogin": false` 后重开 AgentDesk 取消开机启动。
+
 ## 2026-11-24 17:15（北京时间）· VPS1 / VPS2 · 第三台 Windows（win3）预配置
 
 - **VPS2**：`config.json` 的 `workspaces`、`sshBridges`、`quotaBridges`、`relayBridges`、`projects` 加 `win3`（Git 镜像 `repos/win3.git` 由主控首次使用时自动建）；新增 `relay-win3.token`；重启主控和 `agentdesk-home-mount`，`bridge-win3.sock`、`bridge-win3-mount.sock` 已建立。改前备份 `config.json.bak-20261124-win3`。
