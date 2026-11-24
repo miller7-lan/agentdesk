@@ -2,6 +2,17 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 16:30（北京时间）· 客户端 0.4.10 · 原生单聊支持本机技能；Mac 自签名
+
+- **起因 1**：Mac 原生单聊里 `$college-lab-report` 不生效。原生单聊的 Codex 在 VPS2 沙箱里只看得到自己的 CODEX_HOME；客户端的本机技能上传仍走普通会话的路（远程工作区 `.agentdesk-skills` + 直连 Codex 的 `skills/extraRoots/set`），原生会话的 Codex 看不到，原生会话也不放行登记技能目录。模型只好自己用 local_shell 去 Mac 上找 SKILL.md。
+- **改动 1**：`windows-native-seat.js` 新增 `installSkill`：经该会话的 Codex 用 `fs/writeFile` 写到 `CODEX_HOME/agentdesk-skills/<技能>`（CODEX_HOME 由 `skills/list` 的系统技能路径推出），`skills/extraRoots/set` 登记后 `forceReload` 确认识别；路径校验、单文件 ≤2 MB。`skills:upload` 带上 threadId，原生会话走 seat；`live.js` 改为会话建好后再上传技能（首条消息也能用）。普通会话不变。
+- **起因 2**：原生单聊 `screencapture -l` 报 `could not create image from window`。Mac 版是临时签名（无 `_CodeSignature`），macOS 屏幕录制授权按版本失效。
+- **改动 2**：没有 Developer ID 时用自签名证书签名（secret `MAC_SELF_SIGN_P12` / `MAC_SELF_SIGN_PASSWORD`，原件在 VPS2 root 目录，不入库）：`release.yml` 导入临时钥匙串，`build/notarize.js` afterSign 签名（不开 hardened runtime），CI 校验指定要求钉在这张证书上（certificate root/leaf），并对签名后的 App 跑终端和界面冒烟测试。更新上仍是未签名构建（`signed:false`，手动替换）。
+- **VPS2**：无改动（skill 写入 `/root/.codex/agentdesk-skills`，由客户端经原生会话的 Codex 完成）。
+- **验证**：`npm test` 通过（新增 `test/native-seat-skills.test.js`）；在 VPS2 用 Codex 0.171 实测 skills/list → fs/writeFile → extraRoots/set → 重新加载可识别；分支上手动跑发布流程（不上传）验证 Mac 签名和签名后启动。
+- **用户步骤**：Mac 装上后在「屏幕与系统录音」里删掉 AgentDesk 再添加（最后一次）。
+- **回滚**：客户端回到 0.4.9（授权会回到按版本失效）。
+
 ## 2026-11-24 13:30（北京时间）· 客户端 0.4.9 · Windows Bridge 目录原地切换
 
 - **起因**：检查 Windows 是否有 0.4.8 的问题：Windows 的 `remote.json` 由接入脚本写入 `orchestratorBridge`（`~/.agentdesk/<设备>-bridge.json`，用户可写），不会「找不到 Bridge」。但 0.4.7 在 Windows 切换 root 时 `stopBridge()` 后立即 `startOrchestratorBridge()`：`stop` 是异步的（控制管道 `close` 回调后才关 `bridge.sqlite`），立即重启可能与旧实例冲突导致新 Bridge 起不来；且会结束正在运行的 Bridge 命令。
