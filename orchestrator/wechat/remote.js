@@ -30,6 +30,16 @@ function freeName(dir, name) {
   return path.join(dir, candidate);
 }
 
+// 给 AI 看的报错：主控 admin.sock 连不上（主控正在重启）时说清楚，免得 AI 让用户去重启服务。
+function explain(error) {
+  const text = String(error?.message || error);
+  if (/ENOENT|ECONNREFUSED|mcp_socket_closed/.test(text) && /admin\.sock|mcp_socket_closed/.test(text)) {
+    return 'orchestrator_unavailable: VPS2 主控暂时连不上（多半正在重启，约 30 秒恢复）。等 30 秒再试一次；不要让用户重启任何服务。';
+  }
+  if (/mcp_request_timeout|operation_status_unknown/.test(text)) return 'computer_not_responding: 电脑没有响应（可能睡眠、断网或未登录），稍后再试。';
+  return text.slice(0, 500);
+}
+
 class RemoteTools {
   constructor({ socket, devices, log = () => {} }) {
     this.socket = socket;
@@ -59,7 +69,7 @@ class RemoteTools {
           const value = await this.handle(frame);
           if (!socket.destroyed) wire.send({ ok: true, value });
         } catch (error) {
-          if (!socket.destroyed) wire.send({ ok: false, error: String(error?.message || error).slice(0, 500) });
+          if (!socket.destroyed) wire.send({ ok: false, error: explain(error) });
         }
       });
     });
@@ -143,4 +153,4 @@ class RemoteTools {
   }
 }
 
-module.exports = { RemoteTools, inside };
+module.exports = { RemoteTools, inside, explain };

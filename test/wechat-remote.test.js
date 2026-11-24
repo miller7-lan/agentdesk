@@ -47,3 +47,10 @@ test('remote tools: capability bound to one device and task folder; write become
   tools.revoke(cap);
   await assert.rejects(tools.handle({ capability: cap, operation: 'list' }), /permission_denied/);
 });
+
+test('remote errors: orchestrator restart and sleeping computer are explained for the AI', () => {
+  const { explain } = require('../orchestrator/wechat/remote');
+  assert.match(explain(new Error('connect ENOENT /var/lib/agentdesk-orchestrator/admin.sock')), /^orchestrator_unavailable[\s\S]*不要让用户重启/);
+  assert.match(explain(new Error('mcp_request_timeout')), /^computer_not_responding/);
+  assert.equal(explain(new Error('path_not_allowed')), 'path_not_allowed');
+});
