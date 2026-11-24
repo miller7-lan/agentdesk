@@ -72,6 +72,7 @@
   - 未签名构建：0.4.0 起（主人决定）与已签名构建一样，启动 30 秒后检查、每 24 小时检查、网络恢复后重查、收到服务器通知时检查，发现新版本后自动后台下载（对话框里可关）。下载不等于安装，安装规则不变。0.3.x 的未签名构建仍需手动点「立即下载」，所以 0.3.x → 0.4.0 这一次要手动下载。
   - Windows 未签名包：下载完成、门禁通过后，由用户点击「重启并更新」运行安装包。
   - macOS 未签名包：Squirrel.Mac 要求签名，无法由更新器安装，只能打开下载位置手动替换。
+  - **macOS 自签名（0.4.10 起）**：没有 Developer ID 时，发布流程用 AgentDesk 自己的自签名代码签名证书（GitHub secret `MAC_SELF_SIGN_P12` / `MAC_SELF_SIGN_PASSWORD`，原件在 VPS2 `/root/agentdesk-mac-signing/`，root 可读）给 Mac 版签名（`build/notarize.js` 的 afterSign）。目的只是让每个版本的「指定要求」（certificate leaf）相同，macOS 的屏幕录制等授权在更新后保留；以前的临时签名每次构建都变，更新后授权失效。不开 hardened runtime（只有公证需要，且没有 Team ID 时库校验会拒绝 App 自己的框架）。对更新而言它仍是**未签名构建**（`build-info.json` 的 `signed:false`），照旧手动替换；Gatekeeper 照旧首次需手动打开。改用自签名后的第一个版本需要再授权一次，之后不用。证书丢了要换新证书时，用户需要再授权一次。发布时 CI 会校验签名并启动签名后的 App 跑终端和界面冒烟测试，不通过就不上传。
     下载照常校验（sha512、大小），但不交给 Squirrel.Mac：`mac-manual-updater.js` 直接返回下载好的 zip 路径。原版 MacUpdater 会先调用 `autoUpdater.setFeedURL`（签名不被认可时在回调里抛错，下载一直停在「正在下载」），并且返回空列表，导致「打开下载位置」找不到文件。0.2.9 及更早的构建还没有这个修复：在这些版本上下载完成后若打不开下载位置，zip 在 `~/Library/Caches/agentdesk-ui-updater/pending/`。
 
 ## 3. 安全重启门禁（`update-gate.js`）

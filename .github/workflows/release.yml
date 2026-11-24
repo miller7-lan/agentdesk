@@ -63,6 +63,9 @@ jobs:
     # Secrets cannot appear in step conditions; whether signing material exists is decided here once.
     env:
       HAS_SIGNING: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_LINK != '' || matrix.platform == 'windows' && secrets.WIN_CSC_LINK != '' }}
+      # No Developer ID: the Mac app is signed with AgentDesk's own certificate so macOS keeps permissions
+      # (Screen Recording…) across updates. It stays "unsigned" for updates (manual install, build-info signed:false).
+      HAS_SELF_SIGNING: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_LINK == '' && secrets.MAC_SELF_SIGN_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -110,6 +113,23 @@ jobs:
           # An unset secret arrives as an empty string; electron-builder reads an empty CSC_LINK as a path
           # (the working directory) and fails with "not a file". Unsigned builds must not see these at all.
           [ -z "$CSC_LINK" ] && unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          if [ "$HAS_SELF_SIGNING" = true ]; then
+            # A throwaway keychain holding only the self-signed certificate; build/notarize.js signs with it.
+            keychain="$RUNNER_TEMP/agentdesk-sign.keychain-db"
+            kcpass=$(openssl rand -hex 16)
+            security create-keychain -p "$kcpass" "$keychain"
+            security set-keychain-settings -lut 3600 "$keychain"
+            security unlock-keychain -p "$kcpass" "$keychain"
+            printf '%s' "$SELF_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/agentdesk-sign.p12"
+            security import "$RUNNER_TEMP/agentdesk-sign.p12" -k "$keychain" -P "$SELF_SIGN_PASSWORD" -T /usr/bin/codesign
+            rm -f "$RUNNER_TEMP/agentdesk-sign.p12"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$keychain" >/dev/null
+            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+            identity=$(security find-identity -p codesigning "$keychain" | awk '/AgentDesk/ {print $2; exit}')
+            [ -n "$identity" ] || { echo "::error::self-signed AgentDesk identity not found in the imported certificate"; exit 1; }
+            export MAC_SELF_SIGN_IDENTITY="$identity" MAC_SELF_SIGN_KEYCHAIN="$keychain"
+          fi
+          unset SELF_SIGN_P12 SELF_SIGN_PASSWORD
           npm run predist:mac:release
           config=()
           [ "${{ inputs.bundle_connection }}" = true ] && config=(--config build/bundle-connection.config.js)
@@ -121,6 +141,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+          SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
       - name: Package (Windows)
         if: matrix.platform == 'windows'
         shell: bash
@@ -153,6 +175,20 @@ jobs:
           app=$(ls -d dist/mac*/AgentDesk.app | head -1)
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl -a -vv "$app"
+      # Self-signed Mac app: the signature is valid and pinned to the certificate, and the signed app still starts,
+      # loads node-pty and runs real shells (a signing mistake must not reach VPS2).
+      - name: Verify self-signed app (macOS)
+        if: matrix.platform == 'mac' && env.HAS_SELF_SIGNING == 'true'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -o pipefail
+          app=$(ls -d dist/mac*/AgentDesk.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d -r- "$app" 2>&1 | tee /dev/stderr | grep -q 'certificate leaf = H"'
+          ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/AgentDesk" scripts/packaged-terminal-smoke.js "$app/Contents/Resources"
+          npm install --no-save --no-audit --no-fund playwright-core@1.65.1
+          node scripts/packaged-ui-smoke.js "$app/Contents/MacOS/AgentDesk"
       - uses: actions/upload-artifact@v4
         with:
           name: agentdesk-${{ matrix.platform }}${{ inputs.bundle_connection && '-bundled' || '' }}
