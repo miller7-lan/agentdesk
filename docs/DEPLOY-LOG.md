@@ -2,6 +2,16 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 11:20（北京时间）· VPS2 · 单聊按设备隔离 CLI 对话记录
+
+- **起因**：Lenovo 的 Antigravity 单聊用 shell 读到了共用 CLI 目录 `homes/antigravity/.gemini/antigravity-cli/brain/` 里微信助手那段对话的记录（Mac 桌面测试文件），并当成自己的经历回答。三家单聊、群聊、微信助手共用 `homes/<provider>`，沙盒把整个目录可写放入，任何会话都能读其他所有会话。
+- **改动**（`200e9ca`）：新增 `orchestrator/cli-history.js`；`chat-server.js` 在沙盒里把对话记录相关的目录/文件换成本实例自己的副本（`STATE_DIR/cli-history/<instance>/…`，一台设备一份；原生会话一会话一份），登录凭据仍共用。Antigravity：`brain`、`conversations`、`annotations`、`implicit`、`log`、`presence`、`scratch`、`cache`、`crashes` 和 `conversation_summaries.db`、`jetbox_summaries_proto.pb`、`history.jsonl`；Claude：`.claude/{projects,sessions,session-env,shell-snapshots,todos,file-history,plans,paste-cache,debug}`、`.cache/claude-cli-nodejs`；Grok：`.grok/{sessions,logs,memtrace}`。旧对话第一次续聊时只把这一个对话从共用目录复制过来；删除单聊时一并删除本实例里的 Antigravity 记录。
+- **已知**：`jetbox_summaries_proto.pb` 由 agy 用改名覆盖写入，被挂载的文件拒绝改名（EBUSY），agy 只在本设备日志里报错，对话不受影响。
+- **VPS2**：备份 `chat-server.js` 到 `/root/backups/agentdesk-deploy-cli-history-20261124-111648CST/`（含 `ROLLBACK.sh`）；`install -m 0644` 部署 `chat-server.js`、`cli-history.js`，逐字节核对一致。chat-server 每次单聊连接单独启动，**没有重启主控**；已连着的单聊要「重新连接」后生效。
+- **验证**：`npm test` 586 项通过；VPS2 上用真实 agy 直接跑和经 `agent-chat.sh` 端到端各跑一次（临时设备 `isotest`）：新对话只写入设备目录，共用目录不变；shell 列 `brain` 只看到自己的 1 个对话（改前 70 多个）；续聊记得上一句；删除单聊后设备目录里的记录清空。测试数据已删除。
+- **仍未隔离**：群聊步骤与微信助手之间仍共用 `homes/<provider>`（它们已读不到各设备单聊）；Codex 走另一套机制，未改。
+- **回滚**：`sh /root/backups/agentdesk-deploy-cli-history-20261124-111648CST/ROLLBACK.sh`。
+
 ## 2026-11-24 10:45（北京时间）· 客户端 0.4.3 · Mac + Windows 推送更新
 
 - **版本**：0.4.3（上一版 0.4.2）。本机文件夹不存在的项目可以直接删除：`project-deletion.js` 新增 `folderMissing`，文件夹不存在时按「保留文件夹」处理（跳过重叠、顶层目录、工作树等本机检查，不删任何本机文件），确认后再核对一次文件夹仍不存在，否则停止。确认框加一行「本机文件夹已不存在」。
