@@ -17,6 +17,7 @@ const { Devices, changeText, statusText, since: sinceText } = require('./devices
 const STATUS_ICON = { review: '📋', queued: '⏳', planning: '🧭', running: '▶️', succeeded: '✅', failed: '❌', timeout: '⌛', cancelled: '⏹', quota_limited: '🪫', quota_low: '🪫', auth_expired: '🔑' };
 const STATUS_TEXT = { review: '方案待确认', queued: '排队中', planning: '组长出方案中', running: '执行中', succeeded: '完成', failed: '失败', timeout: '超时', cancelled: '已停止', quota_limited: '额度用尽', quota_low: '额度不够', auth_expired: 'AI 需要重新登录' };
 const DAY = 24 * 3600 * 1000;
+const RECEIVED = '📨 已接收，请稍后…';
 const DEFAULT_LIMITS = { messagesPerMinute: 30, activeTasksPerUser: 2, tasksPerDay: 20, asksPerHour: 30 };
 const DEFAULT_ASK = { provider: 'antigravity', model: 'gemini-3.8-flash-medium', fallback: { provider: 'grok', model: 'grok-4.7' }, timeoutMs: 3 * 60 * 1000 };
 
@@ -159,7 +160,7 @@ class WechatService {
       case 'file': return this.receiveFile(message, draft, action.text);
       case 'tier': return this.chooseTier(message, draft, action.tier);
       case 'start': return this.startPlanning(message, draft);
-      case 'wait': return this.respond(message, `组长还在出方案（一般 1～3 分钟），出来后马上发给你。不想等可以发 /2 取消。`);
+      case 'wait': return this.respond(message, `组长还在出方案（一般 1～3 分钟），出来后马上发给你。不想等可以发 /停 取消。`);
       case 'revise': return this.revise(message, draft, action.text);
       case 'confirm': return this.confirm(message, draft);
       case 'cancel': return this.respond(message, this.isAdmin(user) ? this.stopChat(user) : this.cancelFlow(user, draft));
@@ -225,15 +226,17 @@ class WechatService {
 
   chooseModel(user, choice) {
     const { model } = this.chatPref(user);
-    const list = runner.ADMIN_MODELS.filter((item) => this.adapters[item.provider]);
-    if (!choice) return '【AI】\n' + list.map((item, index) => `${index + 1} ${item.label}${item === model ? '（当前）' : ''}`).join('\n') + '\n发 /模型2 这样切换。';
+    // 编号固定（/1 Claude /2 Codex /3 Antigravity /4 Grok），没配置的显示不可用，不让编号错位。
+    const list = runner.ADMIN_MODELS;
+    if (!choice) return '【AI】\n' + list.map((item, index) => `/${index + 1} ${item.label}${item === model ? '（当前）' : this.adapters[item.provider] ? '' : '（不可用）'}`).join('\n') + '\n发 /2 这样随时切换。';
     const next = list[choice - 1];
     if (!next) return `没有第 ${choice} 个，发 /模型 查看。`;
-    if (next === model) return `已经是 ${next.label}。`;
-    if (this.chatting.has(user)) return '当前回复还没结束，等它结束（或 /2 停止）再切换。';
+    if (!this.adapters[next.provider]) return `${next.label} 现在不可用，换一个（/模型 查看）。`;
+    if (next === model) return `✅ 现在用的就是 ${next.label}，接着发消息即可。`;
+    if (this.chatting.has(user)) return '当前回复还没结束，等它结束（或 /停 停止）再切换。';
     // 不同 CLI 的会话不能互相接续：换 AI 就开新对话。
     this.store.setPref(user, { model: next.provider, chatTask: null });
-    return `已切换到 ${next.label}，下条消息开始新对话。`;
+    return `✅ 已切换到 ${next.label}，下条消息开始新对话。`;
   }
 
   chooseComputer(user, choice) {
@@ -248,16 +251,16 @@ class WechatService {
     if (!next) return `没有第 ${choice} 台，发 /电脑 查看。`;
     this.store.setPref(user, { device: next.id });
     const online = this.devices.state.get(next.id)?.online;
-    return `之后操作 ${next.label}${online === false ? '（现在离线）' : ''}。`;
+    return `✅ 已切换到 ${next.label}${online === false ? '（现在离线）' : ''}，之后操作这台电脑。`;
   }
 
   newChat(user) {
-    if (this.chatting.has(user)) return '当前回复还没结束，等它结束（或 /2 停止）再开新对话。';
+    if (this.chatting.has(user)) return '当前回复还没结束，等它结束（或 /停 停止）再开新对话。';
     const { chatTask } = this.chatPref(user);
     if (chatTask) this.store.update(user, chatTask, { status: 'succeeded', finishedAt: this.now() });
     this.store.setPref(user, { chatTask: null });
     this.chatBuffer.delete(user);
-    return '好的，下条消息开始新对话。';
+    return '✅ 已开新对话，下条消息开始。';
   }
 
   stopChat(user) {
@@ -265,7 +268,7 @@ class WechatService {
     if (!running) return '现在没有在进行的回复。发 /新 开新对话。';
     running.abort(new Error('cancelled'));
     this.chatBuffer.delete(user);
-    return '正在停止当前回复。';
+    return '✅ 已发出停止，当前回复马上结束。';
   }
 
   // 当前会话的任务；没有就新建。
@@ -303,9 +306,10 @@ class WechatService {
       const buffer = this.chatBuffer.get(user) || [];
       buffer.push(text);
       this.chatBuffer.set(user, buffer);
-      if (buffer.length === 1) this.respond(message, '收到，等当前这轮做完一起处理（/2 停止当前）。');
+      if (buffer.length === 1) this.respond(message, '收到，等当前这轮做完一起处理（/停 停止当前）。');
       return undefined;
     }
+    await this.respond(message, RECEIVED);
     return this.chatTurn(user, text);
   }
 
@@ -320,7 +324,7 @@ class WechatService {
     this.chatting.set(user, controller);
     const capability = this.remote && device ? this.remote.grant({ user, device, dir }) : null;
     const startedAt = this.now();
-    const slow = setTimeout(() => this.send(user, `⏳ ${model.label} 还在处理（已 ${duration(this.now() - startedAt)}），/2 可以停止。`), 3 * 60_000);
+    const slow = setTimeout(() => this.send(user, `⏳ ${model.label} 还在处理（已 ${duration(this.now() - startedAt)}），/停 可以停止。`), 3 * 60_000);
     slow.unref?.();
     try {
       if (this.quota) await this.quota.require([model.provider]);
@@ -372,10 +376,10 @@ class WechatService {
   }
 
   newTask(user, draft) {
-    if (['planning', 'review'].includes(draft.stage)) return `方案 #${draft.reviewTask} 还没处理完：发「完成」提交或 /2 取消后再开新任务。`;
+    if (['planning', 'review'].includes(draft.stage)) return `方案 #${draft.reviewTask} 还没处理完：发「完成」提交或 /停 取消后再开新任务。`;
     this.store.clearDraft(user, { removeFiles: true });
     this.setDraft(user, { fresh: true });
-    return '好的，开新任务：发需求或文件。';
+    return '✅ 已开新任务：发需求或文件。';
   }
 
   // ---------- 引导 ----------
@@ -391,16 +395,16 @@ class WechatService {
     switch (draft.stage) {
       case 'tier': return router.TIER_MENU;
       case 'collect': return draft.target
-        ? `正在接着改 #${draft.target}：发修改要求（可带新文件），发「开始」交给原来的执行 AI。/2 退出。`
+        ? `正在接着改 #${draft.target}：发修改要求（可带新文件），发「开始」交给原来的执行 AI。/停 退出。`
         : `当前：${router.TIER_LABEL[draft.tier]}，已收到${this.summaryOfDraft(draft)}。继续发需求或文件，发「开始」让组长出方案。`;
       case 'planning': return '组长正在出方案（一般 1～3 分钟），出来后马上发给你。';
-      case 'review': return `方案 #${draft.reviewTask} 等你确认：有要改的直接说；满意就发「完成」提交；/2 取消。`;
-      default: return '发需求或文件开始一个新任务；/0 查看全部命令。';
+      case 'review': return `方案 #${draft.reviewTask} 等你确认：有要改的直接说；满意就发「完成」提交；/停 取消。`;
+      default: return '发需求或文件开始一个新任务；/help 查看全部命令。';
     }
   }
 
   remindText(draft, why) {
-    const head = { tier: '没看懂，请回复数字 1、2 或 3。', start: '现在不需要「开始」。', confirm: '现在没有等确认的方案。', unknown: '没有这个命令（/0 查看全部命令）。' }[why] || '';
+    const head = { tier: '没看懂，请回复数字 1、2 或 3。', start: '现在不需要「开始」。', confirm: '现在没有等确认的方案。', unknown: '没有这个命令（/help 查看全部命令）。' }[why] || '';
     return `${head}\n${this.stagePrompt(draft)}`.trim();
   }
 
@@ -461,7 +465,7 @@ class WechatService {
       return this.respond(message, `已改为${label}（${estimate}）。方案不变；有要改的直接说，满意就发「完成」。`);
     }
     if (draft.stage === 'planning') return this.respond(message, '组长正在出方案，方案出来后可以回数字 1、2、3 改档位。');
-    if (draft.target) return this.respond(message, `接着改 #${draft.target} 时沿用原来的执行 AI，不能换档；要换档请 /2 退出后重新开始。`);
+    if (draft.target) return this.respond(message, `接着改 #${draft.target} 时沿用原来的执行 AI，不能换档；要换档请 /停 退出后重新开始。`);
     const next = this.setDraft(user, { tier, stage: 'collect' });
     const has = next.texts.length || next.files.length;
     return this.respond(message, `已选${label}（${estimate}）。${has ? `已收到${this.summaryOfDraft(next)}，还要补充就继续发，发「开始」让组长出方案。` : '现在发需求和文件（可分多条），发完发「开始」。'}`);
@@ -552,7 +556,7 @@ class WechatService {
       `📋 #${taskId} ${revision ? '修改后的' : ''}方案（${router.TIER_LABEL[fresh.tier]} · 执行预计${runner.estimateText(fresh)}）`,
       plainSummary(result.plan) || '（组长没写方案摘要）',
       '',
-      '有要改的直接说；满意就发「完成」提交；/2 取消。',
+      '有要改的直接说；满意就发「完成」提交；/停 取消。',
     ].join('\n'));
   }
 
@@ -573,23 +577,23 @@ class WechatService {
     const taskId = draft.reviewTask;
     if (taskId && ['planning', 'review'].includes(this.store.get(user, taskId)?.status)) this.store.update(user, taskId, { status: 'cancelled', finishedAt: this.now() });
     this.store.clearDraft(user, { removeFiles: true });
-    if (draft.stage === 'idle' && !draft.target) return '现在没有进行中的步骤。发需求或文件开始新任务；/0 查看全部命令。';
-    return `已取消${taskId ? ` #${taskId}` : draft.target ? `（退出 #${draft.target}）` : ''}。发需求或文件重新开始。`;
+    if (draft.stage === 'idle' && !draft.target) return '现在没有进行中的步骤。发需求或文件开始新任务；/help 查看全部命令。';
+    return `✅ 已取消${taskId ? ` #${taskId}` : draft.target ? `（退出 #${draft.target}）` : ''}。发需求或文件重新开始。`;
   }
 
   enter(user, id) {
     const task = this.store.get(user, id);
-    if (!task || task.user !== user) return `没有 #${id} 这个任务。发 /1 查看历史任务。`;
+    if (!task || task.user !== user) return `没有 #${id} 这个任务。发 /历史 查看历史任务。`;
     if (task.archived) return `#${id} 的文件已过保留期清理，不能接着改了。`;
     if (!task.executor) return `#${id} 当时没执行（${STATUS_TEXT[task.status] || task.status}），发 /重试${id} 重做。`;
     if (this.isActive(user, id)) return `#${id} 还在执行，等它完成再接着改。`;
     const draft = this.draft(user);
-    if (['planning', 'review'].includes(draft.stage)) return `你还有方案 #${draft.reviewTask} 没处理完：发「完成」提交或 /2 取消后再进入别的任务。`;
+    if (['planning', 'review'].includes(draft.stage)) return `你还有方案 #${draft.reviewTask} 没处理完：发「完成」提交或 /停 取消后再进入别的任务。`;
     this.store.clearDraft(user);
     this.setDraft(user, { target: id, stage: 'collect' });
-    const lines = [`已进入 #${id}（${router.TIER_LABEL[task.tier] || ''} · ${executorLabel(task.executor)}）：${short(task.text, 40)}`];
+    const lines = [`✅ 已进入 #${id}（${router.TIER_LABEL[task.tier] || ''} · ${executorLabel(task.executor)}）：${short(task.text, 40)}`];
     if (task.outputs?.length) lines.push(`成品：${task.outputs.join('、')}`);
-    lines.push('发修改要求（可带新文件），发「开始」交给原来的执行 AI。/2 退出。');
+    lines.push('发修改要求（可带新文件），发「开始」交给原来的执行 AI。/停 退出。');
     return lines.join('\n');
   }
 
@@ -606,10 +610,10 @@ class WechatService {
     // 没出成方案的：重新出方案；有方案的：重新执行。
     if (!task.plan) {
       const draft = this.draft(user);
-      if (['planning', 'review'].includes(draft.stage)) return this.respond(message, `你还有方案 #${draft.reviewTask} 没处理完，先发「完成」或 /2 取消。`);
+      if (['planning', 'review'].includes(draft.stage)) return this.respond(message, `你还有方案 #${draft.reviewTask} 没处理完，先发「完成」或 /停 取消。`);
       this.store.update(user, id, { status: 'planning', error: null, blocked: null, finishedAt: null, sessions: {} });
       this.setDraft(user, { stage: 'planning', reviewTask: id, tier: task.tier });
-      this.respond(message, `#${id} 重新出方案，约 1～3 分钟…`);
+      this.respond(message, `✅ #${id} 重新出方案，约 1～3 分钟…`);
       return this.runPlanning(user, id);
     }
     const limited = this.taskLimitReason(user);
@@ -627,7 +631,7 @@ class WechatService {
     const outDir = path.join(this.store.taskDir(user, id), 'out');
     const files = runner.listFiles(outDir).map((name) => path.join(outDir, name));
     if (!files.length) return this.respond(message, `#${id} 没有成品文件。`);
-    await this.respond(message, `正在重发 #${id} 的 ${files.length} 个文件…`);
+    await this.respond(message, `✅ 正在重发 #${id} 的 ${files.length} 个文件…`);
     const results = await this.sendFiles(task.user, files);
     this.store.update(user, id, { deliveries: mergeDeliveries(task.deliveries, results) });
     return this.send(user, deliverySummary(results, id) || `#${id} 的文件已重发。`);
@@ -647,6 +651,7 @@ class WechatService {
     }
     if (!choices.length) return this.respond(message, '没有可用的 AI。');
     this.asking.add(user);
+    await this.respond(message, RECEIVED);
     const dir = path.join(this.store.userDir(user), 'ask');
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const controller = new AbortController();
@@ -802,13 +807,13 @@ class WechatService {
     if (!task || task.user !== user) return `没有 #${id} 这个任务。`;
     if (this.running?.job.id === id && this.running.job.user === user) {
       this.running.controller.abort(new Error('cancelled'));
-      return `正在停止 #${id}…`;
+      return `✅ 正在停止 #${id}…`;
     }
     const index = this.queue.findIndex((job) => job.id === id && job.user === user);
     if (index >= 0) {
       this.queue.splice(index, 1);
       this.store.update(user, id, { status: 'cancelled', finishedAt: this.now() });
-      return `#${id} 已从队列移除。`;
+      return `✅ #${id} 已从队列移除。`;
     }
     const planning = this.planning.get(user);
     if (planning?.taskId === id || ['planning', 'review'].includes(task.status)) return this.cancelFlow(user, this.draft(user));
@@ -817,7 +822,7 @@ class WechatService {
 
   listText(user) {
     const tasks = this.store.recent(user, 10);
-    if (!tasks.length) return '还没有任务。发需求或文件开始；/0 查看全部命令。';
+    if (!tasks.length) return '还没有任务。发需求或文件开始；/help 查看全部命令。';
     return '【最近任务】\n' + tasks.map((task) => {
       const took = task.finishedAt && task.startedAt ? ' ' + duration(task.finishedAt - task.startedAt) : '';
       const who = task.executor ? `${router.TIER_LABEL[task.tier] || ''}·${executorLabel(task.executor)}` : (router.TIER_LABEL[task.tier] || '');

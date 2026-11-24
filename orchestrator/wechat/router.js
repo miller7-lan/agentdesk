@@ -9,7 +9,8 @@
 //   review    方案已给用户看：说修改意见 → 组长改；发「完成」→ 交给执行 AI
 //
 // 命令一律是「/」紧跟数字或词，中间不加空格（加了也认）：
-//   /0 帮助　/1 历史任务　/2 取消当前　/3问题 快问快答
+//   /help（/帮助 /0）详细指令　/1～/4 随时切换 AI（管理员）
+//   /新 新对话或新任务　/停 停止当前　/历史 历史记录　/问问题 快问快答
 //   /进12 接着改 #12　/看12 看 #12 详情　/停12 停止 #12　/重试12　/重发12
 
 const TIERS = { '1': 'low', '2': 'mid', '3': 'high', '低': 'low', '中': 'mid', '高': 'high', '低档': 'low', '中档': 'mid', '高档': 'high' };
@@ -26,26 +27,42 @@ const TIER_MENU = [
 ].join('\n');
 
 const HELP = [
-  '【办公助手】',
-  '发需求或文件 → 选档 1/2/3 → 发「开始」出方案 → 改到满意发「完成」→ 收文件。',
-  '做完后接着发消息 = 继续改上一个任务；开新任务发 /新',
+  '【办公助手 · 指令】',
+  '用法：发需求或文件 → 回数字 1/2/3 选档 → 发「开始」出方案 → 改到满意发「完成」→ 收文件。',
+  '做完后接着发消息 = 继续改上一个任务。',
   '',
-  '/0 帮助　/1 历史　/2 取消当前　/新 新任务',
-  '/3问题 快问快答（例 /3今天星期几）',
-  '/进12 接着改 #12　/看12 详情　/停12 停止',
-  '/重试12 重做　/重发12 重发文件',
-  '记录和文件保留 30 天。',
+  '/help　查看本说明（/帮助 也行）',
+  '/新　开新任务',
+  '/停　取消当前步骤',
+  '/历史　历史任务和编号',
+  '/问问题　快问快答，例：/问今天星期几',
+  '/进12　接着改 #12　　/看12　看 #12 详情',
+  '/停12　停止 #12　　/重试12　重做　　/重发12　重发文件',
+  '',
+  '命令是「/」紧跟文字，不加空格。记录和文件保留 30 天。',
 ].join('\n');
 
+// 管理员 /help 里的 AI 编号和 runner.ADMIN_MODELS 的顺序一致。
 const ADMIN_HELP = [
-  '【管理员助理】直接发消息就交给所选 AI，默认接着当前对话；发 /新 开新对话。',
-  'AI 能处理办公文件，也能操作关联电脑：截屏发来、看/建/改/删文件、执行命令。',
+  '【管理员助理 · 指令】',
+  '直接发消息就交给当前 AI，默认接着当前对话。AI 能处理办公文件，也能操作关联电脑：截屏、看/建/改/删文件、执行命令。',
   '',
-  '/模型 查看和切换 AI（/模型1～4）',
-  '/设备 马上查一次各电脑是否在线；上线/离线也会主动提醒',
-  '/电脑 查看和切换要操作的电脑（/电脑1、/电脑2…）',
-  '/新 开新对话　/2 停止当前回复　/1 历史',
-  '/3问题 快问快答',
+  '随时切换 AI（切换后开新对话）：',
+  '/1　Claude Opus',
+  '/2　Codex（GPT）',
+  '/3　Antigravity',
+  '/4　Grok',
+  '/模型　看当前用的是哪个',
+  '',
+  '/help　查看本说明（/帮助 也行）',
+  '/新　开新对话',
+  '/停　停止当前回复',
+  '/历史　历史记录',
+  '/问问题　快问快答，例：/问今天星期几',
+  '/电脑　查看和切换要操作的电脑（/电脑1、/电脑2…）',
+  '/设备　马上查一次各电脑是否在线（上线/离线也会主动提醒）',
+  '',
+  '命令是「/」紧跟文字，不加空格。',
 ].join('\n');
 
 function normalize(text) { return String(text || '').trim(); }
@@ -58,19 +75,21 @@ function parseCommand(raw) {
   if (GREETINGS.test(text)) return { kind: 'greet' };
   if (!/^[/／]/.test(text)) return null;
   const body = text.slice(1).trim();
-  // 数字菜单：/0 /1 /2 /3问题
-  const numbered = /^([0-3])\s*([\s\S]*)$/.exec(body);
+  // /0 帮助；/1～/4 切换 AI（service 里校验管理员）
+  if (/^0$/.test(body)) return { kind: 'help' };
+  const numbered = /^([1-4])\s*([\s\S]*)$/.exec(body);
   if (numbered) {
-    const rest = numbered[2].trim();
-    if (numbered[1] === '0') return { kind: 'help' };
-    if (numbered[1] === '1') return { kind: 'list' };
-    if (numbered[1] === '2') return { kind: 'cancel' };
-    return rest ? { kind: 'ask', text: rest } : { kind: 'reply', text: '快问快答要把问题接在后面，例：/3今天星期几' };
+    if (!numbered[2].trim()) return { kind: 'model', choice: Number(numbered[1]) };
+    return { kind: 'reply', text: `/${numbered[1]} 只用来切换 AI，后面不接内容。快问快答改成 /问，例：/问今天星期几` };
   }
+  if (/^(历史|历史记录|记录|list)$/i.test(body)) return { kind: 'list' };
+  if (/^(停|停止|退出|stop)$/i.test(body)) return { kind: 'cancel' };
+  const asked = /^问\s*([\s\S]*)$/.exec(body);
+  if (asked) return asked[1].trim() ? { kind: 'ask', text: asked[1].trim() } : { kind: 'reply', text: '快问快答要把问题接在后面，例：/问今天星期几' };
   // 带任务编号：/进12 /看12 /停12 /重试12 /重发12（编号前的 # 和空格可有可无）
   const withId = /^(进|看|停|重试|重发)\s*#?(\d+)$/.exec(body);
   if (withId) return { kind: { '进': 'enter', '看': 'show', '停': 'stop', '重试': 'retry', '重发': 'resend' }[withId[1]], id: Number(withId[2]) };
-  if (/^(进|看|停|重试|重发)$/.test(body)) return { kind: 'reply', text: `要接任务编号，不加空格，例：/${body}12。发 /1 查看历史任务的编号。` };
+  if (/^(进|看|停|重试|重发)$/.test(body)) return { kind: 'reply', text: `要接任务编号，不加空格，例：/${body}12。发 /历史 查看历史任务的编号。` };
   // /新 开新任务（默认是接着上一个）；管理员：/模型 /模型2 选 AI，/电脑 /电脑2 看设备、选电脑（service 里校验身份）
   if (/^(新|新开|新任务|新对话|new)$/i.test(body)) return { kind: 'new' };
   if (body === '设备') return { kind: 'devices' };            // 现查一次在线情况

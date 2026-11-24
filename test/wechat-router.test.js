@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCommand, route, composeDraft, HELP } = require('../orchestrator/wechat/router');
+const { parseCommand, route, composeDraft, HELP, ADMIN_HELP } = require('../orchestrator/wechat/router');
 
 const me = 'zhangsan';
 const at = (stage) => ({ allowUsers: new Set([me]), stage });
@@ -9,15 +9,22 @@ const file = { type: 'file', from: me, chatType: 'single', media: { url: 'u' }, 
 
 test('numbered commands are "/" plus digit, no space needed', () => {
   assert.deepEqual(parseCommand('/0'), { kind: 'help' });
-  assert.deepEqual(parseCommand('/1'), { kind: 'list' });
-  assert.deepEqual(parseCommand('/2'), { kind: 'cancel' });
+  assert.deepEqual(parseCommand('/help'), { kind: 'help' });
+  assert.deepEqual(parseCommand('/帮助'), { kind: 'help' });
+  assert.deepEqual(parseCommand('/1'), { kind: 'model', choice: 1 });
+  assert.deepEqual(parseCommand('/4'), { kind: 'model', choice: 4 });
+  assert.equal(parseCommand('/5').kind, 'unknown');
+  assert.equal(parseCommand('/3今天星期几').kind, 'reply');                       // 旧写法：提示改用 /问
+  assert.deepEqual(parseCommand('/历史'), { kind: 'list' });
+  assert.deepEqual(parseCommand('/停'), { kind: 'cancel' });
+  assert.deepEqual(parseCommand('/停12'), { kind: 'stop', id: 12 });
   assert.deepEqual(parseCommand('/新'), { kind: 'new' });
   assert.deepEqual(parseCommand('/模型'), { kind: 'model', choice: null });
   assert.deepEqual(parseCommand('/模型3'), { kind: 'model', choice: 3 });
   assert.deepEqual(parseCommand('/电脑2'), { kind: 'computer', choice: 2 });
-  assert.deepEqual(parseCommand('/3今天星期几'), { kind: 'ask', text: '今天星期几' });
-  assert.equal(parseCommand('/3').kind, 'reply');
-  assert.deepEqual(parseCommand('／1'), { kind: 'list' });
+  assert.deepEqual(parseCommand('/问今天星期几'), { kind: 'ask', text: '今天星期几' });
+  assert.equal(parseCommand('/问').kind, 'reply');
+  assert.deepEqual(parseCommand('／历史'), { kind: 'list' });
 });
 
 test('task commands take the id right after the word', () => {
@@ -34,7 +41,8 @@ test('task commands take the id right after the word', () => {
 });
 
 test('help lists every command with its mapping', () => {
-  for (const line of ['/0 帮助', '/1 历史', '/2 取消', '/新 新任务', '/3问题', '/进12', '/看12', '/停12', '/重试12', '/重发12']) assert.ok(HELP.includes(line), line);
+  for (const line of ['/help', '/新　开新任务', '/停　取消', '/历史', '/问问题', '/进12', '/看12', '/停12', '/重试12', '/重发12']) assert.ok(HELP.includes(line), line);
+  for (const line of ['/1　Claude Opus', '/2　Codex', '/3　Antigravity', '/4　Grok', '/help', '/新', '/停', '/历史', '/问问题', '/电脑', '/设备']) assert.ok(ADMIN_HELP.includes(line), line);
 });
 
 test('idle: content begins a task, a digit picks the tier', () => {
@@ -63,7 +71,7 @@ test('collect: content appends, 开始 asks for a plan; 完成 here is a mistake
 
 test('planning: everything waits; review: feedback revises, 完成 submits, digits change tier', () => {
   assert.deepEqual(route(text('快点'), at('planning')), { kind: 'wait' });
-  assert.deepEqual(route(text('/1'), at('planning')), { kind: 'list' });           // 命令随时可用
+  assert.deepEqual(route(text('/历史'), at('planning')), { kind: 'list' });           // 命令随时可用
   assert.deepEqual(route(text('标题改成年度总结'), at('review')), { kind: 'revise', text: '标题改成年度总结' });
   assert.deepEqual(route(text('完成'), at('review')), { kind: 'confirm' });
   assert.deepEqual(route(text('/完成'), at('review')), { kind: 'confirm' });
@@ -92,5 +100,6 @@ test('admin: everything that is not a command goes to the assistant', () => {
   assert.deepEqual(route(text('1'), admin), { kind: 'chat', text: '1' });
   assert.equal(route(file, admin).kind, 'chat-file');
   assert.deepEqual(route(text('/新'), admin), { kind: 'new' });
-  assert.deepEqual(route(text('/2'), admin), { kind: 'cancel' });
+  assert.deepEqual(route(text('/停'), admin), { kind: 'cancel' });
+  assert.deepEqual(route(text('/3'), admin), { kind: 'model', choice: 3 });
 });

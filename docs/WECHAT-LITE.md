@@ -33,7 +33,7 @@ systemctl enable --now agentdesk-wechat@2
 
 ## 0.5 管理员和普通成员（2026-11-24）
 
-- **管理员**：扫码登录 ClawBot 的人 + `wechat.json` 的 `admins`。发的消息（命令除外）直接交给所选 CLI，**默认接着当前对话**，`/新` 开新对话；`/模型`、`/模型1～4` 在 Claude Opus / GPT（Codex）/ Antigravity / Grok 间切换（换 AI 即开新对话）；`/2` 停止当前回复。
+- **管理员**：扫码登录 ClawBot 的人 + `wechat.json` 的 `admins`。发的消息（命令除外）直接交给所选 CLI，**默认接着当前对话**，`/新` 开新对话；`/1`～`/4`（或 `/模型1～4`）随时在 Claude Opus / GPT（Codex）/ Antigravity / Grok 间切换（换 AI 即开新对话）；`/停` 停止当前回复。交给 AI 的消息先回「📨 已接收，请稍后…」；快捷指令执行成功都回 ✅ 提示。
 - AI 能做办公文件（`out/` 的新文件发回微信），也能经 MCP 工具（`orchestrator/mcp.js` 的 `remote` 范围，`wechat/remote.js`）操作所选电脑：整机文件增删改查（覆盖前 Bridge 备份、删除进废纸篓）、执行命令（Mac 上凭据目录仍被沙箱挡住）、桌面操作、`remote_save_screenshot` 截屏发回、`remote_fetch_file` 取回文件、`remote_push_file` 把成品放到电脑。截屏等都由 CLI 自己调工具，服务不硬编码。
 - 电脑操作走主控 `admin.sock` → 对应 Bridge（`devices.js`）；每轮对话发一次性 capability，只能操作本轮选中的电脑、只能把文件存进本对话目录。
 - 2026-11-24 实测：Codex、Grok 能用全部远程工具（截屏发回、改文件、执行命令）；Antigravity 只能用文件增删改查——它的 `homes/antigravity/.gemini/config/mcp_config.json` 有固定 `enabledTools` 白名单（与主控群聊共用），要放开命令/桌面/截屏需在白名单加 `local_shell_run`、`local_desktop`、`remote_*`（会同时影响群聊里 Antigravity 的 local 步骤）。Claude 当时 5 小时额度剩 2%，未实测。
@@ -60,10 +60,12 @@ systemctl enable --now agentdesk-wechat@2
 
 | 命令 | 作用 |
 |---|---|
-| `/0` | 显示帮助（这张对应表） |
-| `/1` | 查看历史任务（最近 10 个） |
-| `/2` | 取消当前这一步（收集、出方案中、看方案都可以），重新开始 |
-| `/3问题` | 快问快答，例 `/3今天星期几`：便宜模型只读回答，不建任务 |
+| `/help` | 显示详细指令（`/帮助`、`/0` 也行） |
+| `/1`～`/4` | 管理员随时切换 AI：Claude Opus / Codex / Antigravity / Grok（换 AI 即开新对话）；`/模型` 看当前 |
+| `/新` | 开新任务（管理员：新对话） |
+| `/历史` | 查看历史任务（最近 10 个） |
+| `/停` | 取消当前这一步（收集、出方案中、看方案都可以）；管理员：停止当前回复 |
+| `/问问题` | 快问快答，例 `/问今天星期几`：便宜模型只读回答，不建任务 |
 | `/进12` | 接着修改 #12 的成品：发修改要求后「开始」，交给原执行 AI，不再出方案 |
 | `/看12` | 查看 #12 详情（方案、成品、没发出去的文件） |
 | `/停12` | 停止 #12（执行中、排队中或方案阶段） |
@@ -91,7 +93,7 @@ systemctl enable --now agentdesk-wechat@2
 - **群里不处理任务和文件**；所有结果只发到所有者单聊，不会发到群里或别人那里。
 - 发消息带上对方最近一条消息的 `context_token`（存在 `ilink-state.json`，重启后仍可主动发）。
 - **白名单** `allowUsers`：扫码登录 ClawBot 的人自动在内；其他人收到固定回复，日志打印其 userid 以便登记。当前只有管理员本人，模型订阅不对外开放。
-- **限流**（`limits`）：每人每分钟 30 条消息、同时最多 2 个排队/执行中的任务、24 小时 20 个任务、`/3` 快问快答每小时 30 次。全局同时只执行 1 个任务。
+- **限流**（`limits`）：每人每分钟 30 条消息、同时最多 2 个排队/执行中的任务、24 小时 20 个任务、`/问` 快问快答每小时 30 次。全局同时只执行 1 个任务。
 - 微信里**没有** shell、root、本机 Bridge 或主控访问；AI 只在本任务的 bubblewrap 沙箱目录里读写。
 
 ## 4. 文件
@@ -146,7 +148,7 @@ journalctl -u agentdesk-wechat -f      # 应看到 ilink connected
 
 改 `wechat.json` 后 `systemctl restart agentdesk-wechat`。
 
-`wechat.json` 字段：`allowUsers`、`minQuotaPercent`（8）、`limits`、`sendPreview`（true）、`tiers`（覆盖各档 provider/model，见 `runner.js` 的 `DEFAULTS`）、`ask`（`/3` 快问快答用的模型）、`retention.days`（30）、`retention.draftDays`（3）、`deliveryRetry`。
+`wechat.json` 字段：`allowUsers`、`minQuotaPercent`（8）、`limits`、`sendPreview`（true）、`tiers`（覆盖各档 provider/model，见 `runner.js` 的 `DEFAULTS`）、`ask`（`/问` 快问快答用的模型）、`retention.days`（30）、`retention.draftDays`（3）、`deliveryRetry`。
 
 ## 8. 办公工具链
 

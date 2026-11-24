@@ -160,7 +160,7 @@ test('guided flow: need → pick tier (wrong digit re-prompts) → collect → p
   assert.equal(service.draft('me').stage, 'idle');                                   // 提交后回到新任务
 });
 
-test('/2 cancels at any step; while planning other text waits', async () => {
+test('/停 cancels at any step; while planning other text waits', async () => {
   const { service, say, last } = newService([{ wait: true }]);
   await say('3');
   await say('写个方案');
@@ -169,12 +169,12 @@ test('/2 cancels at any step; while planning other text waits', async () => {
   assert.equal(service.draft('me').stage, 'planning');
   await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'w1', type: 'text', text: '快点' });
   assert.match(last(), /组长还在出方案/);
-  await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'w2', type: 'text', text: '/2' });
+  await service.onMessage({ from: 'me', chatType: 'single', dedupeKey: 'w2', type: 'text', text: '/停' });
   await started;
   assert.match(last(), /已取消 #1/);
   assert.equal(service.store.get('me', 1).status, 'cancelled');
   assert.equal(service.draft('me').stage, 'idle');
-  await say('/2');
+  await say('/停');
   assert.match(last(), /现在没有进行中的步骤/);
 });
 
@@ -183,19 +183,19 @@ test('wrong-stage commands remind the current step; unknown commands too', async
   await say('/完成');
   assert.match(last(), /现在没有等确认的方案[\s\S]*发需求或文件开始/);
   await say('/乱七八糟');
-  assert.match(last(), /没有这个命令（\/0/);
+  assert.match(last(), /没有这个命令（\/help/);
   await say('做个表');
   await say('开始');                                                              // 还没选档：重新提示选档
   assert.match(last(), /没看懂，请回复数字 1、2 或 3[\s\S]*1 低档/);
-  await say('/0');
-  assert.match(last(), /\/新 新任务[\s\S]*\/进12 接着改 #12/);
+  await say('/help');
+  assert.match(last(), /\/新　开新任务[\s\S]*\/进12　接着改 #12/);
 });
 
-test('/进 continues an old task with its executor, no plan; /1 and /看 show history', async () => {
+test('/进 continues an old task with its executor, no plan; /历史 and /看 show history', async () => {
   const { service, run, say, last } = newService([plan(), { output: 'v1', file: 'a.docx', session: 'ex-1' }, { output: 'v2', file: 'a-v2.docx' }]);
   await say('1'); await say('写通知'); await say('开始'); await say('完成');
   assert.equal(service.store.get('me', 1).status, 'succeeded');
-  await say('/1');
+  await say('/历史');
   assert.match(last(), /【最近任务】\n#1 ✅完成 低档·Antigravity[\s\S]*\/看编号 → 详情/);
   await say('/看1');
   assert.match(last(), /方案：/);
@@ -272,11 +272,12 @@ test('failed delivery is recorded and /重发 sends again', async () => {
   assert.equal(service.store.get('me', 1).deliveries[0].status, 'sent');
 });
 
-test('你好 replies with help; /3 answers with a cheap model without a task', async () => {
+test('你好 replies with help; /问 answers with a cheap model without a task', async () => {
   const { service, run, say, last } = newService([{ output: '**今天**是周一' }]);
   await say('你好');
-  assert.match(last(), /你好！\n【办公助手】[\s\S]*\/0 帮助/);
-  await say('/3今天周几');
+  assert.match(last(), /你好！\n【办公助手 · 指令】[\s\S]*\/help/);
+  await say('/问今天周几');
+  assert.ok(service.channel.sent.some(([kind, , text]) => kind === 'text' && text === '📨 已接收，请稍后…'));
   assert.deepEqual([run.calls[0].name, run.calls[0].readonly], ['antigravity', true]);
   assert.equal(last(), '今天是周一');
   assert.equal(service.store.data.tasks.length, 0);
@@ -325,6 +326,8 @@ test('admin assistant: chosen CLI, continuing session, remote tools granted per 
   ], { extra: { devices, remote } });
   service.admins.add('me');
   await say('截个屏发我');
+  const texts = channel.sent.filter(([kind]) => kind === 'text').map(([, , text]) => text);
+  assert.deepEqual(texts.slice(0, 2), ['📨 已接收，请稍后…', '已截屏']);           // 先回已接收，再回 AI 的答复
   assert.equal(run.calls[0].name, 'claude');
   assert.match(run.calls[0].prompt, /管理员的微信助理[\s\S]*「Mac」[\s\S]*remote_save_screenshot[\s\S]*管理员：截个屏发我/);
   assert.deepEqual(run.calls[0].mcp, { socket: 's', capability: 'cap1', scope: 'remote', scopeArg: true });
@@ -340,7 +343,8 @@ test('admin assistant: chosen CLI, continuing session, remote tools granted per 
   assert.notEqual(granted[2].dir, granted[0].dir);
   await say('/模型');
   assert.match(last(), /1 Claude Opus（当前）[\s\S]*4 Grok/);
-  await say('/模型4');
+  await say('/4');
+  assert.match(last(), /^✅ 已切换到 Grok/);
   await say('用 grok 回答');
   assert.equal(run.calls[3].name, 'grok');
   assert.match(service.listText('me'), /#1/);
