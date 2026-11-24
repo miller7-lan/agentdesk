@@ -11,6 +11,10 @@ test('numbered commands are "/" plus digit, no space needed', () => {
   assert.deepEqual(parseCommand('/0'), { kind: 'help' });
   assert.deepEqual(parseCommand('/1'), { kind: 'list' });
   assert.deepEqual(parseCommand('/2'), { kind: 'cancel' });
+  assert.deepEqual(parseCommand('/新'), { kind: 'new' });
+  assert.deepEqual(parseCommand('/模型'), { kind: 'model', choice: null });
+  assert.deepEqual(parseCommand('/模型3'), { kind: 'model', choice: 3 });
+  assert.deepEqual(parseCommand('/电脑2'), { kind: 'computer', choice: 2 });
   assert.deepEqual(parseCommand('/3今天星期几'), { kind: 'ask', text: '今天星期几' });
   assert.equal(parseCommand('/3').kind, 'reply');
   assert.deepEqual(parseCommand('／1'), { kind: 'list' });
@@ -30,7 +34,7 @@ test('task commands take the id right after the word', () => {
 });
 
 test('help lists every command with its mapping', () => {
-  for (const line of ['/0 → ', '/1 → ', '/2 → ', '/3问题 → ', '/进12 → ', '/看12 → ', '/停12 → ', '/重试12 → ', '/重发12 → ']) assert.ok(HELP.includes(line), line);
+  for (const line of ['/0 帮助', '/1 历史', '/2 取消', '/新 新任务', '/3问题', '/进12', '/看12', '/停12', '/重试12', '/重发12']) assert.ok(HELP.includes(line), line);
 });
 
 test('idle: content begins a task, a digit picks the tier', () => {
@@ -79,4 +83,14 @@ test('access: strangers denied, groups refused, events mapped', () => {
 test('composeDraft numbers multiple messages', () => {
   assert.equal(composeDraft(['只有一条']), '只有一条');
   assert.equal(composeDraft(['按部门汇总', '加柱状图', ' ']), '1. 按部门汇总\n2. 加柱状图');
+});
+
+test('admin: everything that is not a command goes to the assistant', () => {
+  const admin = { allowUsers: new Set([me]), stage: 'idle', admin: true };
+  assert.deepEqual(route(text('截个屏发我'), admin), { kind: 'chat', text: '截个屏发我' });
+  assert.deepEqual(route(text('完成'), admin), { kind: 'chat', text: '完成' });
+  assert.deepEqual(route(text('1'), admin), { kind: 'chat', text: '1' });
+  assert.equal(route(file, admin).kind, 'chat-file');
+  assert.deepEqual(route(text('/新'), admin), { kind: 'new' });
+  assert.deepEqual(route(text('/2'), admin), { kind: 'cancel' });
 });

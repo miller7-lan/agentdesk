@@ -19,7 +19,16 @@ systemctl restart agentdesk-wechat
 凭据存 `/var/lib/agentdesk-orchestrator/wechat/ilink-account.json`（0600），收信游标和各用户最近的 `context_token` 存 `ilink-state.json`。扫码人自动是管理员（白名单）。日志出现 `-14 session expired` 时服务暂停 1 小时；持续出现就重新登录（`login.js --force`）。出站文件上限按 50MB，入站 100MB；文件用 AES-128-ECB 加密后走微信 CDN。
 
 
-## 1. 用法（引导式）
+## 0.5 管理员和普通成员（2026-11-24）
+
+- **管理员**：扫码登录 ClawBot 的人 + `wechat.json` 的 `admins`。发的消息（命令除外）直接交给所选 CLI，**默认接着当前对话**，`/新` 开新对话；`/模型`、`/模型1～4` 在 Claude Opus / GPT（Codex）/ Antigravity / Grok 间切换（换 AI 即开新对话）；`/2` 停止当前回复。
+- AI 能做办公文件（`out/` 的新文件发回微信），也能经 MCP 工具（`orchestrator/mcp.js` 的 `remote` 范围，`wechat/remote.js`）操作所选电脑：整机文件增删改查（覆盖前 Bridge 备份、删除进废纸篓）、执行命令（Mac 上凭据目录仍被沙箱挡住）、桌面操作、`remote_save_screenshot` 截屏发回、`remote_fetch_file` 取回文件、`remote_push_file` 把成品放到电脑。截屏等都由 CLI 自己调工具，服务不硬编码。
+- 电脑操作走主控 `admin.sock` → 对应 Bridge（`devices.js`）；每轮对话发一次性 capability，只能操作本轮选中的电脑、只能把文件存进本对话目录。
+- **设备在线提醒**：每分钟查一次各电脑（`devices`，默认只有 Mac）到主控的 SSH/Relay 通道；上线立即提醒、连续 2 次查不到才算离线，提醒所有管理员；服务启动时有离线的也提醒一次。`/电脑` 查看并 `/电脑2` 切换。电脑要「开机即连」：Bridge 用 LaunchAgent（RunAtLoad + KeepAlive）常驻并用 `desktopExecutable`，不依赖打开 AgentDesk（Mac 端提示词见 `docs/WECHAT-MAC-BRIDGE-PROMPT.md`）。
+- **普通成员**：只有办公流程（下面第 1 节）。任务做完后接着发消息 = 继续改上一个任务；`/新` 开新任务。
+- **隔离**：每人自己的任务编号（#1 起）和目录 `wechat/users/<userid 哈希>/{tasks/<编号>,pending,ask}`；查询都按本人过滤，AI 的当前目录只是本人的一个任务目录（沙箱看不到别人的）。旧数据启动时自动迁移。
+
+## 1. 用法（普通成员，引导式）
 
 | 步骤 | 你发 | 机器人 |
 |---|---|---|

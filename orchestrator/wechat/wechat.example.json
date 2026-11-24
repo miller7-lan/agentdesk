@@ -1,5 +1,7 @@
 {
-  "allowUsers": ["管理员的企业微信 userid（首次发消息被拒时日志里会打印）"],
+  "allowUsers": ["普通成员的 userid（首次发消息被拒时日志里会打印）"],
+  "admins": [],
+  "devices": { "mac": { "label": "Mac" }, "lenovo": { "label": "联想" } },
   "minQuotaPercent": 8,
   "limits": { "messagesPerMinute": 30, "activeTasksPerUser": 2, "tasksPerDay": 20, "asksPerHour": 30 },
   "sendPreview": true,

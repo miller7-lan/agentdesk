@@ -271,3 +271,10 @@
 - **主人决定**（原文「1按最新的来，2没有其他解决办法算了，3vps和软件部署好，本机我来」）：Mac 群聊命令只挡 AgentDesk 密钥目录；Antigravity 子代理跳过；VPS2 和安装包到此部署好，本机安装和验收由主人做。
 - **没有验证**：ROLLOUT §6 的每台电脑验收（四家单聊问权限、`git push`、`ls ~/.agentdesk` 被拒、子代理、Mac 群聊 `git push`）要在用户的 Mac/Windows 上、装上新客户端后进行，本次没有做。原生单聊里已经打开的会话要关掉重开，才会用新权限。
 - **回滚**：VPS2 上 `/root/backups/agentdesk-deploy-rollout-20261122-174040CST/ROLLBACK.md`（恢复运行树 tgz，然后重启）。
+
+## 2026-11-24 微信办公助手：管理员助理 + 远程电脑 + 设备在线提醒 + 按用户隔离（feat/wechat-admin）
+
+- VPS2：部署 `orchestrator/wechat/*.js`（新增 devices.js、remote.js）到 `/opt/agentdesk-orchestrator/wechat/`；`orchestrator/mcp.js`（新增 `remote` 工具范围，原有范围不变）、`orchestrator/adapters.js`（`mcp.scopeArg` 把范围放进 MCP 服务参数）到 `/opt/agentdesk-orchestrator/`。只重启 `agentdesk-wechat`；主控进程不重启（新 mcp.js 只在新起的 MCP 子进程生效，主控用的范围行为不变）。
+- 数据：`tasks.json` 升级到 v2（每人编号、`users/<哈希>/tasks/<编号>`），原 #1 迁移到管理员目录。备份 `/var/lib/agentdesk-orchestrator/wechat.bak-20261124`。
+- 实测：经 admin.sock 对 Mac 截屏（2940×1912 PNG）、列桌面、在桌面建文件、执行命令均成功；Windows 离线，联想在线。
+- 回滚：恢复 `/opt/agentdesk-orchestrator/{wechat,mcp.js,adapters.js}` 的 `.bak-20261124` 备份和上面的数据备份，重启 `agentdesk-wechat`。

@@ -1,28 +1,34 @@
 'use strict';
-// 微信任务记录：一个 JSON 文件，原子写入。量很小（个人使用），不需要数据库。
+// 微信任务记录：一个 JSON 文件，原子写入。量很小，不需要数据库。
+// 按用户隔离：每个用户自己的任务编号（#1 起）、自己的目录 users/<userid 哈希>/{tasks/<编号>,pending,ask,screens}；
+// 所有读取都要带 userid，查不到别人的任务。AI 运行时的当前目录只是该用户的一个任务目录。
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const KEEP_RECORDS = 2000;          // 安全上限；正常按保留天数删
 const ACTIVE = new Set(['queued', 'planning', 'running']);
 const FINISHED = new Set(['succeeded', 'failed', 'timeout', 'cancelled', 'quota_limited', 'quota_low', 'auth_expired']);   // review 不算结束
 
+function userKey(user) { return crypto.createHash('sha256').update(String(user)).digest('hex').slice(0, 24); }
+
 class TaskStore {
   constructor(root) {
     this.root = root;
     this.file = path.join(root, 'tasks.json');
-    fs.mkdirSync(path.join(root, 'tasks'), { recursive: true, mode: 0o700 });
-    fs.mkdirSync(path.join(root, 'pending'), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(root, 'users'), { recursive: true, mode: 0o700 });
     try {
       this.data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
-      this.data = { nextId: 1, tasks: [], drafts: {}, seen: [] };
+      this.data = { version: 2, nextIds: {}, tasks: [], drafts: {}, prefs: {}, seen: [] };
     }
     this.data.drafts ||= {};
-    delete this.data.pending;
     this.data.seen ||= [];
+    this.data.prefs ||= {};
+    delete this.data.pending;
+    if (this.data.version !== 2) this.migrate();
     // 服务重启时还在跑的任务已经没有进程了。
     for (const task of this.data.tasks) {
       if (task.status === 'planning' && task.plan) task.status = 'review';      // 改方案时重启：上一版方案还在
@@ -31,19 +37,39 @@ class TaskStore {
     this.save();
   }
 
+  // v1：全局编号、tasks/<id>、pending/<hex>。改成每人编号和每人目录；旧编号对本人保持不变。
+  migrate() {
+    this.data.nextIds = {};
+    for (const task of this.data.tasks) {
+      const key = userKey(task.user);
+      const from = path.join(this.root, 'tasks', String(task.id));
+      const to = this.taskDir(task.user, task.id);
+      if (fs.existsSync(from) && !fs.existsSync(to)) { fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 }); fs.renameSync(from, to); }
+      this.data.nextIds[key] = Math.max(this.data.nextIds[key] || 1, task.id + 1);
+    }
+    for (const user of Object.keys(this.data.drafts)) this.data.drafts[user] = { ...this.data.drafts[user], files: [] };
+    fs.rmSync(path.join(this.root, 'pending'), { recursive: true, force: true });
+    try { fs.rmdirSync(path.join(this.root, 'tasks')); } catch {}
+    delete this.data.nextId;
+    this.data.version = 2;
+  }
+
   save() {
     const temporary = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(this.data, null, 1), { mode: 0o600 });
     fs.renameSync(temporary, this.file);
   }
 
-  taskDir(id) { return path.join(this.root, 'tasks', String(id)); }
-  pendingDir(user) { return path.join(this.root, 'pending', Buffer.from(user).toString('hex').slice(0, 64)); }
+  userDir(user) { return path.join(this.root, 'users', userKey(user)); }
+  taskDir(user, id) { return path.join(this.userDir(user), 'tasks', String(id)); }
+  pendingDir(user) { return path.join(this.userDir(user), 'pending'); }
 
   create(fields) {
-    const id = this.data.nextId++;
+    const key = userKey(fields.user);
+    const id = this.data.nextIds[key] || 1;
+    this.data.nextIds[key] = id + 1;
     const task = { id, status: 'queued', createdAt: Date.now(), turns: 1, ...fields };
-    const dir = this.taskDir(id);
+    const dir = this.taskDir(fields.user, id);
     for (const sub of ['in', 'work', 'out']) fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
     // Codex 只在 git 仓库（或受信任目录）里干活；空仓库就够了，不提交任何东西。
     try { execFileSync('git', ['init', '-q', dir], { stdio: 'ignore' }); } catch {}
@@ -53,10 +79,10 @@ class TaskStore {
     return task;
   }
 
-  get(id) { return this.data.tasks.find((task) => task.id === id) || null; }
+  get(user, id) { return this.data.tasks.find((task) => task.user === user && task.id === id) || null; }
 
-  update(id, fields) {
-    const task = this.get(id);
+  update(user, id, fields) {
+    const task = this.get(user, id);
     if (!task) return null;
     Object.assign(task, fields);
     this.save();
@@ -78,7 +104,11 @@ class TaskStore {
     return false;
   }
 
-  // 草稿：发「开始」前攒下的文字和文件，以及选的档位和要进入的老任务。
+  // 用户偏好（管理员选的模型、电脑）。
+  pref(user) { return this.data.prefs[user] || {}; }
+  setPref(user, change) { this.data.prefs[user] = { ...this.pref(user), ...change }; this.save(); return this.data.prefs[user]; }
+
+  // 草稿：发「开始」前攒下的文字和文件，以及选的档位和要接着改的任务。
   //   { texts: [], files: [绝对路径], tier, target: 任务编号|null, at }
   draft(user) { return this.data.drafts[user] || { texts: [], files: [], tier: null, target: null, at: 0 }; }
   updateDraft(user, change, now = Date.now()) {
@@ -87,12 +117,10 @@ class TaskStore {
     this.save();
     return draft;
   }
-  // 清掉草稿内容；target 默认也清（开始执行或放弃时）。keepTarget 用于 /清空 只丢内容。
-  clearDraft(user, { keepTarget = false, removeFiles = false } = {}) {
+  clearDraft(user, { removeFiles = false } = {}) {
     const draft = this.draft(user);
     if (removeFiles) for (const file of draft.files) fs.rmSync(file, { force: true });
-    if (keepTarget && draft.target) this.data.drafts[user] = { texts: [], files: [], tier: null, target: draft.target, at: draft.at };
-    else delete this.data.drafts[user];
+    delete this.data.drafts[user];
     this.save();
   }
 
@@ -103,7 +131,7 @@ class TaskStore {
       if (task.archived || !FINISHED.has(task.status) || !task.finishedAt) continue;
       const keep = task.status === 'succeeded' ? keepSucceededMs : keepFailedMs;
       if (now - task.finishedAt < keep) continue;
-      fs.rmSync(this.taskDir(task.id), { recursive: true, force: true });
+      fs.rmSync(this.taskDir(task.user, task.id), { recursive: true, force: true });
       task.archived = true;
       removed += 1;
     }
@@ -120,4 +148,4 @@ class TaskStore {
   }
 }
 
-module.exports = { TaskStore, ACTIVE, FINISHED };
+module.exports = { TaskStore, ACTIVE, FINISHED, userKey };

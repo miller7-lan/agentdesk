@@ -19,32 +19,32 @@ const DONE_WORDS = new Set(['完成', '确认', '提交', '可以', '可以了',
 const GREETINGS = /^(你好|您好|嗨|hi|hello|hey|在吗|在不在|哈喽|早上好|晚上好|下午好)[!！。.~～？?]*$/i;
 
 const TIER_MENU = [
-  '请选择档位，直接回复数字：',
-  '1 → 低档：Antigravity / Grok 执行，适合格式整理、简单文档（约 5～15 分钟）',
-  '2 → 中档：GPT 执行，适合多步骤数据处理、较长文档（约 3～10 分钟）',
-  '3 → 高档：Claude Opus 执行，适合深度分析、高质量写作（约 5～20 分钟）',
+  '选档位，回数字：',
+  '1 低档 · Antigravity/Grok · 简单整理（5～15 分钟）',
+  '2 中档 · GPT · 多步骤、较长文档（3～10 分钟）',
+  '3 高档 · Claude Opus · 深度分析、高质量写作（5～20 分钟）',
 ].join('\n');
 
 const HELP = [
-  '【办公助手 · 用法】',
-  '步骤：',
-  '① 发需求或文件 → 回数字选档（1 低 / 2 中 / 3 高）',
-  '② 继续发需求和 Word/Excel/PPT 文件 → 发「开始」',
-  '③ 组长出方案（约 1～3 分钟）→ 有要改的直接说，改到满意',
-  '④ 发「完成」→ 执行 AI 交付文件，做完主动通知你',
+  '【办公助手】',
+  '发需求或文件 → 选档 1/2/3 → 发「开始」出方案 → 改到满意发「完成」→ 收文件。',
+  '做完后接着发消息 = 继续改上一个任务；开新任务发 /新',
   '',
-  '命令（「/」后面直接跟，不要空格）：',
-  '/0 → 显示本帮助',
-  '/1 → 查看历史任务（最近 10 个）',
-  '/2 → 取消当前这一步，重新开始',
-  '/3问题 → 快问快答，例：/3今天星期几',
-  '/进12 → 接着修改 #12 的成品',
-  '/看12 → 查看 #12 详情',
-  '/停12 → 停止 #12',
-  '/重试12 → 重新执行失败的 #12',
-  '/重发12 → 重新发送 #12 的文件',
+  '/0 帮助　/1 历史　/2 取消当前　/新 新任务',
+  '/3问题 快问快答（例 /3今天星期几）',
+  '/进12 接着改 #12　/看12 详情　/停12 停止',
+  '/重试12 重做　/重发12 重发文件',
+  '记录和文件保留 30 天。',
+].join('\n');
+
+const ADMIN_HELP = [
+  '【管理员助理】直接发消息就交给所选 AI，默认接着当前对话；发 /新 开新对话。',
+  'AI 能处理办公文件，也能操作关联电脑：截屏发来、看/建/改/删文件、执行命令。',
   '',
-  '任务记录和文件保留 30 天。',
+  '/模型 查看和切换 AI（/模型1～4）',
+  '/电脑 设备在线情况和切换（/电脑1、/电脑2…）；上线/离线会主动提醒',
+  '/新 开新对话　/2 停止当前回复　/1 历史',
+  '/3问题 快问快答',
 ].join('\n');
 
 function normalize(text) { return String(text || '').trim(); }
@@ -70,15 +70,19 @@ function parseCommand(raw) {
   const withId = /^(进|看|停|重试|重发)\s*#?(\d+)$/.exec(body);
   if (withId) return { kind: { '进': 'enter', '看': 'show', '停': 'stop', '重试': 'retry', '重发': 'resend' }[withId[1]], id: Number(withId[2]) };
   if (/^(进|看|停|重试|重发)$/.test(body)) return { kind: 'reply', text: `要接任务编号，不加空格，例：/${body}12。发 /1 查看历史任务的编号。` };
+  // /新 开新任务（默认是接着上一个）；管理员：/模型 /模型2 选 AI，/电脑 /电脑2 看设备、选电脑（service 里校验身份）
+  if (/^(新|新开|新任务|新对话|new)$/i.test(body)) return { kind: 'new' };
+  const pick = /^(模型|电脑|设备)\s*(\d*)$/.exec(body);
+  if (pick) return { kind: pick[1] === '模型' ? 'model' : 'computer', choice: pick[2] ? Number(pick[2]) : null };
   const name = word(text);
   if (['帮助', 'help', '?'].includes(name)) return { kind: 'help' };
-  if (['取消', '新', 'new', 'cancel', '清空'].includes(name)) return { kind: 'cancel' };
+  if (['取消', 'cancel', '清空'].includes(name)) return { kind: 'cancel' };
   if (DONE_WORDS.has(name)) return { kind: 'confirm' };
   if (START_WORDS.has(name)) return { kind: 'start' };
   return { kind: 'unknown' };
 }
 
-// 消息 → 动作。state = { allowUsers: Set, stage }
+// 消息 → 动作。state = { allowUsers: Set, stage, admin }
 function route(message, state) {
   if (message.type === 'event') {
     if (message.event === 'enter_chat' && message.chatType !== 'group') return { kind: 'welcome' };
@@ -90,6 +94,15 @@ function route(message, state) {
   if (message.type === 'video') return { kind: 'reply', text: '暂不处理视频，请发文件或文字。' };
   if (message.type === 'voice' && !message.text) return { kind: 'reply', text: '语音没有转成文字，请打字。' };
   const stage = state.stage || 'idle';
+  const media = ['file', 'image'].includes(message.type) || (message.type === 'mixed' && Boolean(message.media));
+  // 管理员：除命令外都交给管理员助理（所选 AI 的连续对话）。
+  if (state.admin) {
+    const command = media ? null : parseCommand(normalize(message.text));
+    if (command) return ['confirm', 'start', 'unknown'].includes(command.kind) ? { kind: 'chat', text: normalize(message.text) } : command;
+    if (media) return { kind: 'chat-file', text: normalize(message.text) };
+    if (!normalize(message.text) || !['text', 'voice', 'mixed'].includes(message.type)) return { kind: 'ignore' };
+    return { kind: 'chat', text: normalize(message.text) };
+  }
   const hasMedia = ['file', 'image'].includes(message.type) || (message.type === 'mixed' && Boolean(message.media));
   const text = normalize(message.text);
   if (!hasMedia && !['text', 'voice', 'mixed'].includes(message.type)) return { kind: 'ignore' };
@@ -141,4 +154,4 @@ function composeDraft(texts) {
   return items.map((text, index) => `${index + 1}. ${text}`).join('\n');
 }
 
-module.exports = { TIERS, TIER_LABEL, TIER_MENU, HELP, START_WORDS, DONE_WORDS, parseCommand, route, composeDraft, tierChoice };
+module.exports = { TIERS, TIER_LABEL, TIER_MENU, HELP, ADMIN_HELP, START_WORDS, DONE_WORDS, parseCommand, route, composeDraft, tierChoice };

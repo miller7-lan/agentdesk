@@ -269,7 +269,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     args.unshift('--settings', JSON.stringify({ permissions: { allow, deny, ask: [] } }));
   }
   if (mcp && !provider.template && name !== 'gemini') {
-    const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
+    const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability, ...(mcp.scopeArg ? [mcp.scope] : [])] };
     if (name === 'codex') {
       args.splice(codexSettingsIndex(args), 0,
         '-c', 'mcp_servers.agentdesk_windows.command=' + JSON.stringify(server.command),

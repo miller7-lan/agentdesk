@@ -54,57 +54,86 @@ function fileLines(names) {
   return names.length ? names.map((name) => `- in/${name}`).join('\n') : '（没有附件）';
 }
 
-const PLAN_FORMAT = `最后只输出一个 JSON 代码块：
+const PLAN_FORMAT = `只输出一个 JSON 代码块：
 \`\`\`json
-{"plan": "给用户看的方案（中文，3～8 行，每行一点：要交付什么文件、主要内容和结构、关键做法、你做的假设）",
- "brief": "给执行者的完整简报：执行者只看这份简报干活，看不到这段对话。写清目标、要用的输入文件、具体步骤、成品文件名（放 out/）、交付前自查（xlsx-recalc / office-preview）。",
- "estimate_minutes": 执行大约需要的分钟数（整数，粗估即可）}
+{"plan": "给用户看的方案，3～8 行：交付什么文件、内容结构、关键做法、假设",
+ "brief": "给执行者的完整简报（执行者只看它）：目标、输入文件、步骤、成品文件名（放 out/）、交付前自查",
+ "estimate_minutes": 执行分钟数（整数）}
 \`\`\``;
 
 function planningPrompt({ text, inputs, tier }) {
-  return `你是办公助手的组长，只负责出方案，不动手做。先读 ${GUIDE}（办公规范）。
-当前目录是本任务的目录：in/ 是用户发来的文件（可以用 python3 打开看结构和内容），out/ 是交付区。
-
-用户在微信里的需求：
-${text}
-
-用户发来的文件：
-${fileLines(inputs)}
-
-用户选的档位：${TIER_TEXT[tier] || tier}。方案的复杂度要和执行者能力相称。
-方案会先发给用户确认，用户可能提修改意见。信息不足时写出合理假设，不要反问。
-
+  return `你是办公助手的组长，只出方案不动手。规范见 ${GUIDE}。in/ 是用户文件，out/ 是交付区。
+需求：${text}
+文件：${fileLines(inputs)}
+档位：${TIER_TEXT[tier] || tier}，方案复杂度要与执行者相称。信息不足就写假设，不要反问。
 ${PLAN_FORMAT}`;
 }
 
 function revisionPrompt({ feedback, newInputs }) {
-  return `用户看了方案，提出修改意见：
-${feedback}
-${newInputs.length ? `\n用户新发来的文件：\n${fileLines(newInputs)}\n` : ''}
-按意见修改方案（没提到的部分保持不变），同样只输出 JSON：
-
-${PLAN_FORMAT}`;
+  return `用户的修改意见：${feedback}
+${newInputs.length ? `新文件：${fileLines(newInputs)}\n` : ''}按意见改方案（没提到的不变）。${PLAN_FORMAT}`;
 }
 
 function executorPrompt({ text, inputs, brief }) {
-  return `你是办公助手，在 VPS 沙箱里替用户处理办公文件。先读 ${GUIDE}（办公规范），严格遵守。
-当前目录是本任务的目录：in/ 原件（只读），work/ 草稿，out/ 交付区（这里的新文件会发给用户）。
-
-用户在微信里的原话：
-${text}
-
-用户发来的文件：
-${fileLines(inputs)}
-${brief ? `\n用户已确认的方案和组长的简报（按它做）：\n${brief}\n` : ''}
-一次做完，不要提问。完成后用 1～3 句中文说明交付了什么、做了哪些假设。`;
+  return `你是办公助手，按 ${GUIDE} 的规范处理办公文件。in/ 原件只读，work/ 草稿，out/ 交付区（新文件会发给用户）。
+用户原话：${text}
+文件：${fileLines(inputs)}
+${brief ? `已确认的简报（照做）：\n${brief}\n` : ''}一次做完不要提问，最后用 1～3 句中文说明交付了什么、做了哪些假设。`;
 }
 
 function continuePrompt({ text, newInputs, outputs }) {
-  return `用户在微信里追加了要求（同一个任务，继续按 ${GUIDE} 的规范做）：
-${text}
-${newInputs.length ? `\n新发来的文件：\n${fileLines(newInputs)}\n` : ''}
-上一版成品在 out/：${outputs.length ? outputs.join('、') : '（无）'}。在它的基础上改，另存为新文件名（如加 -v2），不要覆盖旧版。
-完成后用 1～3 句中文说明改了什么。`;
+  return `用户追加要求（同一任务，规范同前）：${text}
+${newInputs.length ? `新文件：${fileLines(newInputs)}\n` : ''}上一版成品在 out/：${outputs.length ? outputs.join('、') : '（无）'}。在它基础上改，另存新文件名（如 -v2），不覆盖旧版。最后用 1～3 句说明改了什么。`;
+}
+
+// 管理员助理可选的 4 个 CLI（/模型1～4）。
+const ADMIN_MODELS = [
+  { provider: 'claude', model: 'claude-opus-5-5', label: 'Claude Opus' },
+  { provider: 'codex', label: 'GPT（Codex）' },
+  { provider: 'antigravity', label: 'Antigravity' },
+  { provider: 'grok', label: 'Grok' },
+];
+
+function chatPrompt({ text, files, device, first }) {
+  const head = first ? `你是管理员的微信助理，运行在 VPS 上。当前目录是本次对话的目录：in/ 是管理员发来的文件，out/ 里新出现的文件会发到他微信（办公文件按 ${GUIDE} 做）。
+${device ? `可以用 agentdesk_windows 工具操作管理员的电脑「${device.label}」：文件增删改查（root 用 computer，路径写绝对路径或 ~/）、执行命令（local_shell_run）、桌面操作；remote_save_screenshot 截屏并发给他，remote_fetch_file 把电脑上的文件取回发给他，remote_push_file 把 out/ 里的文件放到电脑上。删除或覆盖前确认是他明确要的。` : '目前没有关联电脑可操作。'}
+回复用简洁中文纯文本（微信不显示 Markdown），不贴代码。
+` : '';
+  const note = device && !device.online ? `（「${device.label}」现在离线，电脑操作会失败）\n` : '';
+  return `${head}${note}${files.length ? `新文件：${files.map((name) => 'in/' + name).join('、')}\n` : ''}管理员：${text}`;
+}
+
+// 管理员助理的一轮：在会话里接着做，返回回复和 out/ 里新出现的文件。
+async function chatTurn({ task, dir, signal, text, files = [], model, device, mcp, deps }) {
+  const outDir = path.join(dir, 'out');
+  const before = snapshot(outDir);
+  const sessions = { ...(task.sessions || {}) };
+  const logs = path.join(dir, '.logs');
+  fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+  const timeout = (deps.settings?.chatTimeoutMs) || 20 * 60 * 1000;
+  const run = (prompt, session) => deps.runAdapter({
+    name: model.provider, config: deps.adapters[model.provider], cwd: dir, prompt, readonly: false, timeout,
+    printTimeoutMs: Math.max(60_000, timeout - 60_000), signal, mcp,
+    log: path.join(logs, `chat-${(task.turns || 0) + 1}.log`),
+    onSession: (id) => { sessions.chat = id; }, session, model: model.model,
+  });
+  try {
+    let result;
+    if (sessions.chat) {
+      try {
+        result = await run(chatPrompt({ text, files, device, first: false }), sessions.chat);
+      } catch (error) {
+        if (signal.aborted || !/session|conversation|resume|not.?found/i.test(String(error?.message || error))) throw error;
+        delete sessions.chat;   // 会话接不上：带说明重开
+        result = await run(chatPrompt({ text: `（之前的对话接不上了，重新开始）${text}`, files, device, first: true }));
+      }
+    } else {
+      result = await run(chatPrompt({ text, files, device, first: true }));
+    }
+    return { sessions, summary: String(result.output || '').trim(), outputs: changedFiles(outDir, before) };
+  } catch (error) {
+    throw Object.assign(error, { sessions });
+  }
 }
 
 function parsePlan(output) {
@@ -266,6 +295,6 @@ function overdueAfterMs(task) {
 }
 
 module.exports = {
-  DEFAULTS, NAMES, TIER_ESTIMATE, PLAN_ESTIMATE, settingsFrom, planningPrompt, revisionPrompt, executorPrompt, continuePrompt,
+  DEFAULTS, NAMES, ADMIN_MODELS, chatPrompt, chatTurn, TIER_ESTIMATE, PLAN_ESTIMATE, settingsFrom, planningPrompt, revisionPrompt, executorPrompt, continuePrompt,
   parsePlan, statusFor, planTask, executeTask, listFiles, estimateText, overdueAfterMs,
 };
