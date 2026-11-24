@@ -70,7 +70,9 @@ test('main.js re-aims the Bridge after a project change and at start; the window
   assert.match(main, /const bridgeProblems = operation === 'list' \? \[\] : await syncBridgeRoots\(\);/);
   assert.match(main, /pruneOrphanNativeChats\(\);\s*syncBridgeRoots\(\)\.catch/);
   assert.match(main, /launchctl',\s*\['kickstart', '-k', `gui\/\$\{process\.getuid\(\)\}\/local\.agentdesk\.mac-bridge`\]/);
-  assert.match(main, /if \(stopBridge\) \{[\s\S]*?startOrchestratorBridge\(\);/);
+  // Windows updates the running Bridge's settings in place; it is never stopped and restarted for this.
+  assert.match(main, /if \(stopBridge && localBridgeSettings\) \{[\s\S]*?localBridgeSettings\.workspaces\[name\]\.root = saved\.workspaces\[name\]\.root;/);
+  assert.doesNotMatch(main.slice(main.indexOf('async function syncBridgeRoots'), main.indexOf('async function loadAppConfig')), /startOrchestratorBridge\(\)/);
   assert.match(projects, /if \(result\.bridgeWarning\) window\.alert\(result\.bridgeWarning\);/);
   assert.match(projects, /if \(removing\.has\(id\)\) \{ A\.toast\('正在删除这个项目，请稍候…'\); return; \}/);
 });

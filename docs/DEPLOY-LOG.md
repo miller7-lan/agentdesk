@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 13:30（北京时间）· 客户端 0.4.9 · Windows Bridge 目录原地切换
+
+- **起因**：检查 Windows 是否有 0.4.8 的问题：Windows 的 `remote.json` 由接入脚本写入 `orchestratorBridge`（`~/.agentdesk/<设备>-bridge.json`，用户可写），不会「找不到 Bridge」。但 0.4.7 在 Windows 切换 root 时 `stopBridge()` 后立即 `startOrchestratorBridge()`：`stop` 是异步的（控制管道 `close` 回调后才关 `bridge.sqlite`），立即重启可能与旧实例冲突导致新 Bridge 起不来；且会结束正在运行的 Bridge 命令。
+- **改动**：Windows 不重启 Bridge，写文件后直接改 `localBridgeSettings.workspaces[ws].root`（`WindowsOperations` 持有同一对象、每次请求现读 root）。Mac 仍 `launchctl kickstart`。
+- **VPS2**：无改动。
+- **验证**：`npm test` 通过。Windows 端日志读不到，需用户装好后试单聊/群聊。
+- **回滚**：客户端回到 0.4.8。
+
 ## 2026-11-24 13:15（北京时间）· 客户端 0.4.8 · Mac 找不到 Bridge 配置文件
 
 - **起因**：Mac 装上 0.4.7 后，「hi」（文件夹 `~/大学学习/华为ict`）完全访问单聊报「这台电脑没有可用的主控 Bridge 配置」；`mac-bridge.json` 未被改动、审计日志没有 `bridge_root`。`commandsFile()` 只认 `mac-remote.json` 的 `agentCommandsFile` / `orchestratorBridge`，这台 Mac 都没写 → `macBridgeSettings()` 为 null，`syncBridgeRoots` 无文件可改，本机命令列表也为空。0.4.5 之前的「Bridge 写入授权与本机目录不匹配」很可能也是这个原因。

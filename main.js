@@ -244,10 +244,18 @@ async function syncBridgeRoots() {
   }
   if (result.changed.length) {
     logger?.audit('bridge_root', { status: 'ok', workspaces: result.changed });
-    if (stopBridge) {
-      try { stopBridge(); } catch {}
-      stopBridge = null;
-      startOrchestratorBridge();
+    if (stopBridge && localBridgeSettings) {
+      // Windows: the Bridge runs in this process and reads workspaces[…].root from this very object on every
+      // request, so the new root is set in place. Restarting it instead raced its asynchronous shutdown (control
+      // pipe and database still open) and killed Bridge commands of a running group task.
+      try {
+        const saved = JSON.parse(fs.readFileSync(commandsFile(), 'utf8'));
+        for (const name of result.changed) {
+          if (localBridgeSettings.workspaces?.[name] && saved.workspaces?.[name]?.root) localBridgeSettings.workspaces[name].root = saved.workspaces[name].root;
+        }
+      } catch (error) {
+        logger?.audit('bridge_root', { status: 'reload_failed', error: String(error.code || 'failed') });
+      }
     } else if (mac) {
       await new Promise((resolve) => require('node:child_process').execFile('/bin/launchctl',
         ['kickstart', '-k', `gui/${process.getuid()}/local.agentdesk.mac-bridge`], { timeout: 15000 }, (error) => {
