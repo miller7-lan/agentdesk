@@ -1129,7 +1129,9 @@ ipcMain.handle('skills:upload', async (_e, skill, projectId, threadId) => {
     const native = typeof threadId === 'string' && threadId
       ? await nativeDesktop()?.select('codex', 'skills/list', { threadId, ...(projectId !== undefined && { projectId }) }) : null;
     if (native?.installSkill) {
-      const { path: installed } = await native.installSkill({ name: approved.name, folder: approved.folder, files: pack.files });
+      // 文件夹名里的空格、中文等换成 _（与普通会话上传时相同）；Mac 和 Windows 的原生单聊都走这里。
+      const { path: installed } = await native.installSkill({ name: approved.name,
+        folder: approved.folder.replace(/[^\w.-]/g, '_').replace(/^\.+/, '_'), files: pack.files });
       return { ok: true, path: installed };
     }
     const workspace = currentRemoteDirectory(projectId);

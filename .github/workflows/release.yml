@@ -185,7 +185,7 @@ jobs:
           set -o pipefail
           app=$(ls -d dist/mac*/AgentDesk.app | head -1)
           codesign --verify --deep --strict --verbose=2 "$app"
-          codesign -d -r- "$app" 2>&1 | tee /dev/stderr | grep -q 'certificate leaf = H"'
+          codesign -d -r- "$app" 2>&1 | tee /dev/stderr | grep -Eq 'certificate (leaf|root) = H"'
           ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/AgentDesk" scripts/packaged-terminal-smoke.js "$app/Contents/Resources"
           npm install --no-save --no-audit --no-fund playwright-core@1.65.1
           node scripts/packaged-ui-smoke.js "$app/Contents/MacOS/AgentDesk"

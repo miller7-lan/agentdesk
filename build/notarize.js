@@ -19,7 +19,11 @@ function selfSign(appPath) {
   run(['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   const requirement = spawnSync('/usr/bin/codesign', ['-d', '-r-', appPath], { encoding: 'utf8' });
   const text = (requirement.stdout || '') + (requirement.stderr || '');
-  if (!/certificate leaf = H"[0-9a-f]{40}"/i.test(text)) throw new Error('self-signed app has no certificate-based designated requirement');
+  // A self-signed certificate is its own root, so codesign pins it as "certificate root"; either form fixes the
+  // requirement to this certificate.
+  if (!/certificate (leaf|root) = H"[0-9a-f]{40}"/i.test(text)) {
+    throw new Error('self-signed app has no certificate-based designated requirement:\n' + text.trim());
+  }
   console.log('Signed with the AgentDesk self-signed certificate:\n' + text.trim());
 }
 
