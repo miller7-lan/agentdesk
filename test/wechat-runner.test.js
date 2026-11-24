@@ -233,7 +233,8 @@ test('plan failure ends the task with /重试; retry re-plans', async () => {
 });
 
 test('low quota blocks before the planner runs', async () => {
-  const quotaStatus = async () => [{ provider: 'claude', state: 'available', buckets: [{ id: 'c', fiveHour: { usedPercent: 95, resetsAt: 1795460549 } }] }];
+  const low = (provider) => ({ provider, state: 'available', buckets: [{ id: provider, fiveHour: { usedPercent: 95, resetsAt: 1795460549 } }] });
+  const quotaStatus = async () => ['claude', 'codex', 'antigravity', 'grok'].map(low);   // 全都不够
   const { service, run, say, last } = newService([], { extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
   await say('3'); await say('写方案'); await say('开始');
   assert.equal(run.calls.length, 0);
@@ -248,6 +249,33 @@ test('low quota blocks before the planner runs', async () => {
   assert.match(last(), /额度不够[\s\S]*Claude 5 小时额度只剩 5%/);
 });
 
+test('low quota on the preferred AI switches automatically and tells admins (not the member)', async () => {
+  const quotaStatus = async () => [{ provider: 'claude', state: 'available', buckets: [{ id: 'c', fiveHour: { usedPercent: 1 }, weekly: { usedPercent: 98, resetsAt: 1795611600 } }] }];
+  const { service, run, say, last, channel } = newService([plan(), { output: '做好了', file: 'a.docx' }], { users: ['me', 'boss'], extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
+  service.admins.add('boss');
+  await say('3'); await say('写方案'); await say('开始');
+  assert.equal(run.calls[0].name, 'codex');                                         // 组长 Claude 本周不够 → GPT
+  const notices = channel.sent.filter(([kind, to, text]) => kind === 'text' && to === 'boss' && /额度提醒/.test(text));
+  assert.equal(notices.length, 1);
+  assert.match(notices[0][2], /Claude 周额度只剩 2%[\s\S]*#1 出方案已自动改用 GPT/);
+  assert.ok(!channel.sent.some(([kind, to, text]) => to === 'me' && /额度/.test(text)));   // 成员不提额度
+  await say('完成');
+  assert.equal(run.calls[1].name, 'codex');                                         // 高档执行也换了
+  assert.equal(channel.sent.filter(([, to, text]) => to === 'boss' && /额度提醒/.test(text || '')).length, 1);   // 一小时内不重复
+  assert.match(last(), /✅ #1 完成/);
+});
+
+test('admin assistant: current AI out of quota → auto switch with a notice', async () => {
+  const quotaStatus = async () => [{ provider: 'claude', state: 'available', buckets: [{ id: 'c', fiveHour: { usedPercent: 1 }, weekly: { usedPercent: 99 } }] }];
+  const { service, run, say, channel } = newService([{ output: 'GPT 回复' }], { extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
+  service.admins.add('me');
+  await say('你好呀');
+  assert.equal(run.calls[0].name, 'codex');
+  const texts = channel.sent.filter(([kind]) => kind === 'text').map(([, , text]) => text);
+  assert.ok(texts.some((text) => /⚠️ Claude 周额度只剩 1%[\s\S]*已自动切换到 GPT（Codex）[\s\S]*\/1 切回/.test(text)));
+  assert.equal(service.store.pref('me').model, 'codex');
+});
+
 test('/额度 (admin only) lists 5-hour and weekly remaining with reset times', async () => {
   const { quotaReport } = require('../orchestrator/wechat/quota');
   const now = Date.parse('2026-11-24T05:00:00Z');
@@ -258,7 +286,7 @@ test('/额度 (admin only) lists 5-hour and weekly remaining with reset times', 
   ];
   const models = [{ provider: 'claude', label: 'Claude Opus' }, { provider: 'codex', label: 'GPT（Codex）' }, { provider: 'antigravity', label: 'Antigravity' }, { provider: 'grok', label: 'Grok' }];
   const text = quotaReport(list, { models, current: 'claude', now });
-  assert.match(text, /\/1 Claude Opus（当前）：5 小时 99%（16:40 恢复），本周 3% ⚠️（11\/25 21:00 恢复）/);
+  assert.match(text, /\/1 Claude Opus（当前）：5 小时 99%（16:40 恢复），本周 3%（11\/25 21:00 恢复）/);   // 3% 不算低于 3%
   assert.match(text, /\/2 GPT（Codex）：读不到/);
   assert.match(text, /\/3 Antigravity：读不到（未配置）/);
   assert.match(text, /\/4 Grok：本周 50%\n　（60 分钟前的数据）/);

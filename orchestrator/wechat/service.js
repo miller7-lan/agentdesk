@@ -98,6 +98,7 @@ class WechatService {
     this.asking = new Set();
     this.messageTimes = new Map();
     this.askTimes = new Map();
+    this.switchNotified = new Map();
     // 重启前停在「组长出方案中」的引导：方案进程已经没了，退回看方案或收集阶段。
     for (const [user, draft] of Object.entries(this.store.data.drafts)) {
       if (draft.stage !== 'planning') continue;
@@ -107,7 +108,20 @@ class WechatService {
   }
 
   deps(extra = {}) {
-    return { adapters: this.adapters, runAdapter: this.runAdapter, settings: this.config.tiers, quota: this.quota, ...extra };
+    return { adapters: this.adapters, runAdapter: this.runAdapter, settings: this.config.tiers, quota: this.quota, onSwitch: (info) => this.quotaSwitched(info), ...extra };
+  }
+
+  // 额度不够自动换了 AI：马上提醒管理员（普通成员不提）。同一个「从谁换到谁」一小时只提醒一次。
+  quotaSwitched({ role, task, from, to, skipped }) {
+    log('quota switch', task?.id ?? '-', role, from.provider, '->', to.provider);
+    const key = `${skipped.map((item) => item.provider).join(',')}>${to.provider}`;
+    const last = this.switchNotified.get(key) || 0;
+    if (this.now() - last < 3600_000) return;
+    this.switchNotified.set(key, this.now());
+    const owner = task?.user ? (this.isAdmin(task.user) ? '' : `成员 ${userTag(task.user)} 的`) : '';
+    const what = task?.id ? `${owner}#${task.id}${role === 'planner' ? ' 出方案' : ' 执行'}` : '任务';
+    const text = `⚠️ 额度提醒：${describeBlocked(skipped)}。${what}已自动改用 ${runner.NAMES[to.provider] || to.provider}（一小时内同样的切换不再提醒）。`;
+    for (const admin of this.admins) this.send(admin, text);
   }
 
   send(user, text) {
@@ -207,7 +221,7 @@ class WechatService {
       return this.respond(message, `额度读不到（${short(error?.message || error, 60)}），稍后再试。`);
     }
     const { model } = this.chatPref(message.from);
-    return this.respond(message, quotaReport(list, { models: runner.ADMIN_MODELS, current: model?.provider, minRemaining: this.quota.minRemaining, now: this.now() }));
+    return this.respond(message, quotaReport(list, { models: runner.ADMIN_MODELS, current: model?.provider, minRemaining: this.quota.minRemaining, minWeekly: this.quota.minWeekly, now: this.now() }));
   }
 
   chooseMode(user, mode) {
@@ -360,8 +374,25 @@ class WechatService {
   }
 
   async chatTurn(user, text) {
-    const { model, device } = this.chatPref(user);
+    let { model, device } = this.chatPref(user);
     if (!model) return this.send(user, '没有可用的 AI。');
+    // 当前 AI 额度不够：按 /1～/4 的顺序换一个够的，记住选择（开新对话），并告诉管理员。
+    if (this.quota) {
+      const list = runner.ADMIN_MODELS.filter((item) => this.adapters[item.provider]);
+      const order = [model, ...list.filter((item) => item !== model)];
+      try {
+        const { choice, skipped } = await this.quota.pick(order);
+        if (choice !== model) {
+          this.store.setPref(user, { model: choice.provider, chatTask: null });
+          await this.send(user, `⚠️ ${describeBlocked(skipped.slice(0, 1))}，已自动切换到 ${choice.label}，开始新对话。额度恢复后发 /${runner.ADMIN_MODELS.indexOf(model) + 1} 切回。`);
+          log('quota switch', 'chat', model.provider, '->', choice.provider);
+          model = choice;
+        }
+      } catch (error) {
+        if (error?.code !== 'quota_low') throw error;
+        return this.send(user, `🪫 所有 AI 额度都不够：${describeBlocked(error.blocked.filter((item) => !item.ok))}。发 /额度 查看。`);
+      }
+    }
     const task = this.chatTask(user, text);
     const dir = this.store.taskDir(user, task.id);
     const files = this.chatFiles.get(user) || [];
@@ -373,7 +404,6 @@ class WechatService {
     const slow = setTimeout(() => this.send(user, `⏳ ${model.label} 还在处理（已 ${duration(this.now() - startedAt)}），/停 可以停止。`), 3 * 60_000);
     slow.unref?.();
     try {
-      if (this.quota) await this.quota.require([model.provider]);
       const result = await runner.chatTurn({
         task, dir, signal: controller.signal, text, files, model,
         device: device && { label: device.label, online: this.devices?.state.get(device.id)?.online !== false },
@@ -998,7 +1028,7 @@ function main() {
   if (transport.owner && !(config.allowUsers || []).includes(transport.owner)) config.allowUsers = [...(config.allowUsers || []), transport.owner];
   if (!config.allowUsers?.length) log('提示：allowUsers 为空，所有人都会被拒绝；日志里会打印被拒绝的 userid，登记后重启服务');
   const adapters = loadAdapters(orchestratorConfig);
-  const quota = new QuotaGate({ adapters, quotaStatus: require('../quotas').quotaStatus, minRemaining: config.minQuotaPercent ?? 8 });
+  const quota = new QuotaGate({ adapters, quotaStatus: require('../quotas').quotaStatus, minRemaining: config.minQuotaPercent ?? 8, minWeekly: config.minWeeklyQuotaPercent ?? 3 });
   // 扫码人是管理员；admins 里登记的也是。
   // ownerIsAdmin: false（给别人单独开的 ClawBot）：扫码人只是普通成员，不能选模型、不能操作电脑。
   if (transport.owner && config.ownerIsAdmin !== false) config.admins = [...new Set([...(config.admins || []), transport.owner])];

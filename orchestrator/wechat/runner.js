@@ -168,7 +168,7 @@ function statusFor(error, signal) {
 
 function context({ task, dir, signal, deps }) {
   const settings = settingsFrom(deps.settings);
-  const quota = deps.quota || { require: async () => {}, rank: async (choices) => choices, invalidate() {} };
+  const quota = deps.quota || { require: async () => {}, rank: async (choices) => choices, pick: async (choices) => ({ choice: choices[0], skipped: [] }), invalidate() {} };
   const logs = path.join(dir, '.logs');
   fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
   const sessions = { ...(task.sessions || {}) };
@@ -190,6 +190,24 @@ function context({ task, dir, signal, deps }) {
   return { settings, quota, sessions, call };
 }
 
+// 额度不够时的接替顺序：先是本来要用的，再按 Claude → GPT → Antigravity → Grok（低档先换便宜的）。
+function candidates(settings, adapters, preferred, tier) {
+  const order = tier === 'low'
+    ? [preferred, settings.low, settings.lowFallback, settings.mid, settings.high]
+    : [preferred, settings.high, settings.mid, settings.low, settings.lowFallback];
+  const seen = new Set();
+  return order.filter((choice) => choice && adapters[choice.provider] && !seen.has(choice.provider) && seen.add(choice.provider));
+}
+
+// 挑一个额度够的 AI；换了就回调 onSwitch（服务里提醒管理员）。返回 { choice, rest }，rest 是排在后面的候选。
+async function choose({ quota, settings, deps, preferred, tier, role, task }) {
+  const list = candidates(settings, deps.adapters, preferred, tier);
+  if (!list.length) return { choice: preferred, rest: [] };
+  const { choice, skipped } = await quota.pick(list);
+  if (choice.provider !== preferred.provider) deps.onSwitch?.({ role, task, from: preferred, to: choice, skipped });
+  return { choice, rest: list.slice(list.indexOf(choice) + 1) };
+}
+
 function failure(error, signal, quota, extra) {
   if (String(error?.code || '').startsWith('cli_quota')) quota.invalidate();
   return { status: statusFor(error, signal), ...(error?.blocked && { blocked: error.blocked }), error: String(error?.message || error).slice(0, 300), ...extra };
@@ -199,21 +217,22 @@ function failure(error, signal, quota, extra) {
 async function planTask({ task, dir, signal, deps, revision }) {
   const { settings, quota, sessions, call } = context({ task, dir, signal, deps });
   try {
-    await quota.require([settings.planner.provider]);
+    const { choice: planner } = await choose({ quota, settings, deps, preferred: settings.planner, tier: null, role: 'planner', task });
+    if (planner.provider !== settings.planner.provider) delete sessions.planner;   // 换了组长：原会话接不上
     const inputs = listFiles(path.join(dir, 'in'));
     let output;
     if (revision && sessions.planner) {
       try {
-        output = await call('planner', settings.planner, { prompt: revisionPrompt(revision), readonly: true, session: sessions.planner, timeoutMs: settings.planTimeoutMs });
+        output = await call('planner', planner, { prompt: revisionPrompt(revision), readonly: true, session: sessions.planner, timeoutMs: settings.planTimeoutMs });
       } catch (error) {
         if (signal.aborted) throw error;
         // 会话恢复不了：带上原需求、上一版方案和修改意见重新出。
         delete sessions.planner;
         const text = `${task.text}\n\n上一版方案：\n${task.plan || '（无）'}\n\n用户的修改意见：\n${revision.feedback}`;
-        output = await call('planner', settings.planner, { prompt: planningPrompt({ text, inputs, tier: task.tier }), readonly: true, timeoutMs: settings.planTimeoutMs });
+        output = await call('planner', planner, { prompt: planningPrompt({ text, inputs, tier: task.tier }), readonly: true, timeoutMs: settings.planTimeoutMs });
       }
     } else {
-      output = await call('planner', settings.planner, { prompt: planningPrompt({ text: task.text, inputs, tier: task.tier }), readonly: true, timeoutMs: settings.planTimeoutMs });
+      output = await call('planner', planner, { prompt: planningPrompt({ text: task.text, inputs, tier: task.tier }), readonly: true, timeoutMs: settings.planTimeoutMs });
     }
     const plan = parsePlan(output);
     if (!plan) return { status: 'failed', error: 'plan_unparsed', sessions, raw: String(output).slice(0, 2000) };
@@ -236,27 +255,28 @@ async function executeTask({ task, dir, signal, deps, continuation }) {
   let note = '';
   try {
     if (continuation) {
-      executor = task.executor;
-      await quota.require([executor.provider]);
+      ({ choice: executor } = await choose({ quota, settings, deps, preferred: task.executor, tier, role: 'executor', task }));
+      if (executor.provider !== task.executor.provider) delete sessions.executor;   // 换了 AI：带上原需求重新交代
       const prompt = continuePrompt({ text: continuation.text, newInputs: continuation.newInputs, outputs: listFiles(outDir) });
       onStage('running', { executor });
       try {
+        if (!sessions.executor) throw Object.assign(new Error('no_session'), { code: 'no_session' });
         summary = await call('executor', executor, { prompt, readonly: false, session: sessions.executor });
       } catch (error) {
-        if (signal.aborted || !sessions.executor) throw error;
+        if (signal.aborted || (!sessions.executor && error.code !== 'no_session')) throw error;
         delete sessions.executor;
         summary = await call('executor', executor, { prompt: executorPrompt({ text: task.text, inputs, brief: task.brief }) + '\n\n' + prompt, readonly: false });
       }
     } else if (tier === 'high') {
-      executor = settings.high;
-      await quota.require([executor.provider]);
+      ({ choice: executor } = await choose({ quota, settings, deps, preferred: settings.high, tier, role: 'executor', task }));
       onStage('running', { tier, executor });
       const samePlanner = settings.planner.provider === executor.provider && sessions.planner;
       summary = samePlanner
         ? await call('executor', executor, { prompt: '用户已确认方案。按最新方案和简报直接完成这个任务（现在可以写文件了，成品放 out/）。完成后用 1～3 句中文说明交付了什么。', readonly: false, session: sessions.planner })
         : await call('executor', executor, { prompt: executorPrompt({ text: task.text, inputs, brief: task.brief }), readonly: false });
     } else {
-      const ranked = await quota.rank(tier === 'low' ? [settings.low, settings.lowFallback] : [settings[tier] || settings.mid]);
+      const picked = await choose({ quota, settings, deps, preferred: tier === 'low' ? settings.low : settings[tier] || settings.mid, tier, role: 'executor', task });
+      const ranked = [picked.choice, ...picked.rest];
       executor = ranked[0];
       onStage('running', { tier, executor });
       const prompt = executorPrompt({ text: task.text, inputs, brief: task.brief });

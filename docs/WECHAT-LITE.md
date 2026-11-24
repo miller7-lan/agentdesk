@@ -64,7 +64,7 @@ systemctl enable --now agentdesk-wechat@2
 | `/1`～`/4` | 管理员随时切换 AI：Claude Opus / Codex / Antigravity / Grok（换 AI 即开新对话）；`/模型` 看当前 |
 | `/新` | 开新任务（管理员：新对话） |
 | `/工作` `/管理` | 管理员切换模式：工作模式走普通成员的引导流程（选档→方案→完成）；管理员模式消息直接交给所选 AI。`/模式` 看当前，重启不丢 |
-| `/额度` | 管理员现查各 AI 剩余额度（5 小时和本周、恢复时间；低于 8% 标 ⚠️）。普通成员看不到任何额度信息：额度不够时只显示「AI 暂时繁忙」，换 AI 的说明也不发给他们 |
+| `/额度` | 管理员现查各 AI 剩余额度（5 小时和本周、恢复时间；不派活的标 ⚠️）。普通成员看不到任何额度信息：额度不够时只显示「AI 暂时繁忙」，换 AI 的说明也不发给他们 |
 | `/历史` | 查看历史任务（最近 10 个） |
 | `/停` | 取消当前这一步（收集、出方案中、看方案都可以）；管理员：停止当前回复 |
 | `/问问题` | 快问快答，例 `/问今天星期几`：便宜模型只读回答，不建任务 |
@@ -86,7 +86,7 @@ systemctl enable --now agentdesk-wechat@2
 - **组长**（默认 Claude Opus，只读）按所选档位出方案：给用户看的方案摘要 + 给执行者的完整简报 + 执行预计分钟数。用户确认前不动手。
 - 执行者只按确认后的最新简报一次做完，不验收、不中途干预。
 - **时间提醒**：方案和提交时显示预计用时（组长估计，没有就用上表）；执行超过预计 1.5 倍时提醒一次。只求让用户心里有数，不求准。
-- **额度**：出方案前查组长，执行前查执行者（`orchestrator/quotas.js`，缓存 60 秒）。看 5 小时窗口，没有的看周额度；**剩余低于 8%** 的不用，都不够时回「🪫 额度不够」和恢复时间，之后 `/重试编号`。读不到额度时不拦。
+- **额度**：出方案前查组长，执行前查执行者，管理员助理每轮查当前 AI（`orchestrator/quotas.js`，读各 CLI 自己的额度接口，不耗模型额度，缓存 60 秒）。**5 小时剩余低于 8%，或本周剩余低于 3%** 的不派活，按顺序自动换下一个够的（组长/中高档：Claude → GPT → Antigravity → Grok；低档：Antigravity → Grok → GPT → Claude；管理员助理按 /1～/4 顺序，换了就记住并开新对话）。每次自动换都马上提醒管理员（同样的切换一小时提醒一次）；普通成员不提。全都不够时普通成员看到「AI 暂时繁忙」，之后 `/重试编号`。读不到额度时不拦。
 - 没确认的方案 3 天后自动取消。
 
 ## 3. 身份、多人与权限
@@ -150,7 +150,7 @@ journalctl -u agentdesk-wechat -f      # 应看到 ilink connected
 
 改 `wechat.json` 后 `systemctl restart agentdesk-wechat`。
 
-`wechat.json` 字段：`allowUsers`、`minQuotaPercent`（8）、`limits`、`sendPreview`（true）、`tiers`（覆盖各档 provider/model，见 `runner.js` 的 `DEFAULTS`）、`ask`（`/问` 快问快答用的模型）、`retention.days`（30）、`retention.draftDays`（3）、`deliveryRetry`。
+`wechat.json` 字段：`allowUsers`、`minQuotaPercent`（5 小时门槛 8）、`minWeeklyQuotaPercent`（本周门槛 3）、`limits`、`sendPreview`（true）、`tiers`（覆盖各档 provider/model，见 `runner.js` 的 `DEFAULTS`）、`ask`（`/问` 快问快答用的模型）、`retention.days`（30）、`retention.draftDays`（3）、`deliveryRetry`。
 
 ## 8. 办公工具链
 
