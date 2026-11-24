@@ -106,17 +106,26 @@ async function purgeCheckpoints(directory, threadIds) {
   }
 }
 
+// The bound folder is gone (moved, renamed, deleted, or its drive is not attached). There is nothing on disk to remove,
+// so the project is just unbound and its AgentDesk data deleted; no folder check (overlap etc.) can refuse that.
+async function folderMissing(root) {
+  if (!root) return false;
+  return fs.lstat(root).then(() => false, error => { if (error.code === 'ENOENT') return true; throw error; });
+}
+
 // Keep the registration until all requested cleanup succeeds. A retry can finish a partially deleted project.
 async function deleteProject({ project, projects, protectedPaths, preview, confirm, remote, local, unregister, savePlan = async () => {}, home }) {
-  const top = topLevel(project.localRoot && await canonical(project.localRoot));
+  const missing = await folderMissing(project.localRoot);
+  const top = missing || topLevel(project.localRoot && await canonical(project.localRoot));
   const root = await projectDirectory(project, projects, protectedPaths, false, { keep: top });
   const keepFolder = top || await personalFolder(root, home);
   const removeGit = keepFolder && await emptyRepository(root);
   const worktrees = keepFolder ? [] : await linkedWorktrees({ ...project, localRoot: root }, projects, protectedPaths);
   const plan = { ...await preview({ ...project, localRoot: root }), worktrees };
-  if (!await confirm({ ...plan, root, keepFolder, removeGit })) return { cancelled: true };
+  if (!await confirm({ ...plan, root, keepFolder, removeGit, missing })) return { cancelled: true };
   // Recheck registered paths after the confirmation, before the first irreversible step.
-  if (root !== await projectDirectory(project, projects, protectedPaths, false, { keep: top })) throw new Error('项目目录已变化，请重新删除。');
+  if (missing !== await folderMissing(project.localRoot) ||
+      root !== await projectDirectory(project, projects, protectedPaths, false, { keep: top })) throw new Error('项目目录已变化，请重新删除。');
   await savePlan(plan);
   await remote(plan);
   await local(plan);
@@ -127,4 +136,4 @@ async function deleteProject({ project, projects, protectedPaths, preview, confi
   return { deleted: true, threadIds: plan.threadIds || [] };
 }
 
-module.exports = { inside, canonical, topLevel, personalFolder, emptyRepository, projectDirectory, purgeCheckpoints, linkedWorktrees, deleteProject };
+module.exports = { inside, canonical, topLevel, folderMissing, personalFolder, emptyRepository, projectDirectory, purgeCheckpoints, linkedWorktrees, deleteProject };

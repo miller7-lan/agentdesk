@@ -526,8 +526,9 @@ async function removeProjectData(id) {
       },
       confirm: async plan => {
         const lines = [plan.worktrees?.length && '本机关联工作树\n' + plan.worktrees.join('\n'),
+          plan.root && plan.missing && '本机文件夹已不存在，跳过本机文件，只解除绑定\n' + plan.root,
           plan.root && !plan.keepFolder && '本机目录（包括 .git）\n' + plan.root,
-          plan.root && plan.keepFolder && '本机目录保留（个人文件夹或磁盘根下的文件夹），文件全部不动，只解除绑定\n' + plan.root +
+          plan.root && plan.keepFolder && !plan.missing && '本机目录保留（个人文件夹或磁盘根下的文件夹），文件全部不动，只解除绑定\n' + plan.root +
             (plan.removeGit ? '\n（AgentDesk 建的空 .git 会删除，里面没有任何提交）' : ''),
           plan.remoteDirectory ? 'VPS 项目目录（包括 .git）\n' + plan.remoteDirectory
             : plan.remoteClear ? 'VPS 工作区内容全部清空（目录本身保留）\n' + plan.remoteClear

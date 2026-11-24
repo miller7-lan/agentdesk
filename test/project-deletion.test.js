@@ -201,3 +201,27 @@ test('a project on a folder directly under the drive root is unbound and the fol
   assert.ok(result.deleted);
   assert.equal(shown.keepFolder, true);   // never removed: it may hold other projects and the person's files
 });
+
+test('a project whose folder no longer exists is deleted even when another project is bound to its parent folder', async t => {
+  const base = await fixture(t);
+  const parent = { id: 'video', localRoot: base };
+  const project = { id: 'group-x', localRoot: path.join(base, '群聊Projects') };
+  await fs.writeFile(path.join(base, 'keep.txt'), 'keep me');
+  let shown, removed = false;
+  const result = await deleteProject({ project, projects: [parent, project], protectedPaths: [],
+    preview: async () => ({ threadIds: ['t'] }), confirm: async plan => { shown = plan; return true; },
+    remote: async () => {}, local: async () => {}, unregister: async () => { removed = true; } });
+  assert.ok(result.deleted);assert.ok(removed);
+  assert.equal(shown.missing, true);assert.equal(shown.keepFolder, true);assert.deepEqual(shown.worktrees, []);
+  assert.equal(await fs.readFile(path.join(base, 'keep.txt'), 'utf8'), 'keep me');
+});
+
+test('a folder that reappears between the confirmation and the deletion stops the deletion', async t => {
+  const base = await fixture(t);
+  const project = { id: 'p', localRoot: path.join(base, 'gone') };
+  let removed = false;
+  await assert.rejects(deleteProject({ project, projects: [project], protectedPaths: [],
+    preview: async () => ({ threadIds: [] }), confirm: async () => { await fs.mkdir(project.localRoot); return true; },
+    remote: async () => {}, local: async () => {}, unregister: async () => { removed = true; } }), /项目目录已变化/);
+  assert.equal(removed, false);assert.ok(await exists(project.localRoot));
+});
