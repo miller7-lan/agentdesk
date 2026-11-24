@@ -1120,11 +1120,18 @@ ipcMain.handle('ws:diff', (_e, rel) => ws.diff(rel).catch((e) => ({ error: e.mes
 // 技能：本机技能列表；用到时把该技能目录上传到 VPS（同一次连接内按签名缓存）
 const skillCache = new Map();
 ipcMain.handle('skills:local', () => ws.localSkills().catch(() => []));
-ipcMain.handle('skills:upload', async (_e, skill, projectId) => {
+ipcMain.handle('skills:upload', async (_e, skill, projectId, threadId) => {
   try {
     const approved = (await ws.localSkills()).find(({ folder, name }) => folder === skill?.folder && name === skill?.name);
     if (!approved) throw new Error('找不到本机技能。');
     const pack = await ws.packSkill(approved.dir);
+    // 原生单聊：Codex 在 VPS2 的沙箱里只看得到自己的 CODEX_HOME，技能经这个会话装进去并登记（windows-native-seat.js）。
+    const native = typeof threadId === 'string' && threadId
+      ? await nativeDesktop()?.select('codex', 'skills/list', { threadId, ...(projectId !== undefined && { projectId }) }) : null;
+    if (native?.installSkill) {
+      const { path: installed } = await native.installSkill({ name: approved.name, folder: approved.folder, files: pack.files });
+      return { ok: true, path: installed };
+    }
     const workspace = currentRemoteDirectory(projectId);
     if (!workspace) throw new Error('请配置远程工作区目录。');
     const root = path.posix.join(workspace, '.agentdesk-skills');

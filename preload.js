@@ -115,7 +115,7 @@ contextBridge.exposeInMainWorld('desk', {
   },
   skills: {
     local: () => ipcRenderer.invoke('skills:local'),
-    upload: (skill, projectId) => ipcRenderer.invoke('skills:upload', skill, projectId),
+    upload: (skill, projectId, threadId) => ipcRenderer.invoke('skills:upload', skill, projectId, threadId),
   },
   files: {
     pick: (folders = false, projectId) => ipcRenderer.invoke('files:pick', folders, projectId),

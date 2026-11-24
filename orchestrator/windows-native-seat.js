@@ -251,6 +251,38 @@ async function openWindowsNativeSeat({
       if (launch) return { ...reply, windowsNative: true, activeTurnId: turnId };
       return reply;
     },
+    // A skill from this computer (~/.codex/skills, ~/.agents/skills) for a Codex native chat. Codex runs sandboxed
+    // on VPS2 and sees only its own CODEX_HOME there, so the files go into CODEX_HOME/agentdesk-skills through this
+    // seat's app-server, that folder is registered as an extra skill root, and the list is reloaded to confirm.
+    async installSkill({ name, folder: skillFolder, files } = {}) {
+      if (provider !== 'codex') throw new Error('只有 Codex 支持本地技能。');
+      if (typeof name !== 'string' || !name || typeof skillFolder !== 'string' || !/^[\w.-]{1,80}$/.test(skillFolder) ||
+          skillFolder.startsWith('.') || !Array.isArray(files) || !files.length) throw new Error('invalid_skill');
+      const listed = await call('skills/list', { cwds: [folder] });
+      const system = (listed?.data || []).flatMap((entry) => entry.skills || []).find((skill) => skill.scope === 'system' &&
+        typeof skill.path === 'string' && skill.path.includes('/skills/.system/'));
+      if (!system) throw new Error('VPS 上的 Codex 没有返回技能目录，无法安装本地技能。');
+      const home = system.path.slice(0, system.path.indexOf('/skills/.system/'));
+      const root = home + '/agentdesk-skills';
+      const dest = root + '/' + skillFolder;
+      const made = new Set();
+      for (const file of files) {
+        const rel = String(file?.rel || '');
+        if (!rel || rel.startsWith('/') || rel.split('/').some((part) => !part || part === '.' || part === '..') ||
+            typeof file.b64 !== 'string') throw new Error('invalid_skill');
+        // One frame per file; the provider wire takes 4 MB lines.
+        if (file.b64.length > 3 * 1024 * 1024) throw new Error('技能里有单个文件超过 2 MB，未上传。');
+        const full = dest + '/' + rel;
+        const dir = full.slice(0, full.lastIndexOf('/'));
+        if (!made.has(dir)) { await call('fs/createDirectory', { path: dir, recursive: true }); made.add(dir); }
+        await call('fs/writeFile', { path: full, dataBase64: file.b64 });
+      }
+      await call('skills/extraRoots/set', { extraRoots: [root] });
+      const reloaded = await call('skills/list', { cwds: [folder], forceReload: true });
+      const found = (reloaded?.data || []).some((entry) => (entry.skills || []).some((skill) => skill.enabled !== false && skill.name === name));
+      if (!found) throw new Error('技能已上传，但 Codex 没有识别；请升级 VPS 上的 Codex。');
+      return { path: dest + '/SKILL.md' };
+    },
     async close({ confirmedIdle = false } = {}) {
       let recognized = false;
       if (confirmedIdle && !turnId && !startingTurn && !closed) {

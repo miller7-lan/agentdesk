@@ -648,16 +648,15 @@
   async function buildInput(text, files, projectId) {
     const input = [{ type: 'text', text, text_elements: [] }];
     const chips = [];
+    const localSkills = [];
     const names = [...new Set([...text.matchAll(/\$([\w:.\-]+)/g)].map((x) => x[1]))];
     for (const n of names) {
       const local = skills.local.find((k) => k.name === n || k.folder === n);
       const cloud = skills.cloud.find((k) => k.name === n);
       if (cloud && !local) { input.push({ type: 'skill', name: cloud.name, path: cloud.path }); chips.push({ label: '$' + n, kind: 'skill', title: '云端技能' }); }
       else if (local) {
-        toast(`正在上传本地技能 ${n}…`);
-        const r = await skApi.upload(local, projectId);
-        if (!r.ok) { toast('本地技能上传失败：' + r.error); continue; }
-        input.push({ type: 'skill', name: local.name, path: r.path }); chips.push({ label: '$' + n, kind: 'skill local', title: '本地技能（已上传到 VPS）' });
+        // 上传要等会话建好：原生单聊的技能装进这个会话自己的 Codex（uploadLocalSkills）。
+        localSkills.push(local); chips.push({ label: '$' + n, kind: 'skill local', title: '本地技能（发送时上传到 VPS）' });
       }
     }
     const others = [];
@@ -667,7 +666,17 @@
       chips.push({ label: (f.image ? '图片 ' : '附件 ') + f.name, kind: 'file', title: f.path });
     }
     if (others.length) input[0].text += '\n\n[用户上传的附件，位于 VPS]\n' + others.map((f) => `- ${f.name}: ${f.path}`).join('\n');
-    return { input, chips };
+    return { input, chips, localSkills };
+  }
+
+  // 本机技能在会话建好之后上传：普通会话放到远程工作区，原生单聊装进该会话的 Codex。失败只提示，消息照发。
+  async function uploadLocalSkills(list, input, projectId, threadId) {
+    for (const local of list || []) {
+      toast(`正在上传本地技能 ${local.name}…`);
+      const r = await skApi.upload(local, projectId, threadId);
+      if (!r.ok) { toast('本地技能上传失败：' + r.error); continue; }
+      input.push({ type: 'skill', name: local.name, path: r.path });
+    }
   }
 
   async function send(s, fromButton, options = {}) {
@@ -729,7 +738,7 @@
       } catch (error) { toast(error.message); return false; }
     }
     const projectId = A.proj(s.project)?.configured ? s.project : undefined;
-    const { input, chips } = chat
+    const { input, chips, localSkills } = chat
       ? { input: [{ type: 'text', text: text || '请查看随附的文件。', text_elements: [] }],
         chips: fromQueue ? [] : attachments.map(file => ({ label: '附件 ' + file.name, kind: 'file', title: file.name })) }
       : await buildInput(text, attachments, projectId);
@@ -771,6 +780,7 @@
     // leave it. Sent only then: the field is experimental, ordinary turns keep their settings untouched. Whether the
     // thread is in plan mode comes from Codex itself on resume, so it survives a restart. Not on a native seat,
     // whose developer instructions carry the permission statement; the read-only sandbox stays either way.
+    if (!chat && localSkills?.length) await uploadLocalSkills(localSkills, input, projectId, s.threadId);
     const codexModel = model || s.codexModel;
     const planTurn = turnMode === 'plan';
     const collaborationMode = !chat && !s.native && codexModel && (planTurn || s.codexPlanning)
