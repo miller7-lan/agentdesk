@@ -12,7 +12,11 @@ const { fetchQrCode, pollQrStatus, DEFAULT_BASE_URL } = require('./ilink');
 const stateDir = process.env.AGENTDESK_STATE_DIR || '/var/lib/agentdesk-orchestrator';
 // --dir <数据目录>：给另一个 ClawBot 登录（例 --dir /var/lib/agentdesk-orchestrator/wechat-2）。
 const dirFlag = process.argv.indexOf('--dir');
-const dataDir = dirFlag > 0 && process.argv[dirFlag + 1] ? process.argv[dirFlag + 1] : path.join(stateDir, 'wechat');
+if (dirFlag > 0 && !process.argv[dirFlag + 1]?.startsWith('/')) {
+  console.error('--dir 后面要跟数据目录的绝对路径，例：--dir /var/lib/agentdesk-orchestrator/wechat-2');
+  process.exit(2);
+}
+const dataDir = dirFlag > 0 ? process.argv[dirFlag + 1] : path.join(stateDir, 'wechat');
 fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const accountFile = path.join(dataDir, 'ilink-account.json');
 

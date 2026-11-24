@@ -26,7 +26,8 @@ systemctl restart agentdesk-wechat
 ```sh
 install -m 640 -o root -g agentdesk orchestrator/wechat/wechat-extra.example.json /etc/agentdesk-orchestrator/wechat-2.json
 install -m 644 orchestrator/agentdesk-wechat@.service /etc/systemd/system/ && systemctl daemon-reload
-sudo -u agentdesk /opt/agentdesk-orchestrator/node /opt/agentdesk-orchestrator/wechat/login.js --dir /var/lib/agentdesk-orchestrator/wechat-2   # 对方扫码
+sudo install -m 755 orchestrator/wechat/wechat-login.sh /usr/local/bin/wechat-login
+wechat-login 2   # 对方扫码；成功后自动重启 agentdesk-wechat@2
 systemctl enable --now agentdesk-wechat@2
 ```
 
