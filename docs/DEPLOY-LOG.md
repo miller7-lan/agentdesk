@@ -2,6 +2,18 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 11:42（北京时间）· VPS2 · 群聊步骤与微信助手隔离 CLI 对话记录；Antigravity 整目录独立
+
+- **改动**（`42b54be`）：
+  - `adapters.js` 新增 `history` 参数：群聊步骤按发起设备（`history: 'group-<bridge>'`，scheduler 传入）各用一份 CLI 对话记录（`cli-history/adapter-group-<bridge>/<provider>`）；未传的调用方（微信助手）用 `adapter-default`。它们都看不到单聊记录，彼此也看不到。
+  - `project-delete.js` 删除群聊项目时一并清理该设备那份记录。
+  - `cli-history.js`：Antigravity 改为整个 `.gemini/antigravity-cli` 目录按实例独立（首次只复制 bin、builtin、设置等，不复制任何历史），只把登录令牌 `antigravity-oauth-token`（原地写入）挂回共用的那份。原因：上一版按单个文件挂载 `conversation_summaries.db`，它的 WAL 日志（`-wal/-shm`）仍在共用目录里，两台设备同时使用时可能互相套用日志、损坏数据库。上一版部署后没有任何设备用过（`cli-history` 为空），无实际影响。11:30 已先单独替换 `cli-history.js` 并经 `agent-chat.sh` 端到端验证（WAL 落在设备目录、摘要缓存可写、续聊正常）。
+  - 带上了微信分支已在现网的 `adapters.js` 一行（`mcp.scopeArg`），避免覆盖。
+- **VPS2**：备份到 `/root/backups/agentdesk-deploy-group-isolation-20261124-114150CST/`（含 `ROLLBACK.sh`）；维护模式排空（无运行任务）→ 替换 `adapters.js`、`scheduler.js`、`project-delete.js`、`cli-history.js`（逐字节一致）→ 重启主控（旧进程停止超时被 KILL，新进程正常，NRestarts=0）→ 重新启动 `agentdesk-home-mount`（随主控停掉）→ `doctor` 全部 ok → 退出维护模式。**没有重启 `agentdesk-wechat`**（另一会话在开发），它下次重启后才用新的 `adapters.js`。
+- **验证**：`npm test` 590 项通过；新增真实 bwrap 测试：设备 A 的群聊步骤只列出自己的会话、登录可用、共用目录和设备 B 的记录不可读、新会话写入 A 的目录。
+- **Codex 未做**：Codex 自带沙盒支持 `permissions.<档>.filesystem` 禁读（`codex sandbox` 实测有效，可写目录用 `:workspace_roots`），但命令行 `--sandbox` 会覆盖权限档，单聊「完全访问」不进沙盒；需改 Codex 启动方式并处理 git 工作树和家目录挂载，单独做。
+- **回滚**：`sh /root/backups/agentdesk-deploy-group-isolation-20261124-114150CST/ROLLBACK.sh`。
+
 ## 2026-11-24 11:45（北京时间）· 客户端 0.4.4 · Mac + Windows 推送更新
 
 - **起因**：Mac「hi」、Lenovo「群聊Projects」的群聊里组长和 AI 回复都是「示例：……」：新建项目对话框「主控项目」默认「本地示例」，建出的项目没有 `serverProject`，客户端按示例运行（`isExample`），任务从未发到 VPS2（主控数据库里没有这些任务）。
