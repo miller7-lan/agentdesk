@@ -5,29 +5,33 @@
 // transcript in that home, and a conversation may use its shell, so without this one device's chat could read
 // another device's conversations (and the WeChat assistant's, and group steps').
 //
-// In the sandbox, the folders and files below are therefore replaced by this chat instance's own copies (one per
+// In the sandbox, the folders below are therefore replaced by this chat instance's own copies (one per
 // device, or per native session), bound over the shared home. The login and settings stay shared; the
 // conversations do not. The list is of history, not of logins: a history location a future CLI version adds is
 // not hidden until it is listed here, but nothing breaks.
 const fs = require('node:fs');
 const path = require('node:path');
 
+const AGY = path.join('.gemini', 'antigravity-cli');
 const PRIVATE = {
+  // agy keeps conversations in SQLite (WAL) next to other files: binding single files would leave the -wal/-shm
+  // journals in the shared folder, where two devices' databases could pick up each other's journal. So the whole
+  // folder is the instance's own; only the login token inside it (rewritten in place) is bound back from the shared
+  // home. A new folder is seeded once with the shared one's program files and settings, never its history.
   antigravity: {
-    dirs: ['brain', 'conversations', 'annotations', 'implicit', 'log', 'presence', 'scratch', 'cache', 'crashes']
-      .map((name) => path.join('.gemini', 'antigravity-cli', name)),
-    // jetbox_summaries_proto.pb is replaced by rename, which a bound file refuses (EBUSY): agy logs that and goes
-    // on without the summary cache. The point is that it no longer sees every other conversation's summary.
-    files: ['conversation_summaries.db', 'jetbox_summaries_proto.pb', 'history.jsonl']
-      .map((name) => path.join('.gemini', 'antigravity-cli', name)),
+    folder: AGY,
+    shared: ['antigravity-oauth-token'],
+    // Copied into a new instance folder (program files and settings, no history); anything else agy recreates.
+    seed: ['bin', 'builtin', 'installation_id', 'settings.json', 'jetski_state.pbtxt', 'last_check.timestamp'],
+    dirs: [],
   },
   claude: {
     dirs: [...['projects', 'sessions', 'session-env', 'shell-snapshots', 'todos', 'file-history', 'plans', 'paste-cache', 'debug']
       .map((name) => path.join('.claude', name)), path.join('.cache', 'claude-cli-nodejs')],
-    files: [],
   },
-  grok: { dirs: ['sessions', 'logs', 'memtrace'].map((name) => path.join('.grok', name)), files: [] },
+  grok: { dirs: ['sessions', 'logs', 'memtrace'].map((name) => path.join('.grok', name)) },
 };
+const SEEDED = '.agentdesk-seeded';
 
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -37,20 +41,33 @@ function binds(provider, home, root) {
   const spec = PRIVATE[provider];
   if (!spec || !home || !root) return [];
   const pairs = [];
-  for (const relative of spec.dirs) {
+  if (spec.folder) {
+    const source = path.join(root, spec.folder);
+    const target = path.join(home, spec.folder);
+    fs.mkdirSync(target, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(source, { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(path.join(source, SEEDED))) {
+      for (const name of spec.seed) {
+        if (!fs.existsSync(path.join(target, name))) continue;
+        fs.cpSync(path.join(target, name), path.join(source, name), { recursive: true, force: false, errorOnExist: false,
+          preserveTimestamps: true, verbatimSymlinks: true });
+      }
+      fs.writeFileSync(path.join(source, SEEDED), new Date().toISOString() + '\n', { mode: 0o600 });
+    }
+    pairs.push([source, target]);
+    for (const name of spec.shared) {
+      const shared = path.join(target, name);
+      if (!fs.existsSync(shared)) continue;
+      // The mount point inside the instance folder; the shared file is bound onto it.
+      fs.closeSync(fs.openSync(path.join(source, name), 'a', 0o600));
+      pairs.push([shared, shared]);
+    }
+  }
+  for (const relative of spec.dirs || []) {
     const source = path.join(root, relative);
     const target = path.join(home, relative);
     fs.mkdirSync(source, { recursive: true, mode: 0o700 });
     fs.mkdirSync(target, { recursive: true, mode: 0o700 });
-    pairs.push([source, target]);
-  }
-  for (const relative of spec.files) {
-    const source = path.join(root, relative);
-    const target = path.join(home, relative);
-    for (const file of [source, target]) {
-      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-      fs.closeSync(fs.openSync(file, 'a', 0o600));
-    }
     pairs.push([source, target]);
   }
   return pairs;

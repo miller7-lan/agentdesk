@@ -1,9 +1,11 @@
 const { spawn } = require('node:child_process');
+const path = require('node:path');
 const { createWriteStream } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { once } = require('node:events');
 const { createInterface } = require('node:readline');
 const { sandboxCommand } = require('./sandbox');
+const cliHistory = require('./cli-history');
 const { captureClaudeRateLimitEvent } = require('./quotas');
 
 const providers = {
@@ -178,7 +180,7 @@ function errorDetail(text) {
     || '').replace(/\s+/g, ' ').slice(0, 300);
 }
 
-async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, gitView, readPaths = [], hidePaths = [] }) {
+async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printTimeoutMs, signal, log, onSession, session, model, effort, mcp, attachmentDirectory, gitView, readPaths = [], hidePaths = [], history }) {
   if (effort !== undefined && !effortsFor(name, config, model).includes(effort)) effort = undefined;   // never pass an unknown level
   if (signal.aborted) throw signal.reason;
   const provider = config.template ? templateProvider(config.template) : providers[name];
@@ -269,7 +271,7 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
     args.unshift('--settings', JSON.stringify({ permissions: { allow, deny, ask: [] } }));
   }
   if (mcp && !provider.template && name !== 'gemini') {
-    const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability] };
+    const server = { command: process.execPath, args: [require.resolve('./mcp'), mcp.socket, mcp.capability, ...(mcp.scopeArg ? [mcp.scope] : [])] };
     if (name === 'codex') {
       args.splice(codexSettingsIndex(args), 0,
         '-c', 'mcp_servers.agentdesk_windows.command=' + JSON.stringify(server.command),
@@ -289,6 +291,14 @@ async function runAdapter({ name, config, cwd, prompt, readonly, timeout, printT
       hide: [config.sandbox.stateDir], hideDefaults: config.sandbox.hideDefaults, sockets: mcp ? [mcp.socket] : [],
       extraReadOnly: [...(attachmentDirectory ? [attachmentDirectory] : []), ...readPaths], mask: hidePaths })
     : { command: config.bin, args };
+  // Group steps keep their CLI conversations per device that started the task (history: 'group-<bridge>'); a caller
+  // that names no history (the WeChat assistant) gets its own 'default' one. Neither sees single chats' (cli-history.js).
+  if (sandboxed && env.HOME && config.sandbox.stateDir) {
+    const key = typeof history === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(history) ? history : 'default';
+    const root = path.join(config.sandbox.stateDir, 'cli-history', 'adapter-' + key, name);
+    try { cliHistory.adopt(name, env.HOME, root, session); } catch {}
+    launch.args.splice(launch.args.indexOf('--chdir'), 0, ...cliHistory.bwrapArgs(cliHistory.binds(name, env.HOME, root)));
+  }
   const child = spawn(launch.command, launch.args, {
     cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
   });

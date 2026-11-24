@@ -2028,7 +2028,7 @@ event(task, state, detail) {
         name: step.role, config, cwd: folder, prompt, readonly: !step.write,
         timeout: budget.outer, printTimeoutMs: budget.print, signal: stepSignal,
         log: path.join(this.config.stateDir, 'logs', task.id, step.id + '.log'),
-        session: step.session, model: step.model,
+        session: step.session, model: step.model, history: 'group-' + task.owner,
         effort: step.effort || (step.role === LEAD_ROLE && task.leadEffort &&
           effortsFor(step.role, this.config.adapters[step.role], step.model).includes(task.leadEffort) ? task.leadEffort : undefined),
         mcp: mcp && { socket: mcp.socket, capability, ...(task.snapshot && { scope: localTools }) },

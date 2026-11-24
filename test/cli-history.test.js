@@ -13,8 +13,8 @@ function dirs(t) {
   return { home, root: path.join(base, 'history', 'chat-antigravity-lenovo') };
 }
 
-test('each private history folder and file gets its own copy bound over the shared home; logins are never bound', (t) => {
-  for (const provider of ['antigravity', 'claude', 'grok']) {
+test('Claude and Grok history folders get the instance copy bound over the shared home; logins are never bound', (t) => {
+  for (const provider of ['claude', 'grok']) {
     const { home, root } = dirs(t);
     const pairs = cliHistory.binds(provider, home, root);
     assert.ok(pairs.length > 0);
@@ -22,28 +22,51 @@ test('each private history folder and file gets its own copy bound over the shar
       assert.ok(source.startsWith(root + path.sep));
       assert.ok(target.startsWith(home + path.sep));
       assert.equal(path.relative(root, source), path.relative(home, target));
-      assert.ok(fs.existsSync(source) && fs.existsSync(target));
+      assert.ok(fs.statSync(source).isDirectory() && fs.statSync(target).isDirectory());
     }
     const bound = pairs.map(([, target]) => path.relative(home, target));
-    for (const login of ['.gemini/oauth_creds.json', '.gemini/antigravity-cli/antigravity-oauth-token', '.claude/.credentials.json',
-      '.claude.json', '.grok/auth.json', '.gemini/config', '.gemini/antigravity-cli']) {
-      assert.ok(!bound.includes(login), `${provider} must not bind ${login}`);
-    }
+    for (const login of ['.claude/.credentials.json', '.claude.json', '.grok/auth.json']) assert.ok(!bound.includes(login));
     const args = cliHistory.bwrapArgs(pairs);
     assert.equal(args.length, pairs.length * 3);
     assert.deepEqual(args.slice(0, 3), ['--bind', ...pairs[0]]);
   }
-  assert.ok(cliHistory.binds('antigravity', '', '/x').length === 0);
-  assert.ok(cliHistory.binds('codex', '/h', '/x').length === 0);
+  assert.equal(cliHistory.binds('antigravity', '', '/x').length, 0);
+  assert.equal(cliHistory.binds('codex', '/h', '/x').length, 0);
 });
 
-test('the conversation transcripts of every provider are among the private paths', () => {
-  const all = (provider) => [...cliHistory.PRIVATE[provider].dirs, ...cliHistory.PRIVATE[provider].files];
-  assert.ok(all('antigravity').includes(path.join('.gemini', 'antigravity-cli', 'brain')));
-  assert.ok(all('antigravity').includes(path.join('.gemini', 'antigravity-cli', 'conversations')));
-  assert.ok(all('antigravity').includes(path.join('.gemini', 'antigravity-cli', 'conversation_summaries.db')));
-  assert.ok(all('claude').includes(path.join('.claude', 'projects')));
-  assert.ok(all('grok').includes(path.join('.grok', 'sessions')));
+test('Antigravity gets its own whole folder (SQLite journals stay inside it), seeded with program files only, the login token bound back', (t) => {
+  const { home, root } = dirs(t);
+  const shared = path.join(home, '.gemini', 'antigravity-cli');
+  fs.mkdirSync(path.join(shared, 'brain', 'other'), { recursive: true });
+  fs.mkdirSync(path.join(shared, 'builtin', 'skills'), { recursive: true });
+  fs.writeFileSync(path.join(shared, 'builtin', 'skills', 'x.md'), 'skill');
+  fs.writeFileSync(path.join(shared, 'settings.json'), '{}');
+  fs.writeFileSync(path.join(shared, 'antigravity-oauth-token'), 'token');
+  fs.writeFileSync(path.join(shared, 'conversation_summaries.db'), 'all summaries');
+  fs.writeFileSync(path.join(shared, 'conversation_summaries.db-wal'), 'wal');
+  fs.writeFileSync(path.join(shared, 'some-future-history.db'), 'unknown');
+  const pairs = cliHistory.binds('antigravity', home, root);
+  const own = path.join(root, '.gemini', 'antigravity-cli');
+  assert.deepEqual(pairs[0], [own, shared]);
+  assert.deepEqual(pairs[1], [path.join(shared, 'antigravity-oauth-token'), path.join(shared, 'antigravity-oauth-token')]);
+  assert.equal(pairs.length, 2);
+  assert.equal(fs.readFileSync(path.join(own, 'builtin', 'skills', 'x.md'), 'utf8'), 'skill');
+  assert.ok(fs.existsSync(path.join(own, 'settings.json')));
+  assert.equal(fs.readFileSync(path.join(own, 'antigravity-oauth-token'), 'utf8'), '');   // mount point only
+  for (const history of ['brain', 'conversation_summaries.db', 'conversation_summaries.db-wal', 'some-future-history.db']) {
+    assert.ok(!fs.existsSync(path.join(own, history)), history + ' must not be copied');
+  }
+  // Seeded once: a later bind does not copy again (the instance's own settings win).
+  fs.writeFileSync(path.join(own, 'settings.json'), '{"mine":1}');
+  cliHistory.binds('antigravity', home, root);
+  assert.equal(fs.readFileSync(path.join(own, 'settings.json'), 'utf8'), '{"mine":1}');
+});
+
+test('the conversation transcripts of every provider are private', () => {
+  assert.equal(cliHistory.PRIVATE.antigravity.folder, path.join('.gemini', 'antigravity-cli'));
+  assert.ok(!cliHistory.PRIVATE.antigravity.seed.some((name) => /brain|conversation|summar|history|log/.test(name)));
+  assert.ok(cliHistory.PRIVATE.claude.dirs.includes(path.join('.claude', 'projects')));
+  assert.ok(cliHistory.PRIVATE.grok.dirs.includes(path.join('.grok', 'sessions')));
 });
 
 test('resuming an older conversation copies only that one from the shared home, once, without touching the original', (t) => {
@@ -114,4 +137,11 @@ test('chat-server binds the instance history in the sandbox and adopts older con
   assert.match(source, /if \(SANDBOX\) \{[\s\S]*?cliHistory\.adopt\(PROVIDER, HOME, HISTORY_ROOT, turn\.thread\.sessionId\)[\s\S]*?launch\.args\.splice\(launch\.args\.indexOf\('--chdir'\), 0, \.\.\.cliHistory\.bwrapArgs\(cliHistory\.binds\(PROVIDER, HOME, HISTORY_ROOT\)\)\)/);
   assert.match(source, /for \(const home of \[HISTORY_ROOT, HOME\]\) await require\('\.\/project-delete'\)\.cliHistory/);
   assert.match(source, /cliHistory\.purge\(PROVIDER, HISTORY_ROOT, sessions\)/);
+});
+
+test('group steps pass their device as the history, and deleting a project clears that device history too', () => {
+  const scheduler = fs.readFileSync(path.join(__dirname, '..', 'orchestrator', 'scheduler.js'), 'utf8');
+  const deletion = fs.readFileSync(path.join(__dirname, '..', 'orchestrator', 'project-delete.js'), 'utf8');
+  assert.match(scheduler, /session: step\.session, model: step\.model, history: 'group-' \+ task\.owner,/);
+  assert.match(deletion, /path\.join\(config\.stateDir, 'cli-history', 'adapter-group-' \+ owner, provider\)[\s\S]*?cliHistory\(\{ home: own, provider, cwd: work, sessions, subtree: true \}\)[\s\S]*?purge\(provider, own, sessions\)/);
 });

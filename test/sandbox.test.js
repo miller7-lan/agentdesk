@@ -54,3 +54,39 @@ test('the system is mounted folder by folder, skipping /srv, so one stale mount 
   assert.equal(args[args.indexOf('--') - 1], '/');                  // root made read-only after every mount
   assert.equal(args[args.indexOf('--') - 2], '--remount-ro');
 });
+
+test('group steps keep CLI conversations per device: a step sees only its own device history, not the shared home or another device', { skip: !usable }, async (t) => {
+  const root = await fs.mkdtemp(path.join(__dirname, '..', '.sandbox-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, 'state');
+  const cwd = path.join(stateDir, 'worktrees', 'task-a', 'edit');
+  const home = path.join(stateDir, 'homes', 'grok');
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(path.join(home, '.grok', 'sessions', 'shared'), { recursive: true });
+  await fs.writeFile(path.join(home, '.grok', 'sessions', 'shared', 'secret.txt'), 'wechat conversation');
+  await fs.writeFile(path.join(home, '.grok', 'auth.json'), 'login');
+  const other = path.join(stateDir, 'cli-history', 'adapter-group-windows', 'grok', '.grok', 'sessions', 'w');
+  await fs.mkdir(other, { recursive: true });
+  await fs.writeFile(path.join(other, 'secret.txt'), 'windows conversation');
+  const cli = path.join(root, 'fake-grok.js');
+  await fs.writeFile(cli, `#!${process.execPath}
+const fs = require('fs'), path = require('path');
+const read = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return 'hidden'; } };
+const sessions = path.join(process.env.HOME, '.grok', 'sessions');
+fs.mkdirSync(path.join(sessions, 'mine'), { recursive: true });
+fs.writeFileSync(path.join(sessions, 'mine', 'chat.txt'), 'mac step');
+console.log(JSON.stringify({ listed: fs.readdirSync(sessions).sort(), login: read(path.join(process.env.HOME, '.grok', 'auth.json')),
+  shared: read(path.join(sessions, 'shared', 'secret.txt')),
+  windows: read(${JSON.stringify(path.join(other, 'secret.txt'))}) }));
+`, { mode: 0o755 });
+  const result = await runAdapter({
+    name: 'grok', config: { bin: cli, env: { HOME: home, PATH: process.env.PATH }, sandbox: { bin: bwrap, stateDir, hideDefaults: [] } },
+    cwd, prompt: 'go', readonly: false, timeout: 20000, signal: new AbortController().signal,
+    log: path.join(root, 'step.log'), onSession() {}, history: 'group-mac',
+  });
+  const report = JSON.parse(result.output.trim().split('\n').at(-1));
+  assert.deepEqual(report, { listed: ['mine'], login: 'login', shared: 'hidden', windows: 'hidden' });
+  const own = path.join(stateDir, 'cli-history', 'adapter-group-mac', 'grok', '.grok', 'sessions', 'mine', 'chat.txt');
+  assert.equal(await fs.readFile(own, 'utf8'), 'mac step');
+  assert.ok(!existsSync(path.join(home, '.grok', 'sessions', 'mine')));
+});

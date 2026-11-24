@@ -102,6 +102,12 @@ async function projectDelete(scheduler, body, owner) {
         const sessions = [...(task.projectSessions || []).filter(entry => entry.role === provider).map(entry => entry.id),
           ...(task.steps || []).filter(step => step.role === provider).flatMap(step => [...(step.previousSessions || []), step.session].filter(Boolean))];
         if (adapter?.env?.HOME) await cliHistory({ home: adapter.env.HOME, provider, cwd: work, sessions, subtree: true });
+        // The same conversations in the device's own group history (adapters.js), when the step ran sandboxed.
+        if (/^[A-Za-z0-9_-]{1,80}$/.test('group-' + owner)) {
+          const own = path.join(config.stateDir, 'cli-history', 'adapter-group-' + owner, provider);
+          await cliHistory({ home: own, provider, cwd: work, sessions, subtree: true });
+          require('./cli-history').purge(provider, own, sessions);
+        }
       }
       for (const kind of ['worktrees', 'logs', 'chat-attachments']) await fs.rm(path.join(config.stateDir, kind, task.id), { recursive: true, force: true });
       if (root && !repository) {
