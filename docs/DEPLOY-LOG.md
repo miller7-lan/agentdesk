@@ -7,7 +7,7 @@
 - **VPS2**：`config.json` 的 `workspaces`、`sshBridges`、`quotaBridges`、`relayBridges`、`projects` 加 `win3`（Git 镜像 `repos/win3.git` 由主控首次使用时自动建）；新增 `relay-win3.token`；重启主控和 `agentdesk-home-mount`，`bridge-win3.sock`、`bridge-win3-mount.sock` 已建立。改前备份 `config.json.bak-20261124-win3`。
 - **VPS1**：Relay 注册表新增 `win3-bridge` ↔ `vps2-orchestrator-win3`，主控一端已上线。
 - **Caddy（临时）**：:8443 加一条随机路径，只提供 0.4.10 Windows 安装包下载给新电脑（备份 `Caddyfile.bak-20261124-win3dl`），重启 Caddy 约 1 秒。装好后删掉。
-- **待办**：win3 运行配置脚本生成 codex/claude/grok/antigravity/bridge 五把钥匙，公钥发回后写入 `/etc/ssh/agentdesk-authorized-keys`（单聊设备标签 `win3`，Bridge 限定 `ssh-gateway.js bridge-win3.sock bridge-win3-mount.sock`）。
+- **钥匙（17:31）**：win3 的 codex/claude/grok/antigravity/bridge 五把公钥已写入 `/etc/ssh/agentdesk-authorized-keys`（单聊设备标签 `win3`，Bridge 限定 `ssh-gateway.js bridge-win3.sock bridge-win3-mount.sock`），改前备份 `/root/backups/agentdesk-authorized-keys.bak-20261124-173101-win3`。待 win3 真机验证单聊和群聊。
 - **回滚**：恢复 `config.json.bak-20261124-win3` 并重启两个服务；VPS1 删掉这两条配对；恢复 Caddyfile 备份并重启 Caddy。
 
 ## 2026-11-24 16:30（北京时间）· 客户端 0.4.10 · 原生单聊支持本机技能；Mac 自签名
