@@ -109,6 +109,11 @@ function normalizeMessage(raw) {
   return message;
 }
 
+// CDN 上传超时：至少 1 分钟，按 10KB/s 的慢线路估算，最多 8 分钟；卡死的上传不能一直占着这轮对话。
+function uploadTimeout(bytes) {
+  return Math.min(8 * 60_000, Math.max(60_000, Math.ceil(bytes / 10)));
+}
+
 class IlinkChannel {
   constructor({ account, stateFile, fetchImpl = globalThis.fetch, log = () => {}, sleep = (ms, signal) => sleepFor(ms, signal), cdnBaseUrl = CDN_BASE_URL }) {
     if (!account?.token) throw new Error('ilink_not_logged_in');
@@ -259,7 +264,7 @@ class IlinkChannel {
     const url = target.upload_full_url?.trim() ||
       (target.upload_param && `${this.cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(target.upload_param)}&filekey=${encodeURIComponent(filekey)}`);
     if (!url) throw new Error('ilink_no_upload_url');
-    const response = await this.fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(cipher) });
+    const response = await this.fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(cipher), signal: AbortSignal.timeout(uploadTimeout(cipher.length)) });
     if (response.status !== 200) throw new Error(`ilink_cdn_upload_${response.status}${response.headers.get('x-error-message') ? ': ' + response.headers.get('x-error-message') : ''}`);
     const downloadParam = response.headers.get('x-encrypted-param');
     if (!downloadParam) throw new Error('ilink_cdn_no_download_param');

@@ -331,11 +331,13 @@ class WechatService {
         deps: this.deps(),
       });
       this.store.update(user, task.id, { sessions: result.sessions, turns: (task.turns || 0) + 1, finishedAt: this.now(), lastText: short(text, 200) });
+      // 先发文字再发文件：大文件上传微信 CDN 可能要几分钟，别让回复跟着干等。
+      const reply = plainSummary(result.summary) || (result.outputs.length ? '' : '（没有回复内容）');
+      if (reply) await this.send(user, reply.length > 1800 ? reply.slice(0, 1800) + '…' : reply);
       const results = result.outputs.length ? await this.sendFiles(user, result.outputs) : [];
       if (results.length) this.store.update(user, task.id, { outputs: [...new Set([...(task.outputs || []), ...results.map((item) => item.name)])], deliveries: mergeDeliveries(task.deliveries, results) });
-      const reply = plainSummary(result.summary) || (result.outputs.length ? '' : '（没有回复内容）');
-      const lines = [reply.length > 1800 ? reply.slice(0, 1800) + '…' : reply, deliverySummary(results, task.id)].filter(Boolean);
-      if (lines.length) await this.send(user, lines.join('\n'));
+      const failed = deliverySummary(results, task.id);
+      if (failed) await this.send(user, failed);
       log('chat', task.id, model.provider, duration(this.now() - startedAt), `outputs=${result.outputs.length}`);
     } catch (error) {
       const status = runner.statusFor(error, controller.signal);
