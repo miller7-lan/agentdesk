@@ -134,7 +134,7 @@ class WechatService {
     const user = message.from;
     const draft = this.draft(user);
     log('message', message.type, message.event || '', message.chatType, 'user', user ? userTag(user) : '-', 'stage', draft.stage);
-    const action = router.route(message, { allowUsers: this.allowUsers, stage: draft.stage, admin: this.isAdmin(user) });
+    const action = router.route(message, { allowUsers: this.allowUsers, stage: draft.stage, admin: this.adminMode(user) });
     if (action.kind === 'deny') {
       log('denied user (add to allowUsers to enable):', user);
       return this.respond(message, '这个助手目前只对已登记的成员开放，请联系管理员。');
@@ -146,14 +146,15 @@ class WechatService {
     switch (action.kind) {
       case 'ignore': return undefined;
       case 'welcome': return this.channel.welcome(message, this.helpText(user)).catch(() => {});
-      case 'greet': return this.respond(message, `你好！\n${this.helpText(user)}${!this.isAdmin(user) && draft.stage !== 'idle' ? '\n\n' + this.stagePrompt(draft) : ''}`);
+      case 'greet': return this.respond(message, `你好！\n${this.helpText(user)}${!this.adminMode(user) && draft.stage !== 'idle' ? '\n\n' + this.stagePrompt(draft) : ''}`);
       case 'help': return this.respond(message, this.helpText(user));
       case 'devices': return this.isAdmin(user) ? this.devicesNow(message) : this.respond(message, '这个命令只有管理员能用。');
       case 'model': return this.respond(message, this.isAdmin(user) ? this.chooseModel(user, action.choice) : '这个命令只有管理员能用。');
       case 'computer': return this.respond(message, this.isAdmin(user) ? this.chooseComputer(user, action.choice) : '这个命令只有管理员能用。');
+      case 'mode': return this.respond(message, this.isAdmin(user) ? this.chooseMode(user, action.mode) : '这个命令只有管理员能用。');
       case 'chat': return this.chat(message, action.text);
       case 'chat-file': return this.chatFile(message, action.text);
-      case 'new': return this.respond(message, this.isAdmin(user) ? this.newChat(user) : this.newTask(user, draft));
+      case 'new': return this.respond(message, this.adminMode(user) ? this.newChat(user) : this.newTask(user, draft));
       case 'reply': return this.respond(message, action.text);
       case 'remind': return this.respond(message, this.remindText(draft, action.why));
       case 'append': return this.append(message, draft, action.text);
@@ -163,7 +164,7 @@ class WechatService {
       case 'wait': return this.respond(message, `组长还在出方案（一般 1～3 分钟），出来后马上发给你。不想等可以发 /停 取消。`);
       case 'revise': return this.revise(message, draft, action.text);
       case 'confirm': return this.confirm(message, draft);
-      case 'cancel': return this.respond(message, this.isAdmin(user) ? this.stopChat(user) : this.cancelFlow(user, draft));
+      case 'cancel': return this.respond(message, this.adminMode(user) ? this.stopChat(user) : this.cancelFlow(user, draft));
       case 'enter': return this.respond(message, this.enter(user, action.id));
       case 'list': return this.respond(message, this.listText(user));
       case 'show': return this.respond(message, this.showText(user, action.id));
@@ -177,7 +178,28 @@ class WechatService {
 
   isAdmin(user) { return this.admins.has(user); }
 
-  helpText(user) { return this.isAdmin(user) ? router.ADMIN_HELP : router.HELP; }
+  // 管理员默认是管理员模式；/工作 切到工作模式后按普通成员的引导流程走（存在 prefs，重启不丢）。
+  adminMode(user) { return this.isAdmin(user) && this.store.pref(user).mode !== 'work'; }
+
+  helpText(user) {
+    if (!this.isAdmin(user)) return router.HELP;
+    return this.adminMode(user) ? router.ADMIN_HELP : router.WORK_HELP;
+  }
+
+  chooseMode(user, mode) {
+    const current = this.adminMode(user) ? 'admin' : 'work';
+    const label = { admin: '管理员模式', work: '工作模式' };
+    if (!mode) return `现在是${label[current]}。${current === 'admin' ? '发 /工作 切到工作模式。' : '发 /管理 切回管理员模式。'}`;
+    if (mode === current) return `✅ 现在就是${label[mode]}。`;
+    if (this.chatting.has(user)) return '当前回复还没结束，等它结束（或 /停 停止）再切换。';
+    this.store.setPref(user, { mode });
+    if (mode === 'work') {
+      const draft = this.draft(user);
+      return `✅ 已切到工作模式：发需求或文件 → 选档 1/2/3 → 「开始」出方案 → 「完成」收文件。/管理 切回。${draft.stage !== 'idle' ? '\n\n' + this.stagePrompt(draft) : ''}`;
+    }
+    const { model } = this.chatPref(user);
+    return `✅ 已切回管理员模式：消息直接交给 ${model?.label || 'AI'}，接着之前的对话。/工作 切到工作模式。`;
+  }
 
   // ---------- 设备（管理员） ----------
 
@@ -236,7 +258,7 @@ class WechatService {
     if (this.chatting.has(user)) return '当前回复还没结束，等它结束（或 /停 停止）再切换。';
     // 不同 CLI 的会话不能互相接续：换 AI 就开新对话。
     this.store.setPref(user, { model: next.provider, chatTask: null });
-    return `✅ 已切换到 ${next.label}，下条消息开始新对话。`;
+    return `✅ 已切换到 ${next.label}，下条消息开始新对话。${this.adminMode(user) ? '' : '（在管理员模式下生效，发 /管理 切回）'}`;
   }
 
   chooseComputer(user, choice) {

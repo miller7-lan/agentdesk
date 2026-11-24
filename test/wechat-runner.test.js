@@ -349,3 +349,31 @@ test('admin assistant: chosen CLI, continuing session, remote tools granted per 
   assert.equal(run.calls[3].name, 'grok');
   assert.match(service.listText('me'), /#1/);
 });
+
+test('admin can switch to work mode (guided flow) and back; ordinary users cannot', async () => {
+  const { service, run, say, last } = newService([plan(), { output: 'v1', file: 'a.docx' }, { output: '管理员回复' }]);
+  service.admins.add('me');
+  await say('/模式');
+  assert.match(last(), /现在是管理员模式/);
+  await say('/工作');
+  assert.match(last(), /^✅ 已切到工作模式/);
+  assert.equal(service.store.pref('me').mode, 'work');
+  await say('/help');
+  assert.match(last(), /【工作模式 · 指令】[\s\S]*\/管理 切回/);
+  await say('写通知');                                                             // 走引导流程：先选档
+  assert.match(last(), /1 低档/);
+  await say('1'); await say('开始'); await say('完成');
+  await settle(service);
+  assert.equal(service.store.get('me', 1).status, 'succeeded');
+  assert.notEqual(service.store.get('me', 1).kind, 'chat');
+  await say('/工作');
+  assert.match(last(), /现在就是工作模式/);
+  await say('/管理');
+  assert.match(last(), /^✅ 已切回管理员模式/);
+  await say('你好呀');
+  assert.equal(run.calls.at(-1).name, 'claude');
+  assert.equal(last(), '管理员回复');
+  service.admins.delete('me');
+  await say('/工作');
+  assert.match(last(), /只有管理员能用/);
+});

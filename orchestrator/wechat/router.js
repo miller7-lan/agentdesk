@@ -61,6 +61,8 @@ const ADMIN_HELP = [
   '/问问题　快问快答，例：/问今天星期几',
   '/电脑　查看和切换要操作的电脑（/电脑1、/电脑2…）',
   '/设备　马上查一次各电脑是否在线（上线/离线也会主动提醒）',
+  '/工作　切到工作模式（和普通成员一样：选档→出方案→完成→收文件）',
+  '/管理　切回管理员模式（现在就是）　/模式　看当前模式',
   '',
   '命令是「/」紧跟文字，不加空格。',
 ].join('\n');
@@ -93,6 +95,10 @@ function parseCommand(raw) {
   // /新 开新任务（默认是接着上一个）；管理员：/模型 /模型2 选 AI，/电脑 /电脑2 看设备、选电脑（service 里校验身份）
   if (/^(新|新开|新任务|新对话|new)$/i.test(body)) return { kind: 'new' };
   if (body === '设备') return { kind: 'devices' };            // 现查一次在线情况
+  // 管理员切换：/工作 用办公助手的引导流程，/管理 回到管理员助理，/模式 看当前（service 里校验身份）
+  if (/^(工作|工作模式)$/.test(body)) return { kind: 'mode', mode: 'work' };
+  if (/^(管理|管理员|管理模式|管理员模式)$/.test(body)) return { kind: 'mode', mode: 'admin' };
+  if (body === '模式') return { kind: 'mode', mode: null };
   const pick = /^(模型|电脑)\s*(\d*)$/.exec(body);
   if (pick) return { kind: pick[1] === '模型' ? 'model' : 'computer', choice: pick[2] ? Number(pick[2]) : null };
   const name = word(text);
@@ -175,4 +181,7 @@ function composeDraft(texts) {
   return items.map((text, index) => `${index + 1}. ${text}`).join('\n');
 }
 
-module.exports = { TIERS, TIER_LABEL, TIER_MENU, HELP, ADMIN_HELP, START_WORDS, DONE_WORDS, parseCommand, route, composeDraft, tierChoice };
+// 管理员在工作模式下看的帮助：普通帮助 + 怎么切回去。
+const WORK_HELP = HELP.replace('【办公助手 · 指令】', '【工作模式 · 指令】') + '\n管理员：/管理 切回管理员模式（/1～/4 换 AI、操作电脑）；/模式 看当前模式。';
+
+module.exports = { TIERS, TIER_LABEL, TIER_MENU, HELP, ADMIN_HELP, WORK_HELP, START_WORDS, DONE_WORDS, parseCommand, route, composeDraft, tierChoice };

@@ -23,6 +23,10 @@ test('numbered commands are "/" plus digit, no space needed', () => {
   assert.deepEqual(parseCommand('/模型3'), { kind: 'model', choice: 3 });
   assert.deepEqual(parseCommand('/电脑2'), { kind: 'computer', choice: 2 });
   assert.deepEqual(parseCommand('/问今天星期几'), { kind: 'ask', text: '今天星期几' });
+  assert.deepEqual(parseCommand('/工作'), { kind: 'mode', mode: 'work' });
+  assert.deepEqual(parseCommand('/管理'), { kind: 'mode', mode: 'admin' });
+  assert.deepEqual(parseCommand('/管理员模式'), { kind: 'mode', mode: 'admin' });
+  assert.deepEqual(parseCommand('/模式'), { kind: 'mode', mode: null });
   assert.equal(parseCommand('/问').kind, 'reply');
   assert.deepEqual(parseCommand('／历史'), { kind: 'list' });
 });
