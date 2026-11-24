@@ -790,3 +790,10 @@ button.lane-node { cursor: pointer; }
 .permission-kind b { color: var(--accent); }
 .permission-target { margin: 0; font-size: 12.5px; }
 .permission-target code { padding: 1px 6px; border-radius: 6px; background: var(--hover); }
+
+/* An example project's group chat: nothing really runs there; say so and offer to connect it. */
+.group-example-banner { display: flex; align-items: center; gap: 12px; margin: 10px clamp(16px, 3vw, 31px) 0; padding: 10px 14px; border-radius: 10px;
+  background: color-mix(in srgb, var(--warning, #d97706) 14%, transparent); border: 1px solid color-mix(in srgb, var(--warning, #d97706) 40%, transparent);
+  color: var(--text); font-size: 13px; line-height: 1.5; }
+.group-example-banner span { flex: 1; }
+.group-example-banner[hidden] { display: none; }

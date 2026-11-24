@@ -321,3 +321,21 @@ test('the icacls hint is valid PowerShell, and a local project can change its fo
   assert.match(projects, /changeFolder\.hidden = [^\n]*kind !== 'local'/);
   assert.match(projects, /changeFolder\.addEventListener\('click'[\s\S]*?window\.confirm[\s\S]*?relink\(project\.id\)/);
 });
+
+test('a new project connects to the orchestrator by default; example projects say so and can be connected', () => {
+  const orchestrator = fs.readFileSync(path.join(__dirname, '..', 'src', 'orchestrator.js'), 'utf8');
+  const projects = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.html'), 'utf8');
+  // The free workspace is listed first and selected unless the person picked something; the example is last and labelled.
+  assert.match(orchestrator, /setHtml\(projectBinding, free\.map\([\s\S]*?\+\s*'<option value="">本地示例（不连主控，AI 不会真的工作）<\/option>'\)/);
+  assert.match(orchestrator, /else projectBinding\.value = free\[0\] \|\| ''/);
+  assert.match(orchestrator, /delete projectBinding\.dataset\.touched/);
+  assert.match(orchestrator, /一个工作区同一时间只能连一个项目/);
+  // The banner and the connect action.
+  assert.match(html, /id="groupExampleBanner"[\s\S]*?id="groupConnect"/);
+  assert.match(orchestrator, /组长和 AI 不会真的工作，这里的回复都是演示内容/);
+  assert.match(orchestrator, /renderExampleBanner\(\);/);
+  assert.match(orchestrator, /async function connectProject\(projectId\)[\s\S]*?window\.confirm[\s\S]*?bindWorkspace\(projectId, workspace\)[\s\S]*?project\.serverProject = workspace[\s\S]*?store\.set\('groupProjectBindings', savedProjects\)[\s\S]*?group\.records\.clear\(\)/);
+  assert.match(projects, /async function bindWorkspace\(id, workspace\)[\s\S]*?api\.update\(\{ id, name: project\.name, kind: project\.kind, remoteCwd: project\.remoteCwd \|\| '',\s*orchestratorWorkspace: workspace \}\)/);
+  assert.doesNotMatch(projects, /bindWorkspace[\s\S]{0,400}pickLocal: true/);
+});

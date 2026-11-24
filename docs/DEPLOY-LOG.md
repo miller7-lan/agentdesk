@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 11:45（北京时间）· 客户端 0.4.4 · Mac + Windows 推送更新
+
+- **起因**：Mac「hi」、Lenovo「群聊Projects」的群聊里组长和 AI 回复都是「示例：……」：新建项目对话框「主控项目」默认「本地示例」，建出的项目没有 `serverProject`，客户端按示例运行（`isExample`），任务从未发到 VPS2（主控数据库里没有这些任务）。
+- **改动**：新建项目默认选中这台电脑空闲的主控工作区，「本地示例（不连主控，AI 不会真的工作）」放最后；工作区被占用时说明被哪个项目占用。示例项目群聊顶部加提示条和「连接到主控」（`connectProject` → `projects.js bindWorkspace` 更新 `orchestratorWorkspace`，保留文件夹，清除示例记录）。一个工作区仍只连一个项目：Bridge 的工作区根目录跟随当前项目（`activateProject`），多个项目共用会取错快照，本次不放开。
+- **VPS2**：没有改动。
+- **验证**：`npm test` 全部通过；新增源码测试；`node --check` 通过。**没有**在真机上看过界面，需主人更新后确认。
+- **回滚**：VPS2 `withdrawn.json` 加入 `0.4.4`。
+
 ## 2026-11-24 11:20（北京时间）· VPS2 · 单聊按设备隔离 CLI 对话记录
 
 - **起因**：Lenovo 的 Antigravity 单聊用 shell 读到了共用 CLI 目录 `homes/antigravity/.gemini/antigravity-cli/brain/` 里微信助手那段对话的记录（Mac 桌面测试文件），并当成自己的经历回答。三家单聊、群聊、微信助手共用 `homes/<provider>`，沙盒把整个目录可写放入，任何会话都能读其他所有会话。

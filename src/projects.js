@@ -280,7 +280,19 @@
     A.toast('已改用新的本机文件夹。');
     return true;
   }
-  window.AgentDeskProjects = { select, bindForDirect, pickFolder, ensureRegistered, relink, openSettings: () => $('#workspaceSettings').click() };
+  // Binds a registered project to an orchestrator workspace (an example project being connected); folder unchanged.
+  async function bindWorkspace(id, workspace) {
+    const project = snapshot?.projects.find((item) => item.id === id);
+    if (!project) { A.toast('找不到该项目。'); return false; }
+    const local = D.projects.find((item) => item.id === id);
+    if (local) local.serverProject = workspace;
+    const result = await api.update({ id, name: project.name, kind: project.kind, remoteCwd: project.remoteCwd || '',
+      orchestratorWorkspace: workspace });
+    if (!result.ok) { if (local) delete local.serverProject; A.toast('连接主控没有完成：' + result.error); return false; }
+    apply(result);
+    return true;
+  }
+  window.AgentDeskProjects = { select, bindForDirect, pickFolder, ensureRegistered, relink, bindWorkspace, openSettings: () => $('#workspaceSettings').click() };
   api.list().then((result) => {
     if (!result.ok) return;
     apply(result);

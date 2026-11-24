@@ -241,15 +241,35 @@ window.__groupReady = (async () => {
     }
   }
 
+  // This computer's orchestrator workspaces no project is bound to yet. A workspace serves one project at a time:
+  // its Bridge reads the active project's folder, so two projects on one workspace could snapshot the wrong one.
+  function freeWorkspaces() {
+    const bound = new Set(A.D.projects.map((project) => project.serverProject).filter(Boolean));
+    return (routeState.projects || []).filter((id) => !bound.has(id));
+  }
+  // Who already uses this computer's workspace(s), for saying why a new project cannot connect.
+  function workspaceUsers() {
+    const own = new Set(routeState.projects || []);
+    return A.D.projects.filter((project) => project.serverProject && own.has(project.serverProject)).map((project) => project.name);
+  }
+  // A new project connects to the orchestrator by default; the local example (nothing runs, replies are demo text)
+  // has to be picked on purpose. It used to be the default, and projects made that way silently never worked.
   function syncProjectChoices() {
     if (!projectDialog.open) return;
     const chosen = projectBinding.value;
-    const bound = new Set(A.D.projects.map((project) => project.serverProject).filter(Boolean));
-    setHtml(projectBinding, '<option value="">本地示例</option>' + (routeState.projects || [])
-      .filter((id) => !bound.has(id))
-      .map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join(''));
-    if ([...projectBinding.options].some((option) => option.value === chosen)) projectBinding.value = chosen;
+    const free = freeWorkspaces();
+    setHtml(projectBinding, free.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('') +
+      '<option value="">本地示例（不连主控，AI 不会真的工作）</option>');
+    if (projectBinding.dataset.touched && [...projectBinding.options].some((option) => option.value === chosen)) projectBinding.value = chosen;
+    else projectBinding.value = free[0] || '';
+    const hint = $('#groupProjectBindingHint');
+    const users = workspaceUsers();
+    hint.textContent = free.length ? '' : !knownRoutes ? '正在读取主控工作区…' : users.length
+      ? `这台电脑的主控工作区已被项目「${users.join('」「')}」使用，一个工作区同一时间只能连一个项目。要连主控，请先删除或改用那个项目。`
+      : '主控没有给这台电脑分配工作区，只能建本地示例。';
+    hint.hidden = !hint.textContent;
   }
+  projectBinding.addEventListener('change', () => { projectBinding.dataset.touched = '1'; });
 
   const legacy = store.get('macTask', null) || localStorage.getItem('agentdesk.macTask');
   const saved = LIVE && !temporary ? store.get('groupTasks', legacy ? [{ id: legacy }] : []) : [];
@@ -1330,12 +1350,64 @@ window.__groupReady = (async () => {
   }
   document.querySelector('#panelBody').addEventListener('click', (event) => { if (state.group && state.panel === 'lanes') laneClick(event); });
 
+  // An example project's group chat only plays demo replies. Say so plainly, and offer to connect it when this
+  // computer has a free orchestrator workspace.
+  function renderExampleBanner() {
+    const banner = $('#groupExampleBanner');
+    const projectId = projectIdOf(state.group);
+    const project = A.proj(projectId);
+    const example = Boolean(project) && projectId !== liveProject && isExample(projectId);
+    banner.hidden = !example;
+    if (!example) return;
+    const free = supported && !temporary ? freeWorkspaces() : [];
+    const users = workspaceUsers();
+    $('#groupExampleText').textContent = '这是本地示例项目：组长和 AI 不会真的工作，这里的回复都是演示内容。' +
+      (free.length ? '连接到主控后就会正式运行。'
+        : !supported || temporary ? '' : !knownRoutes ? '正在读取主控工作区…'
+          : users.length ? `这台电脑的主控工作区正被项目「${users.join('」「')}」使用。` : '主控没有给这台电脑分配工作区。');
+    $('#groupConnect').hidden = !free.length || !/^group-[a-f0-9-]+$/.test(projectId);
+  }
+
+  // Turns an example project into a real one bound to this computer's free workspace. Its demo records are cleared;
+  // the project's folder, name and chats stay.
+  async function connectProject(projectId) {
+    const workspace = freeWorkspaces()[0];
+    const project = A.proj(projectId);
+    if (!workspace || !project) { A.toast('现在没有可用的主控工作区'); return; }
+    if (!window.confirm(`把项目「${project.name}」连接到主控工作区「${workspace}」？\n\n之后组长和 AI 会真正工作；这个项目里的示例记录会清掉，项目文件夹和单聊不变。`)) return;
+    if (project.configured && window.AgentDeskProjects?.bindWorkspace) {
+      const ok = await window.AgentDeskProjects.bindWorkspace(projectId, workspace);
+      if (!ok) return;
+    }
+    project.serverProject = workspace;
+    project.live = true;
+    const saved = savedProjects.find((item) => item.id === projectId);
+    if (saved) { saved.serverProject = workspace; saved.live = true; }
+    if (!temporary) store.set('groupProjectBindings', savedProjects);
+    for (const { id } of groupsOf(projectId)) {
+      const group = groups.get(id);
+      if (!group) continue;
+      group.records.clear();
+      group.selected = undefined;
+      group.output = null;
+      persist(group);
+    }
+    A.toast(`项目「${project.name}」已连接到主控，可以开始派活了`);
+    repaint();
+    refresh();
+  }
+  $('#groupConnect').addEventListener('click', () => {
+    const projectId = projectIdOf(state.group);
+    if (projectId) connectProject(projectId).catch((error) => A.toast('连接没有完成：' + error.message));
+  });
+
   function render() {
     drawRoutes();
     if (!state.group) return;
     setTimeout(offerChoices, 0);
     const count = taskCount();
     $('#groupSubtitle').textContent = shownMembers().filter((id) => id !== 'you' && id !== 'local').length + ' 位 AI 成员' + (count ? ' · ' + count + ' 项未结任务' : '');
+    renderExampleBanner();
     $('#taskBadge').textContent = count || '';
     for (const id of optional) {
       const option = provider.querySelector(`[value="${id}"]`);
@@ -2713,6 +2785,7 @@ window.__groupReady = (async () => {
     } else if (picked?.error) A.toast(picked.error);
   });
   $('#newGroupProject').addEventListener('click', () => {
+    delete projectBinding.dataset.touched;
     pickedFolder = null;
     showPickedFolder();
     $('#groupProjectFolderRow').hidden = $('#groupProjectHint').hidden = !localProjects();
