@@ -311,3 +311,13 @@ test('a missing project folder is reported as missing, with a 重新选择文件
   assert.equal(removeFailure('EBUSY: resource busy'), 'folder_in_use_or_denied');
   assert.equal(removeFailure('奇怪的错误'), 'other');
 });
+
+test('the icacls hint is valid PowerShell, and a local project can change its folder from the project menu', () => {
+  const live = fs.readFileSync(path.join(__dirname, '..', 'src', 'live.js'), 'utf8');
+  const projects = fs.readFileSync(path.join(__dirname, '..', 'src', 'projects.js'), 'utf8');
+  assert.doesNotMatch(live, /%USERNAME%/);
+  assert.match(live, /icacls "\$\{esc\(localRoot\)\}" \/grant "\$\{esc\('\$\{env:USERNAME\}'\)\}:\(OI\)\(CI\)RX"/);
+  assert.match(projects, /更改本机文件夹…/);
+  assert.match(projects, /changeFolder\.hidden = [^\n]*kind !== 'local'/);
+  assert.match(projects, /changeFolder\.addEventListener\('click'[\s\S]*?window\.confirm[\s\S]*?relink\(project\.id\)/);
+});

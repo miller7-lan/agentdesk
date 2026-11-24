@@ -2,6 +2,17 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 10:30（北京时间）· 客户端 0.4.2 · Mac + Windows 推送更新
+
+- **版本**：0.4.2（上一版 0.4.1）。包含 11-23 已合入 main 的修复（本机文件夹不存在时提示并可重新选择；磁盘根下文件夹的项目可删除；删除失败记录原因类别），加上本次两项 Windows 反馈：
+  - 项目「···」菜单 / 右键新增「更改本机文件夹…」（只改绑定，不移动文件；仅本机项目显示），复用 0.4.2 的 `relink`；
+  - 「需要加只读权限」提示的 icacls 命令改成 PowerShell 写法 `${env:USERNAME}`，路径加引号（原来写的是 cmd 的 `%USERNAME%`，在 PowerShell 里照抄会出错）。
+- **起因**：Lenovo（Windows）0.4.1 上项目文件夹 `D:\agentdesk\群聊Projects` 不存在，右侧显示 ENOENT + icacls 提示，删除项目 4 次失败（审计日志 `project_change remove failed`）。
+- **VPS2**：没有改动。顺带把昨天 15:49 随主控重启停掉、没有自动起来的 `agentdesk-home-mount` 重新启动（只读挂载，读截图和 Lenovo 日志用）。
+- **验证**：`npm test` 全部通过；新增测试覆盖 icacls 写法和菜单项。发布运行、VPS2 收包结果见本次汇报。
+- **未验证**：Lenovo 上 Antigravity「新建会话失败：client_loop: send disconnect: Connection reset / native_bridge_disconnected」原因未查明（服务端日志无记录，时间上与文件夹不存在同时出现），待 0.4.2 重新选择文件夹后复测。
+- **回滚**：在 VPS2 `withdrawn.json` 加入 `0.4.2`。
+
 ## 2026-11-24 02:40（北京时间）· VPS2 · 微信办公助手删除企业微信通道，只保留个人微信 ClawBot
 
 - **改动**：删除企业微信智能机器人通道（`bot.js`、`wechat.env.example`、`@wecom/aibot-node-sdk` 依赖、对应测试；文件校验测试移到 `test/wechat-deliver.test.js`）；`service.js` 只用 ClawBot；unit 去掉 `EnvironmentFile`。文档改为只描述 ClawBot。

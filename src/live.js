@@ -1702,7 +1702,7 @@
     }
     if (!localRoot || isMac) return `<div class="empty-note">${esc(W.access?.error || '没有可用的本机工作区。')}</div>`;
     return `<div class="empty-note">AgentDesk 还不能读取 <code>${esc(localRoot)}</code>（${esc(W.access?.error || '')}）。<br>
-      需要给当前账户加只读权限：在管理员 PowerShell 运行<br><code>icacls ${esc(localRoot)} /grant "${esc('%USERNAME%')}:(OI)(CI)RX"</code></div>`;
+      需要给当前账户加只读权限：在管理员 PowerShell 运行<br><code>icacls "${esc(localRoot)}" /grant "${esc('${env:USERNAME}')}:(OI)(CI)RX"</code></div>`;
   }
   document.addEventListener('click', (event) => {
     const button = event.target.closest?.('[data-relink-project]');

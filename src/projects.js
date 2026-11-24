@@ -179,17 +179,26 @@
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
   menu.hidden = true;
+  // Point a local project at another folder (moved, renamed, or just a different one). Files are not moved.
+  const changeFolder = document.createElement('button');
+  changeFolder.type = 'button';
+  changeFolder.textContent = '更改本机文件夹…';
   const remove = document.createElement('button');
   remove.type = 'button';
+  remove.className = 'danger';
   remove.textContent = '删除项目…';
-  menu.append(remove);
+  menu.append(changeFolder, remove);
+  function prepareMenu(id) {
+    menu.dataset.project = id;
+    changeFolder.hidden = snapshot?.projects.find(project => project.id === id)?.kind !== 'local';
+  }
   document.body.append(menu);
   $('#sessionList').addEventListener('contextmenu', (event) => {
     menu.hidden = true;
     const id = event.target.closest('.group-head')?.closest('[data-proj]')?.dataset.proj;
     if (!snapshot?.projects.some(project => project.id === id) && !groupOnly(id)) return;
     event.preventDefault();
-    menu.dataset.project = id;
+    prepareMenu(id);
     menu.hidden = false;
     menu.style.left = Math.max(0, Math.min(event.clientX, innerWidth - menu.offsetWidth)) + 'px';
     menu.style.top = Math.max(0, Math.min(event.clientY, innerHeight - menu.offsetHeight)) + 'px';
@@ -200,13 +209,21 @@
     const button = event.target.closest('[data-project-menu]');
     if (!button || !(snapshot?.projects.some(project => project.id === button.dataset.projectMenu) || groupOnly(button.dataset.projectMenu))) return;
     event.stopPropagation();
-    menu.dataset.project = button.dataset.projectMenu;
+    prepareMenu(button.dataset.projectMenu);
     menu.hidden = false;
     const box = button.getBoundingClientRect();
     menu.style.left = Math.max(0, Math.min(box.left, innerWidth - menu.offsetWidth)) + 'px';
     menu.style.top = Math.max(0, Math.min(box.bottom + 4, innerHeight - menu.offsetHeight)) + 'px';
     remove.focus();
   }, true);
+  changeFolder.addEventListener('click', () => {
+    menu.hidden = true;
+    const project = snapshot?.projects.find(item => item.id === menu.dataset.project);
+    if (!project) return;
+    const note = project.localRoot ? `当前文件夹：${project.localRoot}\n\n` : '';
+    if (!window.confirm(`${note}接下来选择新的本机文件夹。只改绑定，不会移动或删除原文件夹里的文件；要迁移文件，请先在资源管理器/访达里把文件夹移过去，再选新位置。\n\n项目名称、会话和群聊绑定都保留。继续？`)) return;
+    relink(project.id).catch(error => A.toast('更改文件夹没有完成：' + error.message));
+  });
   remove.addEventListener('click', () => {
     menu.hidden = true;
     removeProject(menu.dataset.project).catch(error => window.alert('删除项目没有完成：' + error.message));
