@@ -61,6 +61,7 @@ const ADMIN_HELP = [
   '/问问题　快问快答，例：/问今天星期几',
   '/电脑　查看和切换要操作的电脑（/电脑1、/电脑2…）',
   '/设备　马上查一次各电脑是否在线（上线/离线也会主动提醒）',
+  '/额度　查各 AI 剩余额度（5 小时和本周）',
   '/工作　切到工作模式（和普通成员一样：选档→出方案→完成→收文件）',
   '/管理　切回管理员模式（现在就是）　/模式　看当前模式',
   '',
@@ -99,6 +100,7 @@ function parseCommand(raw) {
   if (/^(工作|工作模式)$/.test(body)) return { kind: 'mode', mode: 'work' };
   if (/^(管理|管理员|管理模式|管理员模式)$/.test(body)) return { kind: 'mode', mode: 'admin' };
   if (body === '模式') return { kind: 'mode', mode: null };
+  if (/^(额度|用量|quota)$/i.test(body)) return { kind: 'quota' };   // 管理员：现查各 AI 剩余额度
   const pick = /^(模型|电脑)\s*(\d*)$/.exec(body);
   if (pick) return { kind: pick[1] === '模型' ? 'model' : 'computer', choice: pick[2] ? Number(pick[2]) : null };
   const name = word(text);
@@ -182,6 +184,6 @@ function composeDraft(texts) {
 }
 
 // 管理员在工作模式下看的帮助：普通帮助 + 怎么切回去。
-const WORK_HELP = HELP.replace('【办公助手 · 指令】', '【工作模式 · 指令】') + '\n管理员：/管理 切回管理员模式（/1～/4 换 AI、操作电脑）；/模式 看当前模式。';
+const WORK_HELP = HELP.replace('【办公助手 · 指令】', '【工作模式 · 指令】') + '\n管理员：/管理 切回管理员模式（/1～/4 换 AI、操作电脑）；/模式 看当前模式；/额度 查额度。';
 
 module.exports = { TIERS, TIER_LABEL, TIER_MENU, HELP, ADMIN_HELP, WORK_HELP, START_WORDS, DONE_WORDS, parseCommand, route, composeDraft, tierChoice };

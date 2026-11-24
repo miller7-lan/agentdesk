@@ -27,6 +27,7 @@ test('numbered commands are "/" plus digit, no space needed', () => {
   assert.deepEqual(parseCommand('/管理'), { kind: 'mode', mode: 'admin' });
   assert.deepEqual(parseCommand('/管理员模式'), { kind: 'mode', mode: 'admin' });
   assert.deepEqual(parseCommand('/模式'), { kind: 'mode', mode: null });
+  assert.deepEqual(parseCommand('/额度'), { kind: 'quota' });
   assert.equal(parseCommand('/问').kind, 'reply');
   assert.deepEqual(parseCommand('／历史'), { kind: 'list' });
 });
@@ -46,7 +47,7 @@ test('task commands take the id right after the word', () => {
 
 test('help lists every command with its mapping', () => {
   for (const line of ['/help', '/新　开新任务', '/停　取消', '/历史', '/问问题', '/进12', '/看12', '/停12', '/重试12', '/重发12']) assert.ok(HELP.includes(line), line);
-  for (const line of ['/1　Claude Opus', '/2　Codex', '/3　Antigravity', '/4　Grok', '/help', '/新', '/停', '/历史', '/问问题', '/电脑', '/设备']) assert.ok(ADMIN_HELP.includes(line), line);
+  for (const line of ['/1　Claude Opus', '/2　Codex', '/3　Antigravity', '/4　Grok', '/help', '/新', '/停', '/历史', '/问问题', '/电脑', '/设备', '/额度']) assert.ok(ADMIN_HELP.includes(line), line);
 });
 
 test('idle: content begins a task, a digit picks the tier', () => {

@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
 const router = require('./router');
 const runner = require('./runner');
 const { TaskStore } = require('./store');
-const { QuotaGate, describeBlocked } = require('./quota');
+const { QuotaGate, describeBlocked, quotaReport } = require('./quota');
 const { deliverFiles, validateFile } = require('./deliver');
 const { Devices, changeText, statusText, since: sinceText } = require('./devices');
 
@@ -51,7 +51,13 @@ function plainSummary(text) {
     .trim();
 }
 
-function friendlyError(task) {
+// 额度相关只给管理员看；普通成员只看到「AI 暂时繁忙」。
+const QUOTA_STATUS = new Set(['quota_low', 'quota_limited']);
+const BUSY_ICON = '⏸';
+const BUSY_TEXT = 'AI 暂时繁忙';
+
+function friendlyError(task, admin = true) {
+  if (!admin && QUOTA_STATUS.has(task.status)) return `${BUSY_TEXT}，稍后发 /重试${task.id}。`;
   if (task.status === 'quota_low') return `额度不够，稍后再试（发 /重试${task.id}）。${task.blocked ? describeBlocked(task.blocked) + '。' : ''}`;
   if (task.status === 'timeout') return `超时了，可以把需求拆小一点，或发 /重试${task.id}。`;
   if (task.status === 'quota_limited') return `${executorLabel(task.executor)} 额度用完了，稍后发 /重试${task.id}。`;
@@ -151,6 +157,7 @@ class WechatService {
       case 'devices': return this.isAdmin(user) ? this.devicesNow(message) : this.respond(message, '这个命令只有管理员能用。');
       case 'model': return this.respond(message, this.isAdmin(user) ? this.chooseModel(user, action.choice) : '这个命令只有管理员能用。');
       case 'computer': return this.respond(message, this.isAdmin(user) ? this.chooseComputer(user, action.choice) : '这个命令只有管理员能用。');
+      case 'quota': return this.isAdmin(user) ? this.quotaNow(message) : this.respond(message, '这个命令只有管理员能用。');
       case 'mode': return this.respond(message, this.isAdmin(user) ? this.chooseMode(user, action.mode) : '这个命令只有管理员能用。');
       case 'chat': return this.chat(message, action.text);
       case 'chat-file': return this.chatFile(message, action.text);
@@ -178,12 +185,29 @@ class WechatService {
 
   isAdmin(user) { return this.admins.has(user); }
 
+  // 任务状态的图标和文字；额度相关的对普通成员显示成「AI 暂时繁忙」。
+  statusIcon(user, status) { return !this.isAdmin(user) && QUOTA_STATUS.has(status) ? BUSY_ICON : (STATUS_ICON[status] || ''); }
+  statusText(user, status) { return !this.isAdmin(user) && QUOTA_STATUS.has(status) ? BUSY_TEXT : (STATUS_TEXT[status] || status); }
+
   // 管理员默认是管理员模式；/工作 切到工作模式后按普通成员的引导流程走（存在 prefs，重启不丢）。
   adminMode(user) { return this.isAdmin(user) && this.store.pref(user).mode !== 'work'; }
 
   helpText(user) {
     if (!this.isAdmin(user)) return router.HELP;
     return this.adminMode(user) ? router.ADMIN_HELP : router.WORK_HELP;
+  }
+
+  async quotaNow(message) {
+    if (!this.quota) return this.respond(message, '没有配置额度查询。');
+    await this.respond(message, RECEIVED);
+    let list;
+    try {
+      list = await this.quota.fresh();
+    } catch (error) {
+      return this.respond(message, `额度读不到（${short(error?.message || error, 60)}），稍后再试。`);
+    }
+    const { model } = this.chatPref(message.from);
+    return this.respond(message, quotaReport(list, { models: runner.ADMIN_MODELS, current: model?.provider, minRemaining: this.quota.minRemaining, now: this.now() }));
   }
 
   chooseMode(user, mode) {
@@ -564,11 +588,11 @@ class WechatService {
       // 改方案失败：保留上一版方案继续看；第一次出方案就失败：任务结束，可 /重试。
       if (revision && task.plan) {
         this.setDraft(user, { stage: 'review' });
-        return this.send(user, `改方案没成功（${friendlyError({ ...task, status: result.status, error: result.error, blocked: result.blocked }).replace(/[。]?可发.*$/, '')}）。上一版方案还在：可以换个说法再提，或发「完成」按上一版提交。`);
+        return this.send(user, `改方案没成功（${friendlyError({ ...task, status: result.status, error: result.error, blocked: result.blocked }, this.isAdmin(user)).replace(/[。]?可发.*$/, '')}）。上一版方案还在：可以换个说法再提，或发「完成」按上一版提交。`);
       }
       this.store.update(user, taskId, { status: result.status, error: result.error || null, blocked: result.blocked || null, sessions: result.sessions, finishedAt: this.now() });
       this.store.clearDraft(user);
-      return this.send(user, `${STATUS_ICON[result.status] || '❌'} #${taskId} 组长没出成方案：${friendlyError(this.store.get(user, taskId))}`);
+      return this.send(user, `${this.statusIcon(user, result.status) || '❌'} #${taskId} 组长没出成方案：${friendlyError(this.store.get(user, taskId), this.isAdmin(user))}`);
     }
     this.store.update(user, taskId, { status: 'review', plan: result.plan, brief: result.brief, estimateMinutes: result.estimateMinutes, sessions: result.sessions });
     this.setDraft(user, { stage: 'review', reviewTask: taskId });
@@ -607,7 +631,7 @@ class WechatService {
     const task = this.store.get(user, id);
     if (!task || task.user !== user) return `没有 #${id} 这个任务。发 /历史 查看历史任务。`;
     if (task.archived) return `#${id} 的文件已过保留期清理，不能接着改了。`;
-    if (!task.executor) return `#${id} 当时没执行（${STATUS_TEXT[task.status] || task.status}），发 /重试${id} 重做。`;
+    if (!task.executor) return `#${id} 当时没执行（${this.statusText(user, task.status)}），发 /重试${id} 重做。`;
     if (this.isActive(user, id)) return `#${id} 还在执行，等它完成再接着改。`;
     const draft = this.draft(user);
     if (['planning', 'review'].includes(draft.stage)) return `你还有方案 #${draft.reviewTask} 没处理完：发「完成」提交或 /停 取消后再进入别的任务。`;
@@ -669,7 +693,7 @@ class WechatService {
     try {
       if (this.quota) choices = await this.quota.rank(choices);
     } catch (error) {
-      return this.respond(message, `额度不够，稍后再试。${error.blocked ? describeBlocked(error.blocked) + '。' : ''}`);
+      return this.respond(message, this.isAdmin(user) ? `额度不够，稍后再试。${error.blocked ? describeBlocked(error.blocked) + '。' : ''}` : `${BUSY_TEXT}，稍后再试。`);
     }
     if (!choices.length) return this.respond(message, '没有可用的 AI。');
     this.asking.add(user);
@@ -797,13 +821,13 @@ class WechatService {
       if (deck) await this.sendPreview(task.user, deck, task.id).catch((error) => log('preview failed', error?.message || error));
     }
     const meta = [router.TIER_LABEL[task.tier], executorLabel(task.executor), `用时 ${duration(elapsed)}`].filter(Boolean).join(' · ');
-    const lines = [`${STATUS_ICON[task.status]} #${task.id} ${STATUS_TEXT[task.status]}（${meta}）`];
-    if (result.note) lines.push(result.note);
+    const lines = [`${this.statusIcon(user, task.status)} #${task.id} ${this.statusText(user, task.status)}（${meta}）`];
+    if (result.note && this.isAdmin(user)) lines.push(result.note);   // 「某 AI 额度用尽已换」只给管理员看
     if (task.status === 'succeeded') {
       if (result.summary) lines.push(plainSummary(result.summary));
       if (!result.outputs.length) lines.push('（这次没有生成文件）');
     } else {
-      lines.push(friendlyError(task));
+      lines.push(friendlyError(task, this.isAdmin(user)));
       if (results.some((item) => item.status === 'sent')) lines.push('已生成的部分文件也发给你了。');
     }
     const problems = deliverySummary(results, task.id);
@@ -839,7 +863,7 @@ class WechatService {
     }
     const planning = this.planning.get(user);
     if (planning?.taskId === id || ['planning', 'review'].includes(task.status)) return this.cancelFlow(user, this.draft(user));
-    return `#${id} 已经结束（${STATUS_TEXT[task.status] || task.status}）。`;
+    return `#${id} 已经结束（${this.statusText(user, task.status)}）。`;
   }
 
   listText(user) {
@@ -848,7 +872,7 @@ class WechatService {
     return '【最近任务】\n' + tasks.map((task) => {
       const took = task.finishedAt && task.startedAt ? ' ' + duration(task.finishedAt - task.startedAt) : '';
       const who = task.executor ? `${router.TIER_LABEL[task.tier] || ''}·${executorLabel(task.executor)}` : (router.TIER_LABEL[task.tier] || '');
-      return `#${task.id} ${STATUS_ICON[task.status] || ''}${STATUS_TEXT[task.status] || ''} ${who}${took} ${short(task.text)}${task.archived ? '（已清理）' : ''}`;
+      return `#${task.id} ${this.statusIcon(user, task.status)}${this.statusText(user, task.status)} ${who}${took} ${short(task.text)}${task.archived ? '（已清理）' : ''}`;
     }).join('\n') + '\n\n/看编号 → 详情（例 /看12）\n/进编号 → 接着改（例 /进12）\n/重发编号 → 再发文件（例 /重发12）';
   }
 
@@ -856,7 +880,7 @@ class WechatService {
     const task = this.store.get(user, id);
     if (!task || task.user !== user) return `没有 #${id} 这个任务。`;
     const lines = [
-      `#${task.id} ${STATUS_ICON[task.status] || ''} ${STATUS_TEXT[task.status] || task.status}`,
+      `#${task.id} ${this.statusIcon(user, task.status)} ${this.statusText(user, task.status)}`,
       `需求：${short(task.text, 200)}`,
       `档位：${router.TIER_LABEL[task.tier] || '-'}　执行：${executorLabel(task.executor) || '-'}　预计：${runner.estimateText(task)}`,
       `轮次：${task.turns || 1}　方案修改：${task.revisions || 0} 次　开始：${task.startedAt ? new Date(task.startedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '-'}`,
@@ -866,7 +890,7 @@ class WechatService {
     const failed = (task.deliveries || []).filter((item) => item.status !== 'sent');
     if (failed.length) lines.push(`没发出去：${failed.map((item) => item.name).join('、')}（发 /重发${task.id}）`);
     if (task.summary) lines.push(`说明：${plainSummary(task.summary)}`);
-    if (task.error && task.status !== 'succeeded') lines.push(friendlyError(task));
+    if (task.error && task.status !== 'succeeded') lines.push(friendlyError(task, this.isAdmin(user)));
     if (task.archived) lines.push('（文件已按保留期清理）');
     return lines.join('\n');
   }

@@ -40,6 +40,13 @@ class QuotaGate {
     return value;
   }
 
+  // /额度：不走缓存，现读一次完整数据（各窗口、各桶）。
+  async fresh() {
+    const list = await this.quotaStatus(this.adapters);
+    this.cache = { at: this.now(), value: Object.fromEntries(list.map((entry) => [entry.provider, remainingOf(entry)])) };
+    return list;
+  }
+
   // 额度刚被用掉（CLI 报额度用尽）时清缓存，下次重新读。
   invalidate() { this.cache = null; }
 
@@ -78,4 +85,43 @@ function describeBlocked(blocked, timeZone = 'Asia/Shanghai') {
   }).join('；');
 }
 
-module.exports = { MIN_REMAINING, QuotaGate, QuotaLow, remainingOf, describeBlocked };
+// 恢复时间：今天只写时分，其它天写月日。
+function whenText(resetsAt, now, timeZone) {
+  if (!resetsAt) return '';
+  const opts = { timeZone, hour: '2-digit', minute: '2-digit', hour12: false };
+  const day = (ms) => new Date(ms).toLocaleDateString('zh-CN', { timeZone });
+  const at = resetsAt * 1000;
+  const time = new Date(at).toLocaleTimeString('zh-CN', opts);
+  return day(at) === day(now) ? time : `${new Date(at).toLocaleDateString('zh-CN', { timeZone, month: 'numeric', day: 'numeric' })} ${time}`;
+}
+
+// /额度 的文字：models = [{ provider, label }]（按 /1～/4 的顺序），list = quotaStatus 的原始结果。
+function quotaReport(list, { models, current = null, minRemaining = MIN_REMAINING, now = Date.now(), timeZone = 'Asia/Shanghai' } = {}) {
+  const byProvider = new Map((list || []).map((entry) => [entry.provider, entry]));
+  const lines = ['【额度 · 剩余】'];
+  models.forEach((model, index) => {
+    const entry = byProvider.get(model.provider);
+    const head = `/${index + 1} ${model.label}${model.provider === current ? '（当前）' : ''}`;
+    if (!entry || entry.state !== 'available' || !entry.buckets?.length) {
+      lines.push(`${head}：读不到${entry?.state === 'not_configured' ? '（未配置）' : ''}`);
+      return;
+    }
+    const parts = [];
+    for (const bucket of entry.buckets) {
+      const windows = [['fiveHour', '5 小时'], ['weekly', '本周']].filter(([key]) => Number.isFinite(Number(bucket[key]?.usedPercent)));
+      const text = windows.map(([key, name]) => {
+        const left = Math.max(0, Math.round((100 - Number(bucket[key].usedPercent)) * 10) / 10);
+        const when = whenText(bucket[key].resetsAt, now, timeZone);
+        return `${name} ${left}%${left < minRemaining ? ' ⚠️' : ''}${when ? `（${when} 恢复）` : ''}`;
+      }).join('，');
+      if (text) parts.push(entry.buckets.length > 1 && bucket.label ? `${bucket.label}：${text}` : text);
+    }
+    lines.push(`${head}：${parts.join('；') || '读不到'}`);
+    const age = entry.observedAt ? now - Date.parse(entry.observedAt) : 0;
+    if (age > 10 * 60_000) lines.push(`　（${Math.round(age / 60_000)} 分钟前的数据）`);
+  });
+  lines.push(`⚠️ = 低于 ${minRemaining}%，派活时会跳过。`);
+  return lines.join('\n');
+}
+
+module.exports = { MIN_REMAINING, QuotaGate, QuotaLow, remainingOf, describeBlocked, quotaReport };

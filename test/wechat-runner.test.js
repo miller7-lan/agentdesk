@@ -234,10 +234,41 @@ test('plan failure ends the task with /重试; retry re-plans', async () => {
 
 test('low quota blocks before the planner runs', async () => {
   const quotaStatus = async () => [{ provider: 'claude', state: 'available', buckets: [{ id: 'c', fiveHour: { usedPercent: 95, resetsAt: 1795460549 } }] }];
-  const { run, say, last } = newService([], { extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
+  const { service, run, say, last } = newService([], { extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
   await say('3'); await say('写方案'); await say('开始');
   assert.equal(run.calls.length, 0);
+  assert.match(last(), /AI 暂时繁忙，稍后发 \/重试1/);                           // 普通成员看不到额度
+  assert.doesNotMatch(last(), /额度/);
+  await say('/历史');
+  assert.match(last(), /#1 ⏸AI 暂时繁忙/);
+  assert.doesNotMatch(last(), /额度/);
+  service.admins.add('me');                                                         // 管理员（含工作模式）看详情
+  service.store.setPref('me', { mode: 'work' });
+  await say('/看1');
   assert.match(last(), /额度不够[\s\S]*Claude 5 小时额度只剩 5%/);
+});
+
+test('/额度 (admin only) lists 5-hour and weekly remaining with reset times', async () => {
+  const { quotaReport } = require('../orchestrator/wechat/quota');
+  const now = Date.parse('2026-11-24T05:00:00Z');
+  const list = [
+    { provider: 'claude', state: 'available', observedAt: '2026-11-24T04:59:00Z', buckets: [{ fiveHour: { usedPercent: 1, resetsAt: Date.parse('2026-11-24T08:40:00Z') / 1000 }, weekly: { usedPercent: 97, resetsAt: Date.parse('2026-11-25T13:00:00Z') / 1000 } }] },
+    { provider: 'grok', state: 'available', observedAt: '2026-11-24T04:00:00Z', buckets: [{ weekly: { usedPercent: 50 } }] },
+    { provider: 'antigravity', state: 'not_configured', buckets: [] },
+  ];
+  const models = [{ provider: 'claude', label: 'Claude Opus' }, { provider: 'codex', label: 'GPT（Codex）' }, { provider: 'antigravity', label: 'Antigravity' }, { provider: 'grok', label: 'Grok' }];
+  const text = quotaReport(list, { models, current: 'claude', now });
+  assert.match(text, /\/1 Claude Opus（当前）：5 小时 99%（16:40 恢复），本周 3% ⚠️（11\/25 21:00 恢复）/);
+  assert.match(text, /\/2 GPT（Codex）：读不到/);
+  assert.match(text, /\/3 Antigravity：读不到（未配置）/);
+  assert.match(text, /\/4 Grok：本周 50%\n　（60 分钟前的数据）/);
+  const quotaStatus = async () => list;
+  const { service, say, last } = newService([], { extra: { quota: new QuotaGate({ adapters, quotaStatus, ttlMs: 0 }) } });
+  await say('/额度');
+  assert.match(last(), /只有管理员能用/);
+  service.admins.add('me');
+  await say('/额度');
+  assert.match(last(), /^【额度 · 剩余】[\s\S]*\/1 Claude Opus/);
 });
 
 test('two users: separate flows, tasks and files; results only to the owner', async () => {
