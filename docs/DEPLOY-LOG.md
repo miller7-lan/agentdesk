@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-24 17:15（北京时间）· VPS1 / VPS2 · 第三台 Windows（win3）预配置
+
+- **VPS2**：`config.json` 的 `workspaces`、`sshBridges`、`quotaBridges`、`relayBridges`、`projects` 加 `win3`（Git 镜像 `repos/win3.git` 由主控首次使用时自动建）；新增 `relay-win3.token`；重启主控和 `agentdesk-home-mount`，`bridge-win3.sock`、`bridge-win3-mount.sock` 已建立。改前备份 `config.json.bak-20261124-win3`。
+- **VPS1**：Relay 注册表新增 `win3-bridge` ↔ `vps2-orchestrator-win3`，主控一端已上线。
+- **Caddy（临时）**：:8443 加一条随机路径，只提供 0.4.10 Windows 安装包下载给新电脑（备份 `Caddyfile.bak-20261124-win3dl`），重启 Caddy 约 1 秒。装好后删掉。
+- **待办**：win3 运行配置脚本生成 codex/claude/grok/antigravity/bridge 五把钥匙，公钥发回后写入 `/etc/ssh/agentdesk-authorized-keys`（单聊设备标签 `win3`，Bridge 限定 `ssh-gateway.js bridge-win3.sock bridge-win3-mount.sock`）。
+- **回滚**：恢复 `config.json.bak-20261124-win3` 并重启两个服务；VPS1 删掉这两条配对；恢复 Caddyfile 备份并重启 Caddy。
+
 ## 2026-11-24 16:30（北京时间）· 客户端 0.4.10 · 原生单聊支持本机技能；Mac 自签名
 
 - **起因 1**：Mac 原生单聊里 `$college-lab-report` 不生效。原生单聊的 Codex 在 VPS2 沙箱里只看得到自己的 CODEX_HOME；客户端的本机技能上传仍走普通会话的路（远程工作区 `.agentdesk-skills` + 直连 Codex 的 `skills/extraRoots/set`），原生会话的 Codex 看不到，原生会话也不放行登记技能目录。模型只好自己用 local_shell 去 Mac 上找 SKILL.md。
