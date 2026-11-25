@@ -56,6 +56,9 @@ async function main([socketPath, command, id, argument, ...rest]) {
   if (command === 'catalog') {
     return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'model_catalog' } });
   }
+  if (command === 'gc' && id === '--dry-run') {
+    return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: 'cleanup', dryRun: true } });
+  }
   if (command === 'ls' || command === 'doctor' || command === 'gc') {
     return send({ kind: 'task.status', task_id: randomUUID(), body: { operation: { ls: 'list', doctor: 'doctor', gc: 'cleanup' }[command] } });
   }
@@ -122,7 +125,7 @@ async function main([socketPath, command, id, argument, ...rest]) {
     await fs.writeFile(argument, bytes, { flag: 'wx', mode: 0o600 });
     return { path: argument, size: bytes.length };
   }
-  throw new Error('Usage: admin.js <socket> device … | ls | doctor | gc | maintenance [on|off] [reason] | quotas | report [--since ISO] [--until ISO] [--owner O] [--project P] [--tag T] [--format json|table|csv] | benchmark <benchmark-id> [--format json|table|csv] | submit <workspace> <prompt> [test-command] [--tag T] [--project P] [--benchmark-id ID] [--arm single|multi] | status <task-id> [after] | cancel <task-id> | apply <task-id> | reconcile <task-id> | route <ssh|relay> | bridge <task-id> <kind> <json> | upload <task-id> <file> [stream-id] | download <task-id> <output> <json>');
+  throw new Error('Usage: admin.js <socket> device … | ls | doctor | gc [--dry-run] | maintenance [on|off] [reason] | quotas | report [--since ISO] [--until ISO] [--owner O] [--project P] [--tag T] [--format json|table|csv] | benchmark <benchmark-id> [--format json|table|csv] | submit <workspace> <prompt> [test-command] [--tag T] [--project P] [--benchmark-id ID] [--arm single|multi] | status <task-id> [after] | cancel <task-id> | apply <task-id> | reconcile <task-id> | route <ssh|relay> | bridge <task-id> <kind> <json> | upload <task-id> <file> [stream-id] | download <task-id> <output> <json>');
 }
 
 main(process.argv.slice(2)).then((value) => {

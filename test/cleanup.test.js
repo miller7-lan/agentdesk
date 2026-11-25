@@ -72,6 +72,7 @@ test('low on disk: the oldest finished tasks go early, but never one awaiting re
 test('retention settings are checked', () => {
   assert.deepEqual(retention({ completedDays: 1 }), {
     completedDays: 1, failedDays: 7, minFreePercent: 15, historyDays: 60, uploadDays: 7,
+    trashDays: 1, archiveDays: 30, minAgeMinutes: 60,
   });
   assert.throws(() => retention({ failedDays: -1 }), /invalid_retention:failedDays/);
   assert.throws(() => retention({ minFreePercent: 95 }), /invalid_retention:minFreePercent/);
@@ -122,4 +123,169 @@ test('old uploads and orphan worktree/log folders are removed after the history 
   assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', knownId)));
   assert.ok(!fs.existsSync(path.join(stateDir, 'worktrees', orphanId)));
   assert.ok(!fs.existsSync(path.join(stateDir, 'logs', orphanId)));
+});
+
+// ---- safety: quarantine, audit, path checks, references, dry run, lock ----
+
+const { AUDIT, TRASH } = require('../orchestrator/cleanup');
+const audit = (stateDir) => fs.readFileSync(path.join(stateDir, AUDIT), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+const roomy = async () => ({ blocks: 100, bavail: 60 });
+
+function bare(t) {
+  const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-gc-safe-')));
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-gc-outside-')));
+  t.after(() => { fs.rmSync(stateDir, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); });
+  fs.writeFileSync(path.join(outside, 'precious'), 'keep me');
+  const folder = (kind, id) => {
+    fs.mkdirSync(path.join(stateDir, kind, id), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, kind, id, 'file'), 'x');
+  };
+  return { stateDir, outside, folder, config: { stateDir, workspaces: {} } };
+}
+
+test('cleared folders are moved to the trash with an audit trail, then purged after trashDays', async (t) => {
+  const { stateDir, folder, config } = bare(t);
+  folder('worktrees', 'done'); folder('logs', 'done');
+  const tasks = [{ id: 'done', state: 'completed', updatedAt: ago(4) }];
+  const first = await cleanup({ tasks, running: new Set(), config, now, statfs: roomy });
+  assert.deepEqual(first.cleared, ['done']);
+  assert.equal(first.ok, true);
+  assert.equal(first.quarantined, 2);
+  assert.ok(!fs.existsSync(path.join(stateDir, 'worktrees', 'done')));
+  const passes = fs.readdirSync(path.join(stateDir, TRASH));
+  assert.equal(passes.length, 1);
+  const kept = fs.readdirSync(path.join(stateDir, TRASH, passes[0])).filter((name) => name !== '.pass.json');
+  assert.equal(kept.length, 2, 'both folders are recoverable from the trash');
+  const lines = audit(stateDir);
+  assert.ok(lines.some((line) => line.action === 'quarantine' && line.taskId === 'done' && line.kind === 'worktrees' && line.to));
+  assert.ok(lines.some((line) => line.action === 'task_cleared' && line.taskId === 'done'));
+  assert.equal(fs.statSync(path.join(stateDir, AUDIT)).mode & 0o777, 0o600);
+  // A pass a day later purges that trash.
+  const later = await cleanup({ tasks, running: new Set(), config, now: now + 2 * DAY, statfs: roomy });
+  assert.equal(later.purged, 1);
+  assert.deepEqual(fs.readdirSync(path.join(stateDir, TRASH)), []);
+});
+
+test('dry run reports the plan and changes nothing', async (t) => {
+  const { stateDir, folder, config } = bare(t);
+  folder('worktrees', 'done');
+  const tasks = [{ id: 'done', state: 'completed', updatedAt: ago(4) }];
+  const result = await cleanup({ tasks, running: new Set(), config, now, statfs: roomy, dryRun: true, onCleared: () => assert.fail('no record change') });
+  assert.equal(result.dryRun, true);
+  assert.deepEqual(result.cleared, ['done']);
+  assert.ok(result.planned.some((item) => item.action === 'quarantine' && item.taskId === 'done'));
+  assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', 'done', 'file')));
+  assert.equal(tasks[0].cleanedAt, undefined);
+  assert.ok(!fs.existsSync(path.join(stateDir, AUDIT)));
+  assert.ok(!fs.existsSync(path.join(stateDir, TRASH)));
+});
+
+test('a symlinked uploads folder or task folder never lets the cleanup reach outside the state directory', async (t) => {
+  const { stateDir, outside, config } = bare(t);
+  const old = (now - 30 * DAY) / 1000;
+  fs.utimesSync(path.join(outside, 'precious'), old, old);
+  fs.mkdirSync(path.join(stateDir, 'desktop-workspace'));
+  fs.symlinkSync(outside, path.join(stateDir, 'desktop-workspace', '.agentdesk-uploads'));
+  // logs/ itself points outside: the task's log folder resolves there and must be refused.
+  fs.mkdirSync(path.join(outside, 'linked'));
+  fs.writeFileSync(path.join(outside, 'linked', 'file'), 'x');
+  fs.symlinkSync(outside, path.join(stateDir, 'logs'));
+  // worktrees/<id> is a symlink: only the link is moved, never what it points at.
+  fs.mkdirSync(path.join(stateDir, 'worktrees'));
+  fs.symlinkSync(path.join(outside, 'linked'), path.join(stateDir, 'worktrees', 'linked'));
+  const tasks = [{ id: 'linked', state: 'completed', updatedAt: ago(4) }];
+  const result = await cleanup({ tasks, running: new Set(), config, now, statfs: roomy });
+  assert.equal(fs.readFileSync(path.join(outside, 'precious'), 'utf8'), 'keep me');
+  assert.ok(fs.existsSync(path.join(outside, 'linked', 'file')));
+  assert.equal(result.uploadsRemoved, 0);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.error === 'uploads_not_a_directory'));
+  assert.ok(result.errors.some((error) => error.taskId === 'linked' && error.error === 'path_outside_state_dir'));
+  assert.deepEqual(result.cleared, [], 'a task whose folders could not be cleared is retried next pass');
+  assert.equal(tasks[0].cleanedAt, undefined);
+});
+
+test('an unsafe task id is refused and does not stop the other tasks', async (t) => {
+  const { stateDir, folder, config } = bare(t);
+  folder('worktrees', 'good');
+  fs.mkdirSync(path.join(stateDir, 'victim'));
+  const tasks = [
+    { id: '../victim', state: 'completed', updatedAt: ago(9) },
+    { id: 'good', state: 'completed', updatedAt: ago(4) },
+  ];
+  const result = await cleanup({ tasks, running: new Set(), config, now, statfs: roomy });
+  assert.deepEqual(result.cleared, ['good']);
+  assert.ok(fs.existsSync(path.join(stateDir, 'victim')));
+  assert.ok(result.errors.some((error) => error.error === 'unsafe_task_id'));
+  assert.ok(audit(stateDir).some((line) => line.action === 'error' && line.error === 'unsafe_task_id'));
+});
+
+test('a task an unfinished review still reads, or one that starts again mid-pass, keeps its files', async (t) => {
+  const { stateDir, folder, config } = bare(t);
+  for (const id of ['source', 'first', 'second']) folder('worktrees', id);
+  const running = new Set();
+  const tasks = [
+    { id: 'source', state: 'completed', updatedAt: ago(10) },
+    { id: 'review', state: 'queued', mode: 'review_only', reviewOf: 'source', updatedAt: ago(0) },
+    { id: 'first', state: 'completed', updatedAt: ago(9) },
+    { id: 'second', state: 'failed', updatedAt: ago(8) },
+  ];
+  // While "first" is being cleared, the person retries "second".
+  const result = await cleanup({ tasks, running, config, now, statfs: roomy, onCleared: (task) => { if (task.id === 'first') running.add('second'); } });
+  assert.deepEqual(result.cleared, ['first']);
+  assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', 'source')));
+  assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', 'second')));
+});
+
+test('low disk empties the trash and clears early, but not a task that finished minutes ago', async (t) => {
+  const { stateDir, folder, config } = bare(t);
+  for (const id of ['day-old', 'just-done']) folder('worktrees', id);
+  const tasks = [
+    { id: 'day-old', state: 'completed', updatedAt: ago(1) },
+    { id: 'just-done', state: 'completed', updatedAt: new Date(now - 10 * 60_000).toISOString() },
+  ];
+  const result = await cleanup({ tasks, running: new Set(), config, now, statfs: async () => ({ blocks: 100, bavail: 5 }) });
+  assert.deepEqual(result.cleared, ['day-old']);
+  assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', 'just-done')));
+  // Low disk deletes at once instead of keeping a trash copy.
+  const passes = fs.existsSync(path.join(stateDir, TRASH)) ? fs.readdirSync(path.join(stateDir, TRASH)) : [];
+  for (const pass of passes) assert.deepEqual(fs.readdirSync(path.join(stateDir, TRASH, pass)).filter((name) => name !== '.pass.json'), []);
+  assert.ok(audit(stateDir).some((line) => line.action === 'purge' && line.reason === 'low_disk'));
+});
+
+test('deleted branches are logged with their commit, and nothing is orphaned when there are no task records', async (t) => {
+  const { stateDir, repo, tasks, config, git } = setup(t);
+  await cleanup({ tasks, running: new Set(), config, now, statfs: roomy });
+  const line = audit(stateDir).find((entry) => entry.action === 'delete_branch');
+  assert.equal(line.branch, 'agentdesk/old-done/edit');
+  assert.match(line.commit, /^[0-9a-f]{40}$/);
+  git(repo, 'branch', line.branch, line.commit);   // restorable from the log
+  // An empty task list (fresh or unreadable database) must not turn every folder or branch into an orphan.
+  const orphanId = '33333333-3333-4333-8333-333333333333';
+  fs.mkdirSync(path.join(stateDir, 'worktrees', orphanId));
+  const old = (now - 90 * DAY) / 1000;
+  fs.utimesSync(path.join(stateDir, 'worktrees', orphanId), old, old);
+  const empty = await cleanup({ tasks: [], running: new Set(), config, now, statfs: roomy });
+  assert.equal(empty.orphanGuard, 'no_task_records');
+  assert.equal(empty.orphansRemoved, 0);
+  assert.equal(empty.branchesRemoved, 0);
+  assert.ok(fs.existsSync(path.join(stateDir, 'worktrees', orphanId)));
+  assert.match(git(repo, 'branch', '--list', 'agentdesk/*'), /old-done/);
+});
+
+test('a second pass while one holds the lock is refused; a stale lock is taken over', async (t) => {
+  const { stateDir, config } = bare(t);
+  const lock = path.join(stateDir, '.cleanup.lock');
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  await assert.rejects(cleanup({ tasks: [], running: new Set(), config, now, statfs: roomy }), /cleanup_locked/);
+  fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, at: new Date().toISOString() }));
+  const result = await cleanup({ tasks: [], running: new Set(), config, now, statfs: roomy });
+  assert.equal(result.dryRun, false);
+  assert.ok(!fs.existsSync(lock), 'the lock is released after the pass');
+});
+
+test('the state directory must be a real, deep, absolute path', async () => {
+  for (const stateDir of ['/', '/var', 'relative/dir', '/var/lib/../lib/x']) {
+    await assert.rejects(cleanup({ tasks: [], running: new Set(), config: { stateDir }, now, statfs: roomy }), /unsafe_state_dir/);
+  }
 });

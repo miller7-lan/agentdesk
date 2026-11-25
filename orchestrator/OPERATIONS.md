@@ -160,11 +160,26 @@ agent 在 VPS2 的代码副本里改代码。通过本机 Bridge，它还能看�
 | `failedDays` | 7 | 失败的任务文件保留几天（方便排查） |
 | `historyDays` | 60 | 任务记录和事件、单聊线程元数据、无主 worktree/日志保留几天；超期删除并回收数据库空间 |
 | `uploadDays` | 7 | 工作区 `.agentdesk-uploads` 里的附件副本保留几天 |
-| `minFreePercent` | 15 | 磁盘剩余低于这个百分比时，提前清理最早结束的任务，直到高出 5 个百分点 |
+| `minFreePercent` | 15 | 磁盘剩余低于这个百分比时，先清空回收区，再提前清理最早结束的任务（直接删除），直到高出 5 个百分点 |
+| `minAgeMinutes` | 60 | 低磁盘提前清理时，结束不到这么多分钟的任务仍然保留 |
+| `trashDays` | 1 | 清掉的文件先移进 `.cleanup-trash/<批次>/`，保留几天后再真正删除（低磁盘时立即删除） |
+| `archiveDays` | 30 | 超期删除的任务记录和事件先导出到 `cleanup-archive/history-*.json.gz`，归档保留几天 |
 
 任务文件在 `completedDays`/`failedDays` 后先清掉；任务记录和事件再保留到 `historyDays`（默认 60 天），到期后从 SQLite 删除并执行一次 `VACUUM`。单聊线程元数据在单聊服务启动和应用每次重连时按同一个 60 天窗口清理。项目文件、`.agentdesk-skills`、登录凭据和配置永远不在清理范围。
 
 等你审核补丁的任务永远不会被自动清理，因为应用补丁需要它；`ad doctor` 会显示有几个这样的任务。正在运行的任务也不会被清理。
+
+清理的安全规则（`orchestrator/cleanup.js`）：
+
+- 只清已结束（完成、取消、失败）且不在运行的任务；还没结束的任务通过 `reviewOf`/`replyTo` 引用的任务保留文件；清理前再核对一次状态，期间被重试或改动过的任务本轮跳过。
+- 所有路径解析父目录的符号链接后必须仍在状态目录内，目标本身不跟随链接；`.agentdesk-uploads` 是符号链接时拒绝处理；`mounts`、`repos`、`homes`、`cli-history` 等目录不扫描。
+- 不原地递归删除：先在同一文件系统内原子改名到 `.cleanup-trash/`，过了 `trashDays` 再删；跨文件系统时拒绝，不退回到直接删除。
+- 每一步先写 `cleanup-audit.jsonl`（0600，超过 5 MB 轮转为 `.1`），写不进去就不执行；删除分支时记下提交号，可用 `git branch <分支> <提交>` 恢复。
+- 单项失败记入结果的 `errors` 并写审计日志，不影响其余项；`ad doctor` 的 `cleanup` 显示 `ok`、`errors`、`missingRepositories`。文件没清掉的任务（`cleanedAt` 为空）不会被删除记录。
+- 数据库里一条任务记录都没有时（新装或读取异常），不把任何目录或分支当作无主清理，结果里显示 `orphanGuard: no_task_records`。
+- `.cleanup.lock` 保证同一时间只有一轮清理；持有进程已退出或超过 2 小时的锁会被接管。
+
+恢复：从 `.cleanup-trash/<批次>/` 把对应目录移回 `worktrees/` 或 `logs/`（审计日志的 `path`/`to` 字段给出原位置和现位置）；任务记录从 `cleanup-archive/history-*.json.gz` 取回（gzip JSON，含任务和全部事件）。
 
 系统日志由 `agentdesk-journal-retention.timer` 每天执行一次 `journalctl --vacuum-time=60d`，只保留最近 60 天的 journald 日志。
 
@@ -190,6 +205,7 @@ journalctl -u agentdesk-cli-update.service -n 80      # 看结果（每个 CLI �
 ad ls          # 最近 50 个任务：谁提交的、状态、用到的 CLI、消耗的额度
 ad doctor      # 各 CLI 是否安装、版本、当前额度、被停用的 CLI 和原因、分配顺序和额度阈值、上次清理结果和磁盘剩余
 ad gc          # 立即清理一次，返回清理了哪些任务、释放了多少空间、磁盘剩余
+ad gc --dry-run  # 只列出这一轮会清理什么（`planned`、`historyPlanned`），不改动任何文件和记录
 ```
 
 ## Windows 连接

@@ -14,7 +14,7 @@ const { validAttachments, attachmentNote } = require('./attachments');
 const { writeTextCopy } = require('./extract');
 const { quotaStatus } = require('./quotas');
 const { teamAdapter } = require('./team');
-const { cleanup, retention, historyCandidates } = require('./cleanup');
+const { cleanup, retention, historyCandidates, referencedIds, archiveHistory, auditLine } = require('./cleanup');
 const { taskPatch, taskOutput, MAX_PATCH } = require('./task-output');
 const { stepActivity, commandProgress } = require('./activity');
 const { hostResources } = require('./host-resources');
@@ -520,37 +520,69 @@ class Scheduler {
     }));
   }
 
-  // One clean-up pass at a time; the hourly tick and `ad gc` share it.
-  cleanupNow() {
-    this.cleaning ||= cleanup({
-      tasks: [...this.tasks.values()], running: this.running, config: this.config, now: this.now(),
-      onCleared: (task) => this.save(task, task.state, task.detail, false),   // marks cleanedAt without a new event
-    }).then((result) => {
-      // Records are kept for the history window; files were already cleared 3/7 days after the task ended.
-      // A task referenced by a newer review/reply is kept for one more pass so its link does not dangle.
-      const keep = retention(this.config.retention);
-      const referenced = new Set();
-      for (const task of this.tasks.values()) {
-        for (const key of ['replyTo', 'reviewOf']) {
-          if (typeof task[key] === 'string') referenced.add(task[key]);
-        }
-      }
-      const expired = historyCandidates([...this.tasks.values()], this.running, this.now(), keep, { referenced });
-      if (expired.length) {
-        const ids = expired.map((task) => task.id);
-        result.historyRemoved = this.store.deleteTasks(ids);
-        for (const id of ids) this.tasks.delete(id);
-        try { this.store.vacuum(); result.vacuumed = true; }
-        catch (error) { console.error('cleanup vacuum:', error.message); result.vacuumed = false; }
-      } else {
-        result.historyRemoved = 0;
-        result.vacuumed = false;
-      }
+  // One clean-up pass at a time; the hourly tick and `ad gc` share it. `ad gc --dry-run` reports what a pass
+  // would do without changing anything (cleanup.js).
+  cleanupNow({ dryRun = false } = {}) {
+    if (dryRun) return this.cleanupPass(true);
+    this.cleaning ||= this.cleanupPass(false).then((result) => {
       this.lastCleanup = result;
       if (result.lowDisk) console.error('cleanup: low disk', result.freePercent + '% free');
+      if (!result.ok) console.error('cleanup: finished with', result.errors.length, 'error(s); see cleanup-audit.jsonl');
       return result;
+    }, (error) => {
+      this.lastCleanup = { ok: false, error: error.message, at: new Date(this.now()).toISOString() };
+      throw error;
     }).finally(() => { this.cleaning = null; });
     return this.cleaning;
+  }
+
+  async cleanupPass(dryRun) {
+    const result = await cleanup({
+      tasks: [...this.tasks.values()], running: this.running, config: this.config, now: this.now(), dryRun,
+      onCleared: (task) => this.save(task, task.state, task.detail, false),   // marks cleanedAt without a new event
+    });
+    // Records are kept for the history window; files were already cleared 3/7 days after the task ended.
+    // A task any other task still references (reply, review) is kept, and so is one whose files were never
+    // cleared (a failed pass), so its folders are not left without a record.
+    const keep = retention(this.config.retention);
+    const tasks = [...this.tasks.values()];
+    const expired = historyCandidates(tasks, this.running, this.now(), keep,
+      { referenced: referencedIds(tasks), requireCleaned: true });
+    result.historyRemoved = 0;
+    result.vacuumed = false;
+    if (!expired.length) return result;
+    const ids = expired.map((task) => task.id);
+    if (dryRun) {
+      result.historyPlanned = ids;
+      return result;
+    }
+    // The records and events go into a gzip archive first (cleanup-archive/, kept archiveDays); without it
+    // nothing is deleted.
+    try {
+      result.historyArchive = await archiveHistory(this.config.stateDir, expired, (id) => this.allEvents(id), this.now());
+      await auditLine(this.config.stateDir, { action: 'history_delete', archive: result.historyArchive, taskIds: ids });
+    } catch (error) {
+      result.ok = false;
+      result.errors.push({ action: 'history_archive', error: error.code || error.message });
+      console.error('cleanup: history archive failed, records kept:', error.message);
+      return result;
+    }
+    result.historyRemoved = this.store.deleteTasks(ids);
+    for (const id of ids) this.tasks.delete(id);
+    try { this.store.vacuum(); result.vacuumed = true; }
+    catch (error) { console.error('cleanup vacuum:', error.message); }
+    return result;
+  }
+
+  // Every event of a task (store.events pages by 100).
+  allEvents(id) {
+    const events = [];
+    for (let after = 0; ;) {
+      const page = this.store.events(id, after);
+      events.push(...page);
+      if (page.length < 100) return events;
+      after = page[page.length - 1].sequence;
+    }
   }
 
   async diagnosticStatus({ named, admin = false } = {}) {
@@ -3806,7 +3838,7 @@ event(task, state, detail) {
     if (body.operation === 'list' && route === 'admin') return this.list();
     if (body.operation === 'doctor' && route === 'admin') return this.doctor();
     if (body.operation === 'model_catalog' && route === 'admin') return this.refreshModelCatalog();
-    if (body.operation === 'cleanup' && route === 'admin') return this.cleanupNow();
+    if (body.operation === 'cleanup' && route === 'admin') return this.cleanupNow({ dryRun: body.dryRun === true });
     if (body.operation === 'maintenance' && route === 'admin') return this.setMaintenance(body.action || 'status', body.reason, body.source);
     if (body.operation === 'diagnostics' && (route === 'admin' || named)) return this.diagnosticStatus({ named, admin: route === 'admin' });
     if (body.operation === 'onboarding_check' && (route === 'admin' || named)) {
