@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-25 18:54（北京时间）· VPS2 主控 · 清理加固（5555e68）
+
+- **改动**：`cleanup.js` 改为先原子移入 `.cleanup-trash/<批次>/`、`trashDays` 后再删；路径防逃逸（realpath、符号链接、跨文件系统拒绝），只清已结束、未运行、未被引用的任务；每步写 `cleanup-audit.jsonl`；`.cleanup.lock` 防并发；数据库无任务记录时不清无主目录（`orphanGuard: no_task_records`）。`scheduler.js` 删历史记录前先导出 `cleanup-archive/`。`admin.js` 新增 `ad gc --dry-run`。
+- **部署方式**：维护模式排空（无运行任务）→ 安装 → 重启主控 → 手动启动 `agentdesk-home-mount` → 关闭维护模式。安装源是 5555e68 的 `orchestrator/` 暂存副本，但 `mcp.js` 保留线上版本（含 feat/wechat-admin 的微信远程工具，main 上还没有）。`install-ubuntu.sh` 需带 `AGENTDESK_NODE_BIN=/opt/agentdesk-node24/bin/node`（系统 `/usr/bin/node` 不到 24，否则脚本直接退出）。旧版整目录备份为 `/opt/agentdesk-orchestrator.bak-20261125-deploy-cleanup`。
+- **验证**：`npm test` 612 通过、0 失败；服务 `active`，启动无报错；`ad gc --dry-run` 计划为空、`orphanGuard: no_task_records`；首轮正式清理（10:54Z）`ok: true`，无删除、无错误，`ad doctor` 的 `cleanup` 已显示该结果；`worktrees/` 下 31 个无主目录仍在（留待人工处理）。`missingRepositories` 报 mac/lenovo/win3 三个镜像仓库不存在（只报告，不处理）。
+- **回滚**：`sudo cp -a /opt/agentdesk-orchestrator.bak-20261125-deploy-cleanup/*.js /opt/agentdesk-orchestrator/`，重启主控并手动启动 `agentdesk-home-mount`。
+
 ## 2026-11-24 19:50（北京时间）· 客户端 0.4.11 · Windows 后台常驻 Bridge
 
 - **改动**：新增 `background.js`；Windows 打包版在配置了主控 Bridge（`remote.json` 的 `orchestratorBridge`）时，把自己登记为开机启动（`HKCU\…\Run`，参数 `--background`）。后台启动不开窗口、只连主控并显示托盘图标；关掉窗口不退出（留在托盘、首次弹提示），托盘「退出」才真正退出并断开。再次打开 AgentDesk 会在同一进程里打开窗口。Bridge 没起来时照常开窗口。`config.json` 的 `"bridgeAtLogin": false` 可关闭开机启动。Mac 不受影响（仍是 LaunchAgent 独立 Bridge）。
