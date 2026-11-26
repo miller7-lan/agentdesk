@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-26 11:09（北京时间）· 客户端 0.4.15 · 重发 0.4.14
+
+- **起因**：v0.4.14 的 Windows 打包测试失败：`test/local-commands.test.js` 断言命令列表只有项目配置的命令，而 Windows 上现在还会列出内置诊断命令。
+- **改动**：该测试只比对非内置命令。功能同 0.4.14。
+- **VPS2**：无新改动（0.4.14 的单聊服务改动已生效）。
+- **回滚**：发更高版本撤回。
+
 ## 2026-11-26 11:04（北京时间）· 客户端 0.4.14 + VPS2 单聊服务 · Windows 管理员 PowerShell、内置诊断命令
 
 - **改动（客户端）**：新增 `admin-shell.js` 和工具 `agentdesk_admin_shell`（仅 Windows）：先弹 AgentDesk 确认（显示原因和第一条命令），再用 `Start-Process -Verb RunAs` 触发 UAC；提权的 PowerShell 助手通过随机命名管道连回 AgentDesk，先用 `GetNamedPipeServerProcessId` 核对管道属于本 AgentDesk 进程，再发送随机令牌；之后每次调用执行一段脚本并返回退出码、stdout、stderr（各最后 16000 字，CLIXML 错误转纯文本），单条最长 10 分钟。会话按对话区分，10 分钟无调用或 60 分钟后自动结束，写审计日志 `admin_shell`。普通单聊（ask）之后每条命令逐条确认；原生完全访问单聊（经 `windows-native-seat.js` 的 adminShell 钩子）同意一次即可；只读轮次拒绝。`local-commands.js` 在 Windows 上新增 11 条内置只读诊断命令（`sys-overview` 等），工作区 `"builtinCommands": false` 可关闭，同名时以用户配置为准。

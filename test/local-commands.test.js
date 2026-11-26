@@ -15,7 +15,9 @@ test('a direct chat runs only the commands authorized for its project, in the pr
     commands: { hello: [process.execPath, '-e', 'console.log(process.cwd())'], wipe: [process.execPath, '-e', 'process.exit(9)'] },
     agentCommands: ['hello'] } } }));
   const list = payload(await localCommands.call('agentdesk_command_list', {}, { configFile, localRoot: project }));
-  assert.deepEqual(list.commands.map((command) => command.name), ['hello']);   // wipe is defined but not for agents
+  // Built-in Windows diagnostics (builtin: true) are listed too on Windows; only the project's own count here.
+  const own = (commands) => commands.filter((command) => !command.builtin);
+  assert.deepEqual(own(list.commands).map((command) => command.name), ['hello']);   // wipe is defined but not for agents
   const run = await localCommands.call('agentdesk_command_run', { name: 'hello' }, { configFile, localRoot: project });
   assert.equal(run.success, true);
   assert.equal(payload(run).exitCode, 0);
@@ -24,6 +26,6 @@ test('a direct chat runs only the commands authorized for its project, in the pr
   assert.equal(refused.success, false);
   assert.equal(payload(refused).error, 'command_not_enabled_for_agents');
   const elsewhere = payload(await localCommands.call('agentdesk_command_list', {}, { configFile, localRoot: os.tmpdir() }));
-  assert.deepEqual(elsewhere.commands, []);   // another folder gets no commands
+  assert.deepEqual(own(elsewhere.commands), []);   // another folder gets none of the project's commands
   assert.ok(localCommands.isRunTool('agentdesk_command_run') && !localCommands.isRunTool('agentdesk_command_list'));
 });
