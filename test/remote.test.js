@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { PassThrough, Writable } = require('node:stream');
@@ -77,6 +78,24 @@ function jumpFixture(t, mode = 'auto') {
     key, knownHosts, probeMinutes: 10,
   };
 }
+
+test('automatic SSH routing probes the direct host when reconnecting from a jump', async (t) => {
+  const server = net.createServer((socket) => socket.end('SSH-2.0-AgentDesk-Test\r\n'));
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { remote } = setup(t, { config: {
+    host: '127.0.0.1', port: server.address().port, jump: jumpFixture(t),
+  } });
+  for (const reset of [false, true]) {
+    const route = reset ? remote.resetRoute() : remote.route;
+    route.switchTo('jump', 'test');
+    route.manualReconnect();
+    await until(() => route.snapshot().route === 'direct', 'direct SSH recovery');
+  }
+});
 
 async function connect(remote, child) {
   const init = child.sent.find((request) => request.method === 'initialize');

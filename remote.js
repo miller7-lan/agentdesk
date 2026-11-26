@@ -127,7 +127,7 @@ class Remote extends EventEmitter {
       tunnel: 30000, retry: [1000, 3000, 5000, 10000, 20000, 30000, 60000], ...timing,
     };
     this.route = routeFor(this.cfg.jump, { host: this.cfg.host, port: this.cfg.port || 22 });
-    if (this.cfg.host) this.route.setProbe(probeTcpBanner(this.cfg.host, this.cfg.port || 22));
+    if (this.cfg.host) this.route.setProbe(() => probeTcpBanner(this.cfg.host, this.cfg.port || 22));
     this.state = { sshd: 'unknown', tunnel: 'idle', codex: 'idle', detail: '', route: this.route.snapshot() };
     this.stopping = false;
     this.tunnelProc = null;
@@ -203,7 +203,7 @@ class Remote extends EventEmitter {
   resetRoute() {
     this.cfg.jump = normalizeJump(this.cfg.jump, { checkFiles: true });
     this.route = routeFor(this.cfg.jump, { host: this.cfg.host, port: this.cfg.port || 22 });
-    if (this.cfg.host) this.route.setProbe(probeTcpBanner(this.cfg.host, this.cfg.port || 22));
+    if (this.cfg.host) this.route.setProbe(() => probeTcpBanner(this.cfg.host, this.cfg.port || 22));
     this.state.route = this.route.snapshot();
     return this.route;
   }

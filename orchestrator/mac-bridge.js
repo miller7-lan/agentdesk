@@ -39,7 +39,7 @@ function main(argv = process.argv) {
   if (config.ssh) {
     config.ssh.jump = normalizeJump(config.ssh.jump, { checkFiles: true });
     route = routeFor(config.ssh.jump, { host: config.ssh.host, port: config.ssh.port || 22 });
-    if (config.ssh.host) route.setProbe(probeTcpBanner(config.ssh.host, config.ssh.port || 22));
+    if (config.ssh.host) route.setProbe(() => probeTcpBanner(config.ssh.host, config.ssh.port || 22));
   }
   const stop = startBridge({
     config,
