@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-26 11:04（北京时间）· 客户端 0.4.14 + VPS2 单聊服务 · Windows 管理员 PowerShell、内置诊断命令
+
+- **改动（客户端）**：新增 `admin-shell.js` 和工具 `agentdesk_admin_shell`（仅 Windows）：先弹 AgentDesk 确认（显示原因和第一条命令），再用 `Start-Process -Verb RunAs` 触发 UAC；提权的 PowerShell 助手通过随机命名管道连回 AgentDesk，先用 `GetNamedPipeServerProcessId` 核对管道属于本 AgentDesk 进程，再发送随机令牌；之后每次调用执行一段脚本并返回退出码、stdout、stderr（各最后 16000 字，CLIXML 错误转纯文本），单条最长 10 分钟。会话按对话区分，10 分钟无调用或 60 分钟后自动结束，写审计日志 `admin_shell`。普通单聊（ask）之后每条命令逐条确认；原生完全访问单聊（经 `windows-native-seat.js` 的 adminShell 钩子）同意一次即可；只读轮次拒绝。`local-commands.js` 在 Windows 上新增 11 条内置只读诊断命令（`sys-overview` 等），工作区 `"builtinCommands": false` 可关闭，同名时以用户配置为准。
+- **改动（VPS2）**：`chat-server.js` 放行 `agentdesk_admin_shell`（不再出审批卡，由客户端确认；超时 14 分钟；只读轮次拒绝；系统提示加一条用法），`chat-mcp.js` 相应放宽该工具超时。两个文件直接替换（单聊服务每个连接单独启动，新连接生效，不用重启主控）。
+- **18133 电脑**：`~/.agentdesk/windows-bridge.json` 增加 git-log、git-diff-stat、git-branch、git-fetch、docker-ps、docker-stats、gpu-status、tunnel-status，备份 `windows-bridge.json.bak-20261126-commands`。
+- **验证**：全部测试通过（新增 `test/admin-shell.test.js` 9 项、`test/builtin-commands.test.js` 3 项）。在 18133 上用真实 PowerShell 助手（不经 UAC）验证管道、属主校验、令牌、中文输出、退出码、超时与结束；11 条内置命令和 8 条新增命令逐条实跑通过。UAC 实弹待用户在电脑前试。
+- **回滚**：客户端发更高版本撤回；VPS2 恢复 `/opt/agentdesk-orchestrator/chat-server.js.bak-20261126-admin` 与 `chat-mcp.js.bak-20261126-admin`；18133 恢复上述 Bridge 配置备份。
+
 ## 2026-11-26 10:22（北京时间）· 客户端 0.4.13 · 重发 0.4.12
 
 - **起因**：v0.4.12 的 Windows 打包在测试阶段失败（`cleanup.test.js`、`history-retention.test.js` 断言文件权限 0600，Windows 上恒为 0666；来自 main 上的清理加固提交，与 0.4.12 改动无关），没有上传。

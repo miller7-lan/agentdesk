@@ -65,7 +65,8 @@ if (require.main === module) {
           name: frame.params?.name,
           arguments: frame.params?.arguments || {},
         }, frame.params?.name === 'agentdesk_command_run' ? COMMAND_REPLY_TIMEOUT + 75_000
-          : frame.params?.name === ASK_TOOL.name ? QUESTION_TIMEOUT + 75_000 : undefined,
+          : frame.params?.name === ASK_TOOL.name ? QUESTION_TIMEOUT + 75_000
+            : frame.params?.name === 'agentdesk_admin_shell' ? 14 * 60_000 + 75_000 : undefined,
         // Only a question is withdrawn on cancel; other tools finish as before.
         frame.params?.name === ASK_TOOL.name ? (socket) => inFlight.set(frame.id, socket) : null)
           .finally(() => inFlight.delete(frame.id));

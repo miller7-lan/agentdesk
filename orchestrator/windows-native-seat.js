@@ -22,6 +22,8 @@ function workspacePolicy(folder, mode) {
 async function openWindowsNativeSeat({
   remote, worker, identity, binding, hostPath = '/opt/agentdesk-orchestrator/native-project-session-host.js',
   sessionKey, historyRoot, onNotification = () => {}, onServerRequest = null, checkpoints = true,
+  // { spec, call(args, { threadId }) }: administrator PowerShell, run by the app after the person agrees (Windows).
+  adminShell = null,
 }) {
   // What this computer's Worker offers: an interactive terminal only where node-pty is installed (gate G2).
   const optional = (operation, fields) => Promise.resolve().then(() => worker.request(operation, fields)).catch(() => null);
@@ -152,10 +154,12 @@ async function openWindowsNativeSeat({
     if (frame.method && frame.id !== undefined) {
       const p = frame.params || {};
       Promise.resolve().then(async () => {
-        if (frame.method !== 'item/tool/call' || !NATIVE_TOOLS.has(p.tool) || !threadId || p.threadId !== threadId ||
+        const admin = Boolean(adminShell) && p.tool === adminShell.spec.name;
+        if (frame.method !== 'item/tool/call' || !(NATIVE_TOOLS.has(p.tool) || admin) || !threadId || p.threadId !== threadId ||
             !turnId || p.turnId !== turnId || !turnWritable || !p.arguments || p.namespace) throw new Error('native_tool_not_authorized');
         const requestId = createHash('sha256').update(JSON.stringify([threadId, turnId, p.itemId || frame.id])).digest('hex');
-        const value = p.tool === 'terminal' ? await worker.request('terminal', { binding, args: p.arguments })
+        const value = admin ? await adminShell.call(p.arguments, { threadId })
+          : p.tool === 'terminal' ? await worker.request('terminal', { binding, args: p.arguments })
           : p.tool === 'file_lock_acquire' ? await worker.request('lockFiles', { binding, files: p.arguments.paths })
             : await worker.request('shell', { binding, args: p.arguments, requestId });
         return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(value) }] };
@@ -214,7 +218,8 @@ async function openWindowsNativeSeat({
       if (isTurn && activeMode === 'write' && params.approvalPolicy && params.approvalPolicy !== 'never') {
         throw new Error('原生单聊请选择完全访问或只读规划。');
       }
-      const toolSet = activeMode === 'write' ? [localShellSpec, lockSpec, ...(offered.pty ? [terminalSpec()] : [])] : [];
+      const toolSet = activeMode === 'write' ? [localShellSpec, lockSpec, ...(offered.pty ? [terminalSpec()] : []),
+        ...(adminShell ? [adminShell.spec] : [])] : [];
       let value = { ...params };
       if (launch || isTurn) {
         value = { ...value, cwd: folder, approvalPolicy: 'never', sandboxPolicy: workspacePolicy(folder, activeMode) };

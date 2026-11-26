@@ -121,13 +121,18 @@ const OUTPUT_LIMIT = Number(process.env.AGENTDESK_CHAT_OUTPUT_LIMIT || 4 * 1024 
 const { COMMAND_REPLY_TIMEOUT } = require('./command-runs');
 const TOOL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_TOOL_TIMEOUT || 65_000);
 const APPROVAL_TIMEOUT = Number(process.env.AGENTDESK_CHAT_APPROVAL_TIMEOUT || 60_000);
+// Administrator PowerShell on a Windows computer (admin-shell.js in the app): the app itself asks the person (its
+// own dialog, then the Windows UAC prompt, then each command), so no approval card here; the reply may take the
+// person's answer (2 min) plus a script of up to 10 min.
+const ADMIN_TOOL = 'agentdesk_admin_shell';
+const ADMIN_TIMEOUT = 14 * 60_000;
 const READ_ONLY_TOOLS = new Set(['agentdesk_file_list', 'agentdesk_file_read', 'agentdesk_file_read_batch', 'agentdesk_file_glob', 'agentdesk_file_grep', 'agentdesk_command_list']);
 // Running one of the person's authorized commands on their computer asks for approval, like a file change.
 const WRITE_TOOLS = new Set([
   'agentdesk_file_edit', 'agentdesk_file_write', 'agentdesk_file_write_batch', 'agentdesk_file_mkdir', 'agentdesk_file_copy', 'agentdesk_file_move', 'agentdesk_file_trash',
   'agentdesk_command_run',
 ]);
-const CHAT_TOOL = /^(?:agentdesk_(?:file|command)_[a-z]+|agentdesk_file_(?:read|write)_batch|desktop_[a-z_]+)$/;
+const CHAT_TOOL = /^(?:agentdesk_(?:file|command)_[a-z]+|agentdesk_file_(?:read|write)_batch|agentdesk_admin_shell|desktop_[a-z_]+)$/;
 // 实测各 CLI 接受的推理强度：Claude/Antigravity 还接受 max，Grok 最高为 xhigh。
 const EFFORTS = {
   claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
@@ -547,7 +552,7 @@ function finishAgent(turn) {
 
 /* ---------- 工具调用 ---------- */
 function isWriteTool(name) {
-  return WRITE_TOOLS.has(name) || name.startsWith('desktop_') || ['local_shell', 'terminal', 'file_lock_acquire'].includes(name);
+  return WRITE_TOOLS.has(name) || name === ADMIN_TOOL || name.startsWith('desktop_') || ['local_shell', 'terminal', 'file_lock_acquire'].includes(name);
 }
 
 function resultText(result) {
@@ -607,7 +612,7 @@ async function invokeTool(turn, name, args, caller = null) {
     // Deleting and moving still ask; only with on-request (每步询问 sends no autoApprove, and untrusted never skips).
     const autoEdit = turn.autoApprove === 'edits' && turn.approvalPolicy === 'on-request' && name.startsWith('agentdesk_file_') &&
       !['agentdesk_file_trash', 'agentdesk_file_move'].includes(name);
-    if (isWriteTool(name) && turn.approvalPolicy !== 'never' && !autoEdit) {
+    if (isWriteTool(name) && name !== ADMIN_TOOL && turn.approvalPolicy !== 'never' && !autoEdit) {
       const decision = await clientRequest(turn, 'item/tool/requestApproval', {
         threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args, itemId,
       }, APPROVAL_TIMEOUT);
@@ -617,7 +622,7 @@ async function invokeTool(turn, name, args, caller = null) {
     const result = await clientRequest(turn, 'item/tool/call', {
       threadId: turn.threadId, turnId: turn.id, tool: name, arguments: args,
       itemId, ...(name === 'agentdesk_command_run' && { requiresApproval: turn.approvalPolicy !== 'never' }),
-    }, name === 'agentdesk_command_run' ? COMMAND_REPLY_TIMEOUT : TOOL_TIMEOUT);
+    }, name === 'agentdesk_command_run' ? COMMAND_REPLY_TIMEOUT : name === ADMIN_TOOL ? ADMIN_TIMEOUT : TOOL_TIMEOUT);
     const images = name.startsWith('desktop_') && Array.isArray(result?.contentItems)
       ? result.contentItems.filter((item) => item?.type === 'inputImage' &&
           /^data:image\/(?:png|jpeg|webp);base64,[a-z0-9+/]+=*$/i.test(item.imageUrl || ''))
@@ -679,6 +684,7 @@ const mcpServer = net.createServer((socket) => {
       } else if (frame.operation === 'call') {
         if (frame.name === 'agentdesk_command_run') socket.setTimeout(COMMAND_REPLY_TIMEOUT + APPROVAL_TIMEOUT + 10_000);
         if (frame.name === ASK_TOOL.name) socket.setTimeout(QUESTION_TIMEOUT + 10_000);
+        if (frame.name === ADMIN_TOOL) socket.setTimeout(ADMIN_TIMEOUT + 10_000);
         const value = await invokeTool(turn, frame.name, frame.arguments || {}, socket);
         wire.send({ ok: true, value });
       } else {
@@ -854,6 +860,7 @@ ${vps}
 - 同时处理多个本机文件时，优先用 agentdesk_file_read_batch 和 agentdesk_file_write_batch。写入用读到的版本，创建用 null。检查逐项结果再决定是否重试。
 - 本机路径必须是 ${computer} 的绝对路径，例如 ${shown}/note.txt；不要使用 VPS 的 shell 或内置 Read/Write/Bash 工具操作本机文件。
 - 可用的 desktop_* 工具在用户电脑上截图、点击或输入；只有在本机桌面开启且本轮可操作时才会提供。
+- 提供 agentdesk_admin_shell 时（Windows），只在确实需要管理员权限的步骤用它，并写清 reason；用户会先看到原因再看到 Windows 管理员确认。用户拒绝就停止并说明需要他做什么，不要索要密码。
 - 写文件前先读目标；创建文件后把结果路径告诉用户。覆盖已有文件必须显式传 overwrite:true。
 - 系统目录、凭据目录（如 ~/.ssh、~/.agentdesk）和 .git 内部会被拒绝，不要尝试绕过。
 - 工具返回 JSON 文本；失败时如实告诉用户，不要假装成功。

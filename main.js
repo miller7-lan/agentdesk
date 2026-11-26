@@ -33,6 +33,31 @@ const desktopThreads = new Set();
 const windowsFiles = require('./windows-files');
 const localFiles = require('./local-files');
 const localCommands = require('./local-commands');
+const { createAdminShell } = require('./admin-shell');
+// Administrator PowerShell (Windows): the person agrees in AgentDesk's dialog, then in the Windows UAC prompt.
+const adminShellOn = process.platform === 'win32';
+const adminPreview = (script) => { const text = String(script || ''); return text.length > 1500 ? text.slice(0, 1500) + '\n…' : text; };
+async function adminDialog(options) {
+  const parent = win && !win.isDestroyed() && win.isVisible() ? win : null;
+  notifyIfAway('AgentDesk 需要你的确认', options.message);
+  const settings = { type: 'warning', defaultId: 0, cancelId: 0, noLink: true, ...options };
+  const { response } = parent ? await dialog.showMessageBox(parent, settings) : await dialog.showMessageBox(settings);
+  return response === 1;
+}
+const adminShell = createAdminShell({
+  confirmStart: ({ agent, reason, script, policy }) => adminDialog({
+    message: `${agent} 请求管理员权限`,
+    detail: (reason ? '原因：' + reason + '\n\n' : '') + '第一条命令：\n' + adminPreview(script) +
+      '\n\n选择「继续」后 Windows 会弹出管理员确认。同意后，这个对话可以以管理员身份运行 PowerShell，10 分钟不用自动结束' +
+      (policy === 'full' ? '（完全访问：之后的命令不再逐条确认）。' : '（之后每条命令仍会让你确认）。'),
+    buttons: ['拒绝', '继续'],
+  }),
+  confirmRun: ({ agent, script, cwd }) => adminDialog({
+    message: `${agent} 请求以管理员身份运行命令`, detail: cwd + '\n\n' + adminPreview(script), buttons: ['取消', '允许运行'],
+  }),
+  audit: (event, fields) => logger?.audit(event, fields),
+});
+const adminSpecs = () => adminShellOn ? [adminShell.spec] : [];
 const { CommandRuns } = require('./orchestrator/command-runs');
 const commandScope = (agent, threadId) => JSON.stringify([agent, threadId]);
 // The Codex app-server's working folder on VPS2 (orchestrator/codex-desktop.sh). Shared by all projects; never deleted.
@@ -57,7 +82,7 @@ const commandsFile = () => remote.cfg.agentCommandsFile || remote.cfg.orchestrat
 const chatFileTools = process.platform === 'win32' ? windowsFiles : localFiles;
 const chatFileSpecs = chatFileTools.specs.map((tool) =>
   ({ ...tool, name: tool.name.replace(/^windows_file_/, 'agentdesk_file_') }));
-const chatToolSpecs = () => [...chatFileSpecs, ...localCommands.specs];
+const chatToolSpecs = () => [...chatFileSpecs, ...localCommands.specs, ...adminSpecs()];
 const { ChatLink, AGENTS: CHAT_AGENTS } = require('./chat-link');
 const { detectOs, parseBuild, materialFor, isWindows11 } = require('./src/platform');
 const mac = process.platform === 'darwin';
@@ -101,6 +126,9 @@ function nativeDesktop() {
     windowsNative = createNativeDesktop({
       stateDir: path.join(app.getPath('userData'), process.platform === 'win32' ? 'windows-native-chat' : 'native-chat'), remote,
       isDeletingProject: (id) => deletingProjects.has(id),
+      adminShell: adminShellOn ? { spec: adminShell.spec, call: (provider, args, { threadId }) => adminShell.call({
+        scope: 'native:' + provider + ':' + threadId, agent: provider === 'codex' ? 'Codex' : CHAT_LABEL[provider] || provider,
+        policy: 'full', args }) } : null,
       findProject: (id) => id ? appConfig?.value.projects.find((item) => item.id === id) : appConfig?.active,
       findWorktree: (key) => worktrees().get(key),
       bridgeSettings: () => localBridgeSettings || (mac ? macBridgeSettings() : null),
@@ -1035,6 +1063,15 @@ remote.on('server-request', (m) => {
         .then((result) => { if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result); }).catch(() => {});
       return;
     }
+    if (adminShellOn && !enrollment && params.tool === adminShell.spec.name) {
+      const turn = fileTurns.get(params.turnId);
+      const active = !params.namespace && turn && turn.threadId === params.threadId;
+      (active ? adminShell.call({ scope: 'codex:' + params.threadId, agent: 'Codex', policy: turn.policy, args: params.arguments,
+        defaultCwd: turn.binding?.root }) : Promise.resolve({ ok: false, error: '管理员命令需要处于活动轮次' }))
+        .then((value) => localFiles.result(value.ok !== false, value))
+        .then((result) => { if (connection === remote.codexProc && remote.pendingReqs.has(m.id)) remote.respond(m.id, result); }).catch(() => {});
+      return;
+    }
     const winFile = !mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('windows_file_');
     const macFile = mac && !enrollment && typeof params.tool === 'string' && params.tool.startsWith('agentdesk_file_');
     const turn = fileTurns.get(params.turnId);
@@ -1348,7 +1385,7 @@ ipcMain.handle('codex:request', async (event, method, params) => {
     if (method === 'thread/start' || method === 'thread/resume') {
       const desktopSpecs = desktop.enabled ? await desktop.specs() : [];
       params = { ...params, dynamicTools: [...desktopSpecs, ...(mac && !enrollment ? localFiles.specs : []), ...(mac || enrollment ? [] : windowsFiles.specs),
-        ...(enrollment ? [] : localCommands.specs)] };
+        ...(enrollment ? [] : [...localCommands.specs, ...adminSpecs()])] };
       if (method === 'thread/resume' && desktop.enabled && params?.threadId) desktopThreads.add(params.threadId);
     }
     if (method === 'turn/start') {
@@ -1535,6 +1572,11 @@ async function chatToolTask(agent, params, requestId) {
   if (!turn || turn.agent !== agent || turn.threadId !== params.threadId) return invalid('单聊轮次已结束，请重试');
   if (turn.desktopTools.has(params.tool)) return desktop.call(params);
   if (typeof params.tool !== 'string' || !mapping.tools.has(params.tool)) return invalid('该工具在当前单聊中不可用');
+  if (adminShellOn && params.tool === adminShell.spec.name) {
+    const value = await adminShell.call({ scope: agent + ':' + params.threadId, agent: CHAT_LABEL[agent] || agent,
+      policy: turn.readOnly ? 'read' : mapping.approvalPolicy === 'never' ? 'full' : 'ask', args: params.arguments, defaultCwd: mapping.commandRoot });
+    return localFiles.result(value.ok !== false, value);
+  }
   if (localCommands.isCommandTool(params.tool)) {
     if (turn.readOnly && localCommands.isRunTool(params.tool)) return invalid('只读轮次不能在本机运行命令');
     const approved = turn.commandApprovals?.get(params.itemId);

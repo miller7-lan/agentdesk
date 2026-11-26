@@ -15,7 +15,7 @@ function sameRoot(left, right) {
 
 // Windows and macOS: the official CLI on VPS2 works directly in this computer's project (mounted over SFTP),
 // and its local_shell runs here.
-function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onRequest, onCommand, reviewUnknown,
+function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onRequest, onCommand, reviewUnknown, adminShell,
   onTerminal = () => {}, isDeletingProject = () => false }) {
   const worker = createWorkerClient(stateDir, {
     onUpdate: (scope, run) => {
@@ -120,7 +120,8 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       try {
         seat = await openWindowsNativeSeat({ remote, worker: connection, identity, binding, sessionKey: record.sessionKey,
           onNotification: (event) => onEvent(record.provider, event),
-          onServerRequest: onRequest ? (frame) => onRequest(record.provider, frame) : null });
+          onServerRequest: onRequest ? (frame) => onRequest(record.provider, frame) : null,
+          adminShell: adminShell ? { spec: adminShell.spec, call: (args, context) => adminShell.call(record.provider, args, context) } : null });
       } catch (error) {
         await connection.request('release', { binding }).catch(() => {});
         throw error;
