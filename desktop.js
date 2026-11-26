@@ -1,11 +1,41 @@
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const TOOL = /^desktop_(?!sandbox_|trace_|cursor_overlay_|session_|skills_|permissions$|batch$)[a-z_]+$/;
 const MAX_IMAGE = 20 * 1024 * 1024;
 const text = (value) => ({ type: 'inputText', text: value });
 const failure = (message) => ({ success: false, contentItems: [text(message)] });
+
+// agent-desktop on Windows launches a bare name only when it sits directly in System32 or the Windows folder, so
+// "powershell.exe" (System32\WindowsPowerShell\v1.0), "pwsh" (Program Files\PowerShell\7) or anything else on PATH
+// fails with APP_NOT_FOUND before reaching the computer. Resolve a bare program name the way a shell would and pass
+// the absolute path instead; a name that matches nothing is passed through unchanged (it may be an app name).
+// This grants nothing new: the agent may already launch any absolute path.
+function resolveLaunchApp(app, { platform = process.platform, env = process.env, exists = fs.existsSync } = {}) {
+  if (platform !== 'win32' || typeof app !== 'string') return app;
+  const name = app.trim();
+  if (!name || /[\\/:]/.test(name)) return app;
+  const win = path.win32;
+  const root = env.SystemRoot || env.SYSTEMROOT || env.windir || 'C:\\Windows';
+  const programFiles = env.ProgramFiles || env.PROGRAMFILES || 'C:\\Program Files';
+  const directories = [
+    win.join(root, 'System32'), root,
+    win.join(root, 'System32', 'WindowsPowerShell', 'v1.0'),
+    win.join(programFiles, 'PowerShell', '7'),
+    ...String(env.Path || env.PATH || '').split(';').map((entry) => entry.trim().replace(/^"|"$/g, '')).filter(Boolean),
+  ];
+  const names = /\.exe$/i.test(name) ? [name] : [name + '.exe'];
+  for (const directory of directories) {
+    if (!win.isAbsolute(directory)) continue;
+    for (const candidate of names) {
+      const full = win.join(directory, candidate);
+      try { if (exists(full)) return full; } catch {}
+    }
+  }
+  return app;
+}
 
 class Desktop {
   constructor(executable) {
@@ -108,6 +138,7 @@ class Desktop {
     if (Object.keys(args).some((key) => !Object.hasOwn(inputSchema.properties || {}, key))) {
       return failure('Unsupported desktop tool argument');
     }
+    if (tool === 'desktop_launch' && typeof args.app === 'string') args = { ...args, app: resolveLaunchApp(args.app) };
     try {
       const reply = await this.send('tools/call', { name: tool, arguments: args });
       if (!this.enabled || this.active.get(turnId) !== threadId) return failure('Windows desktop access ended');
@@ -141,4 +172,4 @@ function desktopExecutable(app) {
   return path.join(directory, 'desktop-backend', filename);
 }
 
-module.exports = { Desktop, desktopExecutable };
+module.exports = { Desktop, desktopExecutable, resolveLaunchApp };

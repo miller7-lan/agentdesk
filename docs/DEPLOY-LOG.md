@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-26 10:16（北京时间）· 客户端 0.4.12 · Windows 桌面控制能按名字启动 PowerShell
+
+- **起因**：GPT 在 Windows（18133）上调 `desktop_launch({app:"powershell.exe"})` 返回 `APP_NOT_FOUND`，命令没送到电脑。agent-desktop 只认直接在 `System32` 或 Windows 目录下的裸名，`powershell.exe` 在 `System32\WindowsPowerShell\v1.0\`，`pwsh` 在 `Program Files\PowerShell\7\`。
+- **改动**：`desktop.js` 新增 `resolveLaunchApp`：Windows 上 `desktop_launch` 的 `app` 是裸程序名时，按 System32、Windows 目录、Windows PowerShell、PowerShell 7、PATH 的顺序找 `.exe`，找到就换成绝对路径再交给后端；找不到（例如应用显示名）或已是路径时原样传。不增加权限（本来就能传绝对路径）。Mac 不变。
+- **VPS2**：无改动。
+- **验证**：全部测试通过（`test/desktop.test.js` 新增 2 项）。Windows 实机待升级后让 GPT 再试 `desktop_launch powershell.exe`。
+- **回滚**：发更高版本撤回。
+
 ## 2026-11-25 18:54（北京时间）· VPS2 主控 · 清理加固（5555e68）
 
 - **改动**：`cleanup.js` 改为先原子移入 `.cleanup-trash/<批次>/`、`trashDays` 后再删；路径防逃逸（realpath、符号链接、跨文件系统拒绝），只清已结束、未运行、未被引用的任务；每步写 `cleanup-audit.jsonl`；`.cleanup.lock` 防并发；数据库无任务记录时不清无主目录（`orphanGuard: no_task_records`）。`scheduler.js` 删历史记录前先导出 `cleanup-archive/`。`admin.js` 新增 `ad gc --dry-run`。
