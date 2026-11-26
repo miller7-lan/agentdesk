@@ -159,7 +159,7 @@ test('cleared folders are moved to the trash with an audit trail, then purged af
   const lines = audit(stateDir);
   assert.ok(lines.some((line) => line.action === 'quarantine' && line.taskId === 'done' && line.kind === 'worktrees' && line.to));
   assert.ok(lines.some((line) => line.action === 'task_cleared' && line.taskId === 'done'));
-  assert.equal(fs.statSync(path.join(stateDir, AUDIT)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(stateDir, AUDIT)).mode & 0o777, 0o600);
   // A pass a day later purges that trash.
   const later = await cleanup({ tasks, running: new Set(), config, now: now + 2 * DAY, statfs: roomy });
   assert.equal(later.purged, 1);

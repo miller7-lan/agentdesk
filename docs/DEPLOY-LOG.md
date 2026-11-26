@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-26 10:22（北京时间）· 客户端 0.4.13 · 重发 0.4.12
+
+- **起因**：v0.4.12 的 Windows 打包在测试阶段失败（`cleanup.test.js`、`history-retention.test.js` 断言文件权限 0600，Windows 上恒为 0666；来自 main 上的清理加固提交，与 0.4.12 改动无关），没有上传。
+- **改动**：这两处权限断言在 Windows 上跳过。客户端功能同 0.4.12。
+- **VPS2**：无改动。
+- **验证**：本机全部测试通过；以发布运行的 Windows 测试为准。
+- **回滚**：发更高版本撤回。
+
 ## 2026-11-26 10:16（北京时间）· 客户端 0.4.12 · Windows 桌面控制能按名字启动 PowerShell
 
 - **起因**：GPT 在 Windows（18133）上调 `desktop_launch({app:"powershell.exe"})` 返回 `APP_NOT_FOUND`，命令没送到电脑。agent-desktop 只认直接在 `System32` 或 Windows 目录下的裸名，`powershell.exe` 在 `System32\WindowsPowerShell\v1.0\`，`pwsh` 在 `Program Files\PowerShell\7\`。

@@ -67,7 +67,7 @@ test('history prune archives records and events first, keeps uncleared tasks, an
   const archive = JSON.parse(zlib.gunzipSync(fs.readFileSync(result.historyArchive)));
   assert.equal(archive.tasks[0].task.id, oldId);
   assert.equal(archive.tasks[0].events[0].kind, 'completed');
-  assert.equal(fs.statSync(result.historyArchive).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(result.historyArchive).mode & 0o777, 0o600);
   assert.ok(fs.readFileSync(path.join(stateDir, 'cleanup-audit.jsonl'), 'utf8').includes('"history_delete"'));
   assert.equal(scheduler.lastCleanup.ok, false);
 });
