@@ -51,3 +51,15 @@ test('group chat: a click while another operation runs, or while offline, gets a
   assert.match(group, /这个主控工作区现在不可用/);
   assert.match(group, /正在读取主控的工作区，读到后再选择并创建/);
 });
+
+test('single chat: the input box empties on send and gets the text back if the turn does not start', () => {
+  const live = read('live.js');
+  const turn = live.slice(live.indexOf('async function sendTurn('));
+  // Cleared before waiting on the connection / resume, not only after turn/start succeeded.
+  assert.ok(turn.indexOf('if (!fromQueue) takeInput(s, text);') < turn.indexOf('await ensureReady(s)'));
+  assert.match(live, /const ok = await sendTurn\(s, fromButton, options\);\s*if \(!ok\) restoreInput\(s\);/);
+  assert.match(live, /restoreInput\(s\);\s*const message = '发送失败：'/);
+  assert.match(live, /finally \{ takenInput\.delete\(s\); startingTurns\.delete\(s\); \}/);
+  // Another chat opened meanwhile: the text goes into this chat's draft instead of someone else's box.
+  assert.match(live, /else if \(!s\.draft\?\.trim\(\)\) s\.draft = text;/);
+});

@@ -679,20 +679,43 @@
     }
   }
 
+  // The box empties the moment a message is sent, even while the link is still connecting or resuming; if the turn
+  // then does not start, the text comes back (or into that chat's draft) so it can be sent again.
+  const takenInput = new WeakMap();
+  function takeInput(s, text) {
+    const ta = $('#input');
+    if (state.active !== s.id || state.group || ta.value.trim() !== text) return;
+    takenInput.set(s, text);
+    ta.value = ''; A.autosize();
+  }
+  function restoreInput(s) {
+    const text = takenInput.get(s);
+    takenInput.delete(s);
+    if (!text) return;
+    const ta = $('#input');
+    if (state.active === s.id && !state.group) {
+      if (!ta.value.trim()) { ta.value = text; A.autosize(); }
+    } else if (!s.draft?.trim()) s.draft = text;
+  }
   async function send(s, fromButton, options = {}) {
     if (window.__providerDirect?.handles(s)) return window.__providerDirect.send(s, fromButton);
     if (startingTurns.has(s)) return false;
     startingTurns.add(s);
-    try { return await sendTurn(s, fromButton, options); }
+    try {
+      const ok = await sendTurn(s, fromButton, options);
+      if (!ok) restoreInput(s);
+      return ok;
+    }
     catch (error) {
       // Any failure while starting the turn (connecting, uploading, the request itself) ends the "thinking" state
       // and says why, instead of leaving the chat stuck or doing nothing.
+      restoreInput(s);
       const message = '发送失败：' + (error?.message || String(error));
       if (s.busy && s.items.some((item) => item.t === 'thinking')) return fail(s, message);
       toast(message);
       return false;
     }
-    finally { startingTurns.delete(s); }
+    finally { takenInput.delete(s); startingTurns.delete(s); }
   }
 
   async function sendTurn(s, fromButton, options) {
@@ -725,6 +748,7 @@
       : (model && !$('#effortWrap').hidden ? $('#effortSelect').value : undefined);
     const serviceTier = !chat && model ? $('#tierSelect').value || undefined : undefined;
     if (chat) s.chatPolicy = { mode: turnMode, approvalPolicy, sandboxPolicy, autoApprove };
+    if (!fromQueue) takeInput(s, text);
     if (!(await ensureReady(s))) return false;
     if (agent === 'antigravity') {
       try {
@@ -768,7 +792,7 @@
     if (s.fullAccessLocked && sandboxPolicy?.type === 'dangerFullAccess') {
       // Resuming showed this chat is on the old route: 完全访问 would be refused, so say so instead of sending.
       dropThinking(s); s.busy = false; s.status = 'idle';
-      if (!fromQueue) { const at = s.items.findLastIndex((x) => x.t === 'user' && x.text === text); if (at >= 0) s.items.splice(at, 1); }   // still in the input box
+      if (!fromQueue) { const at = s.items.findLastIndex((x) => x.t === 'user' && x.text === text); if (at >= 0) s.items.splice(at, 1); }   // send() puts it back in the input box
       const fallback = window.AgentDeskAccess.lastSafe(store);
       A.setMode(s, fallback, 'handover', { record: false });   // not the person's choice: the default stays
       if (chat) s.chatPolicy = modeToPolicy(fallback, s);   // queued interjections go out in the allowed mode
