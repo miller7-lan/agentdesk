@@ -135,21 +135,15 @@
     return { provider: agentOf(s), projectId: project?.id, name: project?.name || 'project', chatId: s.id, session: s };
   }
 
+  // Always dark (like the CLIs' own terminals): the official TUIs are designed for a dark screen. The colours are
+  // the .native-cli block's own (styles.css), whatever AgentDesk's theme is.
   function theme() {
-    const css = getComputedStyle(document.documentElement);
+    const css = getComputedStyle(view);
     const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
-    const light = document.documentElement.dataset.theme !== 'dark' &&
-      !(document.documentElement.dataset.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
-    // The screen is the conversation area itself (--main), so the TUI sits in AgentDesk rather than in a box.
-    const background = color('--main', light ? '#ffffff' : '#15171b');
-    const foreground = color('--text', light ? '#222b32' : '#e5e8ed');
-    return light ? {
-      background, foreground, cursor: color('--accent', '#167565'), cursorAccent: background,
-      selectionBackground: '#1675a540', black: '#1f2a31', brightBlack: '#5b6b76', red: '#b4233c', brightRed: '#d0384f',
-      green: '#1d7a46', brightGreen: '#26915a', yellow: '#8a6408', brightYellow: '#a7790b', blue: '#1f68a8', brightBlue: '#2f7fc4',
-      magenta: '#7e4aa6', brightMagenta: '#9560bf', cyan: '#127a88', brightCyan: '#1a93a3', white: '#c9d2d8', brightWhite: '#ffffff',
-    } : {
-      background, foreground, cursor: color('--accent', '#67d4be'), cursorAccent: background,
+    // Transparent: the glass of the .native-cli block shows behind the text (allowTransparency below).
+    const background = '#00000000';
+    return {
+      background, foreground: color('--text', '#e5e8ed'), cursor: color('--accent', '#67d4be'), cursorAccent: color('--main', '#15171b'),
       selectionBackground: '#67d4be44', black: '#232a30', brightBlack: '#6c7a85', red: '#f07c8f', brightRed: '#ff9aab',
       green: '#7bceaa', brightGreen: '#9be0c0', yellow: '#edbf72', brightYellow: '#f6d394', blue: '#78b8ed', brightBlue: '#9dccf5',
       magenta: '#c8a1ef', brightMagenta: '#dbbff7', cyan: '#78cad6', brightCyan: '#9cdbe4', white: '#dce3e6', brightWhite: '#ffffff',
@@ -167,7 +161,7 @@
   function ensureTerm() {
     if (term) return term;
     term = new window.Terminal({
-      cursorBlink: true, scrollback: 10000, allowProposedApi: true, convertEol: false,
+      cursorBlink: true, scrollback: 10000, allowProposedApi: true, convertEol: false, allowTransparency: true,
       fontSize: mac ? 13 : 14, lineHeight: 1.1,
       fontFamily: mac ? '"SF Mono", Menlo, Monaco, "PingFang SC", monospace' : '"Cascadia Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace',
       macOptionIsMeta: true, macOptionClickForcesSelection: true, rightClickSelectsWord: mac, altClickMovesCursor: false,

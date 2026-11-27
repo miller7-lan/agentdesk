@@ -651,9 +651,17 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 
 /* ---------- 原生 CLI（src/native-cli.js）：官方 TUI 原样显示，AgentDesk 只在四周 ---------- */
 .center.cli-mode > [data-direct], .center.cli-mode > .thread-banner { display: none !important; }
-.native-cli { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--main); }
+.native-cli { flex: 1; min-height: 0; display: flex; flex-direction: column; color: var(--text); position: relative;
+  /* Dark glass: translucent over the window (vibrancy / acrylic shows through), blurred, with a faint sheen. */
+  background: linear-gradient(160deg, #ffffff0d, #ffffff00 38%), color-mix(in srgb, var(--main) 82%, transparent);
+  backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%);
+  border-left: 1px solid #ffffff10;
+  /* Always dark, whatever AgentDesk's theme: the official CLIs are made for a dark terminal. */
+  color-scheme: dark; --main: #15171b; --panel: #1b1e23; --surface: #1b1e23; --text: #e5e8ed; --muted: #9aa3ad; --border: #2b3037;
+  --accent: #67d4be; --accent-soft: #67d4be22; --accent-ink: #0f1a18; --faint: #7d8792; --hover: #ffffff12; --raised: #20242a;
+  --bg: #15171b; --line: #2b3037; --code-bg: #20242a; --shadow: 0 10px 30px #0008; }
 .native-cli[hidden] { display: none; }
-.native-cli-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel); min-width: 0; flex-wrap: wrap; }
+.native-cli-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid #ffffff14; background: #ffffff08; box-shadow: inset 0 1px 0 #ffffff12; min-width: 0; flex-wrap: wrap; }
 .native-cli-avatar { display: grid; place-items: center; flex: none; }
 .native-cli-title { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .native-cli-title strong { font-size: 13px; }
@@ -680,7 +688,10 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .native-cli-card p { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .native-cli-card-avatar { display: inline-grid; place-items: center; }
 .native-cli-drop { border: 2px dashed var(--accent); border-radius: 12px; margin: 10px; inset: 0; color: var(--accent); font-weight: 600; pointer-events: none; }
-.native-cli-tools { display: flex; gap: 6px; padding: 6px 12px 8px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.native-cli-tools { display: flex; gap: 6px; padding: 6px 12px 8px; border-top: 1px solid #ffffff14; background: #ffffff06; flex-wrap: wrap; }
+.native-cli-tools .chip { border: 1px solid #ffffff12; background: #ffffff08; }
+.native-cli-tools .chip:hover { background: #ffffff16; color: var(--text); }
+.native-cli-card { background: color-mix(in srgb, var(--raised) 78%, transparent) !important; backdrop-filter: blur(16px); border-color: #ffffff1a !important; }
 .native-cli-hints { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 14px 8px; font-size: 11px; color: var(--faint); border-top: 1px solid var(--border); }
 .native-cli-hints kbd { font: 10.5px ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--raised); color: var(--muted); }
 .native-cli-chip.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }

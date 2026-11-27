@@ -2,6 +2,12 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 00:10（北京时间）· 客户端 0.5.2 · CLI 单聊深色玻璃质感；ictvps 改走中继；开通 CLI 设备
+
+- 客户端：`.native-cli` 固定深色变量 + 半透明背景 `backdrop-filter: blur(22px) saturate(150%)`，xterm `allowTransparency` 与透明背景；状态栏、工具栏、提示卡片同风格。只改 CLI 单聊区域，其他界面和群聊不变。未在真机截图验证，靠用户更新后反馈。
+- VPS2：`agentdesk-cli-keys.js add` 开通 `mac`（公钥与 Mac 上 userData 副本一致）和 `windows`（18133，DAZZLE-LEGION，经 `ssh win` 读取）。
+- 用户 Windows（18133）`ssh ictvps` 超时：直连 VPS2:22 成功两三次后被中间设备重置（约 28 秒，VPS2 记为 preauth `Connection reset/closed`，未被 fail2ban 封）；`ictvps-relay`（REALITY 中继）正常。已把 `~/.ssh/config` 中 `ictvps` 改为走中继（127.0.0.1:10022，HostKeyAlias 192.238.238.236），原直连改名 `ictvps-direct`，备份 `config.bak-20261127-relay`。中继 4 次中 1 次失败；该电脑上未发现中继的开机自启任务。
+
 ## 2026-11-27（北京时间，晚）· 客户端 0.5.1 · 发布 0.5.0 的内容
 
 - 0.5.0 第二次发布运行中 Windows 打包测试失败（`test/cli-jail.test.js` 在 Windows 调用 `process.getuid`），未上传。修复：沙盒测试只在 Linux 运行、`writeIdentity` 兜底；按用户选择不再移动 `v0.5.0` 标签，版本升为 0.5.1 发布，内容与 0.5.0 相同。
