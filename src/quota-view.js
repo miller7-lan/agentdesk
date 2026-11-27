@@ -328,14 +328,15 @@
 
   // Live while the page is open and the window is in view: a new reading every 10 seconds, and the reset
   // countdowns tick every second in between.
-  const LIVE_MS = 10_000;
+  // Quotas are read the way each CLI's /usage reads them (orchestrator/quotas.js), once a minute; 「刷新」 reads now.
+  const LIVE_MS = 60_000;
   let ticker = null;
   function updateTime() {
     const label = $('#quotaDialog .qv-time');
     if (!label) return;
     const age = loadedAt ? Math.round((Date.now() - loadedAt) / 1000) : 0;
     label.textContent = loading && !data ? '读取中…'
-      : loadedAt ? (data?.live ? '实时 · ' : '') + (age < 2 ? '刚刚更新' : age + ' 秒前更新') + ' · 每 10 秒刷新' : '';
+      : loadedAt ? (data?.live ? '实时 · ' : '') + (age < 2 ? '刚刚更新' : age + ' 秒前更新') + ' · 每 1 分钟刷新' : '';
   }
   function tick() {
     const dialog = $('#quotaDialog');

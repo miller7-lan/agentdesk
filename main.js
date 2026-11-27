@@ -1555,19 +1555,31 @@ ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) 
   } catch (error) { return { ok: false, error: error.message }; }
 });
 
-// Native CLI single chats (src/native-cli.js): the official CLI's own TUI on VPS2, shown and typed into here.
-const TUI_OPS = new Set(['status', 'open', 'input', 'resize', 'upload', 'close', 'forget']);
+// Native CLI single chats (src/native-cli.js): `ssh -tt agentdesk@vps2 cli …` in a local terminal, the official CLI
+// on VPS2 exactly as in the person's own terminal (orchestrator/native-cli-ssh.js; VPS2: agentdesk-cli.js).
+let nativeCli = null;
+function nativeCliBackend() {
+  if (!['win32', 'darwin'].includes(process.platform)) return null;
+  nativeCli ||= require('./orchestrator/native-cli-ssh').createNativeCli({
+    loadConfig: require('./remote').loadConfig,
+    publicCopy: path.join(app.getPath('userData'), 'cli_ed25519.pub'),
+    onEvent: (event) => toUi('tui:event', event),
+  });
+  return nativeCli;
+}
+const TUI_OPS = new Set(['status', 'open', 'input', 'resize', 'upload', 'close', 'forget', 'key']);
 ipcMain.handle('tui:call', async (event, op, fields = {}) => {
   if (!fromMainWindow(event) || !TUI_OPS.has(op) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
     return { ok: false, error: 'invalid_request' };
   }
   if (updateLocked() && ['open', 'input', 'upload'].includes(op)) return { ok: false, error: UPDATE_LOCKED };
   try {
-    const native = nativeDesktop();
-    if (!native) return { ok: false, error: 'tui_unavailable' };
-    return { ok: true, value: await native.tui(op, fields) };
+    const backend = nativeCliBackend();
+    if (!backend) return { ok: false, error: 'tui_unavailable' };
+    return { ok: true, value: await backend.call(op, fields) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+app.on('before-quit', () => { try { nativeCli?.closeAll(); } catch {} });
 
 function forgetChatThread(threadId) {
   chatThreads.delete(threadId);

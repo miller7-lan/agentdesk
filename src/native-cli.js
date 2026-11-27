@@ -14,6 +14,7 @@
   const STATES = {
     connecting: ['wait', '正在连接 VPS2…'], ready: ['ok', '已连接'], disconnected: ['err', '连接中断'],
     exited: ['idle', 'CLI 已退出'], closed: ['idle', '未启动'], failed: ['err', '启动失败'],
+    reconnecting: ['wait', '断线，正在重连…（CLI 仍在 VPS2 上运行）'], not_enabled: ['err', '这台电脑未开通'],
   };
   const ERRORS = {
     tui_unavailable: '这台电脑上没有原生单聊服务（需要 Windows 或 Mac 版 AgentDesk 并已连上 VPS2）。',
@@ -43,11 +44,8 @@
       <div class="native-cli-title"><strong id="nativeCliName"></strong><span id="nativeCliWhere"></span></div>
       <span class="native-cli-state" id="nativeCliState"><span class="dot"></span><span></span></span>
       <div class="grow"></div>
-      <div class="native-cli-mode" role="radiogroup" aria-label="权限">
-        <button type="button" data-cli-mode="write" role="radio" title="CLI 可以修改项目文件、在这台电脑上运行命令；每一步按 CLI 自己的方式请你批准">可修改</button>
-        <button type="button" data-cli-mode="read" role="radio" title="项目只读挂载，CLI 以规划模式启动，不提供本机命令">只读规划</button>
-      </div>
       <button type="button" class="icon-btn" id="nativeCliUpload" title="上传文件给 CLI（也可以直接拖进来或粘贴图片）"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg></button>
+      <button type="button" class="icon-btn" id="nativeCliHelp" title="帮助：原生 CLI 怎么用"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01"/></svg></button>
       <button type="button" class="btn" id="nativeCliRestart" title="重新连接并继续上次的对话">重新连接</button>
       <button type="button" class="btn" id="nativeCliStop" title="结束这个 CLI（对话记录保留，下次打开会继续）">结束</button>
     </header>
@@ -61,16 +59,17 @@
           <button type="button" class="btn primary" id="nativeCliStart"></button>
         </div>
       </div>
-      <div class="native-cli-drop" id="nativeCliDrop" hidden><span>松开上传到 CLI（/uploads）</span></div>
+      <div class="native-cli-drop" id="nativeCliDrop" hidden><span>松开上传到这个项目的 .uploads/</span></div>
     </div>
-    <footer class="native-cli-hints" id="nativeCliHints"></footer>
+    <footer class="native-cli-tools" id="nativeCliTools">
+      <button type="button" class="chip" data-cli-tool="upload" title="上传文件给 CLI（也可以直接拖进来或粘贴图片）"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
+      <button type="button" class="chip" data-cli-tool="model" title="在 CLI 里打开 /model（会先清空当前输入的那一行）"><svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>模型</button>
+      <button type="button" class="chip" data-cli-tool="quota" title="额度与分工（每 1 分钟刷新）"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8h-8z"/></svg>额度</button>
+      <button type="button" class="chip" data-cli-tool="help" title="原生 CLI 帮助：按键、命令、断线、开通"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01"/></svg>帮助</button>
+    </footer>
     <input type="file" id="nativeCliFile" multiple hidden>`;
   center.appendChild(view);
 
-  $('#nativeCliHints').innerHTML = (mac
-    ? ['<kbd>⌃C</kbd> 中断', '<kbd>⌘C</kbd> 复制', '<kbd>⌘V</kbd> 粘贴', '<kbd>⌥</kbd> 作 Meta 键', '<kbd>⇧⏎</kbd> 换行', '拖入文件 / 粘贴图片 → /uploads']
-    : ['<kbd>Ctrl+C</kbd> 中断（有选中时复制）', '<kbd>Ctrl+V</kbd> 粘贴', '<kbd>Ctrl+Shift+C</kbd> 复制', '<kbd>Shift+Enter</kbd> 换行', '拖入文件 / 粘贴图片 → /uploads'])
-    .map((text) => `<span>${text}</span>`).join('');
 
   // ---------- state ----------
   let shown = false;              // the open conversation is a CLI chat
@@ -132,7 +131,7 @@
     const s = A.sess(A.state.active);
     if (!s?.live || s.surface !== 'cli' || A.state.group) return null;
     const project = A.proj(s.project);
-    return { provider: agentOf(s), projectId: project?.configured ? project.id : undefined, chatId: s.id, session: s };
+    return { provider: agentOf(s), projectId: project?.id, name: project?.name || 'project', chatId: s.id, session: s };
   }
 
   function theme() {
@@ -226,18 +225,14 @@
     $('#nativeCliAvatar').innerHTML = avatar;
     $('#nativeCliName').textContent = name;
     const project = A.proj(conv.session.project);
-    $('#nativeCliWhere').textContent = current?.cwd ? `VPS2 · ${current.cwd}` : project?.name ? `项目 · ${project.name}` : '';
+    $('#nativeCliWhere').textContent = project?.name ? `VPS2 · /work/${project.name}` : 'VPS2';
     const state = current?.state || 'closed';
     const [dot, label] = STATES[state] || STATES.closed;
     $('#nativeCliState').className = 'native-cli-state ' + dot;
     $('#nativeCliState span:last-child').textContent = state === 'ready' && current.mode === 'read' ? '已连接 · 只读' : label;
     const mode = current?.state === 'ready' || current?.state === 'connecting' ? current.mode : wanted;
-    for (const button of view.querySelectorAll('[data-cli-mode]')) {
-      button.classList.toggle('on', button.dataset.cliMode === mode);
-      button.setAttribute('aria-checked', String(button.dataset.cliMode === mode));
-    }
-    $('#nativeCliRestart').hidden = !['disconnected', 'exited', 'failed'].includes(state);
-    $('#nativeCliStop').hidden = !['ready', 'connecting'].includes(state);
+    $('#nativeCliRestart').hidden = !['disconnected', 'exited', 'failed', 'not_enabled'].includes(state);
+    $('#nativeCliStop').hidden = !['ready', 'connecting', 'reconnecting'].includes(state);
     $('#nativeCliUpload').disabled = state !== 'ready';
     const cover = $('#nativeCliCover');
     const card = {
@@ -245,6 +240,7 @@
       failed: ['没有启动成功', explain(current?.error), '重试'],
       disconnected: ['连接中断', `${explain(current?.error) || '和 VPS2 的连接断开了。'}重新连接后会继续上次的对话。`, '重新连接'],
       exited: [`${name} 已退出`, '对话记录保留在 VPS2 上，重新打开会继续。', '重新打开'],
+      not_enabled: ['这台电脑还没开通原生 CLI', '需要管理员在 VPS2 上为这台电脑开通一把 CLI 钥匙（只能打开 CLI，不是 root）。点下面的按钮复制这台电脑的公钥发给管理员；开通后点「重新连接」。', '复制这台电脑的公钥'],
     }[state];
     cover.hidden = !card || busy;
     if (card) {
@@ -261,7 +257,7 @@
     const conv = conversation();
     if (!conv) { current = null; render(); return; }
     try {
-      const status = await call('status', { provider: conv.provider, projectId: conv.projectId, chatId: conv.chatId });
+      const status = await call('status', { provider: conv.provider, projectId: conv.projectId, name: conv.name, chatId: conv.chatId });
       if (status.state === 'no_project') { current = { state: 'failed', error: '原生 CLI 需要一个本机项目：请先为这个单聊选择项目文件夹（项目「···」→ 本机文件夹）。' }; render(); return; }
       const same = current?.key === status.key;
       current = { ...status, provider: conv.provider, projectId: conv.projectId, chatId: conv.chatId };
@@ -300,7 +296,7 @@
     render();
     try {
       autoStarted.add(conv.chatId);
-      const value = await call('open', { provider: conv.provider, projectId: conv.projectId, chatId: conv.chatId, mode: wanted, cols: term.cols, rows: term.rows });
+      const value = await call('open', { provider: conv.provider, projectId: conv.projectId, name: conv.name, chatId: conv.chatId, mode: wanted, cols: term.cols, rows: term.rows });
       current = { ...current, ...value };
       if (value.replay?.length) term.write(value.replay instanceof Uint8Array ? value.replay : new Uint8Array(value.replay));
     } catch (error) {
@@ -327,7 +323,7 @@
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
         const name = file.name && file.name !== 'image.png' ? file.name : `paste-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}.${(file.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`;
-        paths.push(await call('upload', { key: current.key, name, bytes }));
+        paths.push(await call('upload', { projectId: current.projectId, name: A.proj(conversation()?.session.project)?.name || 'project', fileName: name, bytes }));
       } catch (error) { A.toast('上传失败：' + explain(error)); }
     }
     // Typed into the prompt like a dragged file in a terminal: the CLI picks the paths up (images are attached).
@@ -341,25 +337,29 @@
   $('#nativeCliScreen').addEventListener('keydown', (event) => {
     if (!(event.ctrlKey && event.key === 'Tab')) event.stopPropagation();
   });
-  $('#nativeCliStart').addEventListener('click', start);
+  $('#nativeCliStart').addEventListener('click', async () => {
+    if (current?.state !== 'not_enabled') { start(); return; }
+    try { await navigator.clipboard.writeText(await call('key')); A.toast('公钥已复制，发给管理员开通即可'); }
+    catch (error) { A.toast('没能复制公钥：' + explain(error)); }
+  });
+  $('#nativeCliHelp').addEventListener('click', () => window.AgentDeskNativeCliHelp?.open());
+  $('#nativeCliTools').addEventListener('click', (event) => {
+    const tool = event.target.closest('[data-cli-tool]')?.dataset.cliTool;
+    if (tool === 'upload') $('#nativeCliFile').click();
+    else if (tool === 'help') window.AgentDeskNativeCliHelp?.open();
+    else if (tool === 'quota') window.__quotaView?.open();
+    else if (tool === 'model') {
+      if (current?.state !== 'ready') { A.toast('CLI 还没连上'); return; }
+      send('\x15');                                   // Ctrl+U: the line being typed goes first
+      setTimeout(() => send('/model'), 60);
+      setTimeout(() => send('\r'), 260);
+      term?.focus();
+    }
+  });
   $('#nativeCliRestart').addEventListener('click', start);
   $('#nativeCliStop').addEventListener('click', stop);
   $('#nativeCliUpload').addEventListener('click', () => $('#nativeCliFile').click());
   $('#nativeCliFile').addEventListener('change', (event) => { upload([...event.target.files]); event.target.value = ''; });
-  for (const button of view.querySelectorAll('[data-cli-mode]')) {
-    button.addEventListener('click', async () => {
-      const mode = button.dataset.cliMode;
-      if (current?.state === 'ready' && current.mode !== mode) {
-        if (!window.confirm(`切换到「${button.textContent}」需要重启 CLI（对话会继续）。现在切换？`)) return;
-        wanted = mode;
-        await call('close', { key: current.key }).catch(() => {});
-        await start();
-        return;
-      }
-      wanted = mode;
-      render();
-    });
-  }
   // Images pasted from the clipboard go up as files (the CLI on VPS2 cannot read this computer's clipboard).
   $('#nativeCliScreen').addEventListener('paste', (event) => {
     const files = [...(event.clipboardData?.files || [])];

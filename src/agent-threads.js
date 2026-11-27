@@ -560,7 +560,7 @@ window.__agentThreadsReady = (async () => {
   });
   $('#threadBannerNew').addEventListener('click', () => {
     const s = D.sessions.find((session) => session.id === A.state.active);
-    if (s?.agentThread) A.newDirect(s.project, s.provider);
+    if (s?.agentThread) A.newDirect(s.project, s.provider, { surface: 'chat' });
   });
 
   // Deleting a group chat deletes the records of work its lead handed out.

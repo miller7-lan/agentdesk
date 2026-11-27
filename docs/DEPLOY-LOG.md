@@ -2,6 +2,19 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-27 22:30（北京时间）· 客户端 0.5.0 + VPS2 · 原生 CLI 单聊改走纯 SSH
+
+- **起因**：经载体转发的原生 CLI 仍慢（Grok/Codex/Antigravity 启动扫描挂载的项目、按键与 SFTP 同道）。用户要求照「自己在终端 ssh 到 VPS2 用 CLI」的方式做，只适配界面；登录不能用 root；多人使用需隔离；群聊不受影响。
+- **VPS2 改动**：
+  - `60-agentdesk-bridge.conf`（Match User agentdesk）`PermitTTY no → yes`，备份 `*.bak-20261127-cli`，`sshd -t` 通过后 reload。该账号 20 把钥匙全部带 `restrict`（默认无 pty），只有新加的 `restrict,pty` CLI 钥匙能开终端；`DisableForwarding yes` 不变。
+  - 新增 `agentdesk-cli.js`（强制命令，以 agentdesk 身份）：`cli <provider> <chatId> <projectId> <nameHex> <mode>` 在 bwrap 沙盒里于 `cli-chats/<设备>/work/<项目>`（显示为 `/work/<项目名>`）启动官方 CLI，按设备的私有历史（cli-history 绑定；Codex 共用 homes/codex，按目录区分），每个单聊记住自己的会话（Claude/Grok 预设 id，Codex/agy 首次运行后识别）；用 dtach（新装 `dtach 0.9`）保活，断线后再连接回同一会话（`-r winch -E -z`）；`upload`、`stop` 两个子命令。
+  - 新增 `agentdesk-cli-keys.js`（root 管理）：`add/remove/list` 设备的 CLI 钥匙（写入前备份 authorized keys）。
+  - `native-tui.js` 一并部署（共用工具函数）。
+- **客户端改动**：`orchestrator/native-cli-ssh.js`（node-pty 运行 `ssh -tt agentdesk@vps2 cli …`，与其他 VPS2 连接共用直连/VPS1 跳板路线记录，255 断线按 1/2/5/10/20/30 秒自动重连，`Permission denied (publickey)` 显示「未开通」并可复制公钥，公钥副本在 userData/cli_ed25519.pub）；`main.js` 的 `tui:call` 改用它；`src/native-cli.js` 去掉权限切换与提示栏，加工具栏（附件/模型/额度/帮助）；新增 `src/native-cli-help.js`；新建单聊默认原生 CLI（群聊页发起的仍是对话界面）；额度刷新改为 60 秒；`project-mount.js` 增加可选缓存（默认关闭，群聊不变）。
+- **验证**：全部测试通过（新增 `test/native-cli-ssh.test.js` 4 项）；VPS2 上以真实 sshd + 测试钥匙端到端：0.97 秒看到 Grok 官方界面、上传、调整大小、结束；dtach 断线后会话仍在、重连接回并重绘、`stop` 后进程清空。测试钥匙、会话和数据已清除。
+- **待办**：反向 ssh（CLI 里 `ssh pc`）回到用户电脑；CLI 单聊里的共用终端。
+- **回滚**：`agentdesk-cli-keys.js remove <设备>` 关闭某台电脑；恢复 sshd 配置备份并 reload；客户端发更高版本。
+
 ## 2026-11-27 21:00（北京时间）· 客户端 0.4.20 · 载体写入合并，修复原生 CLI 打字卡顿
 
 - **起因**：用户反馈原生 CLI 打字半天才出来，直接 ssh 很快。原因是 `native-tui-client.js` 和 `windows-native-seat.js` 把每个 NativeChannel 帧各发一次 `command/exec/write` 并串行等待回复：每帧一个来回，SFTP（CLI 扫描项目时成千上万个小请求）和按键排在同一条队里。

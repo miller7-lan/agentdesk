@@ -1689,7 +1689,7 @@ window.__groupReady = (async () => {
   function refreshQuotas() {
     if (!supported || !isLiveGroup() || !connected || quotaCheck || Date.now() < nextQuotaAt) return;
     const current = generation;
-    nextQuotaAt = Date.now() + 15000;
+    nextQuotaAt = Date.now() + 60_000;
     quotaCheck = control('quota_status').then((result) => {
       if (current === generation) quotas = result;
     }).catch(() => {
@@ -2756,7 +2756,7 @@ window.__groupReady = (async () => {
         const [taskId, index] = adviceButton.dataset.directAdvice.split(':');
         const option = currentGroup()?.records?.get(taskId)?.directAdvice?.options?.[Number(index)];
         if (!option) return;
-        Promise.resolve(A.newDirect(state.group, option.role)).then(() => {
+        Promise.resolve(A.newDirect(state.group, option.role, { surface: 'chat' })).then(() => {
           const box = $('#input');
           if (box && !box.value.trim()) { box.value = option.prompt || ''; box.dispatchEvent(new Event('input')); }
           const mode = $('#modeSelect');
@@ -2772,7 +2772,7 @@ window.__groupReady = (async () => {
           || A.D.sessions.find((session) => session.project === state.group
             && !session.agentThread && session.provider === provider);
         if (direct) A.openSession(direct.id);
-        else A.newDirect(state.group, provider);
+        else A.newDirect(state.group, provider, { surface: 'chat' });
       }
     });
   }

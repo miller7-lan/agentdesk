@@ -17,7 +17,7 @@ async function isMounted(directory) {
 // The caller owns and authenticates the SFTP stream. This worker never accepts a root or a
 // mountpoint from an SSH payload. Create one unique mountpoint and fail closed on channel loss.
 async function mountProject({
-  stateDir, input, output, signal, readOnly = false, sshfs = '/usr/bin/sshfs',
+  stateDir, input, output, signal, readOnly = false, cache = false, sshfs = '/usr/bin/sshfs',
   fusermount = '/usr/bin/fusermount3', spawnProcess = spawn, checkMount = isMounted, unmount, account,
 }) {
   signal?.throwIfAborted();
@@ -39,7 +39,12 @@ async function mountProject({
     await fs.chmod(root, 0o710);
   }
   const directory = await fs.mkdtemp(path.join(root, 'project-'));
-  const mountOptions = ['passive', 'idmap=user', 'sshfs_sync', 'direct_io', 'dir_cache=no', 'nodev', 'nosuid',
+  // Native seats read and write every file through to the computer (no caching). A native CLI (native-tui-host.js)
+  // walks the whole project when it starts; with every lookup a round trip it took minutes over a slow line, so it
+  // caches names and attributes for a few seconds and file contents until their modification time changes.
+  const caching = cache ? ['dir_cache=yes', 'dcache_timeout=10', 'auto_cache', 'attr_timeout=5', 'entry_timeout=5', 'negative_timeout=5']
+    : ['direct_io', 'dir_cache=no'];
+  const mountOptions = ['passive', 'idmap=user', 'sshfs_sync', ...caching, 'nodev', 'nosuid',
     ...(account ? ['allow_other', 'default_permissions', 'uid=' + account.uid, 'gid=' + account.gid, 'umask=0077'] : []),
     ...(readOnly ? ['ro'] : [])];
   let child;

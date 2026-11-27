@@ -680,6 +680,7 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .native-cli-card p { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .native-cli-card-avatar { display: inline-grid; place-items: center; }
 .native-cli-drop { border: 2px dashed var(--accent); border-radius: 12px; margin: 10px; inset: 0; color: var(--accent); font-weight: 600; pointer-events: none; }
+.native-cli-tools { display: flex; gap: 6px; padding: 6px 12px 8px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .native-cli-hints { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 14px 8px; font-size: 11px; color: var(--faint); border-top: 1px solid var(--border); }
 .native-cli-hints kbd { font: 10.5px ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--raised); color: var(--muted); }
 .native-cli-chip.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
@@ -689,3 +690,14 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .provider-picker .picker-surface label:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); color: var(--text); }
 .provider-picker .picker-surface label:has(input:disabled) { opacity: .5; cursor: not-allowed; }
 .provider-picker .picker-surface input { margin-top: 3px; accent-color: var(--accent); }
+.cli-help-dialog { max-width: 720px; }
+.cli-help { padding: 4px 22px 22px; max-height: 70vh; overflow: auto; font-size: 13px; line-height: 1.65; color: var(--text); }
+.cli-help h3 { font-size: 13.5px; margin: 16px 0 4px; }
+.cli-help p { margin: 4px 0; color: var(--muted); }
+.cli-help code, .cli-help pre, .cli-help kbd { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.cli-help code { background: var(--code-bg); padding: 0 4px; border-radius: 4px; }
+.cli-help pre { background: var(--code-bg); padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
+.cli-help table { border-collapse: collapse; width: 100%; }
+.cli-help td { padding: 4px 8px 4px 0; vertical-align: top; color: var(--muted); }
+.cli-help td:first-child { white-space: nowrap; color: var(--text); }
+.cli-help kbd { padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--raised); }

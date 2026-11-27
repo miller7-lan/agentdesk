@@ -214,24 +214,18 @@
     D.sessions.unshift(s); persist(); A.openSession(s.id); $('#input').focus();
   }
   async function choose(project) {
-    const surface = store.get('newChatSurface', 'chat');
     const dialog = document.createElement('dialog'); dialog.className = 'provider-picker';
     // Gemini CLI 已停用；其余四家都走本机文件工具的单聊。
     const pickable = ['codex', 'claude', 'grok', 'antigravity'];
-    dialog.innerHTML = `<h2>选择单聊 AI</h2><p>每个会话独立；AI 直接读写本机文件，修改即时生效。</p>
+    dialog.innerHTML = `<h2>选择单聊 AI</h2><p>打开的是官方命令行界面（原生 CLI），在 VPS2 上运行，项目和命令都在这台电脑上。每个单聊独立。</p>
       <div>${pickable.map((id) => `<button type="button" class="btn" data-provider-choice="${id}">${names[id]}</button>`).join(' ')}</div>
-      <div class="picker-surface" role="radiogroup" aria-label="界面">
-        <label><input type="radio" name="providerSurface" value="chat" ${surface === 'cli' ? '' : 'checked'} /><span><strong>默认对话</strong>　AgentDesk 的对话界面：气泡、改动面板、批准卡片。</span></label>
-        <label><input type="radio" name="providerSurface" value="cli" ${surface === 'cli' ? 'checked' : ''} ${window.desk.tui ? '' : 'disabled'} /><span><strong>原生 CLI</strong>　官方命令行界面（Claude Code、Codex、Grok Build、Antigravity 原样显示），在 VPS2 上运行，项目来自这台电脑。</span></label>
-      </div>
       <label class="picker-option"><input type="checkbox" data-provider-worktree ${window.desk.worktrees ? '' : 'disabled'} />
         <span><strong>独立工作树</strong>　需要已有提交的 Git 仓库根目录。在新的 Git 分支和独立目录里改，项目目录不受影响；完成后查看差异、合回或丢弃。适合同时开多个单聊改同一个项目。</span></label>
       <p class="panel-note">未配置或额度用尽的 AI 会显示对应状态。</p><button class="btn" data-provider-close>关闭</button>`;
     dialog.addEventListener('click', event => {
       const chosen = event.target.closest('[data-provider-choice]')?.dataset.providerChoice;
       const worktree = dialog.querySelector('[data-provider-worktree]')?.checked;
-      const picked = dialog.querySelector('input[name="providerSurface"]:checked')?.value === 'cli' ? 'cli' : 'chat';
-      if (chosen) { dialog.close(); store.set('newChatSurface', picked); A.newDirect(project, chosen, { worktree, surface: picked }); }
+      if (chosen) { dialog.close(); A.newDirect(project, chosen, { worktree }); }
       else if (event.target.closest('[data-provider-close]')) dialog.close();
     });
     dialog.addEventListener('close', () => dialog.remove());

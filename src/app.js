@@ -265,7 +265,7 @@
     try { return await startDirect(project, agent, options); }
     catch (error) { toast('没能新建单聊：' + (error?.message || String(error))); }
   }
-  async function startDirect(project, agent, { worktree = false, surface = 'chat' } = {}) {
+  async function startDirect(project, agent, { worktree = false, surface = 'cli' } = {}) {
     project = projectIdOf(project);
     let p = proj(project);
     if (!p) { toast('找不到这个项目，请在左侧重新选择'); return; }
@@ -283,10 +283,9 @@
       toast('请先为这个项目选择本机目录，再开始 ' + agentName(agent) + ' 单聊');
       return;
     }
-    if (surface === 'cli') {
-      // A native CLI chat: the official TUI on VPS2 in this project (src/native-cli.js keeps the list).
-      if (!LIVE || !p.live || !p.configured || !window.AgentDeskNativeCli) { toast('原生 CLI 需要已连接、并选好本机目录的项目'); return; }
-      if (worktree) toast('原生 CLI 直接在项目目录里工作，这次不会创建独立工作树');
+    // Single chats are native CLI chats (the official TUI on VPS2 over SSH, src/native-cli.js); they work in the
+    // project's folder on VPS2. A request for its own worktree still gets the conversation interface.
+    if (surface === 'cli' && !worktree && LIVE && p.live && window.AgentDeskNativeCli) {
       return window.AgentDeskNativeCli.create(project, agent);
     }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();

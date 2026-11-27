@@ -144,7 +144,7 @@ async function serveNativeTui({ argv, input = process.stdin, output = process.st
     uploadDir = path.join(stateDir, 'uploads');
     await fs.mkdir(uploadDir, { mode: 0o755 });
     await fs.chown(uploadDir, 0, 0);
-    mounted = await mount({ stateDir, input: sftpIn, output: sftpOut, account, readOnly: !writable, signal: stop.signal });
+    mounted = await mount({ stateDir, input: sftpIn, output: sftpOut, account, readOnly: !writable, cache: process.env.AGENTDESK_TUI_NO_CACHE !== '1', signal: stop.signal });
     // This session's own CLI history (the same root the native chat seats use, under its own key).
     const persistent = path.join(HOST_STATE, 'windows-native-chat');
     await fs.mkdir(persistent, { recursive: true, mode: 0o700 });
