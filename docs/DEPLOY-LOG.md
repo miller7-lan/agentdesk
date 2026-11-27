@@ -12,7 +12,15 @@
   - `native-tui.js` 一并部署（共用工具函数）。
 - **客户端改动**：`orchestrator/native-cli-ssh.js`（node-pty 运行 `ssh -tt agentdesk@vps2 cli …`，与其他 VPS2 连接共用直连/VPS1 跳板路线记录，255 断线按 1/2/5/10/20/30 秒自动重连，`Permission denied (publickey)` 显示「未开通」并可复制公钥，公钥副本在 userData/cli_ed25519.pub）；`main.js` 的 `tui:call` 改用它；`src/native-cli.js` 去掉权限切换与提示栏，加工具栏（附件/模型/额度/帮助）；新增 `src/native-cli-help.js`；新建单聊默认原生 CLI（群聊页发起的仍是对话界面）；额度刷新改为 60 秒；`project-mount.js` 增加可选缓存（默认关闭，群聊不变）。
 - **验证**：全部测试通过（新增 `test/native-cli-ssh.test.js` 4 项）；VPS2 上以真实 sshd + 测试钥匙端到端：0.97 秒看到 Grok 官方界面、上传、调整大小、结束；dtach 断线后会话仍在、重连接回并重绘、`stop` 后进程清空。测试钥匙、会话和数据已清除。
-- **待办**：反向 ssh（CLI 里 `ssh pc`）回到用户电脑；CLI 单聊里的共用终端。
+- **发布暂停**：v0.5.0 的发布运行在打包阶段被取消（用户要求），VPS2 未收到 0.5.0；之后的改动并入 0.5.0 重新发布（需移动标签，已征得用户同意）。
+- **沙盒加固（同日稍后，用户要求「客户端不能改动也不能查看 VPS」、注意并发与多人隐私）**：
+  - 新增 `cli-jail.js`：原生 CLI 不再用群聊的沙盒（整机只读可见），改为从空白开始：只放 `/usr`（`/usr/local` 只留 grok、agy）、Node 运行时、`/etc` 中程序必需的文件；`passwd/group/hosts/hostname/resolv.conf` 为沙盒单独生成；`/root`、`/home`、`/srv`、`/var/lib`、`/var/log`、AgentDesk 代码与数据一律不可见；独立 PID/IPC/UTS/用户/网络命名空间。
+  - 每台设备每个 CLI 一个独立家目录 `cli-chats/<设备>/home/<provider>`；共享登录只把令牌文件本身绑入（Claude `.credentials.json`、Codex `auth.json`、agy 令牌，Grok 每次复制 `auth.json`），设置首次复制一次，历史不共享（`.claude.json` 去掉他人项目列表）。
+  - 网络：沙盒用独立网络命名空间，经 `slirp4netns` 上网（新装 `slirp4netns`、`passt`；passt 因 AppArmor 限制未使用）。`/usr/local/lib/agentdesk/slirp4netns` 为 setgid `agentdesk-cli` 的副本（新建系统组 `agentdesk-cli`，agentdesk 加入）；`/etc/agentdesk-cli-net.nft` 由 `agentdesk-cli-net.service` 加载，拒绝该组访问本机地址与内网（仅放行本机 DNS）。群聊等其他进程不受影响。新增 `cli-net.py`（通过 NS_GET_USERNS 接入 bwrap 的网络命名空间）。
+  - 并发：对话记录改为每个单聊一个文件 `chats/<provider>-<chat>.json`；上传以 O_EXCL 占名；新家目录初始化加锁。
+  - 验证：沙盒内看不到 `/root`、`/srv`、AgentDesk 数据、`/etc/ssh`、日志、shadow；`/usr` 只读；外网可达、本机回环与公网地址上的 3001/9443/7681/888 均被拒；四个 CLI 均能启动，Claude/Codex 登录有效；4 个并发首次打开一致；5 个并发同名上传各自成功；跨设备不可见。测试 643 项通过。
+  - 已知：共享登录意味着任何开通的设备在 CLI 里都能读到该登录令牌（CLI 运行需要它）；Codex 刷新令牌轮换时，多处同时刷新有小概率使登录失效。
+- **待办**：CLI 回到用户电脑（`pc` 命令，经共用终端执行；不使用 sshd 端口转发）；CLI 单聊里的共用终端。
 - **回滚**：`agentdesk-cli-keys.js remove <设备>` 关闭某台电脑；恢复 sshd 配置备份并 reload；客户端发更高版本。
 
 ## 2026-11-27 21:00（北京时间）· 客户端 0.4.20 · 载体写入合并，修复原生 CLI 打字卡顿

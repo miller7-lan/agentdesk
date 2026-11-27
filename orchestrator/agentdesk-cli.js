@@ -6,23 +6,21 @@
 // and the client runs `ssh -tt agentdesk@vps2 cli <provider> <chatId> <projectId> <nameHex> <write|read>`. This
 // program (running as agentdesk, never root) starts the official CLI on the SSH terminal itself: keystrokes and
 // screen go straight through sshd, as in the person's own terminal. The CLI works in a folder of this device and
-// project on VPS2, in the same bubblewrap sandbox as the other chats, with this device's own conversation history
+// project on VPS2, in a sandbox of its own (cli-jail.js: no view of VPS2 beyond the programs, no access to its
+// services, its own home per device with only the login shared), with this device's own conversation history
 // (each chat continues its own conversation; /resume lists the device's conversations). Devices never see each
 // other's folders or history. Group chat, its CLIs and their state are not touched.
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
-const { sandboxCommand } = require('./sandbox');
-const cliHistory = require('./cli-history');
-const { BINS, HOME_NAMES, projectFolderName } = require('./native-tui');
+const jail = require('./cli-jail');
+const { BINS, projectFolderName } = require('./native-tui');
 
 const STATE = '/var/lib/agentdesk-orchestrator';
 const PROVIDERS = ['claude', 'codex', 'grok', 'antigravity'];
 const DEVICE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const CHAT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
-const BILLING = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY',
-  'GROK_API_KEY', 'XAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'];
 
 function parseRequest(original = '', env = process.env) {
   const device = env.AGENTDESK_DEVICE;
@@ -41,7 +39,7 @@ function parseRequest(original = '', env = process.env) {
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
 function writeJson(file, value) {
-  const temp = file + '.' + process.pid;
+  const temp = file + '.' + process.pid + '.' + randomUUID().slice(0, 8);
   fs.writeFileSync(temp, JSON.stringify(value, null, 1), { mode: 0o600 });
   fs.renameSync(temp, file);
 }
@@ -65,9 +63,9 @@ function sessionArgs(provider, record) {
   return [];
 }
 
-function findNewSession(provider, { home, historyRoot, cwd, since }) {
+function findNewSession(provider, { home, cwd, since }) {
   if (provider === 'codex') {
-    const root = path.join(home, '.codex', 'sessions');
+    const root = path.join(home, '.codex', 'sessions');   // the device's own home
     const desc = (items) => items.filter((item) => /^\d+$/.test(item)).sort().reverse();
     for (const year of desc(list(root)).slice(0, 2)) for (const month of desc(list(path.join(root, year))).slice(0, 2)) {
       for (const day of desc(list(path.join(root, year, month))).slice(0, 3)) {
@@ -88,7 +86,7 @@ function findNewSession(provider, { home, historyRoot, cwd, since }) {
     }
   }
   if (provider === 'antigravity') {
-    const folder = path.join(historyRoot, '.gemini', 'antigravity-cli', 'conversations');
+    const folder = path.join(home, '.gemini', 'antigravity-cli', 'conversations');
     const fresh = list(folder).filter((file) => file.endsWith('.db'))
       .map((file) => ({ id: file.slice(0, -3), at: (() => { try { return fs.statSync(path.join(folder, file)).birthtimeMs || fs.statSync(path.join(folder, file)).mtimeMs; } catch { return 0; } })() }))
       .filter((item) => item.at >= since).sort((a, b) => b.at - a.at);
@@ -97,32 +95,28 @@ function findNewSession(provider, { home, historyRoot, cwd, since }) {
   return null;
 }
 
+const INSIDE_HOME = '/home/agentdesk';
+
 function plan(request, { record, fresh = false, env = process.env } = {}) {
   const { device, provider, projectId, name, writable, platform } = request;
-  const home = path.join(STATE, 'homes', provider === 'codex' ? 'codex' : HOME_NAMES[provider]);
   const deviceRoot = path.join(STATE, 'cli-chats', device);
+  const home = path.join(deviceRoot, 'home', provider);
   const workspace = path.join(deviceRoot, 'work', projectId);
-  const historyRoot = path.join(deviceRoot, 'history');
   const runtime = fs.mkdtempSync(path.join('/var/tmp', 'agentdesk-cli-'));
   fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(historyRoot, { recursive: true, mode: 0o700 });
+  const logins = jail.prepareHome(provider, home, path.join(STATE, 'homes'));
   const cwd = `/work/${name}`;
   const text = prompt({ platform, writable, cwd });
   const args = [];
-  const roBinds = [];
-  const extraWritable = [];
+  const extra = [];
   if (provider === 'claude') {
     args.push('--append-system-prompt', text, ...(writable ? [] : ['--permission-mode', 'plan']));
   } else if (provider === 'codex') {
     args.push('-c', `developer_instructions=${JSON.stringify(text)}`, '-c', 'web_search="live"',
       '--sandbox', writable ? 'workspace-write' : 'read-only');
   } else if (provider === 'grok') {
-    const source = path.join(STATE, 'homes', 'grok', '.grok', 'auth.json');
-    const target = path.join(home, '.grok', 'auth.json');
-    try { fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 }); fs.copyFileSync(source, target); fs.chmodSync(target, 0o600); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
     const leader = fs.mkdtempSync(path.join(runtime, 'grok-leader-'));
-    extraWritable.push(leader);
+    extra.push([leader, leader]);
     args.push('--no-auto-update', '--rules', text, '--leader-socket', path.join(leader, 'grok.sock'),
       ...(writable ? [] : ['--permission-mode', 'plan']));
   } else {
@@ -131,18 +125,13 @@ function plan(request, { record, fresh = false, env = process.env } = {}) {
   if (!fresh) args.push(...sessionArgs(provider, record));
   else if (provider === 'claude' || provider === 'grok') args.push('--session-id', record.session);
   if (provider === 'codex' && !fresh && record.session) args.unshift('resume', record.session);
-  const history = provider === 'codex' ? [] : cliHistory.binds(provider, home, historyRoot);
-  const launch = sandboxCommand(BINS[provider], args, { cwd: workspace, home, writable, hide: [STATE], extraWritable });
-  const chdir = launch.args.indexOf('--chdir');
-  launch.args.splice(chdir - 3, 5, writable ? '--bind' : '--ro-bind', fs.realpathSync(workspace), cwd, '--chdir', cwd);
-  launch.args.splice(launch.args.indexOf('--chdir'), 0, ...cliHistory.bwrapArgs(history),
-    ...roBinds.flatMap(([source, target]) => ['--ro-bind', source, target]));
-  const childEnv = { ...env, HOME: home, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', COLORTERM: env.COLORTERM || 'truecolor',
-    TERM: /^[\w.-]{1,40}$/.test(env.TERM || '') ? env.TERM : 'xterm-256color', AGENTDESK_NATIVE_CLI: '1',
-    PATH: '/opt/agentdesk-orchestrator:/usr/local/bin:/usr/bin:/bin' };
-  if (provider === 'codex') childEnv.CODEX_HOME = path.join(home, '.codex');
-  for (const key of [...BILLING, 'SSH_ORIGINAL_COMMAND', 'SSH_CONNECTION', 'SSH_CLIENT', 'GROK_HOME', 'NO_COLOR']) delete childEnv[key];
-  return { command: launch.command, args: launch.args, env: childEnv, runtime, home, historyRoot, cwd };
+  const jailed = jail.jailArgs({ runtime, home, workspace, cwd, writable, logins, extra });
+  // Nothing of this process's environment goes in but the terminal's type and language.
+  const childEnv = { HOME: INSIDE_HOME, USER: 'agentdesk', LOGNAME: 'agentdesk', SHELL: '/bin/bash', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
+    COLORTERM: env.COLORTERM || 'truecolor', TERM: /^[\w.-]{1,40}$/.test(env.TERM || '') ? env.TERM : 'xterm-256color',
+    AGENTDESK_NATIVE_CLI: '1', TMPDIR: '/tmp', PATH: '/usr/local/bin:/usr/bin:/bin:/opt/agentdesk-node24/bin' };
+  if (provider === 'codex') childEnv.CODEX_HOME = path.posix.join(INSIDE_HOME, '.codex');
+  return { command: BINS[provider], args, jail: jailed, env: childEnv, runtime, home, cwd };
 }
 
 // `upload <projectId> <nameHex>`: the file on stdin goes to .uploads/ in this device's project folder (no terminal),
@@ -158,9 +147,14 @@ function upload(original, env = process.env) {
   const base = path.basename(Buffer.from(words[3], 'hex').toString('utf8')).normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu, '_').trim().slice(-80) || 'file';
   const folder = path.join(STATE, 'cli-chats', device, 'work', words[1], '.uploads');
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
-  let target = path.join(folder, base);
-  for (let n = 2; fs.existsSync(target); n++) target = path.join(folder, base.replace(/(\.[^.]*)?$/, `-${n}$1`));
-  const out = fs.createWriteStream(target, { flags: 'wx', mode: 0o600 });
+  // The name is claimed atomically (O_EXCL): two uploads of the same name at once get different names.
+  let target;
+  for (let n = 1; ; n++) {
+    target = path.join(folder, n === 1 ? base : base.replace(/(\.[^.]*)?$/, `-${n}$1`));
+    try { fs.closeSync(fs.openSync(target, 'wx', 0o600)); break; }
+    catch (error) { if (error.code !== 'EEXIST' || n > 999) throw error; }
+  }
+  const out = fs.createWriteStream(target, { flags: 'w', mode: 0o600 });
   let size = 0;
   process.stdin.on('data', (chunk) => {
     size += chunk.length;
@@ -229,18 +223,18 @@ async function main() {
   }
   // Inside the dtach session: the CLI itself.
   try { writeJson(metaFor(request), { pid: process.pid, mode: request.writable ? 'write' : 'read', at: new Date().toISOString() }); } catch {}
-  const chatsFile = path.join(STATE, 'cli-chats', request.device, 'chats.json');
-  fs.mkdirSync(path.dirname(chatsFile), { recursive: true, mode: 0o700 });
-  const chats = readJson(chatsFile, {});
-  const key = request.provider + ':' + request.chatId;
-  const record = chats[key] || { session: randomUUID(), started: false };
+  // One record per chat, so chats of the same device ending at the same moment never overwrite each other.
+  const recordFile = path.join(STATE, 'cli-chats', request.device, 'chats', `${request.provider}-${request.chatId}.json`);
+  fs.mkdirSync(path.dirname(recordFile), { recursive: true, mode: 0o700 });
+  const record = readJson(recordFile, null) || { session: randomUUID(), started: false };
   let child;
   let stopping = false;
   const run = (fresh) => {
     const started = Date.now();
     const resuming = !fresh && ((request.provider === 'claude' || request.provider === 'grok') ? record.started : Boolean(record.session));
     const launch = plan(request, { record, fresh });
-    child = spawn(launch.command, launch.args, { stdio: 'inherit', env: launch.env, cwd: '/' });
+    child = jail.launch(launch.command, launch.args, { jail: launch.jail, env: launch.env,
+      onNote: (note) => process.stderr.write(`\x1b[2mAgentDesk：沙盒网络未就绪（${note}）\x1b[0m\r\n`) });
     child.on('error', (error) => { process.stderr.write(`AgentDesk：启动失败（${error.code || error.message}）\r\n`); process.exit(70); });
     child.on('exit', (code, signal) => {
       const quick = Date.now() - started < 10_000;
@@ -256,11 +250,9 @@ async function main() {
       if (request.provider === 'claude' || request.provider === 'grok') {
         record.started = record.started || !quick || code === 0;
       } else if (!record.session) {
-        record.session = findNewSession(request.provider, { home: launch.home, historyRoot: launch.historyRoot, cwd: launch.cwd, since: started - 1000 });
+        record.session = findNewSession(request.provider, { home: launch.home, cwd: launch.cwd, since: started - 1000 });
       }
-      const latest = readJson(chatsFile, {});
-      latest[key] = { ...record, at: new Date().toISOString() };
-      try { writeJson(chatsFile, latest); } catch {}
+      try { writeJson(recordFile, { ...record, at: new Date().toISOString() }); } catch {}
       fs.rmSync(launch.runtime, { recursive: true, force: true });
       try { if (readJson(metaFor(request), {}).pid === process.pid) fs.unlinkSync(metaFor(request)); } catch {}
       process.exit(signal ? 128 + 1 : code ?? 1);
