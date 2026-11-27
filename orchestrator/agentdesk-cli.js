@@ -49,7 +49,7 @@ function prompt({ platform, writable, cwd }) {
   const computer = platform === 'darwin' ? 'Mac' : 'Windows';
   return [`[AgentDesk 原生 CLI 单聊｜${writable ? '可修改' : '只读规划'}]`,
     `- 你运行在 VPS2 上，工作目录 ${cwd} 是这台设备这个项目在 VPS2 上的文件夹（不是用户电脑）。`,
-    `- 需要用户 ${computer} 电脑上的文件、程序或环境时，用 \`ssh pc '<命令>'\` 在用户电脑上执行（已开通反向 ssh 时可用；不可用就告诉用户在 AgentDesk「帮助」里开通）。`,
+    `- 需要用户 ${computer} 电脑上的文件、程序或环境时，用 \`pc '<命令>'\` 在用户电脑上执行（${platform === 'darwin' ? 'zsh' : 'PowerShell'} 语法）。命令在 AgentDesk 里这个单聊的共用终端中运行，用户看得到、也可以接管；输出和退出码会返回给你。长时间运行的程序用 \`pc --new '<命令>'\`；需要用户输入密码或确认时用 \`pc --ask '<请用户做什么>'\`，用户交还后会返回终端内容；\`pc --screen\` 查看终端当前内容。`,
     '- 是否批准每个操作由用户在你的界面里决定，按你平常的方式请求批准即可。'].join('\n');
 }
 
@@ -125,11 +125,15 @@ function plan(request, { record, fresh = false, env = process.env } = {}) {
   if (!fresh) args.push(...sessionArgs(provider, record));
   else if (provider === 'claude' || provider === 'grok') args.push('--session-id', record.session);
   if (provider === 'codex' && !fresh && record.session) args.unshift('resume', record.session);
-  const jailed = jail.jailArgs({ runtime, home, workspace, cwd, writable, logins, extra });
+  // The device's bridge to its computer (`pc`): the folder holding the socket, read-only (connecting needs no more).
+  const pcFolder = path.join(deviceRoot, 'pc');
+  fs.mkdirSync(pcFolder, { recursive: true, mode: 0o700 });
+  const jailed = jail.jailArgs({ runtime, home, workspace, cwd, writable, logins, extra,
+    readOnly: [[pcFolder, '/run/agentdesk/pc'], [path.join(__dirname, 'cli-pc.py'), '/usr/local/bin/pc']] });
   // Nothing of this process's environment goes in but the terminal's type and language.
   const childEnv = { HOME: INSIDE_HOME, USER: 'agentdesk', LOGNAME: 'agentdesk', SHELL: '/bin/bash', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
     COLORTERM: env.COLORTERM || 'truecolor', TERM: /^[\w.-]{1,40}$/.test(env.TERM || '') ? env.TERM : 'xterm-256color',
-    AGENTDESK_NATIVE_CLI: '1', TMPDIR: '/tmp', PATH: '/usr/local/bin:/usr/bin:/bin:/opt/agentdesk-node24/bin' };
+    AGENTDESK_NATIVE_CLI: '1', AGENTDESK_CHAT: `${provider}:${request.chatId}`, TMPDIR: '/tmp', PATH: '/usr/local/bin:/usr/bin:/bin:/opt/agentdesk-node24/bin' };
   if (provider === 'codex') childEnv.CODEX_HOME = path.posix.join(INSIDE_HOME, '.codex');
   return { command: BINS[provider], args, jail: jailed, env: childEnv, runtime, home, cwd };
 }
@@ -197,8 +201,93 @@ async function stop(original, env) {
   process.stdout.write('stopped\n');
 }
 
+// `pcbridge`: AgentDesk's own connection (no terminal) serving `pc` for this device's CLIs. It listens on the device's
+// bridge socket and passes each request to the computer as one JSON line on stdout; the computer's answers come
+// back as JSON lines on stdin ({ id, type: out|note|done, … }). One bridge per device: a new connection replaces the
+// old one (the computer reconnecting after a network drop). The socket's place is fixed here, never the client's.
+function pcBridge(env = process.env) {
+  const device = env.AGENTDESK_DEVICE;
+  if (!DEVICE.test(device || '')) { process.stderr.write('pcbridge_device_missing\n'); process.exit(2); }
+  const folder = path.join(STATE, 'cli-chats', device, 'pc');
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const socket = path.join(folder, 'bridge.sock');
+  const pidFile = path.join(folder, 'bridge.pid');
+  const previous = Number(readJson(pidFile, {}).pid);
+  if (previous && previous !== process.pid) { try { process.kill(previous, 'SIGTERM'); } catch {} }
+  try { fs.unlinkSync(socket); } catch {}
+  const net = require('node:net');
+  const waiting = new Map();          // id -> socket of the `pc` waiting for it
+  let next = 1;
+  const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+  const server = net.createServer((conn) => {
+    let input = '';
+    let id = null;
+    conn.setEncoding('utf8');
+    conn.on('data', (chunk) => {
+      if (id) return;
+      input += chunk;
+      if (input.length > 80 * 1024) { conn.destroy(); return; }
+      const end = input.indexOf('\n');
+      if (end < 0) return;
+      let request;
+      try { request = JSON.parse(input.slice(0, end)); } catch { conn.destroy(); return; }
+      if (!['run', 'ask', 'screen'].includes(request?.op) || !/^(claude|codex|grok|antigravity):[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(request.chat || '')) {
+        conn.end(JSON.stringify({ type: 'done', code: 2, text: 'pc: 请求无效\n' }) + '\n');
+        return;
+      }
+      id = next++;
+      waiting.set(id, conn);
+      send({ id, op: request.op, chat: request.chat, command: typeof request.command === 'string' ? request.command.slice(0, 65536) : undefined,
+        message: typeof request.message === 'string' ? request.message.slice(0, 4000) : undefined, newTerminal: request.newTerminal === true,
+        timeout: Math.max(1, Math.min(6 * 3600, Number(request.timeout) || 600)) });
+    });
+    conn.on('close', () => { if (id && waiting.delete(id)) send({ id, op: 'cancel' }); });
+    conn.on('error', () => {});
+  });
+  server.listen(socket, () => {
+    fs.chmodSync(socket, 0o600);
+    writeJson(pidFile, { pid: process.pid, at: new Date().toISOString() });
+    send({ op: 'ready' });
+  });
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk;
+    if (buffer.length > 8 * 1024 * 1024) buffer = buffer.slice(-1024 * 1024);
+    let end;
+    while ((end = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, end);
+      buffer = buffer.slice(end + 1);
+      let message;
+      try { message = JSON.parse(line); } catch { continue; }
+      const conn = waiting.get(message?.id);
+      if (!conn || !['out', 'note', 'done'].includes(message.type)) continue;
+      const answer = { type: message.type };
+      if (message.type === 'out') answer.data = String(message.data ?? '').slice(0, 1024 * 1024);
+      if (message.type === 'note') answer.text = String(message.text ?? '').slice(0, 2000);
+      if (message.type === 'done') { answer.code = Number.isInteger(message.code) ? message.code : 1; answer.text = String(message.text ?? '').slice(0, 1024 * 1024); }
+      conn.write(JSON.stringify(answer) + '\n');
+      if (message.type === 'done') { waiting.delete(message.id); conn.end(); }
+    }
+  });
+  const quit = () => {
+    server.close();
+    for (const conn of waiting.values()) { try { conn.end(JSON.stringify({ type: 'done', code: 75, text: 'pc: 与用户电脑的连接中断。\n' }) + '\n'); } catch {} }
+    if (readJson(pidFile, {}).pid === process.pid) {
+      for (const file of [socket, pidFile]) { try { fs.unlinkSync(file); } catch {} }
+    }
+    process.exit(0);
+  };
+  process.stdin.on('end', quit);
+  process.on('SIGTERM', quit);
+  process.on('SIGHUP', quit);
+  // Keepalive for the computer's side: a quiet connection still shows it is alive.
+  setInterval(() => send({ op: 'ping' }), 20_000).unref();
+}
+
 async function main() {
   const original = String(process.env.SSH_ORIGINAL_COMMAND || '');
+  if (original === 'pcbridge') { pcBridge(); return; }
   if (original.startsWith('upload ')) { upload(original); return; }
   if (original.startsWith('stop ')) { await stop(original, process.env); return; }
   let request;

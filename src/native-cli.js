@@ -63,6 +63,7 @@
     </div>
     <footer class="native-cli-tools" id="nativeCliTools">
       <button type="button" class="chip" data-cli-tool="upload" title="上传文件给 CLI（也可以直接拖进来或粘贴图片）"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
+      <button type="button" class="chip" data-cli-tool="terminal" title="你电脑上的共用终端：CLI 用 pc 命令在这里执行，你可以随时输入、中断、接管"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>终端</button>
       <button type="button" class="chip" data-cli-tool="model" title="在 CLI 里打开 /model（会先清空当前输入的那一行）"><svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5-9-5z"/><path d="m3 13 9 5 9-5"/></svg>模型</button>
       <button type="button" class="chip" data-cli-tool="quota" title="额度与分工（每 1 分钟刷新）"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 8 8h-8z"/></svg>额度</button>
       <button type="button" class="chip" data-cli-tool="help" title="原生 CLI 帮助：按键、命令、断线、开通"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01"/></svg>帮助</button>
@@ -348,6 +349,7 @@
     if (tool === 'upload') $('#nativeCliFile').click();
     else if (tool === 'help') window.AgentDeskNativeCliHelp?.open();
     else if (tool === 'quota') window.__quotaView?.open();
+    else if (tool === 'terminal') window.AgentDeskTerminal?.show(true);
     else if (tool === 'model') {
       if (current?.state !== 'ready') { A.toast('CLI 还没连上'); return; }
       send('\x15');                                   // Ctrl+U: the line being typed goes first

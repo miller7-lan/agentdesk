@@ -44,6 +44,8 @@
 
   function conversation() {
     const s = A.sess(A.state.active);
+    // Native CLI single chats: the terminal `pc` runs in, on this computer (orchestrator/pc-bridge.js).
+    if (s?.live && s.surface === 'cli' && !A.state.group) return { key: agentOf(s) + ':cli:' + s.id, agent: agentOf(s), threadId: 'cli:' + s.id, cli: true };
     if (!s?.live || !s.threadId || A.state.group) return null;
     return { key: agentOf(s) + ':' + s.threadId, agent: agentOf(s), threadId: s.threadId };
   }
@@ -142,7 +144,8 @@
         const caps = await call('capabilities');
         if (!caps?.pty) { say(explain(new Error('pty_unavailable'))); return; }
         const { terminals = [] } = await call('list');
-        say(terminals.length ? '' : '还没有终端。点“新建”打开一个，或让 AI 用 terminal 工具开一个。');
+        say(terminals.length ? '' : current.cli ? '还没有终端。CLI 用 pc 命令在你电脑上执行时会自动打开；也可以点“新建”。'
+          : '还没有终端。点“新建”打开一个，或让 AI 用 terminal 工具开一个。');
         for (const info of terminals) {
           if (!views.has(info.terminalId)) await catchUp(createView(info));
           else views.get(info.terminalId).info = { ...views.get(info.terminalId).info, ...info };
@@ -231,6 +234,20 @@
     if (!current || event.provider !== current.agent || event.threadId !== current.threadId) return;
     const view = views.get(event.terminalId);
     if (event.type === 'opened' && !view) { if (open) refresh(); return; }
+    // The AI asks the person to take over (pc --ask): the terminal is already theirs; show why.
+    if (event.type === 'askTakeover') {
+      show(true);
+      active = event.terminalId;
+      refresh().then(() => {
+        const asked = views.get(event.terminalId);
+        if (asked) asked.info = { ...asked.info, takenOver: true };
+        renderTabs();
+        say(`AI 请你接管：${event.message || '请在终端里操作'}。操作完点“交还给 AI”，AI 会接着做。`);
+        views.get(event.terminalId)?.term.focus();
+      });
+      A.toast?.('AI 请你接管终端');
+      return;
+    }
     if (!view) return;
     if (event.type === 'output') {
       if (typeof event.data === 'string' && event.cursor - event.data.length === view.cursor) {
@@ -241,7 +258,7 @@
     }
     if (event.type === 'exited') { view.info = { ...view.info, state: 'exited', exitCode: event.exitCode }; view.term.write(`\r\n\x1b[2m[进程已退出，退出码 ${event.exitCode}]\x1b[0m\r\n`); }
     if (event.type === 'takenOver') view.info = { ...view.info, takenOver: true };
-    if (event.type === 'handedBack') view.info = { ...view.info, takenOver: false };
+    if (event.type === 'handedBack') { view.info = { ...view.info, takenOver: false }; say(''); }
     if (event.type === 'closed') { view.term.dispose(); view.el.remove(); views.delete(event.terminalId); if (active === event.terminalId) active = null; }
     renderTabs();
   });

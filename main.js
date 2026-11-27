@@ -1546,6 +1546,14 @@ ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) 
   if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string' || !TERMINAL_OPS.has(op) ||
       !fields || typeof fields !== 'object' || Array.isArray(fields)) return { ok: false, error: 'invalid_request' };
   if (updateLocked() && ['open', 'input'].includes(op)) return { ok: false, error: UPDATE_LOCKED };
+  // Native CLI single chats: their shared terminal is the one `pc` runs in (orchestrator/pc-bridge.js).
+  if (threadId.startsWith('cli:')) {
+    try {
+      const bridge = pcBridgeBackend();
+      if (!bridge) return { ok: false, error: 'terminal_unavailable' };
+      return { ok: true, value: await bridge.call(agent, threadId, op, fields) };
+    } catch (error) { return { ok: false, error: error.message }; }
+  }
   try {
     const native = nativeDesktop();
     if (!native) return { ok: false, error: 'terminal_unavailable' };
@@ -1567,6 +1575,19 @@ function nativeCliBackend() {
   });
   return nativeCli;
 }
+// `pc` from those CLIs: run in the chat's shared terminal on this computer, through this device's CLI key.
+let pcBridge = null;
+function pcBridgeBackend() {
+  const backend = nativeCliBackend();
+  if (!backend) return null;
+  pcBridge ||= require('./orchestrator/pc-bridge').createPcBridge({
+    spawnBridge: () => backend.bridgeProcess(),
+    profile: () => process.platform === 'darwin'
+      ? require('./orchestrator/windows-local-shell').macSandboxProfile({ extra: [app.getPath('userData')] }) : undefined,
+    onTerminalEvent: (event) => toUi('terminal:event', event),
+  });
+  return pcBridge;
+}
 const TUI_OPS = new Set(['status', 'open', 'input', 'resize', 'upload', 'close', 'forget', 'key']);
 ipcMain.handle('tui:call', async (event, op, fields = {}) => {
   if (!fromMainWindow(event) || !TUI_OPS.has(op) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
@@ -1576,10 +1597,12 @@ ipcMain.handle('tui:call', async (event, op, fields = {}) => {
   try {
     const backend = nativeCliBackend();
     if (!backend) return { ok: false, error: 'tui_unavailable' };
-    return { ok: true, value: await backend.call(op, fields) };
+    const value = await backend.call(op, fields);
+    if (op === 'open') pcBridgeBackend()?.start();
+    return { ok: true, value };
   } catch (error) { return { ok: false, error: error.message }; }
 });
-app.on('before-quit', () => { try { nativeCli?.closeAll(); } catch {} });
+app.on('before-quit', () => { try { nativeCli?.closeAll(); } catch {} try { pcBridge?.closeAll(); } catch {} });
 
 function forgetChatThread(threadId) {
   chatThreads.delete(threadId);

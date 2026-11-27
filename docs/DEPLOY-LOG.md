@@ -20,7 +20,8 @@
   - 并发：对话记录改为每个单聊一个文件 `chats/<provider>-<chat>.json`；上传以 O_EXCL 占名；新家目录初始化加锁。
   - 验证：沙盒内看不到 `/root`、`/srv`、AgentDesk 数据、`/etc/ssh`、日志、shadow；`/usr` 只读；外网可达、本机回环与公网地址上的 3001/9443/7681/888 均被拒；四个 CLI 均能启动，Claude/Codex 登录有效；4 个并发首次打开一致；5 个并发同名上传各自成功；跨设备不可见。测试 643 项通过。
   - 已知：共享登录意味着任何开通的设备在 CLI 里都能读到该登录令牌（CLI 运行需要它）；Codex 刷新令牌轮换时，多处同时刷新有小概率使登录失效。
-- **待办**：CLI 回到用户电脑（`pc` 命令，经共用终端执行；不使用 sshd 端口转发）；CLI 单聊里的共用终端。
+- **pc 命令（回到用户电脑）**：不使用 sshd 端口转发（sshd 配置不再改动）。VPS2：`agentdesk-cli.js pcbridge`（同一把设备 CLI 钥匙、无终端）在 `cli-chats/<设备>/pc/bridge.sock` 监听（位置由服务端决定，同设备新连接替换旧的），沙盒内只读挂到 `/run/agentdesk/pc`，`cli-pc.py` 挂为 `/usr/local/bin/pc`；`AGENTDESK_CHAT` 标明是哪个单聊。客户端：`orchestrator/pc-bridge.js`（主进程里的 TerminalSessions，每单聊一个主终端，最多 4 个；命令从临时文件运行，OSC 633 标记取退出码；AI 颜色行由 shell 自己打印，人工输入颜色用 PSReadLine/zle 设置，不往终端流里插字以免 ConPTY 错位；接管先 SIGINT；`pc --ask` 设为接管并等交还）；`terminal:call` 中 `cli:` 线程走它；面板与 CLI 工具栏「终端」按钮；帮助页说明。
+  - 验证：VPS2 沙盒内 `pc` → 桥 → 模拟电脑往返、退出码；bridge 目录在沙盒内只读；客户端用真实 bash 测运行/目录延续/退出码/接管中断/AI 输入被拒/请求接管与交还/不同单聊分开/颜色行。Windows PowerShell 路径只做了脚本生成的单元测试，未在真机运行。
 - **回滚**：`agentdesk-cli-keys.js remove <设备>` 关闭某台电脑；恢复 sshd 配置备份并 reload；客户端发更高版本。
 
 ## 2026-11-27 21:00（北京时间）· 客户端 0.4.20 · 载体写入合并，修复原生 CLI 打字卡顿

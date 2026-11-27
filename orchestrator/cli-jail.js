@@ -123,7 +123,7 @@ function writeIdentity(runtime, { uid = process.getuid(), gid = process.getgid()
 
 // bwrap arguments. home: the device's home (shown as /home/agentdesk); workspace/cwd: the project folder and where
 // it appears; logins: [source, relative path in home]; extra: [[source, target]] read-write binds (e.g. sockets).
-function jailArgs({ runtime, home, workspace, cwd, writable = true, logins = [], extra = [], readRoot = () => fs.readdirSync('/', { withFileTypes: true }) }) {
+function jailArgs({ runtime, home, workspace, cwd, writable = true, logins = [], extra = [], readOnly = [], readRoot = () => fs.readdirSync('/', { withFileTypes: true }) }) {
   const HOME = '/home/agentdesk';
   const argv = ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net', '--unshare-cgroup-try',
     '--hostname', HOSTNAME, '--die-with-parent', '--ro-bind', '/usr', '/usr'];
@@ -143,6 +143,7 @@ function jailArgs({ runtime, home, workspace, cwd, writable = true, logins = [],
     '--tmpfs', '/home', '--bind', fs.realpathSync(home), HOME);
   for (const [source, item] of logins) argv.push('--bind', source, path.posix.join(HOME, item));
   for (const [source, target] of extra) if (exists(source)) argv.push('--bind', fs.realpathSync(source), target);
+  for (const [source, target] of readOnly) if (exists(source)) argv.push('--ro-bind', fs.realpathSync(source), target);
   argv.push(writable ? '--bind' : '--ro-bind', fs.realpathSync(workspace), cwd);
   argv.push('--remount-ro', '/', '--chdir', cwd);
   return argv;

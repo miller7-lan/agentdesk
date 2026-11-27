@@ -155,8 +155,15 @@ function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agent
     });
   }
 
+  // The `pc` bridge (orchestrator/pc-bridge.js): a plain ssh without a terminal, JSON lines both ways.
+  function bridgeProcess() {
+    const call = invocation(['pcbridge'], false);
+    return spawn(SSH, call.args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...call.env } });
+  }
+
   return {
     publicKey,
+    bridgeProcess,
     async call(op, fields = {}) {
       const key = typeof fields.key === 'string' ? fields.key : fields.provider + ':' + fields.projectId + ':' + fields.chatId;
       switch (op) {
