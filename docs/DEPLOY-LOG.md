@@ -2,6 +2,10 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 03:50（北京时间）· 客户端 0.5.5 · 终端「保护」开关
+
+- 用户要在终端上加按钮切换保护。`pc-bridge.js` 增加 `protection`（get/set/profile）与 `protect` 操作，`capabilities` 返回其状态；`main.js` 在 Mac 上提供（`userData/cli-terminal.json` 记住，开时用 `macSandboxProfile`），Windows 为 null 不显示；`terminal-panel.js` / `index.html` 加 `#terminalProtect`，只在 CLI 单聊显示。测试 648 项通过。
+
 ## 2026-11-28 03:10（北京时间）· 客户端 0.5.4 + VPS2 · Mac 终端去沙盒、Codex 可执行命令
 
 - 用户 Mac 截图：CLI 让 AI 在共用终端 `brew install yt-dlp` 失败，`sandbox-exec: sandbox_apply: Operation not permitted`（终端在 sandbox-exec 里，Homebrew 再开一层被拒）。用户要求 AI 能在终端用命令、按本机部署体验。`main.js` 的 pc 桥终端 `profile` 改为不套 sandbox-exec（只影响 CLI 单聊的共用终端；旧对话式单聊的终端未改）。代价：该终端里可读到 `~/.agentdesk` 等 AgentDesk 密钥。
