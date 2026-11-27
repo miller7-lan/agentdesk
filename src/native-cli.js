@@ -310,6 +310,11 @@
   }
 
   // ---------- events ----------
+  // Keys typed into the CLI are the CLI's: AgentDesk's own Ctrl shortcuts (B, J, K, N, Shift+L…) must not also fire.
+  // Ctrl+Tab still switches conversations.
+  $('#nativeCliScreen').addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey && event.key === 'Tab')) event.stopPropagation();
+  });
   chip.addEventListener('click', () => setShown(!shown));
   $('#nativeCliBack').addEventListener('click', () => setShown(false));
   $('#nativeCliStart').addEventListener('click', start);

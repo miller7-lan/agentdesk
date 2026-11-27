@@ -178,6 +178,10 @@
     else { A.state.panelOpen = false; A.store.set('panelOpen', false); A.applyLayout(); sync(); }
   }
 
+  // Keys typed into a terminal are the terminal's: AgentDesk's own Ctrl shortcuts must not also fire (Ctrl+Tab still switches).
+  body.addEventListener('keydown', (event) => {
+    if (!(event.ctrlKey && event.key === 'Tab')) event.stopPropagation();
+  });
   button.addEventListener('click', () => show(true));
   $('#terminalHide').addEventListener('click', () => show(false));
   $('#terminalNew').addEventListener('click', async () => {
