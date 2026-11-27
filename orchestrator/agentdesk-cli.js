@@ -116,8 +116,10 @@ function plan(request, { record, fresh = false, env = process.env } = {}) {
   if (provider === 'claude') {
     args.push('--append-system-prompt', text, ...(writable ? [] : ['--permission-mode', 'plan']));
   } else if (provider === 'codex') {
-    args.push('-c', `developer_instructions=${JSON.stringify(text)}`, '-c', 'web_search="live"',
-      '--sandbox', writable ? 'workspace-write' : 'read-only');
+    // Codex's own command sandbox (bubblewrap) cannot start inside this one (no nested user namespaces) and every
+    // command then fails. With the person's consent (2026-11-28) this sandbox (cli-jail.js) is the boundary instead;
+    // a read-only chat gets its folders read-only from it. Whether Codex asks first stays Codex's own (/approvals).
+    args.push('-c', `developer_instructions=${JSON.stringify(text)}`, '-c', 'web_search="live"', '--sandbox', 'danger-full-access');
   } else if (provider === 'grok') {
     const leader = fs.mkdtempSync(path.join(runtime, 'grok-leader-'));
     extra.push([leader, leader]);
