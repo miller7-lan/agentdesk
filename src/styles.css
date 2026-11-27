@@ -712,3 +712,5 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .cli-help td { padding: 4px 8px 4px 0; vertical-align: top; color: var(--muted); }
 .cli-help td:first-child { white-space: nowrap; color: var(--text); }
 .cli-help kbd { padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--raised); }
+
+#terminalProtect.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }

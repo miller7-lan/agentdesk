@@ -127,6 +127,27 @@
     view.info = { ...view.info, ...answer };
   }
 
+  // 保护 (CLI chats on a Mac): new terminals inside the sandbox that hides AgentDesk's keys, or like a normal one.
+  const protect = $('#terminalProtect');
+  function showProtection(state) {
+    if (!protect) return;
+    protect.hidden = !state;
+    if (!state) return;
+    protect.textContent = state.on ? '保护：开' : '保护：关';
+    protect.setAttribute('aria-pressed', String(state.on));
+    protect.classList.toggle('on', state.on);
+    protect.title = state.on
+      ? '新开的终端在沙盒里运行，挡住 AgentDesk 自己的密钥；brew 等要自己开沙盒的命令会失败。点一下关闭。'
+      : '新开的终端和本机终端一样（brew 等都能用），AI 能读到你账户下的所有文件。点一下开启保护。';
+  }
+  protect?.addEventListener('click', async () => {
+    try {
+      const state = await call('protect', { on: protect.getAttribute('aria-pressed') !== 'true' });
+      showProtection(state);
+      say(state.on ? '保护已开启：对新开的终端生效（已开的终端不变）。' : '保护已关闭：对新开的终端生效（已开的终端不变）。');
+    } catch (error) { say(explain(error)); }
+  });
+
   function detach() {
     for (const view of views.values()) { try { view.term.dispose(); } catch {} view.el.remove(); }
     views.clear();
@@ -136,13 +157,14 @@
 
   async function refresh() {
     const next = conversation();
-    if (!next) { current = null; detach(); say(explain(new Error('no_conversation'))); return; }
+    if (!next) { current = null; detach(); showProtection(null); say(explain(new Error('no_conversation'))); return; }
     if (current?.key !== next.key) { detach(); current = next; }
     if (loading) return loading;
     loading = (async () => {
       try {
         const caps = await call('capabilities');
         if (!caps?.pty) { say(explain(new Error('pty_unavailable'))); return; }
+        showProtection(current.cli ? caps.protection : null);
         const { terminals = [] } = await call('list');
         say(terminals.length ? '' : current.cli ? '还没有终端。CLI 用 pc 命令在你电脑上执行时会自动打开；也可以点“新建”。'
           : '还没有终端。点“新建”打开一个，或让 AI 用 terminal 工具开一个。');

@@ -1541,7 +1541,7 @@ ipcMain.handle('local-command:cancel', async (event, agent, threadId, id) => {
 
 // Interactive terminals of native conversations (D4): the chat window's panel. The Worker owns the processes, so
 // they keep running when the conversation is switched or the window is closed.
-const TERMINAL_OPS = new Set(['capabilities', 'list', 'read', 'open', 'input', 'takeover', 'resize', 'signal', 'close']);
+const TERMINAL_OPS = new Set(['capabilities', 'list', 'read', 'open', 'input', 'takeover', 'resize', 'signal', 'close', 'protect']);
 ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) => {
   if (!fromMainWindow(event) || typeof agent !== 'string' || typeof threadId !== 'string' || !TERMINAL_OPS.has(op) ||
       !fields || typeof fields !== 'object' || Array.isArray(fields)) return { ok: false, error: 'invalid_request' };
@@ -1590,6 +1590,17 @@ function pcBridgeBackend() {
     // No sandbox-exec around this terminal on a Mac: it is the person's own terminal, as if the CLI were installed
     // here, and tools that sandbox themselves (Homebrew, …) fail inside one ("sandbox_apply: Operation not permitted").
     profile: () => undefined,
+    // The panel's 保护 switch (Mac only): new terminals in sandbox-exec with AgentDesk's own keys hidden. Remembered.
+    protection: process.platform === 'darwin' ? (() => {
+      const file = path.join(app.getPath('userData'), 'cli-terminal.json');
+      let on = false;
+      try { on = JSON.parse(fs.readFileSync(file, 'utf8')).protect === true; } catch {}
+      return {
+        get: () => on,
+        set: (value) => { on = value; try { fs.writeFileSync(file, JSON.stringify({ protect: on }), { mode: 0o600 }); } catch {} },
+        profile: () => require('./orchestrator/windows-local-shell').macSandboxProfile({ extra: [app.getPath('userData')] }),
+      };
+    })() : null,
     onTerminalEvent: (event) => toUi('terminal:event', event),
   });
   return pcBridge;

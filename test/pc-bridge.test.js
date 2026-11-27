@@ -70,3 +70,21 @@ test('pc: runs in the chat terminal, keeps the shell, takeover interrupts, ask w
   assert.equal(handed.code, 0);
   assert.match(handed.text, /typed-by-person/);
 });
+
+test('保护 switch: new terminals use the protected profile only when it is on; absent where unsupported', () => {
+  let on = false;
+  const profiles = [];
+  const fakePty = { spawn() { return { onData() {}, onExit() {}, write() {}, resize() {}, kill() {} }; } };
+  const bridge = createPcBridge({ spawnBridge: () => { throw new Error('offline'); }, platform: 'darwin', shell: 'zsh', pty: fakePty,
+    protection: { get: () => on, set: (value) => { on = value; }, profile: () => { profiles.push('sandboxed'); return '(version 1)'; } } });
+  assert.deepEqual(bridge.call('claude', 'cli:C1', 'capabilities').protection, { on: false });
+  bridge.call('claude', 'cli:C1', 'open', {});
+  assert.deepEqual(profiles, [], 'off: a normal terminal');
+  assert.deepEqual(bridge.call('claude', 'cli:C1', 'protect', { on: true }), { on: true });
+  bridge.call('claude', 'cli:C1', 'open', {});
+  assert.deepEqual(profiles, ['sandboxed'], 'on: the next terminal is sandboxed');
+  const windows = createPcBridge({ spawnBridge: () => { throw new Error('offline'); }, platform: 'win32', pty: fakePty });
+  assert.equal(windows.call('codex', 'cli:C2', 'capabilities').protection, null);
+  assert.throws(() => windows.call('codex', 'cli:C2', 'protect', { on: true }), /terminal_protection_unavailable/);
+  bridge.closeAll(); windows.closeAll();
+});

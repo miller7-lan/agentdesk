@@ -77,10 +77,13 @@ function shellSetup(platform) {
   return ' zle_highlight=(default:fg=#ffffff,bg=#111111 paste:none); clear\r';
 }
 
-function createPcBridge({ spawnBridge, platform = process.platform, profile, onTerminalEvent = () => {}, now = Date.now,
+// protection: { get() → boolean, set(on), profile() → sandbox profile } — the panel's 保护 switch (Mac): new terminals
+// run inside it (AgentDesk's own keys hidden; tools that sandbox themselves fail there). Absent where unsupported.
+function createPcBridge({ spawnBridge, platform = process.platform, profile, protection = null, onTerminalEvent = () => {}, now = Date.now,
   pty, retry = RETRY, shell = platform === 'win32' ? 'powershell' : 'zsh' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-pc-'));
-  const terminals = new TerminalSessions({ ...(pty ? { pty } : {}), profile, now,
+  const terminals = new TerminalSessions({ ...(pty ? { pty } : {}), now,
+    profile: () => (protection?.get() ? protection.profile() : profile?.()),
     onEvent: (event) => { watch(event); emitTerminal(event); } });
   const running = new Map();      // terminalId -> the AI command in it
   const asks = new Map();         // terminalId -> pending `pc --ask`
@@ -262,7 +265,12 @@ function createPcBridge({ spawnBridge, platform = process.platform, profile, onT
     const scope = scopeOf(provider + ':' + threadId.slice(4));
     const id = typeof fields.terminalId === 'string' ? fields.terminalId : undefined;
     switch (op) {
-      case 'capabilities': return { pty: terminals.available };
+      case 'capabilities': return { pty: terminals.available, protection: protection ? { on: protection.get() } : null };
+      case 'protect': {
+        if (!protection) throw new Error('terminal_protection_unavailable');
+        protection.set(fields.on === true);
+        return { on: protection.get() };
+      }
       case 'list': return { terminals: terminals.list(scope) };
       case 'read': return terminals.read(scope, id, fields.cursor);
       case 'open': {
