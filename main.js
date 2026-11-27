@@ -1587,8 +1587,9 @@ function pcBridgeBackend() {
   if (!backend) return null;
   pcBridge ||= require('./orchestrator/pc-bridge').createPcBridge({
     spawnBridge: () => backend.bridgeProcess(),
-    profile: () => process.platform === 'darwin'
-      ? require('./orchestrator/windows-local-shell').macSandboxProfile({ extra: [app.getPath('userData')] }) : undefined,
+    // No sandbox-exec around this terminal on a Mac: it is the person's own terminal, as if the CLI were installed
+    // here, and tools that sandbox themselves (Homebrew, …) fail inside one ("sandbox_apply: Operation not permitted").
+    profile: () => undefined,
     onTerminalEvent: (event) => toUi('terminal:event', event),
   });
   return pcBridge;

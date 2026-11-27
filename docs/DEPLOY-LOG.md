@@ -2,6 +2,12 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 03:10（北京时间）· 客户端 0.5.4 + VPS2 · Mac 终端去沙盒、Codex 可执行命令
+
+- 用户 Mac 截图：CLI 让 AI 在共用终端 `brew install yt-dlp` 失败，`sandbox-exec: sandbox_apply: Operation not permitted`（终端在 sandbox-exec 里，Homebrew 再开一层被拒）。用户要求 AI 能在终端用命令、按本机部署体验。`main.js` 的 pc 桥终端 `profile` 改为不套 sandbox-exec（只影响 CLI 单聊的共用终端；旧对话式单聊的终端未改）。代价：该终端里可读到 `~/.agentdesk` 等 AgentDesk 密钥。
+- VPS2 `agentdesk-cli.js`：Codex 改为 `--sandbox danger-full-access`（用户同意）；原因是 Codex 自带 bubblewrap 在 CLI 沙盒里无法建用户命名空间，所有命令失败；隔离由 cli-jail 负责（备份 `*.bak-20261128-codex`）。
+- 进行中：整台电脑挂载（Windows 打包 Win32-OpenSSH sftp-server，Mac 用系统 sftp-server），等用户 Windows 上线后自动测试。
+
 ## 2026-11-28 01:30（北京时间）· 客户端 0.5.3 + VPS2 · CLI 直接改电脑上的项目
 
 - 用户要求 CLI 直接改电脑上的文件。客户端 `native-cli-ssh.js`：项目有本机目录（`resolveRoot`，main.js 按项目配置的 `localRoot`，渲染层传不进路径）时，先开 `ssh agentdesk@vps2 mount <projectId> <write|read>`（无终端），在本机用 `sftp-project-write.js` 只提供该目录的 SFTP；同项目多个单聊共用，断线按 1/2/5/10/20/30 秒重挂，最后一个单聊关闭时断开。CLI 请求多一个词 `local|vps`（旧客户端 6 个词仍可用）。
