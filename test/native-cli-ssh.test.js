@@ -16,6 +16,9 @@ test('VPS2 entry: the device comes from the forced command, the request is check
     assert.throws(() => parseRequest(bad, env), undefined, bad);
   }
   assert.throws(() => parseRequest(`cli claude C1 p1 ${hex('x')} write`, {}), /cli_device_missing/);
+  assert.equal(parseRequest(`cli codex C1 p1 ${hex('x')} write local`, env).local, true, 'works in the computer\'s own folder');
+  assert.equal(parseRequest(`cli codex C1 p1 ${hex('x')} write`, env).local, false, '0.5.0-0.5.2 clients: VPS2 folder');
+  assert.throws(() => parseRequest(`cli codex C1 p1 ${hex('x')} write /etc`, env), /cli_place_invalid/);
 });
 
 test('VPS2 entry: each chat continues its own conversation', () => {
@@ -60,7 +63,7 @@ test('client: a terminal ssh (-tt) to agentdesk@vps2, reconnects after a drop, r
   await cli.call('open', { provider: 'grok', chatId: 'C1', projectId: 'p1', name: '项目', cols: 100, rows: 30 });
   const first = pty.spawned[0];
   assert.ok(first.args.includes('-tt') && !first.args.includes('-T'), 'a terminal session');
-  assert.deepEqual(first.args.slice(-7), ['agentdesk@vps2.example', 'cli', 'grok', 'C1', 'p1', hex('项目'), 'write']);
+  assert.deepEqual(first.args.slice(-8), ['agentdesk@vps2.example', 'cli', 'grok', 'C1', 'p1', hex('项目'), 'write', 'vps']);
   first.emit('data', 'Grok screen');
   assert.equal(states.at(-1), 'ready');
   await cli.call('input', { key: 'grok:p1:C1', data: 'hi\r' });

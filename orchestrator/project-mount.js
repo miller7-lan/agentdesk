@@ -19,6 +19,9 @@ async function isMounted(directory) {
 async function mountProject({
   stateDir, input, output, signal, readOnly = false, cache = false, sshfs = '/usr/bin/sshfs',
   fusermount = '/usr/bin/fusermount3', spawnProcess = spawn, checkMount = isMounted, unmount, account,
+  // A fixed mountpoint (native CLI chats: one per device and project, bound into running sandboxes, which see each
+  // new mount there). It is made if missing and left in place when the mount ends.
+  directory: fixed,
 }) {
   signal?.throwIfAborted();
   if (account) {
@@ -38,7 +41,8 @@ async function mountProject({
     await fs.chown(root, 0, account.gid);
     await fs.chmod(root, 0o710);
   }
-  const directory = await fs.mkdtemp(path.join(root, 'project-'));
+  const directory = fixed || await fs.mkdtemp(path.join(root, 'project-'));
+  if (fixed) await fs.mkdir(fixed, { recursive: true, mode: 0o700 });
   // Native seats read and write every file through to the computer (no caching). A native CLI (native-tui-host.js)
   // walks the whole project when it starts; with every lookup a round trip it took minutes over a slow line, so it
   // caches names and attributes for a few seconds and file contents until their modification time changes.
@@ -74,7 +78,7 @@ async function mountProject({
           else await run(fusermount, ['-u', '-z', directory], { timeout: 10_000 });
         }
         if (await checkMount(directory)) throw new Error('project_unmount_failed');
-        await fs.rmdir(directory);
+        if (!fixed) await fs.rmdir(directory);
       } finally {
         input.destroy();
         if (output !== input) output.destroy();

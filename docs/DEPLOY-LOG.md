@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 01:30（北京时间）· 客户端 0.5.3 + VPS2 · CLI 直接改电脑上的项目
+
+- 用户要求 CLI 直接改电脑上的文件。客户端 `native-cli-ssh.js`：项目有本机目录（`resolveRoot`，main.js 按项目配置的 `localRoot`，渲染层传不进路径）时，先开 `ssh agentdesk@vps2 mount <projectId> <write|read>`（无终端），在本机用 `sftp-project-write.js` 只提供该目录的 SFTP；同项目多个单聊共用，断线按 1/2/5/10/20/30 秒重挂，最后一个单聊关闭时断开。CLI 请求多一个词 `local|vps`（旧客户端 6 个词仍可用）。
+- VPS2 `agentdesk-cli.js`：`mount` 子命令以 agentdesk 身份用 sshfs（passive、带缓存）挂在固定位置 `cli-chats/<设备>/mounts/<项目>`，新连接替换旧挂载；`local` 时沙盒把它绑成 `/work/<项目名>`（已验证：沙盒启动后才挂上的也能看到，断开后为空、重挂后恢复）。上传改到 `cli-chats/<设备>/uploads/<项目>`，沙盒内 `/uploads`。`project-mount.js` 增加 `directory`（固定挂载点）选项，原调用不变（备份 `*.bak-20261128-fixed`）。
+- 验证：VPS2 上用临时钥匙端到端——0.66 秒挂上，VPS2 侧读到「电脑」文件、写入的新文件出现在「电脑」上，关闭后卸载；测试钥匙与数据已删除。测试 647 项通过。
+- 未改：Codex 自带的命令沙盒在 CLI 沙盒内无法启动（嵌套用户命名空间被拒），Codex 执行命令会失败；改为由 CLI 沙盒负责隔离的改动被自动审查拦下，待用户确认。
+- `ssh-jump.js`：外层 ssh 结束 3 秒后结束内层 ssh（Windows 上残留进程）。
+
 ## 2026-11-28 00:10（北京时间）· 客户端 0.5.2 · CLI 单聊深色玻璃质感；ictvps 改走中继；开通 CLI 设备
 
 - 客户端：`.native-cli` 固定深色变量 + 半透明背景 `backdrop-filter: blur(22px) saturate(150%)`，xterm `allowTransparency` 与透明背景；状态栏、工具栏、提示卡片同风格。只改 CLI 单聊区域，其他界面和群聊不变。未在真机截图验证，靠用户更新后反馈。

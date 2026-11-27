@@ -59,7 +59,7 @@
           <button type="button" class="btn primary" id="nativeCliStart"></button>
         </div>
       </div>
-      <div class="native-cli-drop" id="nativeCliDrop" hidden><span>松开上传到这个项目的 .uploads/</span></div>
+      <div class="native-cli-drop" id="nativeCliDrop" hidden><span>松开上传给 CLI（/uploads/）</span></div>
     </div>
     <footer class="native-cli-tools" id="nativeCliTools">
       <button type="button" class="chip" data-cli-tool="upload" title="上传文件给 CLI（也可以直接拖进来或粘贴图片）"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg>附件</button>
@@ -220,7 +220,7 @@
     $('#nativeCliAvatar').innerHTML = avatar;
     $('#nativeCliName').textContent = name;
     const project = A.proj(conv.session.project);
-    $('#nativeCliWhere').textContent = project?.name ? `VPS2 · /work/${project.name}` : 'VPS2';
+    $('#nativeCliWhere').textContent = project?.name ? (project.configured ? `你的电脑 · ${project.name}` : `VPS2 · /work/${project.name}`) : 'VPS2';
     const state = current?.state || 'closed';
     const [dot, label] = STATES[state] || STATES.closed;
     $('#nativeCliState').className = 'native-cli-state ' + dot;

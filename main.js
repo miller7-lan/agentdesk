@@ -1572,6 +1572,11 @@ function nativeCliBackend() {
     loadConfig: require('./remote').loadConfig,
     publicCopy: path.join(app.getPath('userData'), 'cli_ed25519.pub'),
     onEvent: (event) => toUi('tui:event', event),
+    // The CLI works directly in this computer's folder of the project (mounted on VPS2), when it has one.
+    resolveRoot: (projectId) => {
+      const project = appConfig?.value.projects.find((item) => item.id === projectId);
+      return project?.kind === 'local' && typeof project.localRoot === 'string' && fs.existsSync(project.localRoot) ? project.localRoot : null;
+    },
   });
   return nativeCli;
 }

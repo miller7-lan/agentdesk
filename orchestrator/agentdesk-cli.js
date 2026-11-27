@@ -27,14 +27,16 @@ function parseRequest(original = '', env = process.env) {
   if (!DEVICE.test(device || '')) throw new Error('cli_device_missing');
   if (typeof original !== 'string' || original.length > 600 || /[^\x20-\x7e]/.test(original)) throw new Error('cli_request_invalid');
   const words = original.trim().split(/ +/);
-  if (words.length !== 6 || words[0] !== 'cli') throw new Error('cli_request_invalid');
-  const [, provider, chatId, projectId, nameHex, mode] = words;
+  // A 7th word (0.5.3+): `local` when the computer serves this project's own folder (`mount`), `vps` otherwise.
+  if (![6, 7].includes(words.length) || words[0] !== 'cli') throw new Error('cli_request_invalid');
+  const [, provider, chatId, projectId, nameHex, mode, place = 'vps'] = words;
+  if (!['local', 'vps'].includes(place)) throw new Error('cli_place_invalid');
   if (!PROVIDERS.includes(provider)) throw new Error('cli_provider_invalid');
   if (!CHAT.test(chatId) || !CHAT.test(projectId)) throw new Error('cli_chat_invalid');
   if (!/^(?:[a-f0-9]{2}){1,240}$/.test(nameHex)) throw new Error('cli_name_invalid');
   if (!['write', 'read'].includes(mode)) throw new Error('cli_mode_invalid');
   return { device, platform: env.AGENTDESK_PLATFORM === 'darwin' ? 'darwin' : 'win32', provider, chatId, projectId,
-    name: projectFolderName(Buffer.from(nameHex, 'hex').toString('utf8')), writable: mode === 'write' };
+    name: projectFolderName(Buffer.from(nameHex, 'hex').toString('utf8')), writable: mode === 'write', local: place === 'local' };
 }
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
@@ -45,10 +47,12 @@ function writeJson(file, value) {
 }
 const list = (folder) => { try { return fs.readdirSync(folder); } catch { return []; } };
 
-function prompt({ platform, writable, cwd }) {
+function prompt({ platform, writable, cwd, local }) {
   const computer = platform === 'darwin' ? 'Mac' : 'Windows';
   return [`[AgentDesk 原生 CLI 单聊｜${writable ? '可修改' : '只读规划'}]`,
-    `- 你运行在 VPS2 上，工作目录 ${cwd} 是这台设备这个项目在 VPS2 上的文件夹（不是用户电脑）。`,
+    local ? `- 你运行在 VPS2 上；工作目录 ${cwd} 就是用户 ${computer} 电脑上这个项目的文件夹（实时挂载），在这里读写文件就是直接改用户电脑上的文件。挂载走网络，大量小文件操作会慢一些。`
+      : `- 你运行在 VPS2 上，工作目录 ${cwd} 是这台设备这个项目在 VPS2 上的文件夹（不是用户电脑）。`,
+    '- 用户拖进来或粘贴的文件在 /uploads/ 里。',
     `- 需要用户 ${computer} 电脑上的文件、程序或环境时，用 \`pc '<命令>'\` 在用户电脑上执行（${platform === 'darwin' ? 'zsh' : 'PowerShell'} 语法）。命令在 AgentDesk 里这个单聊的共用终端中运行，用户看得到、也可以接管；输出和退出码会返回给你。长时间运行的程序用 \`pc --new '<命令>'\`；需要用户输入密码或确认时用 \`pc --ask '<请用户做什么>'\`，用户交还后会返回终端内容；\`pc --screen\` 查看终端当前内容。`,
     '- 是否批准每个操作由用户在你的界面里决定，按你平常的方式请求批准即可。'].join('\n');
 }
@@ -106,7 +110,7 @@ function plan(request, { record, fresh = false, env = process.env } = {}) {
   fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
   const logins = jail.prepareHome(provider, home, path.join(STATE, 'homes'));
   const cwd = `/work/${name}`;
-  const text = prompt({ platform, writable, cwd });
+  const text = prompt({ platform, writable, cwd, local: request.local });
   const args = [];
   const extra = [];
   if (provider === 'claude') {
@@ -128,7 +132,17 @@ function plan(request, { record, fresh = false, env = process.env } = {}) {
   // The device's bridge to its computer (`pc`): the folder holding the socket, read-only (connecting needs no more).
   const pcFolder = path.join(deviceRoot, 'pc');
   fs.mkdirSync(pcFolder, { recursive: true, mode: 0o700 });
-  const jailed = jail.jailArgs({ runtime, home, workspace, cwd, writable, logins, extra,
+  // The computer's own project folder (`mount`), when it serves one: mounted at a fixed place, so a sandbox that is
+  // already running sees it again after a reconnect.
+  let folder = workspace;
+  if (request.local) {
+    folder = mountFor(request.device, projectId);
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  }
+  const uploads = path.join(deviceRoot, 'uploads', projectId);
+  fs.mkdirSync(uploads, { recursive: true, mode: 0o700 });
+  extra.push([uploads, '/uploads']);
+  const jailed = jail.jailArgs({ runtime, home, workspace: folder, cwd, writable, logins, extra,
     readOnly: [[pcFolder, '/run/agentdesk/pc'], [path.join(__dirname, 'cli-pc.py'), '/usr/local/bin/pc']] });
   // Nothing of this process's environment goes in but the terminal's type and language.
   const childEnv = { HOME: INSIDE_HOME, USER: 'agentdesk', LOGNAME: 'agentdesk', SHELL: '/bin/bash', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
@@ -149,7 +163,7 @@ function upload(original, env = process.env) {
   }
   const project = projectFolderName(Buffer.from(words[2], 'hex').toString('utf8'));
   const base = path.basename(Buffer.from(words[3], 'hex').toString('utf8')).normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu, '_').trim().slice(-80) || 'file';
-  const folder = path.join(STATE, 'cli-chats', device, 'work', words[1], '.uploads');
+  const folder = path.join(STATE, 'cli-chats', device, 'uploads', words[1]);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   // The name is claimed atomically (O_EXCL): two uploads of the same name at once get different names.
   let target;
@@ -165,7 +179,7 @@ function upload(original, env = process.env) {
     if (size > 25 * 1024 * 1024) { out.destroy(); fs.rmSync(target, { force: true }); process.stderr.write('upload_too_large\n'); process.exit(3); }
     out.write(chunk);
   });
-  process.stdin.on('end', () => out.end(() => process.stdout.write(`/work/${project}/.uploads/${path.basename(target)}\n`)));
+  process.stdin.on('end', () => out.end(() => process.stdout.write(`/uploads/${path.basename(target)}\n`)));
 }
 
 // Each chat's CLI lives in a dtach session on VPS2: a dropped connection detaches it instead of ending it, and the
@@ -285,8 +299,40 @@ function pcBridge(env = process.env) {
   setInterval(() => send({ op: 'ping' }), 20_000).unref();
 }
 
+const mountFor = (device, projectId) => path.join(STATE, 'cli-chats', device, 'mounts', projectId);
+
+// `mount <projectId> <write|read>`: the computer serves this project's own folder as SFTP on stdin/stdout (only that
+// folder: orchestrator/sftp-project-write.js on its side); it is mounted with sshfs at this device's fixed place for
+// the project, which the CLI sandboxes bind as /work/<name>. A new connection replaces an older one. When the
+// connection ends the mount goes and the sandboxes see an empty folder until the computer connects again.
+async function mountCommand(original, env = process.env) {
+  const device = env.AGENTDESK_DEVICE;
+  const words = String(original).trim().split(/ +/);
+  if (!DEVICE.test(device || '') || words.length !== 3 || !CHAT.test(words[1]) || !['write', 'read'].includes(words[2])) {
+    process.stderr.write('mount_request_invalid\n'); process.exit(2);
+  }
+  const { mountProject, isMounted } = require('./project-mount');
+  const directory = mountFor(device, words[1]);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (await isMounted(directory)) {
+    await new Promise((resolve) => spawn('/usr/bin/fusermount3', ['-u', '-z', directory], { stdio: 'ignore' }).on('exit', resolve).on('error', resolve));
+  }
+  const stop = new AbortController();
+  for (const name of ['SIGTERM', 'SIGHUP', 'SIGINT']) process.on(name, () => stop.abort(new Error('stopped')));
+  let mounted;
+  try {
+    mounted = await mountProject({ stateDir: path.join(STATE, 'cli-chats', device), directory, input: process.stdin, output: process.stdout,
+      readOnly: words[2] === 'read', cache: true, signal: stop.signal });
+  } catch (error) { process.stderr.write(`mount_failed ${error.message}\n`); process.exit(1); }
+  process.stderr.write('AGENTDESK_MOUNTED\n');
+  await new Promise((resolve) => mounted.signal.addEventListener('abort', resolve, { once: true }));
+  await mounted.close().catch(() => {});
+  process.exit(0);
+}
+
 async function main() {
   const original = String(process.env.SSH_ORIGINAL_COMMAND || '');
+  if (original.startsWith('mount ')) { await mountCommand(original); return; }
   if (original === 'pcbridge') { pcBridge(); return; }
   if (original.startsWith('upload ')) { upload(original); return; }
   if (original.startsWith('stop ')) { await stop(original, process.env); return; }
