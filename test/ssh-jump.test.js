@@ -119,3 +119,20 @@ test('spawn failures exit 1 and never throw from the helper', async (t) => {
   assert.deepEqual(exits, [1]);
   assert.match(err, /无法启动跳板 SSH/);
 });
+test('the helper ends its inner ssh when the outer ssh is gone (no leftover helpers on Windows)', async (t) => {
+  const h = harness(t);
+  h.child.kill = (signal) => { h.child.killed.push(signal ?? 'default'); setImmediate(() => h.child.emit('close', 255)); };
+  h.stdin.end();                                   // the outer ssh closed its end; the inner one is still connecting
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+  assert.equal(h.child.killed.length, 1);
+  assert.deepEqual(h.exits, [255]);
+});
+
+test('a normal end does not kill the inner ssh', async (t) => {
+  const h = harness(t);
+  h.stdin.end();
+  h.child.emit('close', 0);
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+  assert.equal(h.child.killed.length, 0);
+  assert.deepEqual(h.exits, [0]);
+});

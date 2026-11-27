@@ -155,6 +155,17 @@ function main(env = process.env, {
   stdout?.on?.('error', () => {});
   if (stdin?.pipe) stdin.pipe(child.stdin);
   child.stdin?.on?.('error', () => {});
+  // The outer ssh gone (it timed out or was stopped; on Windows that does not stop this helper): its end of stdin
+  // closes. An inner ssh still in its handshake would not notice and keep this helper alive for good, so it is
+  // ended after a short grace period. Seen on Windows: one leftover helper per failed jump attempt.
+  let ending = null;
+  const outerGone = () => {
+    if (ending || finished) return;
+    ending = setTimeout(() => { try { child.kill(); } catch {} }, 3000);
+  };
+  stdin?.on?.('end', outerGone);
+  stdin?.on?.('close', outerGone);
+  child.once('close', () => clearTimeout(ending));
 
   const forward = (signal) => () => {
     try { child.kill(signal); } catch {}
