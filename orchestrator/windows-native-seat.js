@@ -2,6 +2,7 @@ const { PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { createHash, randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
+const { createCarrierWriter } = require('./carrier-writer');
 const { NativeChannel, VERSION } = require('./native-channel');
 // The local_shell the model sees matches this computer: PowerShell/CMD on Windows, zsh/bash on a Mac.
 const localShellSpec = require('./windows-local-shell').shellSpecFor();
@@ -43,8 +44,6 @@ async function openWindowsNativeSeat({
   const channel = new NativeChannel(binaryIn, binaryOut);
   const wire = new Lines(providerIn, providerOut, 4 * 1024 * 1024);
   const carrier = randomUUID();
-  let queued = Promise.resolve();
-  let bytesPending = 0;
   let next = 0;
   let folder;
   let timeout;
@@ -110,14 +109,11 @@ async function openWindowsNativeSeat({
   channel.on('failure', fail);
   wire.on('fault', fail);
   providerOut.on('data', (data) => send('p', data));
-  binaryOut.on('data', (data) => {
-    bytesPending += data.length;
-    if (bytesPending > 8 * 1024 * 1024) { fail(new Error('native_channel_backpressure')); return; }
-    queued = queued.then(() => {
-      if (!closed) return remote.request('command/exec/write', { processId: carrier, deltaBase64: data.toString('base64') });
-    }).finally(() => { bytesPending -= data.length; });
-    queued.catch(fail);
+  const writer = createCarrierWriter({
+    write: (chunk) => (closed ? undefined : remote.request('command/exec/write', { processId: carrier, deltaBase64: chunk.toString('base64') })),
+    onError: (error) => fail(error),
   });
+  binaryOut.on('data', (data) => writer.push(data));
   const provider = identity.provider;
   const mode = identity.fullAccess ? 'write' : 'read';
   const argv = ['/usr/bin/unshare', '--mount', '--propagation', 'private', '/opt/agentdesk-orchestrator/node', hostPath, provider, mode,

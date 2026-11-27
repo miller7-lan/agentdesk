@@ -4,6 +4,7 @@
 const { PassThrough } = require('node:stream');
 const { randomUUID } = require('node:crypto');
 const { Lines } = require('./transport');
+const { createCarrierWriter } = require('./carrier-writer');
 const { NativeChannel, VERSION, TUI_TYPES } = require('./native-channel');
 
 const HOST = '/opt/agentdesk-orchestrator/native-tui-host.js';
@@ -27,8 +28,6 @@ async function openNativeTui({ remote, worker, binding, provider, mode, sessionK
   const waiting = new Map();
   let closed = false;
   let ready = false;
-  let queued = Promise.resolve();
-  let bytesPending = 0;
   let resolveReady;
   let rejectReady;
   const started = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -90,14 +89,11 @@ async function openNativeTui({ remote, worker, binding, provider, mode, sessionK
     }).then((value) => ({ ok: true, value }), (error) => ({ ok: false, error: String(error?.message || error).slice(0, 500) }))
       .then((answer) => { if (!closed) { try { relay.send({ type: 'result', id: frame.id, ...answer }); } catch {} } });
   });
-  binaryOut.on('data', (data) => {
-    bytesPending += data.length;
-    if (bytesPending > 8 * 1024 * 1024) { finish(new Error('native_channel_backpressure')); return; }
-    queued = queued.then(() => {
-      if (!closed) return remote.request('command/exec/write', { processId: carrier, deltaBase64: data.toString('base64') });
-    }).finally(() => { bytesPending -= data.length; });
-    queued.catch((error) => finish(error));
+  const writer = createCarrierWriter({
+    write: (chunk) => (closed ? undefined : remote.request('command/exec/write', { processId: carrier, deltaBase64: chunk.toString('base64') })),
+    onError: (error) => finish(error),
   });
+  binaryOut.on('data', (data) => writer.push(data));
   const argv = ['/usr/bin/unshare', '--mount', '--propagation', 'private', '/opt/agentdesk-orchestrator/node', hostPath,
     provider, mode, sessionKey, platform, Buffer.from(String(name || 'project'), 'utf8').toString('hex').slice(0, 480),
     String(cols), String(rows)];
