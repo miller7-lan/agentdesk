@@ -166,7 +166,9 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
       fs.renameSync(temp, tuiFile);
     } finally { try { fs.unlinkSync(temp); } catch {} }
   };
-  const tuiKey = (provider, projectId) => provider + ':' + projectId;
+  // One CLI per chat (its own conversation history on VPS2); the chat id comes from the window.
+  const tuiKey = (provider, projectId, chatId) => provider + ':' + projectId + (chatId ? ':' + chatId : '');
+  const validChat = (chatId) => chatId === undefined || (typeof chatId === 'string' && /^[\w-]{1,80}$/.test(chatId));
   const tuiView = (key) => {
     const entry = tuiSessions.get(key);
     return { key, state: entry?.state || 'closed', mode: entry?.mode || null, cwd: entry?.cwd || null, error: entry?.error || null };
@@ -176,13 +178,14 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
     Object.assign(entry, { state, ...extra });
     tuiEmit(key, { type: 'state', ...tuiView(key) });
   };
-  async function tuiOpen({ provider, projectId, mode = 'write', cols, rows }) {
+  async function tuiOpen({ provider, projectId, chatId, mode = 'write', cols, rows }) {
     if (!TUI_PROVIDERS.includes(provider)) throw new Error('tui_provider_invalid');
+    if (!validChat(chatId)) throw new Error('tui_chat_invalid');
     if (!['write', 'read'].includes(mode)) throw new Error('tui_mode_invalid');
     if (isDeletingProject(projectId)) throw new Error('项目正在删除。');
     const project = resolveProject(projectId);
     if (!project) throw new Error('原生 CLI 需要一个本机项目：请先为这个单聊选择项目文件夹。');
-    const key = tuiKey(provider, project.id);
+    const key = tuiKey(provider, project.id, chatId);
     const current = tuiSessions.get(key);
     if (current?.session && !current.session.closed) return { ...tuiView(key), replay: Buffer.concat(current.buffer) };
     if (current?.opening) { await current.opening; return { ...tuiView(key), replay: Buffer.concat(tuiSessions.get(key).buffer) }; }
@@ -420,7 +423,8 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
         let project = null;
         try { project = resolveProject(fields.projectId); } catch {}
         if (op === 'status' && !project) return { key: null, state: 'no_project' };
-        key = tuiKey(fields.provider, project?.id ?? fields.projectId);
+        if (!validChat(fields.chatId)) throw new Error('tui_chat_invalid');
+        key = tuiKey(fields.provider, project?.id ?? fields.projectId, fields.chatId);
       }
       switch (op) {
         case 'status': {
@@ -435,10 +439,13 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
           if (!bytes.length || bytes.length > 25 * 1024 * 1024) throw new Error('文件为空或超过 25 MB。');
           return liveTui(key).upload(String(fields.name || 'file'), bytes);
         }
-        case 'close': {
+        case 'close':
+        case 'forget': {
           const entry = tuiSessions.get(key);
           await entry?.session?.close();
           tuiSessions.delete(key);
+          // Deleting the chat: its record (and with it the session key of its VPS2 history) is dropped too.
+          if (op === 'forget' && tuiRecords.delete(key)) saveTui();
           tuiEmit(key, { type: 'state', ...tuiView(key) });
           return true;
         }

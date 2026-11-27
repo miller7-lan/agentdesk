@@ -1074,6 +1074,7 @@
   // 删除单聊：主进程先弹出确认，再删除 VPS 上的会话记录和本机的存档、命令、工作树。
   async function deleteSession(s) {
     if (!s || !s.live || s.agentThread) return;
+    if (s.surface === 'cli') { await window.AgentDeskNativeCli?.remove(s); return; }
     if (s.busy) { toast('会话还在运行，先停止再删除'); return; }
     const provider = window.__providerDirect?.handles(s);
     const r = await window.desk.sessions.remove({ agent: provider ? 'codex' : agentOf(s), sessionId: s.id, title: s.title,
@@ -1096,7 +1097,7 @@
     if (!s || !s.live || s.agentThread) return;
     e.preventDefault();
     const provider = window.__providerDirect?.handles(s);
-    ctx.innerHTML = (provider ? '' : '<button data-c="rename">重命名</button><button data-c="archive">归档</button>') +
+    ctx.innerHTML = (provider ? '' : s.surface === 'cli' ? '<button data-c="rename">重命名</button>' : '<button data-c="rename">重命名</button><button data-c="archive">归档</button>') +
       (s.threadId ? '<button data-c="copy">复制会话 ID</button>' : '') + '<button data-c="delete" class="danger">删除…</button>';
     ctx.style.left = e.clientX + 'px'; ctx.style.top = e.clientY + 'px'; ctx.hidden = false; ctx.dataset.id = s.id;
   });

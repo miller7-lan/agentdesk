@@ -30,15 +30,7 @@
 
   // ---------- markup ----------
   const center = document.querySelector('main.center');
-  const composerBar = $('.composer-bar');
-  if (!center || !composerBar) return;
-  const chip = document.createElement('button');
-  chip.type = 'button';
-  chip.className = 'chip native-cli-chip';
-  chip.id = 'nativeCliBtn';
-  chip.title = '原生 CLI：直接使用官方命令行界面（在 VPS2 上运行，项目来自这台电脑）';
-  chip.innerHTML = '<svg viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M11 16h8"/><rect x="2" y="3" width="20" height="18" rx="3"/></svg>原生 CLI';
-  ($('#terminalBtn') || composerBar.firstChild).after(chip);
+  if (!center) return;
 
   const view = document.createElement('section');
   view.className = 'native-cli';
@@ -58,7 +50,6 @@
       <button type="button" class="icon-btn" id="nativeCliUpload" title="上传文件给 CLI（也可以直接拖进来或粘贴图片）"><svg viewBox="0 0 24 24"><path d="M16 7l-7.5 7.5a2.5 2.5 0 0 0 3.5 3.5L19 11a4.5 4.5 0 0 0-6.4-6.4L5 12.2"/></svg></button>
       <button type="button" class="btn" id="nativeCliRestart" title="重新连接并继续上次的对话">重新连接</button>
       <button type="button" class="btn" id="nativeCliStop" title="结束这个 CLI（对话记录保留，下次打开会继续）">结束</button>
-      <button type="button" class="btn primary" id="nativeCliBack" title="回到 AgentDesk 对话界面；CLI 在后台继续运行">返回对话</button>
     </header>
     <div class="native-cli-body">
       <div class="native-cli-screen" id="nativeCliScreen"></div>
@@ -82,15 +73,54 @@
     .map((text) => `<span>${text}</span>`).join('');
 
   // ---------- state ----------
-  let shown = false;              // the CLI view is showing (for the current conversation)
-  let current = null;             // { key, provider, projectId, state, mode, cwd, error }
+  let shown = false;              // the open conversation is a CLI chat
+  let current = null;             // { key, provider, projectId, chatId, state, mode, cwd, error }
   let wanted = 'write';
   let term = null;
   let fit = null;
   let busy = false;
-  const viewOn = new Set();       // conversation keys whose CLI view was left open
-  try { for (const key of JSON.parse(localStorage.getItem('agentdesk.nativeCli') || '[]')) viewOn.add(key); } catch {}
-  const remember = () => { try { localStorage.setItem('agentdesk.nativeCli', JSON.stringify([...viewOn])); } catch {} };
+  const autoStarted = new Set();  // CLI chats started on opening during this run (a stopped one is not restarted)
+
+  // ---------- the CLI chats themselves (kept here; they have no thread on VPS2 the sidebar could list) ----------
+  const saved = () => { try { return JSON.parse(localStorage.getItem('agentdesk.cliChats') || '[]'); } catch { return []; } };
+  const save = () => {
+    const list = A.D.sessions.filter((s) => s.surface === 'cli')
+      .map(({ id, project, agent, title, created }) => ({ id, project, agent, title, created }));
+    try { localStorage.setItem('agentdesk.cliChats', JSON.stringify(list.slice(0, 100))); } catch {}
+  };
+  const rel = (at) => {
+    const minutes = Math.round((Date.now() - (at || Date.now())) / 60000);
+    return minutes < 1 ? '刚刚' : minutes < 60 ? minutes + ' 分钟前' : minutes < 1440 ? Math.round(minutes / 60) + ' 小时前' : Math.round(minutes / 1440) + ' 天前';
+  };
+  const asSession = (chat) => ({ id: chat.id, project: chat.project, agent: chat.agent, surface: 'cli', title: chat.title || CLI_NAMES[chat.agent] || 'CLI',
+    created: chat.created, status: 'idle', time: rel(chat.created), items: [], live: true, diffs: [], term: [] });
+  // The sidebar list is rebuilt from VPS2 threads now and then; the CLI chats are put back after each rebuild.
+  function restore() {
+    let added = false;
+    for (const chat of saved()) {
+      if (A.D.sessions.some((s) => s.id === chat.id) || !A.proj(chat.project)) continue;
+      A.D.sessions.push(asSession(chat));
+      added = true;
+    }
+    if (added) A.renderSidebar?.();
+  }
+  function create(project, agent) {
+    const chat = { id: 'C' + crypto.randomUUID(), project, agent, title: CLI_NAMES[agent] || 'CLI', created: Date.now() };
+    A.D.sessions.unshift(asSession(chat));
+    save();
+    A.openSession(chat.id);
+  }
+  async function remove(s) {
+    if (!window.confirm(`删除「${s.title}」？CLI 会结束，这个对话的记录也不再保留。`)) return;
+    await call('forget', { provider: agentOf(s), projectId: A.proj(s.project)?.id, chatId: s.id }).catch(() => {});
+    A.D.sessions.splice(A.D.sessions.indexOf(s), 1);
+    save();
+    if (A.state.active === s.id) {
+      const next = A.D.sessions.find((x) => x.live && !x.agentThread);
+      if (next) A.openSession(next.id); else A.newDirect(s.project, s.agent);
+    } else A.renderAll();
+    A.toast('已删除会话');
+  }
 
   const call = async (op, fields) => {
     const answer = await api.call(op, fields);
@@ -100,9 +130,9 @@
 
   function conversation() {
     const s = A.sess(A.state.active);
-    if (!s?.live || A.state.group) return null;
+    if (!s?.live || s.surface !== 'cli' || A.state.group) return null;
     const project = A.proj(s.project);
-    return { provider: agentOf(s), projectId: project?.configured ? project.id : undefined, session: s };
+    return { provider: agentOf(s), projectId: project?.configured ? project.id : undefined, chatId: s.id, session: s };
   }
 
   function theme() {
@@ -188,8 +218,6 @@
   // ---------- rendering ----------
   function render() {
     const conv = conversation();
-    chip.hidden = !conv;
-    chip.classList.toggle('on', shown);
     view.hidden = !shown;
     center.classList.toggle('cli-mode', shown);
     if (!shown || !conv) return;
@@ -233,10 +261,10 @@
     const conv = conversation();
     if (!conv) { current = null; render(); return; }
     try {
-      const status = await call('status', { provider: conv.provider, projectId: conv.projectId });
+      const status = await call('status', { provider: conv.provider, projectId: conv.projectId, chatId: conv.chatId });
       if (status.state === 'no_project') { current = { state: 'failed', error: '原生 CLI 需要一个本机项目：请先为这个单聊选择项目文件夹（项目「···」→ 本机文件夹）。' }; render(); return; }
       const same = current?.key === status.key;
-      current = { ...status, provider: conv.provider, projectId: conv.projectId };
+      current = { ...status, provider: conv.provider, projectId: conv.projectId, chatId: conv.chatId };
       ensureTerm();
       if (!same) {
         term.reset();
@@ -244,6 +272,11 @@
       }
       render();
       if (status.state === 'ready') nudge();
+      // Opening a CLI chat starts its CLI (continuing its conversation), once per run: one the person ended stays ended.
+      else if (['closed', 'disconnected'].includes(status.state) && !autoStarted.has(conv.chatId)) {
+        autoStarted.add(conv.chatId);
+        start();
+      }
     } catch (error) { current = { state: 'failed', error: error.message }; render(); }
   }
 
@@ -266,7 +299,8 @@
     current = { ...(current || {}), state: 'connecting', mode: wanted, error: null };
     render();
     try {
-      const value = await call('open', { provider: conv.provider, projectId: conv.projectId, mode: wanted, cols: term.cols, rows: term.rows });
+      autoStarted.add(conv.chatId);
+      const value = await call('open', { provider: conv.provider, projectId: conv.projectId, chatId: conv.chatId, mode: wanted, cols: term.cols, rows: term.rows });
       current = { ...current, ...value };
       if (value.replay?.length) term.write(value.replay instanceof Uint8Array ? value.replay : new Uint8Array(value.replay));
     } catch (error) {
@@ -284,14 +318,6 @@
     render();
   }
 
-  function setShown(on) {
-    const conv = conversation();
-    shown = Boolean(on && conv);
-    const viewKey = conv ? conv.provider + ':' + (conv.projectId || '') : null;
-    if (viewKey) { if (shown) viewOn.add(viewKey); else viewOn.delete(viewKey); remember(); }
-    render();
-    if (shown) attach();
-  }
 
   async function upload(files) {
     if (current?.state !== 'ready' || !files?.length) return;
@@ -315,8 +341,6 @@
   $('#nativeCliScreen').addEventListener('keydown', (event) => {
     if (!(event.ctrlKey && event.key === 'Tab')) event.stopPropagation();
   });
-  chip.addEventListener('click', () => setShown(!shown));
-  $('#nativeCliBack').addEventListener('click', () => setShown(false));
   $('#nativeCliStart').addEventListener('click', start);
   $('#nativeCliRestart').addEventListener('click', start);
   $('#nativeCliStop').addEventListener('click', stop);
@@ -375,20 +399,25 @@
     }
   });
 
-  // Follow the open conversation: each provider + project has its own CLI; the view stays as it was left there.
+  // Follow the open conversation: a CLI chat shows its CLI; any other chat shows the usual conversation.
   let lastKey;
+  let lastTitles = '';
   setInterval(() => {
+    restore();
+    const titles = A.D.sessions.filter((s) => s.surface === 'cli').map((s) => s.id + s.title).join('|');
+    if (titles !== lastTitles) { lastTitles = titles; save(); }
     const conv = conversation();
-    const viewKey = conv ? conv.provider + ':' + (conv.projectId || '') : null;
-    if (viewKey === lastKey) { chip.hidden = !conv; return; }
+    const viewKey = conv ? conv.chatId : null;
+    if (viewKey === lastKey) return;
     lastKey = viewKey;
-    shown = Boolean(viewKey && viewOn.has(viewKey));
+    shown = Boolean(conv);
     current = null;
     render();
     if (shown) attach();
   }, 400);
+  restore();
   new MutationObserver(() => { if (term) term.options.theme = theme(); })
     .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'style'] });
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (term) term.options.theme = theme(); });
-  window.AgentDeskNativeCli = { show: setShown, start };
+  window.AgentDeskNativeCli = { create, remove, start };
 })();

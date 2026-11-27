@@ -1556,7 +1556,7 @@ ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) 
 });
 
 // Native CLI single chats (src/native-cli.js): the official CLI's own TUI on VPS2, shown and typed into here.
-const TUI_OPS = new Set(['status', 'open', 'input', 'resize', 'upload', 'close']);
+const TUI_OPS = new Set(['status', 'open', 'input', 'resize', 'upload', 'close', 'forget']);
 ipcMain.handle('tui:call', async (event, op, fields = {}) => {
   if (!fromMainWindow(event) || !TUI_OPS.has(op) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
     return { ok: false, error: 'invalid_request' };

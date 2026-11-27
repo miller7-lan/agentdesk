@@ -201,7 +201,7 @@
       const own = items.filter((s) => !s.agentThread);
       const row = (s) => `
           <div class="sess ${s.agentThread ? 'sess-dispatched ' : ''}${!state.group && s.id === state.active ? 'active' : ''}" data-id="${s.id}" title="${esc(s.agentThread ? s.title + '（只读记录）' : s.title)}" role="button" tabindex="0">
-            ${avatars.html(s.provider || s.agent || 'codex', { size: s.agentThread ? 20 : 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.agentThread ? (s.shortTitle || s.title || window.__providerDirect?.names[s.provider] || s.provider) : s.title)}</span>${s.agentThread ? '<span class="s-badge">派遣</span>' : `<span class="s-time">${esc(s.time)}</span>`}
+            ${avatars.html(s.provider || s.agent || 'codex', { size: s.agentThread ? 20 : 24, key: 'direct:' + s.id, state: directAvatarState(s) })}<span class="status-dot ${s.status}"></span><span class="s-title">${esc(s.agentThread ? (s.shortTitle || s.title || window.__providerDirect?.names[s.provider] || s.provider) : s.title)}</span>${s.agentThread ? '<span class="s-badge">派遣</span>' : `${s.surface === 'cli' ? '<span class="s-badge">CLI</span>' : ''}<span class="s-time">${esc(s.time)}</span>`}
           </div>`;
       const col = state.collapsed.has(p.id) && !q;
       html += `<div class="group ${col ? 'collapsed' : ''}" data-proj="${p.id}">
@@ -265,7 +265,7 @@
     try { return await startDirect(project, agent, options); }
     catch (error) { toast('没能新建单聊：' + (error?.message || String(error))); }
   }
-  async function startDirect(project, agent, { worktree = false } = {}) {
+  async function startDirect(project, agent, { worktree = false, surface = 'chat' } = {}) {
     project = projectIdOf(project);
     let p = proj(project);
     if (!p) { toast('找不到这个项目，请在左侧重新选择'); return; }
@@ -282,6 +282,12 @@
     if (agent !== 'codex' && p.live && !p.configured) {
       toast('请先为这个项目选择本机目录，再开始 ' + agentName(agent) + ' 单聊');
       return;
+    }
+    if (surface === 'cli') {
+      // A native CLI chat: the official TUI on VPS2 in this project (src/native-cli.js keeps the list).
+      if (!LIVE || !p.live || !p.configured || !window.AgentDeskNativeCli) { toast('原生 CLI 需要已连接、并选好本机目录的项目'); return; }
+      if (worktree) toast('原生 CLI 直接在项目目录里工作，这次不会创建独立工作树');
+      return window.AgentDeskNativeCli.create(project, agent);
     }
     const id = (p.live ? 'L' : 's') + crypto.randomUUID();
     // A live chat starts in the last writable mode (never 只读规划; first use 自动编辑), set when it is opened.

@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-27 20:10（北京时间）· 客户端 0.4.19 · 原生 CLI 在新建单聊时选择
+
+- **起因**：用户希望选单聊 AI 时同时选「原生 CLI / 默认对话」，CLI 单聊直接显示官方 TUI。
+- **改动**：`src/provider-direct.js` 选择框加「界面」单选（记在 `newChatSurface`）；`src/app.js` `startDirect` 的 `surface: 'cli'` 交给 `AgentDeskNativeCli.create`，侧栏显示「CLI」标记；`src/native-cli.js` 去掉输入框按钮，CLI 单聊（`surface: 'cli'`，列表存 `agentdesk.cliChats`）打开即显示并自动启动 TUI（每次运行一次，用户结束的不自动重启）；删除走 `tui forget`。`windows-native-desktop.js` 的 TUI 键加上单聊 id（每个 CLI 单聊独立会话键与 VPS2 私有历史）。
+- **VPS2**：无改动。
+- **验证**：全部测试通过；打包后的界面冒烟测试由 CI 在 Windows/Mac 上跑。
+- **回滚**：发更高版本撤回。
+
 ## 2026-11-27 12:10（北京时间）· 客户端 0.4.18 · CLI/终端按键不再触发应用快捷键
 
 - **起因**：xterm.js 默认不阻止按键冒泡，原生 CLI 和终端面板里的 Ctrl+B/J/K/N/Shift+L 会同时触发 `src/app.js` 的全局快捷键。
