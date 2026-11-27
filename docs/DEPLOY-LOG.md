@@ -2,6 +2,16 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-27 11:30（北京时间）· 客户端 0.4.17 + VPS2 · 原生 CLI 单聊
+
+- **起因**：用户要一个「纯血」CLI 单聊：官方 TUI 原样显示，经反向通道直接操作本机，并和 AgentDesk 的功能结合；Windows 和 Mac 都要支持。
+- **改动（VPS2，新增，不影响现有单聊）**：`orchestrator/native-tui-host.js`（由 root codex app-server 的 command/exec 载体启动，在私有挂载命名空间里运行：SFTP 挂载项目、提供 agentdesk MCP 套接字、上传目录）、`native-tui-launch.js`（以 CLI 的服务账户在伪终端里准备私有历史和 MCP 配置，再在 bwrap 里运行官方 CLI；项目绑定为 `/work/<项目名>`，Codex 为 `/work/<会话键前 8 位>/<项目名>`，上传只读绑定为 `/uploads`）、`native-tui.js`（各 CLI 的交互式参数、提示、续聊判断）、`pty-run.py`（伪终端：fd0 按键、fd1 画面、fd3 尺寸）。`native-channel.js` 增加可选的帧类型集合（t 终端、m 工具中继、u 上传），默认集合不变；`chat-mcp.js` 给 local_shell/terminal 15 分钟超时。
+- **改动（客户端）**：`orchestrator/native-tui-client.js`（一条载体复用 SFTP、终端、工具中继、上传）、`windows-native-desktop.js` 的 `tui()`（每个 CLI + 项目一个会话，独立的会话键和本机租约，记录在 `tui.json`；工具：local_shell、有 node-pty 时 terminal、Windows 管理员 PowerShell；只读模式不提供工具）、`main.js` 的 `tui:call` / `tui:event`、`src/native-cli.js` + 样式（输入框旁「原生 CLI」按钮、状态栏、可修改/只读规划、上传、重新连接续聊、后台保活与回放；按键按 Windows Terminal / Terminal.app 习惯）。
+- **权限**：全部按官方模式：Claude/Grok/Antigravity 用默认权限模式（只读规划用 plan），Codex 用 `--sandbox workspace-write|read-only` 和自己的默认批准策略；AgentDesk 不预先放行任何工具，包括连到本机的 agentdesk 工具。续聊：Claude/Grok/agy 在本会话的私有历史里有内容时用 `--continue`，Codex 按 rollout 的 cwd 找到会话 id 用 `resume <id>`；继续失败 10 秒内退出就改为新对话。
+- **VPS2**：上述 4 个新文件放到 `/opt/agentdesk-orchestrator/`，`native-channel.js`、`chat-mcp.js` 覆盖前备份为 `*.bak-20261127-tui`。不需要重启服务。
+- **验证**：全部测试通过（新增 `test/native-tui.test.js` 8 项）；在 VPS2 上用真实客户端模块 + 真实 host 端到端跑通 Claude Code、Codex、Grok、agy 的官方 TUI（启动约 0.2 秒、项目挂载为 /work/<名>、上传、调整尺寸、结束后无残留挂载和临时目录），agentdesk MCP 工具经中继到达「本机」并返回，未提供的工具和错误能力码被拒。
+- **回滚**：删除 VPS2 上 4 个新文件即关闭该功能（客户端会提示 VPS2 没有原生 CLI 服务）；客户端发更高版本撤回。
+
 ## 2026-11-26 16:10（北京时间）· 客户端 0.4.16 · 单聊发送后输入框立刻清空
 
 - **起因**：Windows 单聊（Codex）连到 VPS2 的 SSH 被中途重置（`client_loop: send disconnect: Connection reset`），之后再发消息时，消息已经出现在对话里，输入框却还留着原文。原因是输入框只在 `turn/start` 成功后才清空，等连接、恢复会话、发送失败的整个过程中文字都还在。

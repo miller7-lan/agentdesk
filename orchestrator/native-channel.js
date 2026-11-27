@@ -4,20 +4,23 @@ const LIMIT = 64 * 1024;
 const VERSION = 1;
 const NATIVE_PROVIDERS = Object.freeze(['codex', 'claude', 'grok', 'antigravity']);
 const channelTypes = new Set(['s', 'p', 'c']);
+// Native CLI single chats (native-tui-host.js): terminal bytes, the tool relay and file uploads instead of 'p'.
+const TUI_TYPES = Object.freeze(['s', 't', 'c', 'm', 'u']);
 
 // SFTP and provider JSON-RPC are separate byte streams. Frames never contain an operating-system
 // path granting authority, and the provider process never receives the SFTP/control channels.
 class NativeChannel extends EventEmitter {
-  constructor(input, output) {
+  constructor(input, output, types = channelTypes) {
     super();
     this.output = output;
+    this.types = types instanceof Set ? types : new Set(types);
     let buffer = Buffer.alloc(0);
     input.on('data', (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
       while (buffer.length >= 5) {
         const size = buffer.readUInt32BE(0);
         const type = String.fromCharCode(buffer[4]);
-        if (!size || size > LIMIT || !channelTypes.has(type)) {
+        if (!size || size > LIMIT || !this.types.has(type)) {
           input.destroy();
           this.emit('failure', new Error('invalid_native_channel_frame'));
           return;
@@ -34,7 +37,7 @@ class NativeChannel extends EventEmitter {
   }
 
   send(type, bytes) {
-    if (!channelTypes.has(type) || this.output.destroyed || this.output.writableEnded) throw new Error('native_channel_closed');
+    if (!this.types.has(type) || this.output.destroyed || this.output.writableEnded) throw new Error('native_channel_closed');
     const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
     if (this.output.writableLength + data.length > 8 * 1024 * 1024) throw new Error('native_channel_backpressure');
     for (let offset = 0; offset < data.length; offset += LIMIT) {
@@ -47,4 +50,4 @@ class NativeChannel extends EventEmitter {
   }
 }
 
-module.exports = { NativeChannel, VERSION, NATIVE_PROVIDERS };
+module.exports = { NativeChannel, VERSION, NATIVE_PROVIDERS, TUI_TYPES };

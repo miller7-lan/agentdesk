@@ -648,3 +648,39 @@ dialog.stage-picker, dialog.stage-editor { width: min(640px, 92vw); max-width: n
 .access-toggle.on { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); background: var(--warn-soft); }
 .access-toggle:disabled { opacity: .55; cursor: not-allowed; }
 .handover-note { margin: 0 0 8px; color: var(--warn); font-size: 12px; }
+
+/* ---------- 原生 CLI（src/native-cli.js）：官方 TUI 原样显示，AgentDesk 只在四周 ---------- */
+.center.cli-mode > [data-direct], .center.cli-mode > .thread-banner { display: none !important; }
+.native-cli { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--main); }
+.native-cli[hidden] { display: none; }
+.native-cli-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel); min-width: 0; flex-wrap: wrap; }
+.native-cli-avatar { display: grid; place-items: center; flex: none; }
+.native-cli-title { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.native-cli-title strong { font-size: 13px; }
+.native-cli-title span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42ch; font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; }
+.native-cli-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 20px; padding: 2px 9px; white-space: nowrap; }
+.native-cli-state .dot { background: var(--faint); }
+.native-cli-state.ok .dot { background: var(--ok); }
+.native-cli-state.wait .dot { background: var(--warn); animation: blink 1s infinite; }
+.native-cli-state.err .dot { background: var(--danger); }
+.native-cli-state.err { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.native-cli-mode { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.native-cli-mode button { padding: 4px 10px; font-size: 12px; color: var(--muted); }
+.native-cli-mode button + button { border-left: 1px solid var(--border); }
+.native-cli-mode button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.native-cli-bar .icon-btn:disabled { opacity: .4; }
+.native-cli-body { position: relative; flex: 1; min-height: 0; display: flex; }
+.native-cli-screen { flex: 1; min-width: 0; min-height: 0; padding: 8px 4px 4px 12px; }
+.native-cli-screen .xterm { height: 100%; }
+.native-cli-screen .xterm-viewport { background: transparent !important; }
+.native-cli-cover, .native-cli-drop { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--main) 88%, transparent); backdrop-filter: blur(2px); }
+.native-cli-cover[hidden], .native-cli-drop[hidden] { display: none; }
+.native-cli-card { max-width: 440px; text-align: center; padding: 28px 30px; border: 1px solid var(--border); border-radius: 14px; background: var(--raised); box-shadow: var(--shadow); }
+.native-cli-card h2 { margin: 12px 0 6px; font-size: 17px; }
+.native-cli-card p { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.native-cli-card-avatar { display: inline-grid; place-items: center; }
+.native-cli-drop { border: 2px dashed var(--accent); border-radius: 12px; margin: 10px; inset: 0; color: var(--accent); font-weight: 600; pointer-events: none; }
+.native-cli-hints { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 6px 14px 8px; font-size: 11px; color: var(--faint); border-top: 1px solid var(--border); }
+.native-cli-hints kbd { font: 10.5px ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--raised); color: var(--muted); }
+.native-cli-chip.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+@media (max-width: 720px) { .native-cli-hints { display: none; } .native-cli-title span { max-width: 22ch; } }

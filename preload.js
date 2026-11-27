@@ -151,6 +151,11 @@ contextBridge.exposeInMainWorld('desk', {
     call: (agent, threadId, op, fields) => ipcRenderer.invoke('terminal:call', agent, threadId, op, fields),
     onEvent: on('terminal:event'),
   },
+  // Native CLI single chats: the official CLI's TUI on VPS2.
+  tui: {
+    call: (op, fields) => ipcRenderer.invoke('tui:call', op, fields),
+    onEvent: on('tui:event'),
+  },
   localCommands: {
     list: (agent, threadId) => ipcRenderer.invoke('local-command:list', agent, threadId),
     cancel: (agent, threadId, id) => ipcRenderer.invoke('local-command:cancel', agent, threadId, id),

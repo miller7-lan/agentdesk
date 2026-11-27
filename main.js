@@ -158,6 +158,7 @@ function nativeDesktop() {
       }),
       onCommand: (agent, threadId, run) => toUi('local-command:update', { agent, threadId, run }),
       onTerminal: (event) => toUi('terminal:event', event),
+      onTui: (event) => toUi('tui:event', event),
       reviewUnknown: async () => {
         const { response } = await dialog.showMessageBox(win, {
           type: 'warning', message: '上次断线时有本机操作的结果未确认。',
@@ -1551,6 +1552,20 @@ ipcMain.handle('terminal:call', async (event, agent, threadId, op, fields = {}) 
     const value = await native.terminal(agent, threadId, op, fields);
     if (value === undefined) return { ok: false, error: 'terminal_needs_native_chat' };
     return { ok: true, value };
+  } catch (error) { return { ok: false, error: error.message }; }
+});
+
+// Native CLI single chats (src/native-cli.js): the official CLI's own TUI on VPS2, shown and typed into here.
+const TUI_OPS = new Set(['status', 'open', 'input', 'resize', 'upload', 'close']);
+ipcMain.handle('tui:call', async (event, op, fields = {}) => {
+  if (!fromMainWindow(event) || !TUI_OPS.has(op) || !fields || typeof fields !== 'object' || Array.isArray(fields)) {
+    return { ok: false, error: 'invalid_request' };
+  }
+  if (updateLocked() && ['open', 'input', 'upload'].includes(op)) return { ok: false, error: UPDATE_LOCKED };
+  try {
+    const native = nativeDesktop();
+    if (!native) return { ok: false, error: 'tui_unavailable' };
+    return { ok: true, value: await native.tui(op, fields) };
   } catch (error) { return { ok: false, error: error.message }; }
 });
 

@@ -3,9 +3,14 @@ const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { createWorkerClient, createSecret, connectWorker } = require('./windows-chat-worker');
 const { openWindowsNativeSeat } = require('./windows-native-seat');
+const { openNativeTui } = require('./native-tui-client');
+const { TUI_PROVIDERS } = require('./native-tui');
+const { shellSpecFor } = require('./windows-local-shell');
+const { terminalSpec } = require('./terminal-sessions');
 const { NATIVE_PROVIDERS } = require('./native-channel');
 
 const HOST = '/opt/agentdesk-orchestrator/native-project-session-host.js';
+const TUI_HOST = '/opt/agentdesk-orchestrator/native-tui-host.js';
 const supported = new Set(NATIVE_PROVIDERS);
 
 function sameRoot(left, right) {
@@ -16,7 +21,7 @@ function sameRoot(left, right) {
 // Windows and macOS: the official CLI on VPS2 works directly in this computer's project (mounted over SFTP),
 // and its local_shell runs here.
 function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktree, bridgeSettings, onEvent, onRequest, onCommand, reviewUnknown, adminShell,
-  onTerminal = () => {}, isDeletingProject = () => false }) {
+  onTerminal = () => {}, onTui = () => {}, isDeletingProject = () => false }) {
   const worker = createWorkerClient(stateDir, {
     onUpdate: (scope, run) => {
       try {
@@ -146,6 +151,113 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
     opening.catch(() => { if (seats.get(record.threadId) === opening) seats.delete(record.threadId); });
     return opening;
   }
+  // ---- Native CLI single chats (native-tui.js): one official CLI TUI per provider and project. ----
+  const tuiFile = path.join(stateDir, 'tui.json');
+  const tuiRecords = new Map();
+  try { for (const entry of JSON.parse(fs.readFileSync(tuiFile, 'utf8'))) tuiRecords.set(entry.key, entry); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const tuiSessions = new Map();   // key -> { session, opening, buffer, state, mode, cwd, error }
+  const TUI_BUFFER = 768 * 1024;
+  const saveTui = () => {
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const temp = tuiFile + '.' + randomUUID();
+    try {
+      fs.writeFileSync(temp, JSON.stringify([...tuiRecords.values()]), { flag: 'wx', mode: 0o600 });
+      fs.renameSync(temp, tuiFile);
+    } finally { try { fs.unlinkSync(temp); } catch {} }
+  };
+  const tuiKey = (provider, projectId) => provider + ':' + projectId;
+  const tuiView = (key) => {
+    const entry = tuiSessions.get(key);
+    return { key, state: entry?.state || 'closed', mode: entry?.mode || null, cwd: entry?.cwd || null, error: entry?.error || null };
+  };
+  const tuiEmit = (key, event) => { try { onTui({ key, ...event }); } catch {} };
+  const tuiState = (key, entry, state, extra = {}) => {
+    Object.assign(entry, { state, ...extra });
+    tuiEmit(key, { type: 'state', ...tuiView(key) });
+  };
+  async function tuiOpen({ provider, projectId, mode = 'write', cols, rows }) {
+    if (!TUI_PROVIDERS.includes(provider)) throw new Error('tui_provider_invalid');
+    if (!['write', 'read'].includes(mode)) throw new Error('tui_mode_invalid');
+    if (isDeletingProject(projectId)) throw new Error('项目正在删除。');
+    const project = resolveProject(projectId);
+    if (!project) throw new Error('原生 CLI 需要一个本机项目：请先为这个单聊选择项目文件夹。');
+    const key = tuiKey(provider, project.id);
+    const current = tuiSessions.get(key);
+    if (current?.session && !current.session.closed) return { ...tuiView(key), replay: Buffer.concat(current.buffer) };
+    if (current?.opening) { await current.opening; return { ...tuiView(key), replay: Buffer.concat(tuiSessions.get(key).buffer) }; }
+    if (!await remote.wake()) throw new Error('VPS 连接未就绪，请重连后重试。');
+    const hostReady = await remote.request('command/exec', { command: ['/usr/bin/test', '-r', TUI_HOST], cwd: '/var/tmp',
+      timeoutMs: 3000, sandboxPolicy: { type: 'dangerFullAccess' } }, { timeoutMs: 8000 }).then((result) => result.exitCode === 0, () => false);
+    if (!hostReady) throw new Error('VPS2 还没有原生 CLI 服务，请先更新 VPS2 上的 AgentDesk 主控。');
+    let record = tuiRecords.get(key);
+    if (!record || !sameRoot(record.root, project.root)) {
+      record = { key, provider, projectId: project.id, root: project.root, id: randomUUID(),
+        sessionKey: createHash('sha256').update(deviceId() + ':tui:' + randomUUID()).digest('hex') };
+      tuiRecords.set(key, record);
+      saveTui();
+    }
+    const entry = { buffer: [], size: 0, mode, state: 'connecting', cwd: null, error: null };
+    tuiSessions.set(key, entry);
+    tuiState(key, entry, 'connecting');
+    entry.opening = (async () => {
+      const connection = await worker.get();
+      const identity = { device: deviceId(), provider, projectId: project.id, root: project.root, threadId: 'tui-' + record.id, fullAccess: true };
+      let binding = { ...identity, ...await connection.request('acquire', { binding: identity }) };
+      if (binding.suspended) {
+        if (!await connection.request('reconcile', { binding })) throw new Error('本机项目已暂停。请先核对上次连接中的本机文件和命令。');
+        binding = { ...identity, ...await connection.request('acquire', { binding: identity }) };
+      }
+      const offered = await connection.request('capabilities', {}).catch(() => ({})) || {};
+      const specs = mode === 'write' ? [shellSpecFor(process.platform), ...(offered.pty ? [terminalSpec(process.platform)] : []),
+        ...(adminShell ? [adminShell.spec] : [])] : [];
+      const tools = specs.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+      const callTool = async (name, args) => {
+        const value = adminShell && name === adminShell.spec.name ? await adminShell.call(provider, args, { threadId: 'tui-' + record.id })
+          : name === 'terminal' ? await connection.request('terminal', { binding, args })
+            : await connection.request('shell', { binding, args, requestId: createHash('sha256').update(randomUUID()).digest('hex') });
+        return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+      };
+      const release = async () => {
+        const idle = await connection.request('completeSftp', { binding }).catch(() => false);
+        if (idle) await connection.request('release', { binding }).catch(() => {});
+      };
+      try {
+        entry.session = await openNativeTui({ remote, worker: connection, binding, provider, mode, sessionKey: record.sessionKey,
+          name: path.basename(project.root), cols, rows, tools, callTool,
+          onData: (data) => {
+            entry.buffer.push(data);
+            entry.size += data.length;
+            while (entry.size > TUI_BUFFER && entry.buffer.length > 1) entry.size -= entry.buffer.shift().length;
+            tuiEmit(key, { type: 'data', data });
+          },
+          onControl: (message) => {
+            if (message.state === 'exited') tuiState(key, entry, 'exited', { exitCode: message.code });
+          },
+          onClose: (error) => {
+            if (entry.state !== 'exited') tuiState(key, entry, error ? 'disconnected' : 'closed', { error: error?.message || null });
+            release();
+          },
+        });
+      } catch (error) {
+        await release();
+        throw error;
+      }
+      tuiState(key, entry, 'ready', { cwd: entry.session.info.cwd });
+    })();
+    try { await entry.opening; }
+    catch (error) {
+      tuiState(key, entry, 'failed', { error: error.message });
+      throw error;
+    } finally { entry.opening = null; }
+    return { ...tuiView(key), replay: Buffer.concat(entry.buffer) };
+  }
+  const liveTui = (key) => {
+    const entry = tuiSessions.get(key);
+    if (!entry?.session || entry.session.closed) throw new Error('原生 CLI 未连接。');
+    return entry.session;
+  };
+
   return {
     async select(provider, method, params = {}) {
       if (!supported.has(provider)) return null;
@@ -301,6 +413,39 @@ function createWindowsNativeDesktop({ stateDir, remote, findProject, findWorktre
         default: throw new Error('invalid_terminal_operation');
       }
     },
+    // Native CLI single chats (renderer: src/native-cli.js).
+    async tui(op, fields = {}) {
+      let key = fields.key;
+      if (typeof key !== 'string') {
+        let project = null;
+        try { project = resolveProject(fields.projectId); } catch {}
+        if (op === 'status' && !project) return { key: null, state: 'no_project' };
+        key = tuiKey(fields.provider, project?.id ?? fields.projectId);
+      }
+      switch (op) {
+        case 'status': {
+          const entry = tuiSessions.get(key);
+          return { ...tuiView(key), replay: entry?.buffer.length ? Buffer.concat(entry.buffer) : null, known: tuiRecords.has(key) };
+        }
+        case 'open': return tuiOpen(fields);
+        case 'input': liveTui(key).input(String(fields.data ?? '')); return true;
+        case 'resize': liveTui(key).resize(fields.cols, fields.rows); return true;
+        case 'upload': {
+          const bytes = Buffer.from(fields.bytes || []);
+          if (!bytes.length || bytes.length > 25 * 1024 * 1024) throw new Error('文件为空或超过 25 MB。');
+          return liveTui(key).upload(String(fields.name || 'file'), bytes);
+        }
+        case 'close': {
+          const entry = tuiSessions.get(key);
+          await entry?.session?.close();
+          tuiSessions.delete(key);
+          tuiEmit(key, { type: 'state', ...tuiView(key) });
+          return true;
+        }
+        default: throw new Error('invalid_tui_operation');
+      }
+    },
+    closeAllTui: () => Promise.all([...tuiSessions.values()].map((entry) => entry.session?.close().catch(() => {}))),
     disconnect: () => worker.disconnect(),
     // Update gate (orchestrator/worker-idle.js): asks the Worker over a separate connection — never launches it,
     // never stops anything in it.
