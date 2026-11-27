@@ -106,7 +106,7 @@ function prepareHome(provider, home, sharedRoot) {
 }
 
 // The few /etc files that would otherwise name VPS2's users, hosts or resolver, written for the sandbox.
-function writeIdentity(runtime, { uid = process.getuid(), gid = process.getgid(), home = '/home/agentdesk' } = {}) {
+function writeIdentity(runtime, { uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000, home = '/home/agentdesk' } = {}) {
   const folder = path.join(runtime, 'etc');
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   const files = {

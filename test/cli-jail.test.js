@@ -11,7 +11,7 @@ function scratch(t) {
   return dir;
 }
 
-test('a device home gets the login (bound) and settings (copied once), never the shared history', (t) => {
+test('a device home gets the login (bound) and settings (copied once), never the shared history', { skip: process.platform === 'win32' && 'VPS2 (Linux) only' }, (t) => {
   const dir = scratch(t);
   const shared = path.join(dir, 'homes');
   fs.mkdirSync(path.join(shared, 'claude', '.claude', 'projects', '-other-device'), { recursive: true });
@@ -29,7 +29,8 @@ test('a device home gets the login (bound) and settings (copied once), never the
   assert.equal(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'), '{"mine":1}', 'seeded once only');
 });
 
-test('the sandbox starts from nothing: no host root, no AgentDesk state, own network, fixed identity', (t) => {
+// The sandbox runs on VPS2 (Linux) only; Windows paths and symlinks make no sense for it.
+test('the sandbox starts from nothing: no host root, no AgentDesk state, own network, fixed identity', { skip: process.platform === 'win32' && 'VPS2 (Linux) only' }, (t) => {
   const dir = scratch(t);
   const home = path.join(dir, 'home');
   const workspace = path.join(dir, 'work');
