@@ -2,6 +2,10 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 04:20（北京时间）· 客户端 0.5.6
+
+- 0.5.5 Windows 打包测试失败（`test/pc-bridge.test.js` 保护开关测试在 Windows 用 zsh → `invalid_terminal_shell`），未上传。测试改为按平台选 shell；按用户既定选择不移标签，发 0.5.6，内容同 0.5.5。
+
 ## 2026-11-28 03:50（北京时间）· 客户端 0.5.5 · 终端「保护」开关
 
 - 用户要在终端上加按钮切换保护。`pc-bridge.js` 增加 `protection`（get/set/profile）与 `protect` 操作，`capabilities` 返回其状态；`main.js` 在 Mac 上提供（`userData/cli-terminal.json` 记住，开时用 `macSandboxProfile`），Windows 为 null 不显示；`terminal-panel.js` / `index.html` 加 `#terminalProtect`，只在 CLI 单聊显示。测试 648 项通过。

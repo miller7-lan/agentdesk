@@ -75,7 +75,8 @@ test('保护 switch: new terminals use the protected profile only when it is on;
   let on = false;
   const profiles = [];
   const fakePty = { spawn() { return { onData() {}, onExit() {}, write() {}, resize() {}, kill() {} }; } };
-  const bridge = createPcBridge({ spawnBridge: () => { throw new Error('offline'); }, platform: 'darwin', shell: 'zsh', pty: fakePty,
+  // The shell is this test machine's (terminals start with the host's launcher; Windows CI has no zsh).
+  const bridge = createPcBridge({ spawnBridge: () => { throw new Error('offline'); }, platform: 'darwin', shell: process.platform === 'win32' ? 'powershell' : 'zsh', pty: fakePty,
     protection: { get: () => on, set: (value) => { on = value; }, profile: () => { profiles.push('sandboxed'); return '(version 1)'; } } });
   assert.deepEqual(bridge.call('claude', 'cli:C1', 'capabilities').protection, { on: false });
   bridge.call('claude', 'cli:C1', 'open', {});
