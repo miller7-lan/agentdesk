@@ -21,7 +21,8 @@ const BUFFER = 768 * 1024;
 const hex = (text) => Buffer.from(String(text || 'project'), 'utf8').toString('hex').slice(0, 480);
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const PROVIDERS = new Set(['claude', 'codex', 'grok', 'antigravity']);
-// A dropped connection is tried again after these pauses; the CLI keeps running on VPS2 meanwhile (dtach).
+// A dropped connection is tried again after these pauses; the CLI on VPS2 ends with it and the next connection
+// continues its conversation (agentdesk-cli.js).
 const RETRY = [1000, 2000, 5000, 10_000, 20_000, 30_000];
 
 // resolveRoot(projectId) → this computer's folder of the project, or null: when there is one, the CLI works directly in
@@ -299,7 +300,7 @@ function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agent
         default: throw new Error('invalid_cli_operation');
       }
     },
-    // Quitting AgentDesk only disconnects: the CLIs keep running on VPS2 and are attached again next time.
+    // Quitting AgentDesk disconnects: the CLIs on VPS2 end and continue their conversations next time.
     closeAll() {
       for (const entry of sessions.values()) { entry.closing = true; clearTimeout(entry.timer); try { entry.term?.kill(); } catch {} }
       for (const mount of [...mounts.values()]) stopMount(mount);

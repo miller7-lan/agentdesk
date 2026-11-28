@@ -2,6 +2,15 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 16:15（北京时间）· VPS2 CLI 单聊断线即停 + 客户端 0.5.11
+
+- 用户要求：断联应立刻停止处理，重连回到上一次继续（Mac、Windows 都出现过断线后内容丢失）。
+- 原因：CLI 跑在 dtach 里，断线后继续运行；会话记录（chats/<provider>-<chat>.json）只在 CLI 退出时写，被杀或重启时丢失，重连开成新对话；重接时 dtach 只重画当前一屏。sshd 对 agentdesk 的 ClientAlive 为 900×3，断线约 45 分钟后才发现。
+- `orchestrator/agentdesk-cli.js`：不再用 dtach，CLI 随 SSH 连接结束（SIGHUP）；启动 10 秒后即保存会话（Claude/Grok started，Codex/Antigravity 找到会话 id 即存）；新连接先结束同一单聊仍在运行的旧 CLI（含旧 dtach 会话；按 /proc cmdline+environ 核对是该单聊的进程），等其退出再 `--resume`/`resume` 继续。stdout/stderr 写错误忽略，保证退出时记录写成。
+- VPS2：部署该文件（备份 agentdesk-cli.js.bak-20261128-stopdrop）；`/etc/ssh/sshd_config.d/60-agentdesk-bridge.conf` 的 Match User agentdesk 加 ClientAliveInterval 10 / ClientAliveCountMax 3（备份 /root/backups/60-agentdesk-bridge.conf.bak-20261128-alive），`sshd -t` 后 reload；root 等不变（900）。
+- 验证：VPS2 上以 agentdesk 在 pty 里跑测试单聊：运行中 10 秒记录 started=true；第二个连接先结束第一个，再 `--resume` 同一会话；强杀终端（等同 sshd 断开）后 CLI 全部退出、记录保留、无残留；测试数据已删。全量测试 0 失败。
+- 客户端 0.5.11 只改帮助文字和注释。回滚：恢复两个备份文件并 reload ssh。
+
 ## 2026-11-28 14:45（北京时间）· 客户端 0.5.10
 
 - v0.5.9 发布运行 Windows 测试失败（bridge-ssh/chat-link/remote 测试在 win32 上读取 `AGENTDESK_SSH_JUMP`），未上传。win32 跳板也写入该环境变量（不设 ELECTRON_RUN_AS_NODE），ssh-options 旧用例显式 `platform: 'linux'`；本地以模拟 win32 跑相关 4 个测试文件 47/47 通过。内容同 0.5.9。

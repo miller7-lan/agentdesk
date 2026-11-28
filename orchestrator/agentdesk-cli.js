@@ -232,20 +232,34 @@ function upload(original, env = process.env) {
   process.stdin.on('end', () => out.end(() => process.stdout.write(`/uploads/${path.basename(target)}\n`)));
 }
 
-// Each chat's CLI lives in a dtach session on VPS2: a dropped connection detaches it instead of ending it, and the
-// next connection attaches to the same running CLI (-r winch makes it redraw for the new window). dtach passes the
-// terminal through untouched (unlike tmux), so the screen stays the CLI's own. -E: no detach key; -z: no suspend key.
-const DTACH = '/usr/bin/dtach';
+// Each chat's CLI runs only while its connection does (the person's choice, 2026-11-28): a dropped connection ends
+// it at once (sshd hangs up within ~30 s, ClientAlive in 60-agentdesk-bridge.conf) and the next connection starts
+// the CLI again on the same conversation (--resume / codex resume), which shows it again. Chats started before
+// this ran in dtach sessions; the socket path is kept so such a session is found and ended.
 const socketFor = (request) => path.join(STATE, 'cli-chats', request.device, 'sessions', `${request.provider}-${request.chatId}.sock`);
 const metaFor = (request) => socketFor(request).replace(/\.sock$/, '.json');
 
-function alive(socket) {
-  return new Promise((resolve) => {
-    if (!fs.existsSync(socket)) { resolve(false); return; }
-    const probe = require('node:net').connect(socket);
-    probe.once('connect', () => { probe.destroy(); resolve(true); });
-    probe.once('error', () => { try { fs.unlinkSync(socket); } catch {} resolve(false); });
-  });
+// Whether pid is still this chat's CLI (a pid in an old record may since belong to something else).
+function ownsChat(pid, request) {
+  try {
+    if (!fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('agentdesk-cli.js')) return false;
+    const environ = fs.readFileSync(`/proc/${pid}/environ`, 'utf8');
+    return environ.includes(`cli ${request.provider} ${request.chatId} `);
+  } catch { return false; }
+}
+const gone = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+// Ends the chat's previous CLI, if one still runs (an old dtach session, or a connection VPS2 has not noticed yet is
+// gone), and waits for it, so its conversation is saved before it is continued.
+async function endPrevious(request) {
+  const meta = readJson(metaFor(request), null);
+  const pid = Number(meta?.pid);
+  if (Number.isInteger(pid) && pid > 1 && pid !== process.pid && ownsChat(pid, request)) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+    for (let waited = 0; waited < 8000 && !gone(pid); waited += 200) await new Promise((resolve) => setTimeout(resolve, 200));
+    if (!gone(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} await new Promise((resolve) => setTimeout(resolve, 500)); }
+  }
+  try { fs.unlinkSync(socketFor(request)); } catch {}
 }
 
 function stopSession(request) {
@@ -389,33 +403,35 @@ async function main() {
   let request;
   try { request = parseRequest(original, process.env); }
   catch (error) { process.stderr.write(`AgentDesk：原生 CLI 请求无效（${error.message}）\r\n`); process.exit(2); }
-  if (process.env.AGENTDESK_CLI_INNER !== '1') {
-    const socket = socketFor(request);
-    fs.mkdirSync(path.dirname(socket), { recursive: true, mode: 0o700 });
-    if (await alive(socket)) {
-      // A CLI started in another mode is restarted in the one asked for (its conversation continues).
-      if (readJson(metaFor(request), {}).mode !== (request.writable ? 'write' : 'read')) {
-        stopSession(request);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-    }
-    const attach = await alive(socket);
-    const args = attach ? ['-a', socket, '-r', 'winch', '-E', '-z'] : ['-A', socket, '-r', 'winch', '-E', '-z', process.execPath, __filename];
-    const child = spawn(DTACH, args, { stdio: 'inherit', env: { ...process.env, AGENTDESK_CLI_INNER: '1' } });
-    child.on('exit', (code) => process.exit(code ?? 0));
-    for (const name of ['SIGINT', 'SIGQUIT', 'SIGTSTP']) process.on(name, () => {});
-    return;
-  }
-  // Inside the dtach session: the CLI itself.
+  fs.mkdirSync(path.dirname(socketFor(request)), { recursive: true, mode: 0o700 });
+  await endPrevious(request);
+  // The connection may be gone while the CLI ends; writing to it then must not stop the conversation being saved.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', () => {});
   try { writeJson(metaFor(request), { pid: process.pid, mode: request.writable ? 'write' : 'read', at: new Date().toISOString() }); } catch {}
   // One record per chat, so chats of the same device ending at the same moment never overwrite each other.
   const recordFile = path.join(STATE, 'cli-chats', request.device, 'chats', `${request.provider}-${request.chatId}.json`);
   fs.mkdirSync(path.dirname(recordFile), { recursive: true, mode: 0o700 });
   const record = readJson(recordFile, null) || { session: randomUUID(), started: false };
+  const save = () => { try { writeJson(recordFile, { ...record, at: new Date().toISOString() }); } catch {} };
   let child;
   let stopping = false;
+  let remember = null;
   const run = (fresh) => {
     const started = Date.now();
+    clearInterval(remember);
+    // Saved while the CLI runs, not only when it ends: a CLI that is killed still has its conversation continued.
+    let checks = 0;
+    remember = setInterval(() => {
+      if (Date.now() - started < 10_000) return;
+      if (request.provider === 'claude' || request.provider === 'grok') {
+        if (!record.started) { record.started = true; save(); }
+        clearInterval(remember);
+      } else if (!record.session) {
+        record.session = findNewSession(request.provider, { home: launch.home, cwd: launch.cwd, since: started - 1000 });
+        if (record.session) { save(); clearInterval(remember); } else if (++checks > 60) clearInterval(remember);
+      } else clearInterval(remember);
+    }, 5000);
+    remember.unref?.();
     const resuming = !fresh && ((request.provider === 'claude' || request.provider === 'grok') ? record.started : Boolean(record.session));
     const launch = plan(request, { record, fresh,
       notice: (text) => process.stdout.write(`\x1b[2mAgentDesk：${text}\x1b[0m\r\n`) });
@@ -423,6 +439,7 @@ async function main() {
       onNote: (note) => process.stderr.write(`\x1b[2mAgentDesk：沙盒网络未就绪（${note}）\x1b[0m\r\n`) });
     child.on('error', (error) => { process.stderr.write(`AgentDesk：启动失败（${error.code || error.message}）\r\n`); process.exit(70); });
     child.on('exit', (code, signal) => {
+      clearInterval(remember);
       const quick = Date.now() - started < 10_000;
       if (!stopping && resuming && quick && code) {
         process.stdout.write('\x1b[?1049l\x1b[2J\x1b[H\x1b[2mAgentDesk：上次的对话无法继续，正在开始新对话…\x1b[0m\r\n');
@@ -438,7 +455,7 @@ async function main() {
       } else if (!record.session) {
         record.session = findNewSession(request.provider, { home: launch.home, cwd: launch.cwd, since: started - 1000 });
       }
-      try { writeJson(recordFile, { ...record, at: new Date().toISOString() }); } catch {}
+      save();
       fs.rmSync(launch.runtime, { recursive: true, force: true });
       try { if (readJson(metaFor(request), {}).pid === process.pid) fs.unlinkSync(metaFor(request)); } catch {}
       process.exit(signal ? 128 + 1 : code ?? 1);
