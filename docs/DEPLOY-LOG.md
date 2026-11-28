@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 23:30（北京时间）· VPS2 临时 Antigravity CLI 入口（agytmp，不属于客户端发布）
+
+- 用户要求：给一台新电脑开临时 agy 入口，单独沙盒、单独 Google 登录、能上网、能反向 SSH 回该电脑；不设期限。
+- 新用户 `agytmp`（组 agentdesk-cli，套用 /etc/agentdesk-cli-net.nft 的外网规则），数据 /var/lib/agytmp/{home,work,rev}。入口 `/opt/agentdesk-orchestrator/temp-agy.js`（复用 cli-jail.js 的 jailArgs/launch，不绑共享登录）：参数 空/`user <名>`/`key`/`check`。
+- sshd `/etc/ssh/sshd_config.d/61-agytmp.conf`：AllowUsers agytmp；Match 内 AuthorizedKeysFile /etc/ssh/agytmp-authorized-keys、AllowTcpForwarding remote + PermitListen none + PermitOpen none（只剩反向 Unix socket，`-R /var/lib/agytmp/rev/pc.sock:localhost:22`）、StreamLocalBindUnlink yes、ClientAlive 10×3。注意：AllowTcpForwarding no 会连 Unix socket 反向转发一起拒绝。备份 /root/backups/sshd_config.d.bak-20261128-agytmp.tgz。
+- 验证（Mac 真机，临时测试钥匙）：`check` 经反向 socket 在沙盒里 ssh 到 Mac 成功；TCP `-R` 被拒、`-L` 打开被拒；沙盒内外网 200、github:22 可连，127.0.0.1:3001 和公网 :8443 不通，看不到 /root、/etc/ssh、/opt/agentdesk-orchestrator、/var/lib/agentdesk-orchestrator；agy 显示未登录（单独登录）；强杀客户端 5 秒内沙盒全部退出。测试钥匙两边已删，沙盒数据已清空。
+- 删除：删 61-agytmp.conf 与 agytmp-authorized-keys 后 reload ssh；userdel agytmp；rm -rf /var/lib/agytmp；删 temp-agy.js。
+
 ## 2026-11-28 22:25（北京时间）· VPS2 CLI 单聊：agy 会话目录改正 + 四个 AI 真机测试
 
 - 22:00 那次把 agy 会话目录改成了 `.gemini/antigravity/conversations`，是错的：真机测试发现 agy 1.5.18 实际写 `.gemini/antigravity-cli/conversations/<id>.db`（日志里 antigravity/conversations 只是它额外读取的导入目录）。现两处都认；测试改为同时覆盖。部署（备份 agentdesk-cli.js.bak-20261128-agydir）。
