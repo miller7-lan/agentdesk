@@ -115,9 +115,9 @@ function findNewSession(provider, { home, cwd, since }) {
     }
   }
   if (provider === 'antigravity') {
-    const folder = path.join(home, '.gemini', 'antigravity-cli', 'conversations');
-    const fresh = list(folder).filter((file) => file.endsWith('.db'))
-      .map((file) => ({ id: file.slice(0, -3), at: (() => { try { return fs.statSync(path.join(folder, file)).birthtimeMs || fs.statSync(path.join(folder, file)).mtimeMs; } catch { return 0; } })() }))
+    const folder = path.join(home, ...ANTIGRAVITY_CONVERSATIONS);
+    const fresh = list(folder).filter((file) => UUID.test(file.split('.')[0]))
+      .map((file) => ({ id: file.split('.')[0], at: (() => { try { return fs.statSync(path.join(folder, file)).birthtimeMs || fs.statSync(path.join(folder, file)).mtimeMs; } catch { return 0; } })() }))
       .filter((item) => item.at >= since).sort((a, b) => b.at - a.at);
     return fresh[0]?.id || null;
   }
@@ -125,6 +125,36 @@ function findNewSession(provider, { home, cwd, since }) {
 }
 
 const INSIDE_HOME = '/home/agentdesk';
+
+// Where each CLI keeps a conversation once it has one (2026-11-28: agy writes ~/.gemini/antigravity/conversations,
+// not antigravity-cli/; Codex writes its rollout only after the first message). A chat opened and left without a
+// message has no conversation, so passing its id would only show "conversation … not found" or fail the start.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ANTIGRAVITY_CONVERSATIONS = ['.gemini', 'antigravity', 'conversations'];
+function sessionExists(provider, home, id) {
+  if (typeof id !== 'string' || !UUID.test(id)) return false;
+  const inFolders = (root, match) => list(root).some((sub) => list(path.join(root, sub)).some(match));
+  if (provider === 'claude') return inFolders(path.join(home, '.claude', 'projects'), (file) => file === id + '.jsonl');
+  if (provider === 'grok') return inFolders(path.join(home, '.grok', 'sessions'), (file) => file === id);
+  if (provider === 'antigravity') return list(path.join(home, ...ANTIGRAVITY_CONVERSATIONS)).some((file) => file.split('.')[0] === id);
+  if (provider === 'codex') {
+    const root = path.join(home, '.codex', 'sessions');
+    for (const year of list(root)) for (const month of list(path.join(root, year))) for (const day of list(path.join(root, year, month))) {
+      if (list(path.join(root, year, month, day)).some((file) => file.endsWith('-' + id + '.jsonl'))) return true;
+    }
+  }
+  return false;
+}
+
+// Drops a remembered conversation the CLI does not have (never got a message, or an id an older version invented),
+// so the chat starts cleanly instead of asking the CLI for a conversation that is not there.
+function checkRecord(provider, record, home) {
+  if (provider === 'claude' || provider === 'grok') {
+    if (record.started && !sessionExists(provider, home, record.session)) record.started = false;
+    if (!record.session) record.session = randomUUID();
+  } else if (record.session && !sessionExists(provider, home, record.session)) record.session = null;
+  return record;
+}
 
 // Whether the computer's files are mounted there now (waits up to `ms` for a mount that is on its way).
 function mountedSoon(directory, ms = 10_000) {
@@ -149,6 +179,7 @@ function plan(request, { record, fresh = false, env = process.env, notice = () =
     request = { ...request, computer: false, start: null };
   }
   const home = path.join(deviceRoot, 'home', provider);
+  if (!fresh && record) checkRecord(provider, record, home);
   const workspace = path.join(deviceRoot, 'work', projectId);
   const runtime = fs.mkdtempSync(path.join('/var/tmp', 'agentdesk-cli-'));
   fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
@@ -411,7 +442,9 @@ async function main() {
   // One record per chat, so chats of the same device ending at the same moment never overwrite each other.
   const recordFile = path.join(STATE, 'cli-chats', request.device, 'chats', `${request.provider}-${request.chatId}.json`);
   fs.mkdirSync(path.dirname(recordFile), { recursive: true, mode: 0o700 });
-  const record = readJson(recordFile, null) || { session: randomUUID(), started: false };
+  // Claude and Grok take an id we choose; Codex and Antigravity name their own (found after the first message).
+  const record = readJson(recordFile, null)
+    || { session: (request.provider === 'claude' || request.provider === 'grok') ? randomUUID() : null, started: false };
   const save = () => { try { writeJson(recordFile, { ...record, at: new Date().toISOString() }); } catch {} };
   let child;
   let stopping = false;
@@ -432,9 +465,10 @@ async function main() {
       } else clearInterval(remember);
     }, 5000);
     remember.unref?.();
-    const resuming = !fresh && ((request.provider === 'claude' || request.provider === 'grok') ? record.started : Boolean(record.session));
     const launch = plan(request, { record, fresh,
       notice: (text) => process.stdout.write(`\x1b[2mAgentDesk：${text}\x1b[0m\r\n`) });
+    // After plan: it drops a remembered conversation the CLI does not have.
+    const resuming = !fresh && ((request.provider === 'claude' || request.provider === 'grok') ? record.started : Boolean(record.session));
     child = jail.launch(launch.command, launch.args, { jail: launch.jail, env: launch.env,
       onNote: (note) => process.stderr.write(`\x1b[2mAgentDesk：沙盒网络未就绪（${note}）\x1b[0m\r\n`) });
     child.on('error', (error) => { process.stderr.write(`AgentDesk：启动失败（${error.code || error.message}）\r\n`); process.exit(70); });
@@ -468,4 +502,4 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`AgentDesk：${error.message}\r\n`); process.exit(1); });
 
-module.exports = { computerPath, parseRequest, plan, sessionArgs, findNewSession, socketFor };
+module.exports = { computerPath, parseRequest, plan, sessionArgs, findNewSession, sessionExists, checkRecord, socketFor };

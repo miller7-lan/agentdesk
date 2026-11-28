@@ -2,6 +2,16 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 22:00（北京时间）· VPS2 CLI 单聊不再续接不存在的会话
+
+- 现象：每个新开的 Antigravity CLI 单聊先显示 `warning: conversation "<id>" not found`，再出现 agy；重开/重连同一单聊每次重复，且接不上上次对话。Codex 新单聊首次启动先失败一次再重开。
+- 原因：`agentdesk-cli.js` 新单聊记录对所有 CLI 预生成随机会话 id，Antigravity/Codex 会话 id 只能由 CLI 自己命名，于是 `agy --conversation <编的 id>`（agy 忽略后照常运行，退出码 0，不触发重开兜底）；记录里已有 id，"找新会话" 永远不执行。另外 `findNewSession` 找的是 `.gemini/antigravity-cli/conversations/*.db`，agy 实际写在 `.gemini/antigravity/conversations/`。
+- 修复：只有 Claude/Grok 预生成 id；新增 `sessionExists`/`checkRecord`，启动前核对记录的会话在该 CLI 目录里确实存在（Claude projects/*/<id>.jsonl、Grok sessions/*/<id>、Codex sessions/**/rollout-*-<id>.jsonl、agy antigravity/conversations/<id>.*），不存在则 Codex/agy 清空、Claude/Grok 改为 `--session-id` 新开；agy 会话目录改正。旧记录（5 条 mac antigravity 随机 id）启动时自动纠正，无需改数据。
+- VPS2：部署该文件（备份 agentdesk-cli.js.bak-20261128-resume），每个连接一个进程，无需重启。
+- 验证：新增测试用例；全量 658 项 0 失败。Mac 用 AgentDesk 的 CLI 密钥真实连接开测试 agy 单聊：无 warning，进程为 `agy --mode plan`（无 --conversation）。断线测试：VPS2 上 iptables 静默丢弃该连接双向报文（模拟网络突然中断），约 30 秒后 sshd、agentdesk-cli、agy 全部退出（ClientAlive 10×3 生效）；规则已删，测试数据已删。
+- 遗留：16:15 之前以 dtach 启动的 24 个旧 CLI 会话（mac/windows，最长 23 小时）无人连接仍在运行，占约 2 GB 内存；新代码只在同一单聊重连时结束它们。待用户确认后再统一结束。
+- 回滚：恢复备份文件。
+
 ## 2026-11-28 16:15（北京时间）· VPS2 CLI 单聊断线即停 + 客户端 0.5.11
 
 - 用户要求：断联应立刻停止处理，重连回到上一次继续（Mac、Windows 都出现过断线后内容丢失）。

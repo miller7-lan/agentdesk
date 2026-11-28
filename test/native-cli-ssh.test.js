@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { parseRequest, sessionArgs } = require('../orchestrator/agentdesk-cli');
+const { parseRequest, sessionArgs, sessionExists, checkRecord, findNewSession } = require('../orchestrator/agentdesk-cli');
 const { line } = require('../orchestrator/agentdesk-cli-keys');
 const { createNativeCli } = require('../orchestrator/native-cli-ssh');
 
@@ -37,6 +37,34 @@ test('VPS2 entry: each chat continues its own conversation', () => {
   assert.deepEqual(sessionArgs('claude', { session: 'u1', started: true }), ['--resume', 'u1']);
   assert.deepEqual(sessionArgs('antigravity', { session: 'conv' }), ['--conversation', 'conv']);
   assert.deepEqual(sessionArgs('antigravity', {}), []);
+});
+
+test('VPS2 entry: a remembered conversation the CLI does not have is dropped, not passed on', (t) => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-cli-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const id = (n) => `${String(n).repeat(8)}-1111-4111-8111-${String(n).repeat(12)}`;
+  const put = (...parts) => { fs.mkdirSync(path.join(home, ...parts.slice(0, -1)), { recursive: true }); fs.writeFileSync(path.join(home, ...parts), ''); };
+  put('.gemini', 'antigravity', 'conversations', id(1) + '.pb');
+  put('.claude', 'projects', '-work-x', id(2) + '.jsonl');
+  put('.codex', 'sessions', '2026', '11', '28', `rollout-2026-11-28T10-00-00-${id(3)}.jsonl`);
+  fs.mkdirSync(path.join(home, '.grok', 'sessions', '%2Fwork', id(4)), { recursive: true });
+  assert.equal(sessionExists('antigravity', home, id(1)), true);
+  assert.equal(sessionExists('claude', home, id(2)), true);
+  assert.equal(sessionExists('codex', home, id(3)), true);
+  assert.equal(sessionExists('grok', home, id(4)), true);
+  for (const p of ['antigravity', 'claude', 'codex', 'grok']) assert.equal(sessionExists(p, home, id(9)), false);
+  // The 2026-11-28 bug: an invented id was passed as `agy --conversation` → "conversation … not found" every time.
+  assert.deepEqual(sessionArgs('antigravity', checkRecord('antigravity', { session: id(9), started: false }, home)), []);
+  assert.deepEqual(sessionArgs('antigravity', checkRecord('antigravity', { session: id(1) }, home)), ['--conversation', id(1)]);
+  assert.equal(checkRecord('codex', { session: id(9) }, home).session, null);
+  assert.equal(checkRecord('codex', { session: id(3) }, home).session, id(3));
+  // Claude/Grok keep their chosen id; a session never written starts with it instead of resuming it.
+  assert.deepEqual(sessionArgs('claude', checkRecord('claude', { session: id(9), started: true }, home)), ['--session-id', id(9)]);
+  assert.deepEqual(sessionArgs('claude', checkRecord('claude', { session: id(2), started: true }, home)), ['--resume', id(2)]);
+  assert.deepEqual(sessionArgs('grok', checkRecord('grok', { session: id(4), started: true }, home)), ['--resume', id(4)]);
+  // A new Antigravity conversation is found where agy writes it.
+  assert.equal(findNewSession('antigravity', { home, since: 0 }), id(1));
 });
 
 test('CLI key line: terminal allowed, one forced program, identity fixed, never root', () => {
