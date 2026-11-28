@@ -308,6 +308,8 @@ async function syncBridgeRoots() {
         const saved = JSON.parse(fs.readFileSync(commandsFile(), 'utf8'));
         for (const name of result.changed) {
           if (localBridgeSettings.workspaces?.[name] && saved.workspaces?.[name]?.root) localBridgeSettings.workspaces[name].root = saved.workspaces[name].root;
+          // An extra workspace slot (windows-2 …) just added to the file joins the running Bridge as a whole.
+          else if (localBridgeSettings.workspaces && !Object.hasOwn(localBridgeSettings.workspaces, name) && saved.workspaces?.[name]?.root) localBridgeSettings.workspaces[name] = saved.workspaces[name];
         }
       } catch (error) {
         logger?.audit('bridge_root', { status: 'reload_failed', error: String(error.code || 'failed') });

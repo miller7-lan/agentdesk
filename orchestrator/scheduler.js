@@ -904,6 +904,7 @@ event(task, state, detail) {
         !(task.mode === 'chat' && task.tags?.includes('direct') ? this.router.quotaAllowsDirect(role) : this.router.quotaAllows(role, capability)) ||
         !this.ownerAllows(task, role).allowed)) throw new Error('executor_waiting:' + capability);
     if (task.mode === 'review_only' && !this.router.routes.review.includes(role)) throw new Error('invalid_review_provider');
+    await this.restoreDeletedRepository(task, this.config.workspaces[task.workspace].repository, signal);
     const prompt = (task.mode === 'chat' ? 'Respond in read-only mode. Do not modify files or run write operations. For files on the user\'s computer, use agentdesk_windows MCP tools: first windows_list_locations, then use windows_glob_files, windows_grep_context or read/list with the chosen root. Your VPS checkout is not the user\'s live filesystem. Request: '
       : 'Review the supplied uncommitted changes without modifying them. Request: ') + task.prompt;
     if (task.mode === 'review_only') {
@@ -2296,8 +2297,9 @@ event(task, state, detail) {
   async restoreDeletedRepository(task, repo, signal) {
     const key = 'deleted-repository:' + task.workspace;
     const deleted = this.store.get('settings', key);
-    if (!deleted) return;
-    if (deleted.repository !== repo) throw Error('project_repository_changed');
+    // A workspace added later (an extra slot such as mac-2) has no mirror yet: it is built the same way as after a delete.
+    if (!deleted && await stat(path.join(repo, 'HEAD')).then(() => true, () => false)) return;
+    if (deleted && deleted.repository !== repo) throw Error('project_repository_changed');
     this.repositoryResets ||= new Map();
     if (!this.repositoryResets.has(repo)) {
       const reset = (async () => {
@@ -2308,7 +2310,7 @@ event(task, state, detail) {
         if (!/^[0-9a-f]{40,64}$/.test(head || '')) throw Error('invalid_workspace_baseline');
         await this.ensureCommit(task, repo, head, signal);
         await git(repo, ['update-ref', 'HEAD', head], signal);
-        this.store.delete('settings', key);
+        if (deleted) this.store.delete('settings', key);
       })();
       this.repositoryResets.set(repo, reset);
       reset.finally(() => this.repositoryResets.delete(repo)).catch(() => {});

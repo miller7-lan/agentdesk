@@ -4,6 +4,9 @@
 // (~/AgentDeskWorkspace): group steps worked there instead of in the project, and full-access single chats were
 // refused with 「该项目的 Bridge 写入授权与本机目录不匹配」. One workspace serves one project at a time (the window
 // only offers a free workspace), so moving the root never takes it from another project.
+// A computer may have several workspaces on VPS2 (mac, mac-2, mac-3 …) so it can run several projects at once. The
+// Bridge was installed knowing only the first; an extra one is added here the first time a project binds to it, as a
+// copy of the existing workspace (same permissions and commands) rooted at that project's folder.
 const fs = require('node:fs');
 const path = require('node:path');
 const { refusedRoot } = require('./app-config');
@@ -26,6 +29,14 @@ function wanted(projects, activeId) {
   return byWorkspace;
 }
 
+// The Bridge workspace an extra slot is copied from: `mac-2` comes from `mac`. Only names of that form are added, so a
+// project bound on another computer (`windows`) never makes this Bridge claim a workspace it does not serve.
+function slotTemplate(settings, workspace) {
+  const match = /^([a-z0-9][a-z0-9_-]*?)-([0-9]{1,3})$/.exec(workspace);
+  const base = match && settings.workspaces?.[match[1]];
+  return base && typeof base === 'object' && !Array.isArray(base) ? base : null;
+}
+
 // Rewrites the Bridge configuration file so each bound workspace's root is its project's folder. Returns
 // { changed: [workspace…], problems: [{ workspace, project, error }] }; the caller restarts the Bridge when changed.
 function syncBridgeRoots({ file, projects, activeId, options = {} }) {
@@ -37,9 +48,11 @@ function syncBridgeRoots({ file, projects, activeId, options = {} }) {
     throw error;
   }
   for (const [workspace, project] of wanted(projects, activeId)) {
-    const current = settings.workspaces?.[workspace];
-    if (!current) continue; // A workspace of another computer, or a Bridge that does not serve it: nothing to move.
-    if (current.root && same(current.root, project.localRoot)) continue;
+    const existing = Object.hasOwn(settings.workspaces || {}, workspace) ? settings.workspaces[workspace] : null;
+    const template = existing ? null : slotTemplate(settings, workspace);
+    if (!existing && !template) continue; // A workspace of another computer, or a Bridge that does not serve it.
+    const current = existing || template;
+    if (existing && current.root && same(current.root, project.localRoot)) continue;
     const root = real(project.localRoot);
     // Compare real paths on both sides: a home folder reached through a link (macOS /var → /private/var) would
     // otherwise not recognise its own Desktop.
@@ -59,4 +72,4 @@ function syncBridgeRoots({ file, projects, activeId, options = {} }) {
   return result;
 }
 
-module.exports = { syncBridgeRoots, wanted };
+module.exports = { syncBridgeRoots, wanted, slotTemplate };

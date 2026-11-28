@@ -2,6 +2,15 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-29 00:45（北京时间）· 0.5.12：每台电脑多个主控工作区
+
+- 用户要求：一台电脑能同时连多个群聊项目（原来每台只有 1 个工作区，第二个项目建不了），Mac 和 Windows 都要。
+- VPS2 配置 `/etc/agentdesk-orchestrator/config.json`：mac / windows / lenovo / win3 各加 `<设备>-2`…`<设备>-5` 四个工作区（复制原工作区设置，仓库 repos/<名>.git）和同名 project（members 只有该设备）。备份 config.json.bak-20261128-slots。
+- VPS2 代码（install 覆盖，备份 *.bak-20261128-slots）：scheduler.js —— 工作区镜像仓库不存在时按“删除后恢复”的流程从 Bridge 基线建立，只读对话也先做这一步；service.js —— Bridge 控制口：项目名就是本机 Bridge 的工作区名时用它；未指定项目且有多个时回到 controlWorkspace。重启 agentdesk-orchestrator，并重新 start agentdesk-home-mount。
+- 客户端：bridge-root.js 绑定到 `<工作区>-<n>` 且本机 Bridge 配置里没有时，复制原工作区条目、root 设为项目文件夹（Mac 重启 Bridge；Windows 在运行中的 Bridge 设置里直接加入）。
+- 验证：npm test 663 项 0 失败（新增 test/workspace-slots.test.js：加槽、只认 <名>-<n>、拒绝文件夹不加、VPS2 无镜像时从基线建立）；重启后服务 active，Mac Bridge 已重连。真机新建第二个项目待用户验收。
+- 回滚：恢复 config.json 与两个 .js 的 .bak-20261128-slots 后重启服务（再 start home-mount）；客户端回退 0.5.11 时，已绑定 -2… 的项目会无法执行，需改回或删除。
+
 ## 2026-11-28 23:30（北京时间）· VPS2 临时 Antigravity CLI 入口（agytmp，不属于客户端发布）
 
 - 用户要求：给一台新电脑开临时 agy 入口，单独沙盒、单独 Google 登录、能上网、能反向 SSH 回该电脑；不设期限。

@@ -661,9 +661,13 @@ function startBridge({ config, desktop, recycle, spawnSsh, log = console.error }
           }
         }
         if (['submit', 'start_plan', 'broadcast', 'compact_project', 'project_tasks', 'project_delete'].includes(operation)) {
-          body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0] : undefined);
+          // With extra slots (mac, mac-2 …) a request that names no project stays on the Bridge's own workspace.
+          body.project ??= config.controlProject ?? (value.projects?.length === 1 ? value.projects[0]
+            : value.projects?.includes(config.controlWorkspace) ? config.controlWorkspace : undefined);
           const workspaces = config.controlWorkspaces || {};
-          const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project] : config.controlWorkspace);
+          // A project named after one of this Bridge's workspaces (an extra slot such as mac-2) works in that workspace.
+          const workspace = requestedWorkspace ?? (Object.hasOwn(workspaces, body.project) ? workspaces[body.project]
+            : typeof body.project === 'string' && Object.hasOwn(config.workspaces || {}, body.project) ? body.project : config.controlWorkspace);
           if (operation !== 'project_tasks' || body.project === undefined) body.workspace = workspace;
           if (['submit', 'start_plan', 'broadcast'].includes(operation)) {
             Object.assign(body, { prompt, provider, model, mode, replyTo, via, tags, reviewOf, attachments, group, leadEffort, leadModel, approval, autoHandover, routeOrder });
