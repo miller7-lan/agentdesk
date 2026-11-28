@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 14:20（北京时间）· 客户端 0.5.9 · Windows 跳板修复
+
+- 现象：`windows`（18133）跳板路线（remote.json `jump`）每 30 秒 `remote_connection retry`，Bridge 不通，`update_download` 30 秒后 `network`；本机残留约 70 个 ssh.exe。VPS1 侧跳板账户每次登录成功，VPS1→VPS2:22 正常，VPS2 sshd 连接停在 `[accepted]`（客户端握手字节从未到达）。
+- 原因：Windows 上 ProxyCommand 运行 `AgentDesk.exe`（GUI 子系统）+ `ELECTRON_RUN_AS_NODE` 的 `ssh-jump.js`，读不到 ssh 传来的标准输入；helper 不退出，其子 ssh 一并残留。
+- 修复：`orchestrator/ssh-options.js` 在 win32 上 ProxyCommand 直接是 `ssh.exe <jumpArguments> -W host:port`（参数按 Windows 命令行规则加引号；路径含 `"`、`%`、换行拒绝），不再设 ELECTRON_RUN_AS_NODE；Mac/Linux 仍用 helper。
+- 验证：用户在该 PC 上手动以系统 ssh.exe `-W` 作 ProxyCommand 走同一跳板，握手完成直到目标账户认证（之前从未到达 VPS2）；`test/ssh-options.test.js` 新增用例；全量测试见提交。
+- VPS2 未改动。受影响设备需手动安装 0.5.9（自动更新本身走这条连接）。
+
 ## 2026-11-28 11:55（北京时间）· 客户端 0.5.8
 
 - v0.5.7 提交漏了 `vendor/win32-openssh/sftp-server.exe`（`.gitignore` 的 `*.exe`），发布运行已取消、未上传。`.gitignore` 加例外并补上文件，发 0.5.8，内容同 0.5.7。

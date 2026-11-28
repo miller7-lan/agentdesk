@@ -181,6 +181,24 @@ function proxyCommandFor({ nodePath, helperPath, platform = process.platform } =
   return `${posixQuote(escape(nodePath))} ${posixQuote(escape(helperPath))}`;
 }
 
+// Windows 命令行的一个参数（CommandLineToArgvW / MSVCRT 规则）：需要时加引号，引号前的反斜杠加倍。
+function windowsArg(value) {
+  const textValue = String(value);
+  if (textValue !== '' && !/[\s"]/.test(textValue)) return textValue;
+  return '"' + textValue.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
+}
+
+// Windows 上 ProxyCommand 直接运行 ssh.exe -W，不经 ssh-jump.js：AgentDesk.exe 是图形界面程序，
+// 以 ELECTRON_RUN_AS_NODE 运行时读不到 ssh 传来的标准输入，外层握手永远到不了 VPS2（0.5.8 实测）。
+// ssh -W 在标准输入关闭时自己退出，外层 ssh 结束后不会留下进程。
+function windowsJumpCommand(payload) {
+  const raw = [payload.ssh, payload.jump.key, payload.jump.knownHosts, payload.jump.certificate].filter((v) => v !== undefined);
+  for (const value of raw) {
+    if (/["%\r\n]/.test(String(value))) throw new Error('SSH 跳板路径包含 Windows 不支持的字符（引号、换行或 %）');
+  }
+  return [payload.ssh, ...jumpArguments(payload)].map(windowsArg).join(' ');
+}
+
 // 打包后的 Electron 必须从 asar 外执行 helper；开发态、独立 Bridge 和测试从仓库/部署目录执行。
 function jumpHelperPath({ packaged = Boolean(process.versions.electron && !process.defaultApp), resourcesPath = process.resourcesPath, moduleDir = __dirname } = {}) {
   if (packaged && resourcesPath) {
@@ -200,11 +218,14 @@ function jumpRuntime() {
 function buildSshInvocation({
   cfg = {}, key, certificate, port, target, targetHost,
   route = 'direct', extraArgs = [], afterTarget = [], jump = cfg.jump,
-  connectTimeout = 15, runtime = jumpRuntime(), helperPath,
+  connectTimeout = 15, runtime = jumpRuntime(), helperPath, platform = process.platform,
 } = {}) {
   const args = buildSshBase(cfg, key, certificate, { connectTimeout });
   let env = {};
-  if (route === 'jump') {
+  if (route === 'jump' && platform === 'win32') {
+    if (!isJumpConfigured(jump)) throw new Error('跳板配置不完整，无法建立跳板连接');
+    args.push('-o', 'ProxyCommand=' + windowsJumpCommand(jumpPayload(jump, { host: targetHost, port: port || 22 })));
+  } else if (route === 'jump') {
     if (!isJumpConfigured(jump)) throw new Error('跳板配置不完整，无法建立跳板连接');
     const helper = helperPath || jumpHelperPath();
     if (!helper) throw new Error('找不到 ssh-jump.js，无法建立跳板连接');
@@ -266,4 +287,6 @@ module.exports = {
   normalizeJump,
   proxyCommandFor,
   sshPath,
+  windowsArg,
+  windowsJumpCommand,
 };

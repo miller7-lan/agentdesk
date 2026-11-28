@@ -193,3 +193,28 @@ test('normalizeJump rejects control characters and a malformed certificate', () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+test('Windows jump runs ssh.exe -W directly as ProxyCommand (no Electron helper)', () => {
+  const { windowsArg } = require('../orchestrator/ssh-options');
+  const jump = {
+    ...JUMP, key: 'C:\\Users\\Some One\\.agentdesk\\vps1_jump_ed25519', knownHosts: 'C:\\Users\\Some One\\.agentdesk\\vps1_known_hosts',
+  };
+  const invocation = buildSshInvocation({
+    cfg: CFG, key: 'C:\\k', port: 22, target: 'agentdesk@vps.example.invalid', targetHost: 'vps.example.invalid',
+    route: 'jump', jump, platform: 'win32', runtime: { nodePath: 'C:\\AgentDesk.exe', electron: true }, helperPath: 'C:\\ssh-jump.js',
+  });
+  assert.deepEqual(invocation.env, {});
+  const proxy = invocation.args.find((arg) => arg.startsWith('ProxyCommand='));
+  assert(proxy && !proxy.includes('ssh-jump.js') && !proxy.includes('AgentDesk.exe'));
+  assert(proxy.includes(' -W vps.example.invalid:22 -- '));
+  assert(proxy.includes('-i "C:\\Users\\Some One\\.agentdesk\\vps1_jump_ed25519"'));
+  assert(proxy.endsWith(' ' + JUMP.user + '@' + JUMP.host));
+  assert.equal(windowsArg('plain'), 'plain');
+  assert.equal(windowsArg('a b'), '"a b"');
+  assert.equal(windowsArg('K="C:/x y/kh"'), '"K=\\"C:/x y/kh\\""');
+  assert.equal(windowsArg('C:\\dir\\'), 'C:\\dir\\');
+  assert.equal(windowsArg('C:\\my dir\\'), '"C:\\my dir\\\\"');
+  assert.throws(() => buildSshInvocation({
+    cfg: CFG, key: 'C:\\k', port: 22, target: 'a@b', targetHost: 'b', route: 'jump', platform: 'win32',
+    jump: { ...JUMP, key: 'C:\\100%\\key' },
+  }), /不支持/);
+});
