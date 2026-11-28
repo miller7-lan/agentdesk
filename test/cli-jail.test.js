@@ -52,3 +52,17 @@ test('the sandbox starts from nothing: no host root, no AgentDesk state, own net
   assert.equal(passwd.trim().split('\n').length, 3, 'names nobody else on VPS2');
   assert.match(fs.readFileSync(path.join(dir, 'etc', 'resolv.conf'), 'utf8'), /10\.0\.2\.3/);
 });
+
+test('the whole computer: mounted at /pc, its own paths linked to it, nothing of VPS2 added', { skip: process.platform === 'win32' && 'VPS2 (Linux) only' }, (t) => {
+  const dir = scratch(t);
+  const home = path.join(dir, 'home');
+  const folder = path.join(dir, 'pc-files');
+  fs.mkdirSync(home); fs.mkdirSync(folder);
+  const windows = jailArgs({ runtime: dir, home, workspace: null, computer: { folder, platform: 'win32' }, cwd: '/c/Users/me/ICT', writable: true });
+  assert.equal(windows[windows.indexOf('/pc') - 2], '--bind');
+  assert.equal(windows[windows.indexOf('/c') - 1], '/pc/C:');
+  assert.equal(windows[windows.indexOf('--chdir') + 1], '/c/Users/me/ICT');
+  const mac = jailArgs({ runtime: dir, home, workspace: null, computer: { folder, platform: 'darwin' }, cwd: '/Users/me/p', writable: false });
+  assert.equal(mac[mac.indexOf('/pc') - 2], '--ro-bind', 'read-only chats get the computer read-only');
+  assert.equal(mac[mac.indexOf('/Users') - 1], '/pc/Users');
+});

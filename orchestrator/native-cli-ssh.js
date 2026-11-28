@@ -26,6 +26,26 @@ const RETRY = [1000, 2000, 5000, 10_000, 20_000, 30_000];
 
 // resolveRoot(projectId) → this computer's folder of the project, or null: when there is one, the CLI works directly in
 // it (served over SFTP for only that folder and mounted on VPS2 as /work/<name>; `mount` in agentdesk-cli.js).
+// The whole computer over SFTP, as the signed-in person (the system decides what may be read or written): OpenSSH's
+// own sftp-server — bundled with AgentDesk on Windows (most Windows computers have only the OpenSSH client), the
+// system's on a Mac. null when there is none (then only the project's folder is served, below).
+function computerSftpServer({ platform = process.platform, resources = process.resourcesPath, exists = fs.existsSync } = {}) {
+  const candidates = platform === 'win32'
+    ? [resources && path.join(resources, 'win32-openssh', 'sftp-server.exe'),
+      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'OpenSSH', 'sftp-server.exe')]
+    : ['/usr/libexec/sftp-server', '/usr/lib/openssh/sftp-server'];
+  return candidates.find((file) => file && exists(file)) || null;
+}
+function serveComputer(server, input, output) {
+  const child = spawn(server, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], cwd: os.homedir() });
+  input.pipe(child.stdin);
+  child.stdout.pipe(output);
+  child.stdin.on('error', () => {});
+  child.on('error', () => { try { output.end(); } catch {} });
+  child.on('exit', () => { try { output.end(); } catch {} });
+  return { close() { try { child.kill(); } catch {} } };
+}
+
 // Serves only `root` (and below) as SFTP: the same server native single chats use for their project folder.
 function defaultServeFolder(root, input, output) {
   const { createProjectSftp } = require('./sftp-project-write');
@@ -33,7 +53,7 @@ function defaultServeFolder(root, input, output) {
 }
 
 function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agentdesk', 'keys', 'cli_ed25519'), publicCopy,
-  onEvent = () => {}, pty = loadPty(), resolveRoot = () => null, serveFolder = defaultServeFolder } = {}) {
+  onEvent = () => {}, pty = loadPty(), resolveRoot = () => null, serveFolder = defaultServeFolder, sftpServer = computerSftpServer() } = {}) {
   const mounts = new Map();       // projectId -> { root, mode, chats: Set, child, ready, timer, attempt }
   const sessions = new Map();     // key -> { term, buffer, size, state, mode, error, output }
   const emit = (key, event) => { try { onEvent({ key, ...event }); } catch {} };
@@ -81,11 +101,14 @@ function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agent
     let root = null;
     try { root = resolveRoot(projectId); } catch {}
     Object.assign(entry, { mode, state: 'connecting', output: '', attempt: 0, closing: false, projectId,
-      request: ['cli', provider, chatId, projectId, hex(name), mode, root ? 'local' : 'vps'], cols, rows });
+      // With an sftp-server here the CLI gets the whole computer and starts in the project; otherwise only the
+      // project's folder; a project without a folder on this computer works in VPS2's folder for it.
+      request: ['cli', provider, chatId, projectId, hex(name), mode,
+        ...(root && sftpServer ? ['pc', Buffer.from(root, 'utf8').toString('hex')] : [root ? 'local' : 'vps'])], cols, rows });
     sessions.set(key, entry);
     // This project's own folder first, so the CLI starts in it (a slow or failed mount does not hold the CLI back
     // for long: it retries by itself, and the running CLI sees the folder as soon as it is there).
-    if (root) await mountFor(projectId, root, mode, key).catch(() => {});
+    if (root) await mountFor(sftpServer ? 'computer' : projectId, root, mode, key).catch(() => {});
     sessions.set(key, entry);
     setState(key, entry, 'connecting');
     connect(key, entry);
@@ -179,6 +202,7 @@ function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agent
   // ---- the project's own folder on this computer, mounted on VPS2 ----
   function mountFor(projectId, root, mode, key) {
     let mount = mounts.get(projectId);
+    if (projectId === 'computer') root = 'computer';     // one mount for all chats of this computer
     if (!mount || mount.root !== root) {
       if (mount) stopMount(mount);
       mount = { projectId, root, mode, chats: new Set(), child: null, ready: null, timer: null, attempt: 0, closing: false };
@@ -206,7 +230,7 @@ function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agent
       errors = (errors + text).slice(-2000);
       if (errors.includes('AGENTDESK_MOUNTED')) { clearTimeout(timer); mount.attempt = 0; resolveReady(); }
     });
-    try { served = serveFolder(mount.root, child.stdout, child.stdin); }
+    try { served = mount.projectId === 'computer' ? serveComputer(sftpServer, child.stdout, child.stdin) : serveFolder(mount.root, child.stdout, child.stdin); }
     catch (error) { clearTimeout(timer); rejectReady(error); try { child.kill(); } catch {} }
     child.on('error', () => {});
     child.on('close', () => {
@@ -283,4 +307,4 @@ function createNativeCli({ loadConfig, keyFile = path.join(os.homedir(), '.agent
   };
 }
 
-module.exports = { createNativeCli };
+module.exports = { createNativeCli, computerSftpServer };

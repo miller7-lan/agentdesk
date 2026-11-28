@@ -1,7 +1,7 @@
 {
   "name": "agentdesk-ui",
   "productName": "AgentDesk",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "AI 编程助手桌面端：连接 VPS 上的 Codex 操作 Windows 开发机",
   "main": "main.js",
   "scripts": {
@@ -78,7 +78,18 @@
         "signingHashAlgorithms": [
           "sha256"
         ]
-      }
+      },
+      "extraResources": [
+        {
+          "from": "vendor/win32-openssh",
+          "to": "win32-openssh",
+          "filter": [
+            "sftp-server.exe",
+            "libcrypto.dll",
+            "LICENSE.txt"
+          ]
+        }
+      ]
     },
     "portable": {
       "artifactName": "AgentDesk-${version}-portable.exe"

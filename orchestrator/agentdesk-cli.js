@@ -25,18 +25,42 @@ const CHAT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 function parseRequest(original = '', env = process.env) {
   const device = env.AGENTDESK_DEVICE;
   if (!DEVICE.test(device || '')) throw new Error('cli_device_missing');
-  if (typeof original !== 'string' || original.length > 600 || /[^\x20-\x7e]/.test(original)) throw new Error('cli_request_invalid');
+  if (typeof original !== 'string' || original.length > 1700 || /[^\x20-\x7e]/.test(original)) throw new Error('cli_request_invalid');
   const words = original.trim().split(/ +/);
-  // A 7th word (0.5.3+): `local` when the computer serves this project's own folder (`mount`), `vps` otherwise.
-  if (![6, 7].includes(words.length) || words[0] !== 'cli') throw new Error('cli_request_invalid');
-  const [, provider, chatId, projectId, nameHex, mode, place = 'vps'] = words;
-  if (!['local', 'vps'].includes(place)) throw new Error('cli_place_invalid');
+  // A 7th word: `vps` (this device's folder on VPS2), `local` (0.5.3-0.5.6: the computer serves the project folder
+  // only, `mount <projectId>`) or `pc` (0.5.7+: the computer serves all of itself, `mount computer`), then the
+  // project's folder on that computer as hex, where the CLI starts.
+  if (![6, 7, 8].includes(words.length) || words[0] !== 'cli') throw new Error('cli_request_invalid');
+  const [, provider, chatId, projectId, nameHex, mode, place = 'vps', rootHex] = words;
+  if (!['local', 'vps', 'pc'].includes(place) || (place === 'pc') !== (words.length === 8)) throw new Error('cli_place_invalid');
   if (!PROVIDERS.includes(provider)) throw new Error('cli_provider_invalid');
   if (!CHAT.test(chatId) || !CHAT.test(projectId)) throw new Error('cli_chat_invalid');
   if (!/^(?:[a-f0-9]{2}){1,240}$/.test(nameHex)) throw new Error('cli_name_invalid');
   if (!['write', 'read'].includes(mode)) throw new Error('cli_mode_invalid');
-  return { device, platform: env.AGENTDESK_PLATFORM === 'darwin' ? 'darwin' : 'win32', provider, chatId, projectId,
-    name: projectFolderName(Buffer.from(nameHex, 'hex').toString('utf8')), writable: mode === 'write', local: place === 'local' };
+  const platform = env.AGENTDESK_PLATFORM === 'darwin' ? 'darwin' : 'win32';
+  return { device, platform, provider, chatId, projectId,
+    name: projectFolderName(Buffer.from(nameHex, 'hex').toString('utf8')), writable: mode === 'write', local: place === 'local',
+    computer: place === 'pc', start: place === 'pc' ? computerPath(platform, rootHex) : null };
+}
+
+// Where a folder of the computer appears in the sandbox: a Mac's paths are its own (/Users/…, /Volumes/…); Windows
+// drives are /c, /d, … (as in Git Bash). Anything else, or a path climbing out with .., is refused.
+function computerPath(platform, rootHex) {
+  if (!/^(?:[a-f0-9]{2}){1,500}$/.test(rootHex || '')) throw new Error('cli_root_invalid');
+  const root = Buffer.from(rootHex, 'hex').toString('utf8');
+  if (/[\x00-\x1f]/.test(root)) throw new Error('cli_root_invalid');
+  let parts;
+  if (platform === 'win32') {
+    const match = /^([A-Za-z]):[\\/](.*)$/.exec(root);
+    if (!match) throw new Error('cli_root_invalid');
+    parts = [match[1].toLowerCase(), ...match[2].split(/[\\/]+/)];
+  } else {
+    if (!/^\/(Users|Volumes)\//.test(root)) throw new Error('cli_root_invalid');
+    parts = root.split('/');
+  }
+  parts = parts.filter(Boolean);
+  if (parts.some((part) => part === '..' || part === '.')) throw new Error('cli_root_invalid');
+  return '/' + parts.join('/');
 }
 
 const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };
@@ -47,10 +71,11 @@ function writeJson(file, value) {
 }
 const list = (folder) => { try { return fs.readdirSync(folder); } catch { return []; } };
 
-function prompt({ platform, writable, cwd, local }) {
+function prompt({ platform, writable, cwd, local, whole }) {
   const computer = platform === 'darwin' ? 'Mac' : 'Windows';
   return [`[AgentDesk 原生 CLI 单聊｜${writable ? '可修改' : '只读规划'}]`,
-    local ? `- 你运行在 VPS2 上；工作目录 ${cwd} 就是用户 ${computer} 电脑上这个项目的文件夹（实时挂载），在这里读写文件就是直接改用户电脑上的文件。挂载走网络，大量小文件操作会慢一些。`
+    whole ? `- 你运行在 VPS2 上，但用户这台 ${computer} 电脑已整台挂载进来，权限和用户本人一样：${platform === 'darwin' ? '路径与用户 Mac 上相同（/Users/…、/Volumes/…）' : 'Windows 各盘在 /c、/d…（C:\\Users\\x 即 /c/Users/x，也显示为 /pc/C:/Users/x，两者相同）'}。当前目录 ${cwd} 就是用户正在用的项目，在这里读写就是直接改用户电脑上的文件。你自己的 shell 命令在 VPS2（Linux）上执行，经网络读写这些文件，较慢；要在用户电脑上用本机的程序和环境（如 git、npm、编译、安装软件），用下面的 pc 命令。`
+      : local ? `- 你运行在 VPS2 上；工作目录 ${cwd} 就是用户 ${computer} 电脑上这个项目的文件夹（实时挂载），在这里读写文件就是直接改用户电脑上的文件。挂载走网络，大量小文件操作会慢一些。`
       : `- 你运行在 VPS2 上，工作目录 ${cwd} 是这台设备这个项目在 VPS2 上的文件夹（不是用户电脑）。`,
     '- 用户拖进来或粘贴的文件在 /uploads/ 里。',
     `- 需要用户 ${computer} 电脑上的文件、程序或环境时，用 \`pc '<命令>'\` 在用户电脑上执行（${platform === 'darwin' ? 'zsh' : 'PowerShell'} 语法）。命令在 AgentDesk 里这个单聊的共用终端中运行，用户看得到、也可以接管；输出和退出码会返回给你。长时间运行的程序用 \`pc --new '<命令>'\`；需要用户输入密码或确认时用 \`pc --ask '<请用户做什么>'\`，用户交还后会返回终端内容；\`pc --screen\` 查看终端当前内容。`,
@@ -101,16 +126,35 @@ function findNewSession(provider, { home, cwd, since }) {
 
 const INSIDE_HOME = '/home/agentdesk';
 
-function plan(request, { record, fresh = false, env = process.env } = {}) {
+// Whether the computer's files are mounted there now (waits up to `ms` for a mount that is on its way).
+function mountedSoon(directory, ms = 10_000) {
+  const decode = (text) => text.replace(/\\([0-7]{3})/g, (_, code) => String.fromCharCode(parseInt(code, 8)));
+  for (const until = Date.now() + ms; ;) {
+    try {
+      if (fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').some((line) => decode(line.split(' ')[4] || '') === directory)) return true;
+    } catch {}
+    if (Date.now() >= until) return false;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  }
+}
+
+function plan(request, { record, fresh = false, env = process.env, notice = () => {} } = {}) {
   const { device, provider, projectId, name, writable, platform } = request;
   const deviceRoot = path.join(STATE, 'cli-chats', device);
+  // The computer's files not there (AgentDesk on it offline, or the mount failed): this device's folder on VPS2.
+  // A mount whose connection just dropped is still listed but answers ENOTCONN: that counts as not there.
+  const reachable = (folder) => { try { fs.readdirSync(folder); return true; } catch { return false; } };
+  if (request.computer && !(mountedSoon(path.join(deviceRoot, 'pc-files')) && reachable(path.join(deviceRoot, 'pc-files')))) {
+    notice('没连上你电脑上的文件，这次先在 VPS2 上的文件夹里工作；重新连接后会回到你电脑上的项目。');
+    request = { ...request, computer: false, start: null };
+  }
   const home = path.join(deviceRoot, 'home', provider);
   const workspace = path.join(deviceRoot, 'work', projectId);
   const runtime = fs.mkdtempSync(path.join('/var/tmp', 'agentdesk-cli-'));
   fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
   const logins = jail.prepareHome(provider, home, path.join(STATE, 'homes'));
-  const cwd = `/work/${name}`;
-  const text = prompt({ platform, writable, cwd, local: request.local });
+  const cwd = request.computer ? request.start : `/work/${name}`;
+  const text = prompt({ platform, writable, cwd, local: request.local, whole: request.computer });
   const args = [];
   const extra = [];
   if (provider === 'claude') {
@@ -137,14 +181,18 @@ function plan(request, { record, fresh = false, env = process.env } = {}) {
   // The computer's own project folder (`mount`), when it serves one: mounted at a fixed place, so a sandbox that is
   // already running sees it again after a reconnect.
   let folder = workspace;
-  if (request.local) {
+  let computer = null;
+  if (request.computer) {
+    // The whole computer (`mount computer`), at the device's fixed place, shown under its own paths.
+    computer = { folder: path.join(deviceRoot, 'pc-files'), platform };
+  } else if (request.local) {
     folder = mountFor(request.device, projectId);
     fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   }
   const uploads = path.join(deviceRoot, 'uploads', projectId);
   fs.mkdirSync(uploads, { recursive: true, mode: 0o700 });
   extra.push([uploads, '/uploads']);
-  const jailed = jail.jailArgs({ runtime, home, workspace: folder, cwd, writable, logins, extra,
+  const jailed = jail.jailArgs({ runtime, home, workspace: computer ? null : folder, computer, cwd, writable, logins, extra,
     readOnly: [[pcFolder, '/run/agentdesk/pc'], [path.join(__dirname, 'cli-pc.py'), '/usr/local/bin/pc']] });
   // Nothing of this process's environment goes in but the terminal's type and language.
   const childEnv = { HOME: INSIDE_HOME, USER: 'agentdesk', LOGNAME: 'agentdesk', SHELL: '/bin/bash', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
@@ -310,11 +358,11 @@ const mountFor = (device, projectId) => path.join(STATE, 'cli-chats', device, 'm
 async function mountCommand(original, env = process.env) {
   const device = env.AGENTDESK_DEVICE;
   const words = String(original).trim().split(/ +/);
-  if (!DEVICE.test(device || '') || words.length !== 3 || !CHAT.test(words[1]) || !['write', 'read'].includes(words[2])) {
+  if (!DEVICE.test(device || '') || words.length !== 3 || !(CHAT.test(words[1]) || words[1] === 'computer') || !['write', 'read'].includes(words[2])) {
     process.stderr.write('mount_request_invalid\n'); process.exit(2);
   }
   const { mountProject, isMounted } = require('./project-mount');
-  const directory = mountFor(device, words[1]);
+  const directory = words[1] === 'computer' ? path.join(STATE, 'cli-chats', device, 'pc-files') : mountFor(device, words[1]);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (await isMounted(directory)) {
     await new Promise((resolve) => spawn('/usr/bin/fusermount3', ['-u', '-z', directory], { stdio: 'ignore' }).on('exit', resolve).on('error', resolve));
@@ -369,7 +417,8 @@ async function main() {
   const run = (fresh) => {
     const started = Date.now();
     const resuming = !fresh && ((request.provider === 'claude' || request.provider === 'grok') ? record.started : Boolean(record.session));
-    const launch = plan(request, { record, fresh });
+    const launch = plan(request, { record, fresh,
+      notice: (text) => process.stdout.write(`\x1b[2mAgentDesk：${text}\x1b[0m\r\n`) });
     child = jail.launch(launch.command, launch.args, { jail: launch.jail, env: launch.env,
       onNote: (note) => process.stderr.write(`\x1b[2mAgentDesk：沙盒网络未就绪（${note}）\x1b[0m\r\n`) });
     child.on('error', (error) => { process.stderr.write(`AgentDesk：启动失败（${error.code || error.message}）\r\n`); process.exit(70); });
@@ -402,4 +451,4 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { process.stderr.write(`AgentDesk：${error.message}\r\n`); process.exit(1); });
 
-module.exports = { parseRequest, plan, sessionArgs, findNewSession, socketFor };
+module.exports = { computerPath, parseRequest, plan, sessionArgs, findNewSession, socketFor };

@@ -19,6 +19,17 @@ test('VPS2 entry: the device comes from the forced command, the request is check
   assert.equal(parseRequest(`cli codex C1 p1 ${hex('x')} write local`, env).local, true, 'works in the computer\'s own folder');
   assert.equal(parseRequest(`cli codex C1 p1 ${hex('x')} write`, env).local, false, '0.5.0-0.5.2 clients: VPS2 folder');
   assert.throws(() => parseRequest(`cli codex C1 p1 ${hex('x')} write /etc`, env), /cli_place_invalid/);
+  const win = { AGENTDESK_DEVICE: 'win', AGENTDESK_PLATFORM: 'win32' };
+  const whole = parseRequest(`cli codex C1 p1 ${hex('ICT')} write pc ${hex('C:\\Users\\me\\Desktop\\ICT')}`, win);
+  assert.deepEqual([whole.computer, whole.start], [true, '/c/Users/me/Desktop/ICT'], 'the whole computer, starting in the project');
+  assert.equal(parseRequest(`cli codex C1 p1 ${hex('p')} write pc ${hex('/Users/me/p')}`, env).start, '/Users/me/p', 'a Mac keeps its own paths');
+  for (const bad of ['C:\\..\\Windows', 'relative\\x', '\\\\server\\share']) {
+    assert.throws(() => parseRequest(`cli codex C1 p1 ${hex('p')} write pc ${hex(bad)}`, win), /cli_root_invalid/, bad);
+  }
+  for (const bad of ['/etc/passwd', '/Users/../etc', '/Users/me/../../etc']) {
+    assert.throws(() => parseRequest(`cli codex C1 p1 ${hex('p')} write pc ${hex(bad)}`, env), /cli_root_invalid/, bad);
+  }
+  assert.throws(() => parseRequest(`cli codex C1 p1 ${hex('p')} write pc`, env), /cli_place_invalid/, 'pc needs the folder');
 });
 
 test('VPS2 entry: each chat continues its own conversation', () => {

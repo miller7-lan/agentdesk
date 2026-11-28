@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 11:40（北京时间）· 客户端 0.5.7 + VPS2 · CLI 挂载整台电脑
+
+- 用户要求：远程 CLI 控制本机、尽量贴合本地部署体验，能读写本机任意项目（系统拦截除外），其他人的 Windows 也要能用。
+- 客户端 `native-cli-ssh.js`：有 sftp-server 时（Windows：安装包 `resources/win32-openssh/sftp-server.exe`，退回 System32\OpenSSH；Mac：`/usr/libexec/sftp-server`）用它以当前用户身份提供整台电脑，`ssh … mount computer <mode>`，一台电脑一个挂载、多个单聊共用；CLI 请求 `pc <项目本机路径 hex>`。没有 sftp-server 时退回只挂项目（0.5.3 方式）。`vendor/win32-openssh/`：PowerShell/Win32-OpenSSH 10.0.0.0p2-Preview `OpenSSH-Win64.zip`（sha256 23f50f34…aba5）中的 sftp-server.exe、libcrypto.dll、LICENSE.txt 原样，`build.win.extraResources` 打进 Windows 包。
+- VPS2 `agentdesk-cli.js`：`mount computer` 挂在 `cli-chats/<设备>/pc-files`；`computerPath` 把本机路径映射为沙盒路径（Windows `C:\x` → `/c/x`，Mac 只接受 `/Users/…`、`/Volumes/…`，拒绝 `..`）；挂载不在或连接已断（ENOTCONN）时退回 VPS2 文件夹并提示。`cli-jail.js`：整台电脑绑在 `/pc`，Windows `/a`…`/z` 链接到 `/pc/X:`，Mac `/Users`、`/Volumes` 链接到 `/pc/…`。旧客户端的 `vps`/`local` 请求不变。
+- 验证：用户 Windows（DAZZLE-LEGION）上实测 Win32 sftp-server 单独运行：根目录列出 C:、D:，读、写、建目录、改名、删除正常，列 System32 2.2 秒。VPS2 上以临时钥匙、经 `ssh win` 提供 sftp 端到端：0.7 秒挂上，Grok 在 `/pc/C:/Users/18133/Desktop/ICT-dual-track-202611` 启动（真实路径显示为 /pc/C:/…），关闭后卸载；连接已断时退回逻辑修正后通过。测试 649 项通过。临时钥匙和数据已删。
+
 ## 2026-11-28 04:20（北京时间）· 客户端 0.5.6
 
 - 0.5.5 Windows 打包测试失败（`test/pc-bridge.test.js` 保护开关测试在 Windows 用 zsh → `invalid_terminal_shell`），未上传。测试改为按平台选 shell；按用户既定选择不移标签，发 0.5.6，内容同 0.5.5。
