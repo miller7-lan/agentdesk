@@ -115,9 +115,8 @@ function findNewSession(provider, { home, cwd, since }) {
     }
   }
   if (provider === 'antigravity') {
-    const folder = path.join(home, ...ANTIGRAVITY_CONVERSATIONS);
-    const fresh = list(folder).filter((file) => UUID.test(file.split('.')[0]))
-      .map((file) => ({ id: file.split('.')[0], at: (() => { try { return fs.statSync(path.join(folder, file)).birthtimeMs || fs.statSync(path.join(folder, file)).mtimeMs; } catch { return 0; } })() }))
+    const fresh = antigravityFiles(home).filter((file) => UUID.test(path.basename(file).split('.')[0]))
+      .map((file) => ({ id: path.basename(file).split('.')[0], at: (() => { try { return fs.statSync(file).birthtimeMs || fs.statSync(file).mtimeMs; } catch { return 0; } })() }))
       .filter((item) => item.at >= since).sort((a, b) => b.at - a.at);
     return fresh[0]?.id || null;
   }
@@ -126,17 +125,19 @@ function findNewSession(provider, { home, cwd, since }) {
 
 const INSIDE_HOME = '/home/agentdesk';
 
-// Where each CLI keeps a conversation once it has one (2026-11-28: agy writes ~/.gemini/antigravity/conversations,
-// not antigravity-cli/; Codex writes its rollout only after the first message). A chat opened and left without a
+// Where each CLI keeps a conversation once it has one (agy: ~/.gemini/antigravity-cli/conversations/<id>.db, created
+// with the first message; it also reads ~/.gemini/antigravity/conversations. Codex writes its rollout only after the
+// first message). A chat opened and left without a
 // message has no conversation, so passing its id would only show "conversation … not found" or fail the start.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ANTIGRAVITY_CONVERSATIONS = ['.gemini', 'antigravity', 'conversations'];
+const ANTIGRAVITY_CONVERSATIONS = [['.gemini', 'antigravity-cli', 'conversations'], ['.gemini', 'antigravity', 'conversations']];
+const antigravityFiles = (home) => ANTIGRAVITY_CONVERSATIONS.flatMap((parts) => list(path.join(home, ...parts)).map((file) => path.join(home, ...parts, file)));
 function sessionExists(provider, home, id) {
   if (typeof id !== 'string' || !UUID.test(id)) return false;
   const inFolders = (root, match) => list(root).some((sub) => list(path.join(root, sub)).some(match));
   if (provider === 'claude') return inFolders(path.join(home, '.claude', 'projects'), (file) => file === id + '.jsonl');
   if (provider === 'grok') return inFolders(path.join(home, '.grok', 'sessions'), (file) => file === id);
-  if (provider === 'antigravity') return list(path.join(home, ...ANTIGRAVITY_CONVERSATIONS)).some((file) => file.split('.')[0] === id);
+  if (provider === 'antigravity') return antigravityFiles(home).some((file) => path.basename(file).split('.')[0] === id);
   if (provider === 'codex') {
     const root = path.join(home, '.codex', 'sessions');
     for (const year of list(root)) for (const month of list(path.join(root, year))) for (const day of list(path.join(root, year, month))) {

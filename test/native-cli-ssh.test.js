@@ -45,11 +45,14 @@ test('VPS2 entry: a remembered conversation the CLI does not have is dropped, no
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const id = (n) => `${String(n).repeat(8)}-1111-4111-8111-${String(n).repeat(12)}`;
   const put = (...parts) => { fs.mkdirSync(path.join(home, ...parts.slice(0, -1)), { recursive: true }); fs.writeFileSync(path.join(home, ...parts), ''); };
-  put('.gemini', 'antigravity', 'conversations', id(1) + '.pb');
+  put('.gemini', 'antigravity', 'conversations', id(5) + '.pb');
+  for (const until = Date.now() + 30; Date.now() < until;);   // id(1) is the newer conversation
+  put('.gemini', 'antigravity-cli', 'conversations', id(1) + '.db');   // where agy 1.5 writes (seen live 2026-11-28)
   put('.claude', 'projects', '-work-x', id(2) + '.jsonl');
   put('.codex', 'sessions', '2026', '11', '28', `rollout-2026-11-28T10-00-00-${id(3)}.jsonl`);
   fs.mkdirSync(path.join(home, '.grok', 'sessions', '%2Fwork', id(4)), { recursive: true });
   assert.equal(sessionExists('antigravity', home, id(1)), true);
+  assert.equal(sessionExists('antigravity', home, id(5)), true);
   assert.equal(sessionExists('claude', home, id(2)), true);
   assert.equal(sessionExists('codex', home, id(3)), true);
   assert.equal(sessionExists('grok', home, id(4)), true);

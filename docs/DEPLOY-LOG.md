@@ -2,6 +2,13 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 22:25（北京时间）· VPS2 CLI 单聊：agy 会话目录改正 + 四个 AI 真机测试
+
+- 22:00 那次把 agy 会话目录改成了 `.gemini/antigravity/conversations`，是错的：真机测试发现 agy 1.5.18 实际写 `.gemini/antigravity-cli/conversations/<id>.db`（日志里 antigravity/conversations 只是它额外读取的导入目录）。现两处都认；测试改为同时覆盖。部署（备份 agentdesk-cli.js.bak-20261128-agydir）。
+- 真机测试（Mac 用 AgentDesk 的 CLI 密钥连 VPS2，Claude/Codex/Grok/Antigravity 各开一个测试单聊）：各自记住暗号后，记录均写入正确会话 id；强杀 Mac 端 ssh 后 5 秒内 VPS2 上四个 CLI 全部退出；重连分别以 `--resume`/`codex resume`/`--resume`/`--conversation` 接上，四个都答对暗号。静默丢包模拟断网：约 35–40 秒四个全部退出，无残留。
+- 观察：测试中 Mac 网络有一次约 30 秒无响应，sshd（agentdesk ClientAlive 10×3）判定超时断开了 Claude 连接，重连后正常续接——网络不稳时会更频繁地"断开→续接"，属设计预期。
+- 22:05 经用户同意结束了 16:15 前遗留的 24 个 dtach 旧会话（约 2 GB 内存）。测试数据已删。
+
 ## 2026-11-28 22:00（北京时间）· VPS2 CLI 单聊不再续接不存在的会话
 
 - 现象：每个新开的 Antigravity CLI 单聊先显示 `warning: conversation "<id>" not found`，再出现 agy；重开/重连同一单聊每次重复，且接不上上次对话。Codex 新单聊首次启动先失败一次再重开。
