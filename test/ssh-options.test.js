@@ -47,7 +47,7 @@ test('jump invocation adds one ProxyCommand and a private environment', () => {
     cfg: CFG, key: '/tmp/codex_ed25519', port: 2222, target: 'codexdev@vps.example.invalid',
     targetHost: 'vps.example.invalid', route: 'jump', jump: JUMP,
     extraArgs: ['--'], afterTarget: ['/opt/agentdesk-orchestrator/agent-chat.sh claude'],
-    runtime: RUNTIME, helperPath: HELPER,
+    runtime: RUNTIME, helperPath: HELPER, platform: 'linux',
   });
   assert.equal(invocation.args.filter((arg) => arg.startsWith('ProxyCommand=')).length, 1);
   assert(invocation.args.includes('ProxyCommand=' + proxyCommandFor({
@@ -202,7 +202,8 @@ test('Windows jump runs ssh.exe -W directly as ProxyCommand (no Electron helper)
     cfg: CFG, key: 'C:\\k', port: 22, target: 'agentdesk@vps.example.invalid', targetHost: 'vps.example.invalid',
     route: 'jump', jump, platform: 'win32', runtime: { nodePath: 'C:\\AgentDesk.exe', electron: true }, helperPath: 'C:\\ssh-jump.js',
   });
-  assert.deepEqual(invocation.env, {});
+  assert.equal(invocation.env.ELECTRON_RUN_AS_NODE, undefined);
+  assert(invocation.env.AGENTDESK_SSH_JUMP);
   const proxy = invocation.args.find((arg) => arg.startsWith('ProxyCommand='));
   assert(proxy && !proxy.includes('ssh-jump.js') && !proxy.includes('AgentDesk.exe'));
   assert(proxy.includes(' -W vps.example.invalid:22 -- '));

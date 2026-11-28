@@ -2,6 +2,10 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-28 14:45（北京时间）· 客户端 0.5.10
+
+- v0.5.9 发布运行 Windows 测试失败（bridge-ssh/chat-link/remote 测试在 win32 上读取 `AGENTDESK_SSH_JUMP`），未上传。win32 跳板也写入该环境变量（不设 ELECTRON_RUN_AS_NODE），ssh-options 旧用例显式 `platform: 'linux'`；本地以模拟 win32 跑相关 4 个测试文件 47/47 通过。内容同 0.5.9。
+
 ## 2026-11-28 14:20（北京时间）· 客户端 0.5.9 · Windows 跳板修复
 
 - 现象：`windows`（18133）跳板路线（remote.json `jump`）每 30 秒 `remote_connection retry`，Bridge 不通，`update_download` 30 秒后 `network`；本机残留约 70 个 ssh.exe。VPS1 侧跳板账户每次登录成功，VPS1→VPS2:22 正常，VPS2 sshd 连接停在 `[accepted]`（客户端握手字节从未到达）。

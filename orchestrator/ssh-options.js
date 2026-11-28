@@ -224,7 +224,10 @@ function buildSshInvocation({
   let env = {};
   if (route === 'jump' && platform === 'win32') {
     if (!isJumpConfigured(jump)) throw new Error('跳板配置不完整，无法建立跳板连接');
-    args.push('-o', 'ProxyCommand=' + windowsJumpCommand(jumpPayload(jump, { host: targetHost, port: port || 22 })));
+    const payload = jumpPayload(jump, { host: targetHost, port: port || 22 });
+    args.push('-o', 'ProxyCommand=' + windowsJumpCommand(payload));
+    // 同一份跳板参数也放进环境变量（不设 ELECTRON_RUN_AS_NODE），便于诊断和与其他平台一致。
+    env = jumpEnvironment(payload, { ...runtime, electron: false });
   } else if (route === 'jump') {
     if (!isJumpConfigured(jump)) throw new Error('跳板配置不完整，无法建立跳板连接');
     const helper = helperPath || jumpHelperPath();
