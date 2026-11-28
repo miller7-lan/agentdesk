@@ -82,11 +82,26 @@
   const autoStarted = new Set();  // CLI chats started on opening during this run (a stopped one is not restarted)
 
   // ---------- the CLI chats themselves (kept here; they have no thread on VPS2 the sidebar could list) ----------
-  const saved = () => { try { return JSON.parse(localStorage.getItem('agentdesk.cliChats') || '[]'); } catch { return []; } };
+  // The list is saved as the union of what is shown and what was saved before: a chat leaves it only when it is
+  // deleted. (Saving only what was shown lost every chat on an update: the window opened the project and started a
+  // new chat before the saved ones were put back, and that one-chat list replaced the saved one.)
+  const KEY = 'agentdesk.cliChats';
+  const forgotten = new Set();
+  let fileChats = [];
+  const local = () => { try { const list = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } };
+  const saved = () => {
+    const seen = new Set();
+    return [...local(), ...fileChats].filter((chat) => chat && typeof chat.id === 'string' && !forgotten.has(chat.id) &&
+      !seen.has(chat.id) && seen.add(chat.id));
+  };
   const save = () => {
-    const list = A.D.sessions.filter((s) => s.surface === 'cli')
+    const shownChats = A.D.sessions.filter((s) => s.surface === 'cli')
       .map(({ id, project, agent, title, created }) => ({ id, project, agent, title, created }));
-    try { localStorage.setItem('agentdesk.cliChats', JSON.stringify(list.slice(0, 100))); } catch {}
+    const ids = new Set(shownChats.map((chat) => chat.id));
+    const list = [...shownChats, ...saved().filter((chat) => !ids.has(chat.id))].slice(0, 100);
+    try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {}
+    fileChats = list;
+    api.saveChats?.(list)?.catch?.(() => {});
   };
   const rel = (at) => {
     const minutes = Math.round((Date.now() - (at || Date.now())) / 60000);
@@ -105,6 +120,7 @@
     if (added) A.renderSidebar?.();
   }
   function create(project, agent) {
+    restore();
     const chat = { id: 'C' + crypto.randomUUID(), project, agent, title: CLI_NAMES[agent] || 'CLI', created: Date.now() };
     A.D.sessions.unshift(asSession(chat));
     save();
@@ -113,6 +129,7 @@
   async function remove(s) {
     if (!window.confirm(`删除「${s.title}」？CLI 会结束，这个对话的记录也不再保留。`)) return;
     await call('forget', { provider: agentOf(s), projectId: A.proj(s.project)?.id, chatId: s.id }).catch(() => {});
+    forgotten.add(s.id);
     A.D.sessions.splice(A.D.sessions.indexOf(s), 1);
     save();
     if (A.state.active === s.id) {
@@ -412,8 +429,15 @@
     if (shown) attach();
   }, 400);
   restore();
+  // The durable copy (cli-chats.json): chats this window's storage no longer has come back from it.
+  Promise.resolve(api.chats?.()).then((list) => {
+    if (!Array.isArray(list)) return;
+    fileChats = list;
+    restore();
+    save();
+  }).catch(() => {});
   new MutationObserver(() => { if (term) term.options.theme = theme(); })
     .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'style'] });
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (term) term.options.theme = theme(); });
-  window.AgentDeskNativeCli = { create, remove, start };
+  window.AgentDeskNativeCli = { create, remove, start, restore };
 })();

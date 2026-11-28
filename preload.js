@@ -155,6 +155,9 @@ contextBridge.exposeInMainWorld('desk', {
   tui: {
     call: (op, fields) => ipcRenderer.invoke('tui:call', op, fields),
     onEvent: on('tui:event'),
+    // The list of CLI single chats, also kept in a file so an update or a reopen never loses it.
+    chats: () => ipcRenderer.invoke('tui:chats'),
+    saveChats: (list) => ipcRenderer.invoke('tui:chats-save', list),
   },
   localCommands: {
     list: (agent, threadId) => ipcRenderer.invoke('local-command:list', agent, threadId),

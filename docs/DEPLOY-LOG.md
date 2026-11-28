@@ -2,6 +2,14 @@
 
 每次部署一条，最新的在最上面。只写版本、做了什么、怎样验证、怎样回滚；不写 IP、令牌和密钥。
 
+## 2026-11-29 01:30（北京时间）· 0.5.13：CLI 单聊列表更新/重开后丢失
+
+- 现象（用户 Mac，01:03 换装 0.5.12 后）：种子项目下没删的 Codex/Claude/Antigravity 三个 CLI 单聊都不见了，只剩一个新开的 Codex。Mac localStorage 的 leveldb 日志里能看到原来三条，之后被只含新 Codex 的列表覆盖；VPS2 cli-chats/mac/chats/ 里三条会话记录都在。
+- 原因：列表只存在 localStorage（agentdesk.cliChats），save() 只写当前侧栏里的 CLI 会话。启动时 openProject 在 restore() 把保存的会话放回前就判断「项目没有会话」→ newDirect → create() → save()，于是用一条覆盖了保存的列表。
+- 修复（仅客户端）：save() 写「当前 ∪ 已保存」，只有删除（forgotten）才移除；create() 和 openProject 先 restore()；列表另存 userData/cli-chats.json（main.js tui:chats / tui:chats-save，校验 id/agent/长度，最多 200 条），启动时合并回来。
+- 验证：npm test 666 项 0 失败（新增 test/cli-chat-list.test.js）。VPS2 无改动。
+- 找回：给 Mac 写 cli-chats.json，放回丢失的三条（id 取自 leveldb 日志），装 0.5.13 后启动合并。
+
 ## 2026-11-29 00:45（北京时间）· 0.5.12：每台电脑多个主控工作区
 
 - 用户要求：一台电脑能同时连多个群聊项目（原来每台只有 1 个工作区，第二个项目建不了），Mac 和 Windows 都要。

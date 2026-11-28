@@ -78,6 +78,8 @@
   }
 
   function openProject(id) {
+    // Put the saved CLI chats back first, or a project whose chats are not shown yet would get a new one instead.
+    window.AgentDeskNativeCli?.restore?.();
     const target = D.sessions.find((session) => session.project === id);
     if (target) A.openSession(target.id);
     else if (id) A.newDirect(id);

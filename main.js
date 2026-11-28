@@ -1621,6 +1621,31 @@ ipcMain.handle('tui:call', async (event, op, fields = {}) => {
     return { ok: true, value };
   } catch (error) { return { ok: false, error: error.message }; }
 });
+// The CLI single chats in the sidebar exist only on this computer (VPS2 keeps each one's conversation, not the list).
+// The window keeps the list in localStorage; this file is its durable copy, merged back in at every start.
+const cliChatsFile = () => path.join(app.getPath('userData'), 'cli-chats.json');
+function validCliChats(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter((chat) => chat && typeof chat === 'object' && /^C[0-9a-f-]{36}$/.test(chat.id || '') &&
+    typeof chat.project === 'string' && chat.project.length <= 128 && /^(claude|codex|grok|antigravity)$/.test(chat.agent || '') &&
+    (chat.title === undefined || (typeof chat.title === 'string' && chat.title.length <= 200)) &&
+    (chat.created === undefined || Number.isFinite(chat.created)))
+    .slice(0, 200).map(({ id, project, agent, title, created }) => ({ id, project, agent, title, created }));
+}
+ipcMain.handle('tui:chats', (event) => {
+  if (!fromMainWindow(event)) return [];
+  try { return validCliChats(JSON.parse(fs.readFileSync(cliChatsFile(), 'utf8'))); } catch { return []; }
+});
+ipcMain.handle('tui:chats-save', (event, list) => {
+  if (!fromMainWindow(event)) return false;
+  const file = cliChatsFile();
+  const temp = file + '.' + process.pid + '.tmp';
+  try {
+    fs.writeFileSync(temp, JSON.stringify(validCliChats(list), null, 1) + '\n', { mode: 0o600 });
+    fs.renameSync(temp, file);
+    return true;
+  } catch { try { fs.unlinkSync(temp); } catch {} return false; }
+});
 app.on('before-quit', () => { try { nativeCli?.closeAll(); } catch {} try { pcBridge?.closeAll(); } catch {} });
 
 function forgetChatThread(threadId) {
